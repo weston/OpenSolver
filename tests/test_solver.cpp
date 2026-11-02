@@ -96,6 +96,32 @@ static bool run_pruning() {
   return det && sum && conv;
 }
 
+// #98: memory_bytes_for must price the set_predictive preds array (storage_floats * 4, never
+// compressed) under with_preds, and follow the actual preds allocation state without it.
+static bool mem_accounting() {
+  GameConfig cfg;
+  parse_cards("KhQs7d4c2s", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+  if (!parse_range("AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 200;
+  cfg.lines.add = {{75, 200}, {0, 75, 200}, {0, 50}, {75}};
+  GameTree g;
+  if (!g.build(cfg, err)) return false;
+  const uint64_t preds_bytes = g.storage_floats * sizeof(float);
+  bool ok = g.memory_bytes_for(false, true) - g.memory_bytes_for(false, false) == preds_bytes &&
+            g.memory_bytes_for(true, true) - g.memory_bytes_for(true, false) == preds_bytes &&
+            g.memory_bytes() == g.memory_bytes_for(g.compressed, false);  // preds still empty
+  g.preds.resize(g.storage_floats);  // what set_predictive allocates
+  ok = ok && g.memory_bytes() == g.memory_bytes_for(g.compressed, true);
+  std::printf("[mem] preds accounting %s\n", ok ? "OK" : "WRONG");
+  return ok;
+}
+
 int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
@@ -140,6 +166,7 @@ int main(int argc, char** argv) {
   fails += !run("flop-mono-noiso", "Kh9h4h", "AA,KK,QQ,JJ,TT,99,AK,AQ,AJ,KQ,KJ,QJ,JT,T9", "AA,KK,QQ,JJ,TT,99,88,AK,AQ,KQ,QJ,JT", 60, 200,
                 {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {0, 0, 40}, {20, 200}}, 200, 0.01, false);
   fails += !run_pruning();
+  fails += !mem_accounting();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

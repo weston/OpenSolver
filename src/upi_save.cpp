@@ -740,7 +740,10 @@ std::string Upi::cmd_load_tree(const Args& a) {
   else if (small_strats_ == "off") t->compressed = false;
   // auto: keep the file's storage mode so a save/load round trip is exact. Requantizing a float32 save
   // to 16-bit is lossy (~1e-4 in strategies), so only do it when float32 genuinely does not fit.
-  else t->compressed = ((lc.h.mode & kModeQ16) && !(lc.h.mode & kModeQuant)) || t->memory_bytes_for(false) > avail;
+  // Price in the preds array when predictive is on: apply_pcfr_settings below resizes it
+  // after this decision, so float32 chosen against an unpriced budget can overflow (#98).
+  else t->compressed = ((lc.h.mode & kModeQ16) && !(lc.h.mode & kModeQuant)) ||
+                       t->memory_bytes_for(false, predictive_) > avail;
   tree_.reset();
   solver_.reset();
   t->allocate_storage();

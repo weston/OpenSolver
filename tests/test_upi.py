@@ -270,6 +270,9 @@ def run_big_tree(u, order):
     print("[build + solve the real Pio script tree]")
     est = u.cmd("estimate_schematic_tree")
     check("MB" in est, "estimate_schematic_tree")
+    # 6.4 GB in float32: pin 16-bit storage so the tree fits 16 GB machines and the save/load round
+    # trip below is exact (auto mode could otherwise save float32 and reload compressed, see #40).
+    u.cmd("small_strats on")
     check(u.cmd("build_tree") == "build_tree ok!", "build_tree")
     check_tree_shape(u, order)
     u.cmd("set_accuracy 0.2")
@@ -333,6 +336,7 @@ def main(exe, big=False):
 
         if big:
             run_big_tree(u, order)
+            u.cmd("small_strats auto")  # run_big_tree pins 16-bit storage; later sections use the default
         else:
             run_small_tree(u, order)
 

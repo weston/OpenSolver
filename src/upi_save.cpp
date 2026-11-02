@@ -396,7 +396,9 @@ std::string Upi::cmd_load_tree(const Args& a) {
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
   if (small_strats_ == "on") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
-  else t->compressed = (lc.h.mode & 1) || t->memory_bytes_for(false) > avail * 9 / 10;
+  // auto: keep the file's storage mode so a save/load round trip is exact. Requantizing a float32 save
+  // to 16-bit is lossy (~1e-4 in strategies), so only do it when float32 genuinely does not fit.
+  else t->compressed = (lc.h.mode & 1) || t->memory_bytes_for(false) > avail;
   tree_.reset();
   solver_.reset();
   t->allocate_storage();

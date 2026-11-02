@@ -29,6 +29,19 @@ struct DcfrParams {
   double alpha = 1.3;  // positive regret discount exponent
   double beta = 0.0;   // negative regret discount exponent
   double gamma = 4.0;  // strategy-sum discount exponent
+  // beta schedule: from iteration beta_switch + 1 on, negative regrets use beta_late instead of beta
+  // (0 = no switch). beta = 0 halves every negative regret each iteration, so discarded actions keep
+  // re-entering; on large trees with many actions (a realistic 13 GB SRP tree: 3 flop sizes x 2
+  // raises, 2 turn and 2 river sizes) the average then oscillates and stalls around 1% of pot.
+  // Slower forgetting late in the solve fixes that: exploitability at iteration 125 / 150 / 200
+  // 0.83 / 0.66 / 0.75 -> 0.67 / 0.44 / 0.24, and 1% of pot in 140 instead of 220 iterations (70 s,
+  // level with PioSOLVER on the same PC). Constant beta 0.5 does as well there but costs the small
+  // bench trees 25-40% more iterations; switching after 50 keeps them within 0-11% (deep 180 -> 200,
+  // flop_3bet 95 -> 100, river 165 -> 175; flop_srp_4, flop_srp_2, turn unchanged). Constant
+  // beta 0.25 oscillates too.
+  double beta_late = 0.5;
+  int beta_switch = 50;
+  double beta_at(int t) const { return beta_switch > 0 && t > beta_switch ? beta_late : beta; }
 };
 
 // Showdown values against one river board: out[h] += value of p's hand h given opponent reach ro,

@@ -665,12 +665,25 @@ void Upi::register_commands() {
   // (t/(t+1))^gamma. beta very negative underflows to 0, i.e. CFR+'s "discard negative
   // regrets"; alpha must stay small, since a large exponent overflows t^alpha to inf and
   // inf/(inf+1) is NaN.
+  // set_dcfr alpha beta gamma [beta_late switch]: three values give constant exponents (the
+  // published DCFR form); five add the beta schedule (beta -> beta_late after iteration `switch`).
   H["set_dcfr"] = [this](const Args& a) {
-    if (a.size() < 3) throw CmdError{"incorrect or missing argument"};
+    if (a.size() != 3 && a.size() != 5) throw CmdError{"incorrect or missing argument"};
     double al = arg_double(a, 0, "alpha"), be = arg_double(a, 1, "beta"), ga = arg_double(a, 2, "gamma");
     if (!(al > 0.0) || al > 10.0 || be > 10.0 || !(ga >= 0.0) || ga > 10.0)
       throw CmdError{"incorrect or missing argument"};
-    dcfr_ = DcfrParams{al, be, ga};
+    DcfrParams d;
+    d.alpha = al;
+    d.beta = be;
+    d.gamma = ga;
+    d.beta_switch = 0;
+    if (a.size() == 5) {
+      d.beta_late = arg_double(a, 3, "beta_late");
+      long long sw = arg_int(a, 4, "switch");
+      if (d.beta_late > 10.0 || sw < 0 || sw > 1000000000) throw CmdError{"incorrect or missing argument"};
+      d.beta_switch = static_cast<int>(sw);
+    }
+    dcfr_ = d;
     if (solver_) solver_->params = dcfr_;
     return std::string("set_dcfr ok!");
   };
@@ -783,10 +796,10 @@ void Upi::register_commands() {
   H["build_tree"] = [this](const Args& a) { return cmd_build_tree(a); };
   H["list_algorithms"] = [](const Args&) {
     return std::string(
-        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4); this solver uses one algorithm for every code\n"
-        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
-        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
-        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)");
+        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4); this solver uses one algorithm for every code\n"
+        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
+        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
+        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)");
   };
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};

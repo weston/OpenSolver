@@ -978,7 +978,7 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
 void Solver::iterate(int t) {
   double td = static_cast<double>(t);
   double pa = std::pow(td, params.alpha);
-  double pb = std::pow(td, params.beta);
+  double pb = std::pow(td, params.beta_at(t));
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
@@ -1041,7 +1041,7 @@ void Solver::reset_strategy_sums() {
 void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r1) {
   double td = static_cast<double>(t);
   double pa = std::pow(td, params.alpha);
-  double pb = std::pow(td, params.beta);
+  double pb = std::pow(td, params.beta_at(t));
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));

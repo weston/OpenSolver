@@ -140,6 +140,11 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `set_recalc_accuracy` (fraction of the pot; defaults 0.0025 0.001 0.0005) and flags it
   `ALREADY_RECALCED`. `set_always_recalc <street> <ms>` does the same for present streets.
   `rebuild_tree`, `estimate_rebuild_tree`, `solve_all_splits` need `load_all_nodes` first (probe10).
+- Save records (ours, v5): default quantized to `compression_precision_` bits. Frequencies come from
+  `Solver::average_strategy` (exactly what `show_strategy` shows). Per-hand strategy weights are stored
+  in half-octave log steps, needed so a resumed solve converges as before (measured: without them,
+  0.0020 -> 0.0020 instead of 0.0010 over 100 more iterations). Regrets are stored at the same bits.
+  `lossless` = v4 records. Tests that need bit-exact reloads must save with `lossless`.
 - Lazy loading (ours): `load_tree` without `full` reads v4 saves per street segment on first access,
   hooked into every `GameTree` storage accessor (`ensure_loaded`). Storage arrays are calloc'd
   (`ZVec`), so untouched segments cost no RAM. Code that reads `regrets`/`strat` arrays directly must

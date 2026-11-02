@@ -1,21 +1,27 @@
 // dump_tree / load_tree / show_metadata / show_save_version / check_tree_health.
 //
 // A save is a sequence of gzip members; decompressed back to back (gunzip, gzread) they form one stream:
-//   "OUPISAV2" | u32 version | u32 truncate (0 full, 4 no_rivers, 3 no_turns) | u8 storage mode (bit 0:
-//   16-bit records, bit 1: compressed file) | u32 config length | config | u64 meta length | node metadata
+//   "OUPISAV2" | u32 version | u32 truncate (0 full, 4 no_rivers, 3 no_turns) | u8 mode | [v5: u8 precision]
+//   | u32 config length | config | u64 meta length | node metadata
 //   | node records | [v4: u64 segment count | u64 member offset per segment | u64 index offset] | "OUPIEND!"
 // v4 (current) writes node records grouped by street segment (GameTree::street_segments), one gzip
 // member per segment, followed by an index member with each segment's byte offset and a fixed-size
 // 39-byte final member holding the index offset and the trailer. That lets `load_tree` (fast) read only
 // the segments that are actually accessed. v2/v3 files (records in node order, one member) load fully.
+// Mode bits: 0 exact 16-bit records (else exact float32), 1 compressed file, 2 quantised records (v5), 3 no
+// regrets (v5). Quantised records (the default since v5, `set_compression_precision` bits, 11 by default)
+// store the displayed strategy as per-hand frequencies (last action implied) plus regrets; `no_regrets`
+// keeps the frequencies only (for browsing); `lossless` writes the exact records of v4.
 // gzip's CRC32 plus the trailer marker let check_tree_health detect corruption and truncation.
 #include <zlib.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
 
+#include "solver.hpp"
 #include "upi.hpp"
 #include "version.hpp"
 
@@ -25,7 +31,7 @@ namespace {
 
 constexpr char kMagic[8] = {'O', 'U', 'P', 'I', 'S', 'A', 'V', '2'};
 constexpr char kTrailer[8] = {'O', 'U', 'P', 'I', 'E', 'N', 'D', '!'};
-constexpr uint32_t kVersion = 4;  // 4: segmented (lazy-loadable); 3 adds preflop trees; 2, 3 readable
+constexpr uint32_t kVersion = 5;  // 5: quantised records; 4: segmented (lazy); 3: preflop trees; 2+ readable
 
 struct Writer {
   std::string buf;
@@ -255,8 +261,9 @@ class GzIn {
 
 struct Header {
   uint32_t version = 0, truncate = 0;
-  uint8_t mode = 0;
+  uint8_t mode = 0, precision = 0;
 };
+constexpr uint8_t kModeQ16 = 1, kModeCompressed = 2, kModeQuant = 4, kModeNoRegrets = 8;
 
 Header read_header(GzIn& in) {
   char magic[8];
@@ -271,6 +278,8 @@ Header read_header(GzIn& in) {
   if (h.version < 2 || h.version > kVersion) throw CmdError{"unsupported save version " + std::to_string(h.version)};
   h.truncate = in.get<uint32_t>();
   h.mode = in.get<uint8_t>();
+  if (h.version >= 5) h.precision = in.get<uint8_t>();
+  if ((h.mode & kModeQuant) && (h.precision < 2 || h.precision > 16)) throw CmdError{"file format error (precision)"};
   return h;
 }
 
@@ -428,7 +437,71 @@ LoadedConfig read_config_section(GzIn& in) {
 // float32 storage writes [A*H f32 regrets][A*H f32 strategy sums].
 size_t record_bytes(const GameTree& t, const GNode& n, uint8_t file_mode) {
   size_t len = t.node_size(n);
+  if (file_mode & kModeQuant) {
+    size_t H = static_cast<size_t>(t.num_hands(n.player));
+    size_t b = 4 + (n.num_children > 1 ? (n.num_children - 1) * H * 2 : 0);
+    if (!(file_mode & kModeNoRegrets)) b += 4 + len * 2 + H;
+    return b;
+  }
   return (file_mode & 1) ? 8 + len * 4 : len * 8;
+}
+
+// Quantised record: [f32 strategy scale][(A-1)*H u16 frequencies of the displayed strategy, last action
+// implied][unless no_regrets: f32 regret scale][A*H u16 zigzag regrets]. Frequencies use 2^p-1 levels,
+// regrets 2^(p-1)-1 per sign. On load each hand's strategy sums become frequency * scale (each hand's
+// average is independent of the others, so this only changes how strongly the past weighs if you keep
+// solving), and without regrets the regrets become the frequencies (regret matching reproduces them).
+void write_record_quant(GzOut& out, const GameTree& g, const Solver& solver, uint32_t ni, int prec, bool regrets,
+                        std::vector<float>& f, std::vector<float>& b1, std::vector<uint16_t>& q) {
+  const GNode& n = g.nodes[ni];
+  const int A = n.num_children, H = g.num_hands(n.player);
+  const size_t len = static_cast<size_t>(A) * H;
+  f.resize(len);
+  b1.resize(len);
+  solver.average_strategy(ni, f.data());
+  const float* S = g.strat_ro(n, b1.data());
+  float sscale = 0;
+  for (int h = 0; h < H; ++h) {
+    double t = 0;
+    for (int a = 0; a < A; ++a) t += std::max(0.0f, S[static_cast<size_t>(a) * H + h]);
+    sscale = std::max(sscale, static_cast<float>(t));
+  }
+  if (!std::isfinite(sscale)) sscale = 0;
+  out.put(sscale);
+  if (regrets) {
+    // Per-hand strategy weight (log2 relative to the node max, half-octave steps; 0 = none), so a
+    // resumed solve weighs each hand's past as before (within ~19%; enough for the same convergence).
+    std::vector<uint8_t> lt(static_cast<size_t>(H), 0);
+    for (int h = 0; h < H; ++h) {
+      double t = 0;
+      for (int a = 0; a < A; ++a) t += std::max(0.0f, S[static_cast<size_t>(a) * H + h]);
+      if (t > 0 && sscale > 0) lt[h] = static_cast<uint8_t>(std::clamp(255.0 + std::round(std::log2(t / sscale) * 2.0), 1.0, 255.0));
+    }
+    out.write(lt.data(), lt.size());
+  }
+  const double lf = static_cast<double>((1u << prec) - 1);
+  if (A > 1) {
+    q.resize(static_cast<size_t>(A - 1) * H);
+    for (size_t i = 0; i < q.size(); ++i) {
+      double v = std::isfinite(f[i]) ? std::clamp(static_cast<double>(f[i]), 0.0, 1.0) : 0.0;
+      q[i] = static_cast<uint16_t>(std::lround(v * lf));
+    }
+    out.write(q.data(), q.size() * sizeof(uint16_t));
+  }
+  if (!regrets) return;
+  const float* R = g.regrets_ro(n, b1.data());
+  float rscale = 0;
+  for (size_t i = 0; i < len; ++i)
+    if (std::isfinite(R[i])) rscale = std::max(rscale, std::fabs(R[i]));
+  out.put(rscale);
+  const double lr = static_cast<double>((1u << (prec - 1)) - 1);
+  q.resize(len);
+  for (size_t i = 0; i < len; ++i) {
+    double v = rscale > 0 && std::isfinite(R[i]) ? R[i] / rscale * lr : 0.0;
+    auto x = static_cast<int32_t>(std::lround(std::clamp(v, -lr, lr)));
+    q[i] = static_cast<uint16_t>((static_cast<uint32_t>(x) << 1) ^ static_cast<uint32_t>(x >> 31));  // zigzag
+  }
+  out.write(q.data(), len * sizeof(uint16_t));
 }
 
 void write_record(GzOut& out, const GameTree& g, const GNode& n) {
@@ -463,8 +536,60 @@ struct MemIn {
 // Reads one record into the tree's storage directly (no accessors: used by the lazy loader too),
 // converting between the file's and the tree's storage modes.
 template <class In>
-void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, std::vector<float>& fr,
+void read_record_quant(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int prec, std::vector<float>& fr,
+                       std::vector<float>& fs) {
+  const int A = n.num_children, H = t.num_hands(n.player);
+  const size_t len = static_cast<size_t>(A) * H;
+  fr.resize(len);
+  fs.resize(len);
+  const float sscale = in.template get<float>();
+  const bool has_regrets = !(file_mode & kModeNoRegrets);
+  std::vector<float> tot(static_cast<size_t>(H), sscale);
+  if (has_regrets) {
+    std::vector<uint8_t> lt(static_cast<size_t>(H));
+    in.read(lt.data(), lt.size());
+    for (int h = 0; h < H; ++h) tot[h] = lt[h] ? sscale * std::exp2((static_cast<int>(lt[h]) - 255) / 2.0f) : 0.0f;
+  }
+  std::vector<uint16_t> q;
+  if (A > 1) {
+    q.resize(static_cast<size_t>(A - 1) * H);
+    in.read(q.data(), q.size() * sizeof(uint16_t));
+  }
+  const float inv_f = 1.0f / static_cast<float>((1u << prec) - 1);
+  for (int h = 0; h < H; ++h) {
+    float rest = 1.0f;
+    for (int a = 0; a + 1 < A; ++a) {
+      float v = q[static_cast<size_t>(a) * H + h] * inv_f;
+      rest -= v;
+      fr[static_cast<size_t>(a) * H + h] = v;
+    }
+    fr[static_cast<size_t>(A - 1) * H + h] = std::max(0.0f, rest);
+  }
+  for (int a = 0; a < A; ++a)
+    for (int h = 0; h < H; ++h) fs[static_cast<size_t>(a) * H + h] = fr[static_cast<size_t>(a) * H + h] * tot[h];
+  if (has_regrets) {
+    const float rscale = in.template get<float>();
+    q.resize(len);
+    in.read(q.data(), len * sizeof(uint16_t));
+    const float k = rscale / static_cast<float>((1u << (prec - 1)) - 1);
+    for (size_t i = 0; i < len; ++i) {
+      int32_t x = static_cast<int32_t>(q[i] >> 1) ^ -static_cast<int32_t>(q[i] & 1);  // un-zigzag
+      fr[i] = static_cast<float>(x) * k;
+    }
+  }  // else: regrets = frequencies (already in fr)
+  if (t.compressed) {
+    t.regrets_store(n, fr.data());
+    t.strat_store(n, fs.data());
+  } else {
+    std::memcpy(t.regrets.data() + n.storage, fr.data(), len * sizeof(float));
+    std::memcpy(t.strat.data() + n.storage, fs.data(), len * sizeof(float));
+  }
+}
+
+template <class In>
+void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int prec, std::vector<float>& fr,
                  std::vector<float>& fs) {
+  if (file_mode & kModeQuant) return read_record_quant(in, t, n, file_mode, prec, fr, fs);
   size_t len = t.node_size(n);
   if ((file_mode & 1) && t.compressed) {
     t.rscale[n.aux] = in.template get<float>();
@@ -514,11 +639,12 @@ void lazy_load_segment(const GameTree& ct, const LazyStore& L, uint32_t s) {
   std::vector<char> data = inflate_member(f.f, L.offset[s], bytes);
   MemIn in{data.data(), data.data() + data.size()};
   std::vector<float> fr, fs;
-  for (uint32_t ni : L.seg.segs[s]) read_record(in, t, t.nodes[ni], L.file_mode, fr, fs);
+  for (uint32_t ni : L.seg.segs[s]) read_record(in, t, t.nodes[ni], L.file_mode, L.precision, fr, fs);
 }
 
 // Sets up lazy loading from a v4 file. False (nothing changed) if the index is missing or invalid.
-bool open_lazy(GameTree& t, const std::string& path, uint8_t file_mode, uint32_t max_len, StreetSegments& sg) {
+bool open_lazy(GameTree& t, const std::string& path, uint8_t file_mode, uint8_t precision, uint32_t max_len,
+               StreetSegments& sg) {
   File f(path, "rb");
   if (!f.f) return false;
   uint64_t size = file_size(f.f);
@@ -545,6 +671,7 @@ bool open_lazy(GameTree& t, const std::string& path, uint8_t file_mode, uint32_t
   auto L = std::make_unique<LazyStore>();
   L->path = path;
   L->file_mode = file_mode;
+  L->precision = precision;
   L->offset.assign(sg.segs.size(), 0);
   for (size_t i = 0; i < present.size(); ++i) {
     std::memcpy(&L->offset[present[i]], idx.data() + 8 + 8 * i, 8);
@@ -570,14 +697,18 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   require_tree();
   if (a.empty()) throw CmdError{"incorrect or missing argument"};
   uint32_t truncate = 0;
-  bool compress = true;
+  bool compress = true, lossless = false, regrets = true;
   for (size_t i = 1; i < a.size(); ++i) {
     if (a[i] == "full") truncate = 0;
     else if (a[i] == "no_rivers") truncate = 4;
     else if (a[i] == "no_turns") truncate = 3;
     else if (a[i] == "no_compress") compress = false;
+    else if (a[i] == "lossless") lossless = true;   // ours: exact records (v4 layout)
+    else if (a[i] == "no_regrets") regrets = false;  // ours: strategies only, for browsing
     else throw CmdError{"incorrect or missing argument"};
   }
+  if (lossless && !regrets) throw CmdError{"incorrect or missing argument"};
+  const int prec = std::clamp(compression_precision_, 2, 16);
   TreePause tp(pause_requests_, tree_mu_, pause_cv_);
   std::string lerr;
   if (!tree_->load_all(lerr)) throw CmdError{"cannot read the loaded tree's file: " + lerr};
@@ -586,7 +717,11 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   out.write(kMagic, 8);
   out.put(kVersion);
   out.put(truncate);
-  out.put(static_cast<uint8_t>((g.compressed ? 1 : 0) | (compress ? 2 : 0)));
+  const uint8_t mode = static_cast<uint8_t>((compress ? kModeCompressed : 0) |
+                                            (lossless ? (g.compressed ? kModeQ16 : 0) : kModeQuant) |
+                                            (regrets ? 0 : kModeNoRegrets));
+  out.put(mode);
+  out.put(static_cast<uint8_t>(lossless ? 0 : prec));
   Writer w;
   write_config(w, g.cfg, g.payoff, tree_info_, g.iterations, solve_seconds_);
   out.put(static_cast<uint32_t>(w.buf.size()));
@@ -618,10 +753,15 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   uint32_t max_len = truncate ? truncate : 5;
   StreetSegments sg = g.street_segments();
   std::vector<uint64_t> offsets;
+  std::vector<float> qf, qb;
+  std::vector<uint16_t> qq;
   for (size_t s = 0; s < sg.segs.size(); ++s) {
     if (!segment_saved(g, sg, s, max_len)) continue;
     offsets.push_back(out.offset());
-    for (uint32_t ni : sg.segs[s]) write_record(out, g, g.nodes[ni]);
+    for (uint32_t ni : sg.segs[s]) {
+      if (lossless) write_record(out, g, g.nodes[ni]);
+      else write_record_quant(out, g, *solver_, ni, prec, regrets, qf, qb, qq);
+    }
     out.finish_member();
   }
   uint64_t index_off = out.offset();
@@ -652,7 +792,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   else if (small_strats_ == "off") t->compressed = false;
   // auto: keep the file's storage mode so a save/load round trip is exact. Requantizing a float32 save
   // to 16-bit is lossy (~1e-4 in strategies), so only do it when float32 genuinely does not fit.
-  else t->compressed = (lc.h.mode & 1) || t->memory_bytes_for(false) > avail;
+  else t->compressed = ((lc.h.mode & kModeQ16) && !(lc.h.mode & kModeQuant)) || t->memory_bytes_for(false) > avail;
   tree_.reset();
   solver_.reset();
   t->allocate_storage();
@@ -688,13 +828,13 @@ std::string Upi::cmd_load_tree(const Args& a) {
   if (lc.h.version >= 4) {
     StreetSegments sg = t->street_segments();
     // Fast (default): read segments on first access. Falls back to a full read if the index is unusable.
-    if (full_load || !open_lazy(*t, a[0], lc.h.mode, max_len, sg)) {
+    if (full_load || !open_lazy(*t, a[0], lc.h.mode, lc.h.precision, max_len, sg)) {
       if (sg.segs.empty()) sg = t->street_segments();
       size_t present = 0;
       for (size_t s = 0; s < sg.segs.size(); ++s) {
         if (!segment_saved(*t, sg, s, max_len)) continue;
         ++present;
-        for (uint32_t ni : sg.segs[s]) read_record(in, *t, t->nodes[ni], lc.h.mode, fr, fs);
+        for (uint32_t ni : sg.segs[s]) read_record(in, *t, t->nodes[ni], lc.h.mode, lc.h.precision, fr, fs);
       }
       if (in.get<uint64_t>() != present) throw CmdError{"file format error (segment index)"};
       for (size_t i = 0; i <= present; ++i) in.get<uint64_t>();  // offsets + index offset
@@ -705,7 +845,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   } else {
     for (auto& n : t->nodes) {
       if (n.kind != ANodeKind::Decision || n.board_len > max_len) continue;
-      read_record(in, *t, n, lc.h.mode, fr, fs);
+      read_record(in, *t, n, lc.h.mode, 0, fr, fs);
     }
     char trailer[8];
     in.read(trailer, 8);

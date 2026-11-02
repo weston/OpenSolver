@@ -162,9 +162,23 @@ clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compres
 show_metadata, show_save_version, load_all_nodes, set_compression_precision,
 set_compression_level, check_tree_health.
 
-**Saving and loading.** `dump_tree <file> [no_rivers|no_turns]` writes a full save, or one without the
-river (or turn and river) strategies. Those are much smaller, and the missing streets are re-solved on
-demand when you browse them. `load_tree <file>` is **lazy** (Pio's "fast" load): it reads only the
+**Saving and loading.** `dump_tree <file> [no_rivers|no_turns] [no_regrets|lossless]` writes a save.
+- **Default:** quantized to `set_compression_precision` bits (11, as in Pio). It stores each hand's
+  displayed strategy as frequencies, plus regrets and per-hand weights, so you can keep solving after
+  loading with the same convergence.
+- **`no_regrets`:** strategies only, for browsing.
+- **`lossless`:** exact values.
+- **`no_rivers` / `no_turns`:** drop the river (or turn and river) strategies. The missing streets are
+  re-solved on demand when you browse them.
+
+A converged flop tree (155 MB in RAM, exploitability 0.2% of the pot):
+
+| save | size | strategies | after load |
+|---|---|---|---|
+| `lossless` | 74.7 MB | exact | resumes exactly |
+| default (11 bits) | 19.3 MB | within 1/2047 | same exploitability, resumes at the same rate |
+| `no_regrets` | 4.0 MB | within 1/2047 | browse; solving restarts from the strategy |
+ `load_tree <file>` is **lazy** (Pio's "fast" load): it reads only the
 tree's settings, and each street segment (the decisions between two card deals) is decompressed the
 first time it is accessed. Big saves open instantly and use memory only for what you look at (e.g. a
 155 MB tree: 0.02 s and 13 MB to open and browse vs 0.22 s and 155 MB for `load_tree <file> full`).
@@ -193,7 +207,7 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
 
 - **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip files with one
   member per street segment plus an index (`src/upi_save.cpp`), and `show_save_version` reports our own
-  format (4).
+  format (5).
 - **One algorithm.** `set_algorithm` accepts every Pio code but all map to DCFR; `list_algorithms`
   keeps Pio's codes with honest descriptions.
 - **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.

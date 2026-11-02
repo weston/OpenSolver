@@ -811,6 +811,8 @@ std::string Upi::cmd_load_tree(const Args& a) {
   solver_->first_player = first_player_;
   solver_->params = dcfr_;  // settings persist over load_tree the way they do over build_tree
   apply_pcfr_settings();
+  solver_->pruning = pruning_;
+  solver_->prune_period = prune_period_;
   tree_info_ = lc.info;
   solve_seconds_ = lc.secs;
   iterations_ = lc.iters;

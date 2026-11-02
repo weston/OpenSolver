@@ -364,9 +364,22 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
   else if (actor == o || M == Walk::Evaluate || (n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) average_strategy(ni, sigma);
 
   if (actor == p) {
+    // Regret-based pruning (#51): in the CFR walk, an action whose current strategy is zero for
+    // every one of p's hands contributes exactly nothing to this iteration's strategy, cfv
+    // aggregate or strategy-sum rows; the only work lost by skipping its subtree is re-measuring
+    // its instantaneous regret, which is Brown & Sandholm's bounded approximation (solver.hpp).
+    // Never prune nodes whose update semantics must not change: locked, combo-locked, incentivised
+    // (rake/ICM bonuses are added to the regret update) or eliminated.
+    uint8_t* pruned = nullptr;
+    if (M == Walk::CFR && prune_this_iter_ &&
+        !(n.flags & (GF_LOCKED | GF_COMBO_LOCKED | GF_INCENTIVES | GF_ELIMINATED))) {
+      pruned = reinterpret_cast<uint8_t*>(sc.a.alloc(static_cast<size_t>((A + 3) / 4)));
+      for (int a = 0; a < A; ++a) pruned[a] = all_zero(sigma + static_cast<size_t>(a) * Hp, Hp) ? 1 : 0;
+    }
     float* cfv = sc.a.alloc(static_cast<size_t>(A) * Hp);
     float* rp2 = sc.a.alloc(Hp);
     for (int a = 0; a < A; ++a) {
+      if (pruned && pruned[a]) continue;  // cfv[a] intentionally left undefined
       const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
       float* ca = cfv + static_cast<size_t>(a) * Hp;
       const GNode& child = g_.nodes[ci];
@@ -424,6 +437,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     }
     std::memset(out, 0, sizeof(float) * Hp);
     for (int a = 0; a < A; ++a) {
+      if (pruned && pruned[a]) continue;  // its sigma row is zero: identical to the full sum
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       const float* c = cfv + static_cast<size_t>(a) * Hp;
       for (int h = 0; h < Hp; ++h) out[h] += sa[h] * c[h];
@@ -463,6 +477,26 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       const float* c = cfv + static_cast<size_t>(a) * Hp;
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       const float ia = inc ? inc[a] : 0.0f;
+      if (pruned && pruned[a]) {
+        // RBP pruned: the regret row is NOT touched (not even discounted). Discounting a frozen
+        // row makes it forget its magnitude exponentially (at beta=0 it halves every iteration)
+        // while the true update would keep it near its (negative) fixed point, so discounted
+        // frozen rows churn back into play at every revisiting iteration. A completely frozen row
+        // instead stays below the unpruned value until genuinely re-measured, so pruning only ever
+        // DELAYS a re-entry, never invents one. The strategy sum gets its usual discount: with
+        // sigma == 0 on the whole row that is exactly the unpruned update. (Skip it during the
+        // avg_delay phase, exactly like the unpruned rows do.)
+        for (int h = 0; h < Hp; ++h) {
+          if (accum) {
+            float y = s[h] * sm;
+            s[h] = y;
+            ms = y > ms ? y : ms;
+          }
+          float ax = std::fabs(r[h]);
+          mr = ax > mr ? ax : mr;
+        }
+        continue;
+      }
       if (fast && !g_.compressed) {
         // float32 storage: plain update (vectorizes; no max tracking needed)
         for (int h = 0; h < Hp; ++h) {
@@ -727,6 +761,10 @@ void Solver::iterate(int t) {
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
   accumulate_ = t > avg_delay;  // set_avg_delay: the first t <= avg_delay only move regrets
+  // Every prune_period-th iteration is measured in full (the RBP revisiting schedule), and
+  // pruning activates only after two full periods (see Solver::pruning): pruning from t=1
+  // destroys convergence (flop_3bet to 0.2% pot: 50 -> 230 iterations at period 32).
+  prune_this_iter_ = pruning && t > 2 * prune_period && !(prune_period > 1 && t % prune_period == 0);
   for (int k = 0; k < 2; ++k) {
     int p = k == 0 ? first_player : 1 - first_player;
     ArenaScope sc;
@@ -743,6 +781,7 @@ void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
   accumulate_ = t > avg_delay;
+  prune_this_iter_ = pruning && t > 2 * prune_period && !(prune_period > 1 && t % prune_period == 0);
   const float* r[2] = {r0, r1};
   for (int k = 0; k < 2; ++k) {
     int p = k == 0 ? first_player : 1 - first_player;

@@ -49,6 +49,53 @@ static bool run(const char* name, const char* board, const char* r0, const char*
   return ok;
 }
 
+// Regret-based pruning (#51): two identical pruned runs must agree bit-for-bit (no parallelism
+// nondeterminism via the prune decision), the EVs must still sum to the pot, and the pruned run
+// must reach about the unpruned exploitability in the same number of iterations. The revisit
+// schedule is exercised by using a small prune_period.
+static bool run_pruning() {
+  const char* board = "KhQs7d4c2s";
+  const char* r0 = "AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s";
+  const char* r1 = "AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s";
+  const int pot = 100;
+  auto build = [&](GameTree& g) {
+    GameConfig cfg;
+    parse_cards(board, cfg.board);
+    std::string err;
+    RangeWeights w;
+    if (!parse_range(r0, w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+    if (!parse_range(r1, w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+    cfg.pot[2] = pot;
+    cfg.eff_stack = 200;
+    cfg.lines.add = {{75, 200}, {0, 75, 200}, {0, 50}, {75}};
+    return g.build(cfg, err);
+  };
+  GameTree g_off, g_on1, g_on2;
+  if (!build(g_off) || !build(g_on1) || !build(g_on2)) {
+    std::printf("[pruning] build failed\n");
+    return false;
+  }
+  Solver s_off(g_off), s_on1(g_on1), s_on2(g_on2);
+  s_on1.pruning = s_on2.pruning = true;
+  s_on1.prune_period = s_on2.prune_period = 7;
+  const int iters = 400;
+  for (int t = 1; t <= iters; ++t) {
+    s_off.iterate(t);
+    s_on1.iterate(t);
+    s_on2.iterate(t);
+  }
+  RootStats off = s_off.root_stats(), on1 = s_on1.root_stats(), on2 = s_on2.root_stats();
+  bool det = on1.ev[0] == on2.ev[0] && on1.ev[1] == on2.ev[1] && on1.exploitability == on2.exploitability;
+  bool sum = std::abs(on1.ev[0] + on1.ev[1] - pot) < 1e-3 * pot;
+  bool conv = on1.exploitability <= off.exploitability * 1.5 + 0.0005 * pot;
+  std::printf("[pruning] explo off=%.5f on=%.5f  %s%s%s\n", off.exploitability, on1.exploitability,
+              det ? "deterministic " : "NONDETERMINISTIC ", sum ? "ev-sum-ok " : "EV-SUM-WRONG ",
+              conv ? "converged" : "DIVERGED");
+  return det && sum && conv;
+}
+
 int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
@@ -92,6 +139,7 @@ int main(int argc, char** argv) {
                 {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {0, 0, 40}, {20, 200}}, 200, 0.01);
   fails += !run("flop-mono-noiso", "Kh9h4h", "AA,KK,QQ,JJ,TT,99,AK,AQ,AJ,KQ,KJ,QJ,JT,T9", "AA,KK,QQ,JJ,TT,99,88,AK,AQ,KQ,QJ,JT", 60, 200,
                 {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {0, 0, 40}, {20, 200}}, 200, 0.01, false);
+  fails += !run_pruning();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

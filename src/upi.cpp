@@ -396,6 +396,8 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   solver_->first_player = first_player_;
   solver_->params = dcfr_;
   apply_pcfr_settings();
+  solver_->pruning = pruning_;
+  solver_->prune_period = prune_period_;
   tree_alg_ = algorithm_;
   iterations_ = 0;
   discount_restart_ = 0;
@@ -679,6 +681,23 @@ void Upi::register_commands() {
     avg_delay_ = static_cast<int>(n);
     if (solver_) solver_->avg_delay = avg_delay_;
     return std::string("set_avg_delay ok!");
+  };
+  // Not a Pio command. Regret-based pruning (#51, see Solver::pruning): from iteration
+  // 2*<period>+1 on, an action of the traverser whose current strategy is zero for every one of
+  // its hands is not re-measured that iteration; its regret row is frozen (not discounted or
+  // updated) until the next full iteration. Every <period>-th iteration (default 32) is measured
+  // in full. The strategy and the strategy-sum rows are untouched, so this is a
+  // convergence-speed knob, not an abstraction.
+  H["set_pruning"] = [this](const Args& a) {
+    if (a.empty() || (a[0] != "on" && a[0] != "off")) throw CmdError{"incorrect or missing argument"};
+    pruning_ = a[0] == "on";
+    if (a.size() > 1) prune_period_ = static_cast<int>(arg_int(a, 1, "period"));
+    if (prune_period_ < 0) throw CmdError{"incorrect or missing argument"};
+    if (solver_) {
+      solver_->pruning = pruning_;
+      solver_->prune_period = prune_period_;
+    }
+    return std::string("set_pruning ok!");
   };
   // Not a Pio command: Pio always tracks the union. Opt-in here because the wider vectors
   // cost time and memory, and it has to be set before build_tree to take effect.

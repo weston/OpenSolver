@@ -4,6 +4,12 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Manual full run of every job on any branch (Actions tab -> CI -> Run workflow).
+  workflow_dispatch:
+
+# Billing (#97): this is a private repo, so Actions minutes are multiplied per OS (Linux 1x,
+# Windows 2x, macOS 10x). The 1x Linux jobs run on every PR; macOS and native Windows run only
+# on pushes to main and on manual runs. Agents verify macOS locally before merging.
 
 # A new push to a pull request supersedes the previous run. Pushes to main are not
 # cancelled: each commit there is something we may later want to point at, and two merges
@@ -24,12 +30,9 @@ jobs:
       fail-fast: false
       matrix:
         # An explicit list rather than a cross product: g++ on macOS is a clang shim, so
-        # a full os x compiler matrix would add a job that tests nothing new. macOS covers
-        # the -mcpu=native path, Linux x86 covers -march=native.
+        # a full os x compiler matrix would add a job that tests nothing new. Linux x86 covers
+        # -march=native; the macos job below covers -mcpu=native.
         include:
-          - name: macOS (Apple clang)
-            os: macos-latest
-            cxx: clang++
           - name: Linux (g++)
             os: ubuntu-latest
             cxx: g++
@@ -67,10 +70,36 @@ jobs:
       - name: Unit and end-to-end tests
         run: make test
 
+  # Same steps as build-and-test, split out so it can be gated (a job-level `if` cannot see
+  # the matrix). Covers the Apple clang / -mcpu=native path.
+  macos:
+    name: macOS (Apple clang)
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          "$CXX" --version
+          "$CXX" -dumpmachine
+          python3 --version
+          getconf _NPROCESSORS_ONLN
+
+      - name: Build
+        run: make -j"$(getconf _NPROCESSORS_ONLN)"
+
+      - name: Unit and end-to-end tests
+        run: make test
+
   # Native Python is essential here: its subprocess/path behavior must match
   # Windows clients, rather than running the tests under MSYS POSIX emulation.
   windows-native:
     name: Windows (native UCRT64)
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:

@@ -162,6 +162,11 @@ machine with a licensed PioSOLVER, reachable over SSH) and optionally `PIO_KEY`,
 Piping a whole script over SSH to Windows can stall when it contains very long lines (e.g.
 `set_strategy` with 2x1326 numbers); use `pio_session.PioSession` (one command at a time) for those.
 `PIO_EXE` can point at our own `solver.exe` to compare the Windows build with the local one.
+On the Pio machine itself, `PIO_LOCAL=1` runs `PIO_EXE` directly instead of over SSH (compare.py and
+pio_session.py). `compare.py --exact` also reports responses whose values agree but whose bytes differ
+(digits, trailing spaces, blank lines); the default numeric tolerance hides those (#125).
+Timing Pio: `go`/`wait_for_solver` resolve to about 0.5 s (even `go 1 steps` takes ~0.56 s), so time
+one long run, or count iterations to a target and multiply by seconds per iteration.
 `tests/pio_compare/remote_exe.py` makes a remote solver look like a local executable (it converts
 range text for Pio and starts it in its own folder). Use it with `bench/run.py --exe` to benchmark
 PioSOLVER and our `solver.exe` on the same machine. Compare there, never across machines. Pio prints

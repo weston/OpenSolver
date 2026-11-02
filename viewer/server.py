@@ -468,6 +468,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _static(self, path):
+        if not self._allowed("GET"):
+            return
         name = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}.get(path)
         if not name:
             self._send(404, {"error": "not found"})
@@ -477,7 +479,29 @@ class Handler(BaseHTTPRequestHandler):
         with open(os.path.join(STATIC, name), "rb") as f:
             self._send(200, f.read(), ctype)
 
+    def _allowed(self, method):
+        """Refuse requests a web page on another site could make (#48 follow-up).
+
+        Host must name the loopback address we serve on, which blocks DNS-rebinding pages from
+        reading the API. POSTs must be application/json: browsers send that type cross-origin
+        only after a CORS preflight, which this server never grants, so another site cannot
+        trigger save/load (file writes) or solves with a "simple" text/plain request.
+        """
+        host = (self.headers.get("Host") or "").strip().lower()
+        port = self.server.server_port
+        if host not in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"):
+            self._send(403, {"ok": False, "error": "bad Host header"})
+            return False
+        if method == "POST":
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                self._send(415, {"ok": False, "error": "Content-Type must be application/json"})
+                return False
+        return True
+
     def _api(self, method):
+        if not self._allowed(method):
+            return
         parsed = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(parsed.query)
         body = None

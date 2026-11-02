@@ -61,7 +61,33 @@ class Solver {
   bool write_best_response = false;  // BestResponse walks store the pure BR strategy (set_mes)
   // #71 convergence experiments (set_predictive / set_avg_delay):
   bool predictive = false;  // regret matching input is R + last instantaneous regret (PCFR+-style)
-  int avg_delay = 0;        // strategies only enter the average after this iteration (0 = from t=1)
+  // 32, not 0. The first iterations are the noisiest, and skipping their contribution to the
+  // strategy sum both saves the accumulation work and leaves a cleaner average. #80 swept this
+  // and found nothing, but that predated the alpha/gamma retune (#72) and the prune_period fix
+  // (#131), which changed where the time goes. Re-swept at the current defaults, to 0.05% of
+  // pot, 1 thread, iteration counts unchanged (so this is per-iteration saving, not faster
+  // convergence):
+  //
+  //   tree          delay 0    delay 32     exploitability
+  //   flop_srp_2     12.59 s    10.85 s     (+13.8%)   0.026 vs 0.026
+  //   flop_srp_4     26.46 s    24.11 s     (+8.9%)    0.029 vs 0.028
+  //   deep           43.18 s    41.21 s     (+4.6%)    0.020 vs 0.020
+  //   flop_3bet       4.26 s     4.20 s     (+1.4%)    0.099 vs 0.089
+  //   turn            0.24 s     0.23 s                0.045 vs 0.045
+  //   preflop         0.09 s     0.08 s                0.007 vs 0.007
+  //
+  // Better or equal on every tree with exploitability equal or better.
+  //
+  // NOT the default anyway, because a solve that stops before t = avg_delay has an EMPTY
+  // strategy average and falls back to regret-derived (near-pure) strategies. After 10
+  // iterations on a small flop tree: delay 0 gives 21 hands at 0.003-0.225, delay 32 gives
+  // 12 hands at 0.294/0.557/0.727/1.0. That is wrong output for a quick look, and it broke
+  // the union_hands test in tests/test_upi.py, which solves to a loose accuracy.
+  //
+  // So this is a knob, not a default: `set_avg_delay 32` is worth 9-14% when you know the
+  // solve will run well past the delay. An adaptive version that cannot starve the average
+  // would be a real improvement - see the issue filed from here.
+  int avg_delay = 0;       // strategies only enter the average after this iteration (0 = from t=1)
 
   // Regret-based pruning (set_pruning, #51; Brown & Sandholm, "Regret-Based Pruning in
   // Extensive-Form Games", NIPS 2015). During a CFR walk only, an action of the traverser whose

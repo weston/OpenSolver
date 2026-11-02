@@ -360,7 +360,7 @@ class ResolveManager:
                 "set_board " + ctx["board"],
                 f"set_eff_stack {ctx['stack']}",
                 f"set_pot {pot['oop']} {pot['ip']} {pot['dead']}",
-                "set_isomorphism 1 0", "clear_lines"]
+                "set_isomorphism 1 1", "clear_lines"]
         cmds += tb.format_lines(lines)
         cmds.append("build_tree")
         self.rsolver.cmds(cmds)

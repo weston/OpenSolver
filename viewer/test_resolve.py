@@ -413,7 +413,7 @@ class ResolveIntegrationTest(unittest.TestCase):
             scratch.cmds(["set_range OOP " + self.main.cmd("show_range OOP r:0"),
                           "set_range IP " + self.main.cmd("show_range IP r:0"),
                           "set_board QhQc2c", "set_eff_stack 60", "set_pot 0 0 40",
-                          "set_isomorphism 1 0", "clear_lines"] + lines + ["build_tree"])
+                          "set_isomorphism 1 1", "clear_lines"] + lines + ["build_tree"])
             self.assertEqual(res["node_count"], scratch.cmd("node_count"))
         finally:
             kill_solver(scratch)
@@ -464,7 +464,7 @@ class ResolveIntegrationTest(unittest.TestCase):
             scratch.cmds(["set_range OOP " + self.main.cmd("show_range OOP r:0"),
                           "set_range IP " + self.main.cmd("show_range IP r:0"),
                           "set_board QhQc2c", "set_eff_stack 60", "set_pot 0 0 40",
-                          "set_isomorphism 1 0", "clear_lines"] + lines + ["build_tree"])
+                          "set_isomorphism 1 1", "clear_lines"] + lines + ["build_tree"])
             self.assertEqual(res["node_count"], scratch.cmd("node_count"))
         finally:
             kill_solver(scratch)
@@ -520,7 +520,7 @@ class ResolveIntegrationTest(unittest.TestCase):
                               "set_board " + ctx["board"],
                               f"set_eff_stack {ctx['stack']}",
                               f"set_pot {pot['oop']} {pot['ip']} {pot['dead']}",
-                              "set_isomorphism 1 0", "clear_lines"] + lines +
+                              "set_isomorphism 1 1", "clear_lines"] + lines +
                              ["build_tree", f"set_accuracy {self.ACC}", "go",
                               "wait_for_solver"], timeout=600)
                 evs = vresolve.parse_evs(scratch.cmd("calc_results"))

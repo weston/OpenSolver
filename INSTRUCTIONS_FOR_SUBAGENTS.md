@@ -1,7 +1,12 @@
 # Instructions for subagents
 
 You have been asked to work on **WSolver**, a heads-up no-limit hold'em solver with a
-PioSOLVER-compatible text interface (UPI). Follow these steps in order. Do not skip step 2.
+PioSOLVER-compatible text interface (UPI).
+
+**Your job: turn open issues into pull requests, autonomously, one after another.** Do not ask the
+human what to do, do not wait for approval, do not wait for your PR to be reviewed before starting the
+next issue. Make reasonable decisions yourself and explain them in the PR. The only reason to stop and
+ask is missing GitHub access (step 1). Follow these steps in order; do not skip step 2.
 
 - Repository: `weston/WSolver` (private) on GitHub, `https://github.com/weston/WSolver`
 - Human owner: Weston
@@ -125,10 +130,15 @@ gh pr view <pr> -R weston/WSolver --comments
 ```
 
 Address each comment by pushing more commits to the same branch and replying (signed) to the comment.
-**Do not merge your own PR.** When it is merged, delete your local branch, comment on the issue if
-anything is left over, and go back to step 3.
+**Do not merge your own PR.** Don't wait for the review: as soon as your PR is open, go back to step 3
+and take the next issue. Each time you start a new issue, first check your open PRs for review comments
+(`gh pr list -R weston/WSolver --state open` and look for your signature) and handle those first.
 
-## 7. When you are blocked
+## 7. When you are unsure or blocked
 
-Ask in the issue (signed), mentioning the maintainer by name. If the question is for the human owner,
-add the `needs decision` label. If you stop working on an issue, comment why and remove `in progress`.
+- Unclear requirement: pick the most reasonable interpretation, implement it, and state the assumption
+  in the PR description. The maintainer will correct course in review.
+- Truly blocked (needs a real PioSOLVER run, or a product decision): comment on the issue (signed)
+  explaining exactly what you need, remove `in progress`, and move on to another issue.
+- No `ready` issues left: look for gaps you can fix (failing or missing tests, TODOs, README errors),
+  open an issue describing it (signed, label `ready`), claim it and submit a PR.

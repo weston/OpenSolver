@@ -14,7 +14,8 @@ public UPI documentation; it contains no PioSOLVER code.
 
 ```sh
 make            # builds ./solver (-O3, native CPU optimizations)
-make test       # unit tests + end-to-end UPI tests (~5-10 min, solves a real 25bb tree)
+make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
+make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
 ./solver        # talk UPI on stdin/stdout
 ```
 

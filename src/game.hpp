@@ -85,10 +85,10 @@ struct ChanceInfo {
 };
 
 struct SdEntry {
-  uint16_t idx;   // local hand index
+  uint16_t idx;   // local hand index (<= 1325)
   uint8_t c1, c2; // hole cards
-  int32_t same;   // local index of the identical combo in the opponent's list, or -1
-};
+  int16_t same;   // local index of the identical combo in the opponent's list (<= 1325), or -1
+};  // 6 bytes; one entry per hand per showdown board, so this is the dominant structural array
 
 // All-in before the river: the showdown boards of every runout and 1 / (runouts per hand pair).
 struct AllinRunouts {

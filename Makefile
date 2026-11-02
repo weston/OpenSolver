@@ -1,4 +1,5 @@
 # OpenUPI-Solver build. `make` builds ./solver; `make test` runs the unit and integration tests.
+# `make test-big` also runs the 25bb fixture section of test_upi.py (~4 GB of free RAM needed).
 CXX      ?= clang++
 # ARM compilers use -mcpu; x86 compilers use -march. Inspect the compiler's
 # target so this also works when building for a target other than the host.
@@ -37,7 +38,13 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 tests/test_tree_builder.py
 	python3 tests/test_upi.py ./solver
 
+test-big: solver build/test_eval build/test_range build/test_categories build/test_solver
+	./build/test_range
+	./build/test_categories
+	./build/test_solver
+	python3 tests/test_upi.py ./solver --big
+
 clean:
 	rm -rf build solver
 
-.PHONY: all test clean
+.PHONY: all test test-big clean

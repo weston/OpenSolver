@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """End-to-end UPI tests: drives the solver binary over stdin/stdout like a PioSOLVER client.
 
-Usage: python3 tests/test_upi.py ./solver
+Usage: python3 tests/test_upi.py ./solver [--big]
+
+By default the multi-street checks run on a small tree (tens of MB) so `make test` fits in
+< 4 GB of RAM. With --big they run on the real 25bb fixture tree instead (~6.4 GB float32,
+~3.3 GB with small_strats) — use that on a large-RAM machine.
 """
 import os
 import re
@@ -120,7 +124,194 @@ def load_fixture(u, max_lines=None):
     return r0, r1, f0
 
 
-def main(exe):
+# Small default tree: same board/pot as the 25bb fixture, but tiny ranges and 10 lines, so the
+# default run exercises build/solve/strategies/isomorphism/locking/save-load/lines in tens of MB.
+SMALL_LINES = ["24 230 230", "24 24", "12 36 230 230", "12 12", "0 12 12", "0 12 36 36",
+               "0 0", "0 0 20 20", "0 0 0 0 20 20", "0 0 0 0 0 24 24"]
+
+
+def set_small_tree(u):
+    u.cmd("set_board QhQc2c")
+    u.cmd("set_range OOP AA,KK,QQ,JJ,TT,AK,AQ,AJs,KQ,QJs,JTs")
+    u.cmd("set_range IP AA,KK,QQ,JJ,TT,99,AK,AQ,AJs,KQs")
+    u.cmd("set_pot 0 0 40")
+    u.cmd("set_eff_stack 230")
+    u.cmd("set_isomorphism 1 0")
+    u.cmd("clear_lines")
+    for l in SMALL_LINES:
+        resp = u.cmd("add_line " + l)
+        if resp != "add_line ok!":
+            raise RuntimeError(f"add_line {l} -> {resp}")
+
+
+def solve_and_check(u, steps, max_expl):
+    u.cmd("set_accuracy 0")
+    u.cmd("set_info_freq 50")
+    u.send_raw(f"go {steps} steps")
+    check(u.read_response() == "go ok!", "go returns immediately")
+    u.cmd("wait_for_solver")
+    res = u.cmd("calc_results").split("\n")
+    evo, evi = float(res[0].split(": ")[1]), float(res[1].split(": ")[1])
+    expl = float(res[4].split(": ")[1])
+    check(abs(evo + evi - 40) < 0.05, f"EV OOP + EV IP = pot ({evo:.3f} + {evi:.3f})")
+    check(expl < max_expl, f"exploitability {expl:.4f} chips")
+    check(any(m[0].startswith("SOLVER: stopped") for m in u.solver_msgs), "SOLVER: stopped message")
+    check(any(m and m[0].startswith("running time") for m in u.solver_msgs), "SOLVER info block")
+    return evo
+
+
+def check_tree_shape(u, order):
+    check(u.cmd("is_tree_present") == "true", "is_tree_present")
+    node = u.cmd("show_node r").split("\n")
+    check(node[0] == "r" and node[1] == "ROOT" and node[2] == "Qh Qc 2c " and node[3] == "0 0 40 ", "show_node r")
+    node = u.cmd("show_node r:0").split("\n")
+    check(node[1] == "OOP_DEC" and node[4].endswith("children"), "show_node r:0")
+    kids = [k for k in u.cmd("show_children r:0").split("\n\n") if k.strip()]
+    names = [k.split("\n")[1].split(":")[-1] for k in kids]
+    check(names == ["b24", "b12", "c"], f"root actions in Pio order {names}")
+
+
+def check_strategies(u, order, evo):
+    st = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+    check(len(st) == 3 and all(len(l) == 1326 for l in st), "show_strategy shape")
+    live = [i for i in range(1326) if sum(l[i] for l in st) > 0]
+    check(all(abs(sum(l[i] for l in st) - 1) < 1e-4 for i in live), "strategies sum to 1")
+    board_blocked = [i for i, h in enumerate(order) if any(c in ("Qh", "Qc", "2c") for c in (h[:2], h[2:]))]
+    check(all(sum(l[i] for l in st) == 0 for i in board_blocked), "board-blocked hands have 0 strategy")
+    ev = u.cmd("calc_ev OOP r:0").split("\n")
+    evs, mus = floats(ev[0]), floats(ev[1])
+    rng = floats(u.cmd("show_range OOP r:0"))
+    # matchups are already weighted by the hand's reach (Pio semantics); EV is nan/inf off-range
+    pairs = [(e, m) for e, m in zip(evs, mus) if m > 0]
+    tot = sum(e * m for e, m in pairs) / sum(m for _, m in pairs)
+    check(abs(tot - evo) < 0.05, f"calc_ev root average {tot:.3f} matches calc_results {evo:.3f}")
+    # range after a bet = range * strategy
+    rb = floats(u.cmd("show_range OOP r:0:b12"))
+    check(all(abs(rb[i] - rng[i] * st[1][i]) < 1e-5 for i in range(1326)), "show_range after action = range * strategy")
+    eq = u.cmd("calc_eq_node OOP r:0").split("\n")
+    check(len(eq) == 3 and 0.3 < float(eq[2]) < 0.7, f"calc_eq_node total {float(eq[2]):.3f}")
+
+
+def check_isomorphism(u, order):
+    print("[isomorphism: QhQc2c: turn cards of suits d/s are equivalent (board uses h,c)]")
+    a = floats(u.cmd("show_strategy r:0:c:c:7d").split("\n")[0])
+    b = floats(u.cmd("show_strategy r:0:c:c:7s").split("\n")[0])
+    idx = {h: i for i, h in enumerate(order)}
+
+    def swap_ds(h):
+        t = {"d": "s", "s": "d"}
+        c1 = h[0] + t.get(h[1], h[1])
+        c2 = h[2] + t.get(h[3], h[3])
+        return idx.get(c1 + c2, idx.get(c2 + c1))
+
+    dev = max(abs(a[i] - b[swap_ds(h)]) for i, h in enumerate(order))
+    check(dev < 1e-6, f"7d and 7s turn strategies are suit-swapped copies (max dev {dev})")
+    n7s = u.cmd("show_node r:0:c:c:7s").split("\n")
+    check(n7s[0] == "r:0:c:c:7s" and n7s[2] == "Qh Qc 2c 7s ", "show_node keeps requested isomorphic card")
+    sp = u.cmd("show_children r:0:c:c")
+    check(sp.count("child ") == 49, "SPLIT_NODE lists all 49 turn cards")
+
+
+def check_locking(u):
+    print("[locking]")
+    before = u.cmd("show_strategy r:0")
+    u.cmd("lock_node r:0")
+    u.cmd("go 20 steps")
+    u.cmd("wait_for_solver")
+    after = u.cmd("show_strategy r:0")
+    bv, av = floats(before.replace("\n", " ")), floats(after.replace("\n", " "))
+    check(max(abs(x - y) for x, y in zip(bv, av)) < 1e-4, "locked node strategy unchanged by solving")
+    check("LOCKED" in u.cmd("show_node r:0"), "LOCKED flag")
+    u.cmd("unlock_node r:0")
+    pure = " ".join(["0"] * 1326 + ["1"] * 1326 + ["0"] * 1326)
+    check(u.cmd("set_strategy r:0 " + pure) == "set_strategy ok!", "set_strategy")
+    st2 = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+    in_range = [i for i, w in enumerate(floats(u.cmd("show_range OOP r:0"))) if w > 0]
+    check(all(abs(st2[1][i] - 1) < 1e-4 for i in in_range), "set_strategy round-trips (in-range hands)")
+
+
+def check_save_load(u, strat_path):
+    print("[save / load]")
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "t.cfr")
+        check(u.cmd(f'dump_tree "{path}"') == "dump_tree ok!", "dump_tree")
+        check(u.cmd(f'check_tree_health "{path}"') == "File OK", "check_tree_health")
+        meta = u.cmd(f'show_metadata "{path}"').split("\n")
+        check(meta[1] == "ROOT" and meta[2].rstrip() == "Qh Qc 2c", f"show_metadata ({meta[2]!r})")
+        s_before = u.cmd("show_strategy " + strat_path)
+        u.cmd("free_tree")
+        check(u.cmd("is_tree_present") == "false", "free_tree")
+        check(u.cmd(f'load_tree "{path}"') == "load_tree ok!", "load_tree")
+        check(u.cmd("show_strategy " + strat_path) == s_before, "strategy identical after reload")
+        small = os.path.join(td, "small.cfr")
+        u.cmd(f'dump_tree "{small}" no_rivers')
+        check(os.path.getsize(small) < os.path.getsize(path), "no_rivers save is smaller")
+        with open(path, "r+b") as f:
+            f.seek(200)
+            f.write(b"\xff\xfe\xfd")
+        check(u.cmd(f'check_tree_health "{path}"') == "File CORRUPTED", "corruption detected")
+
+
+def check_lines(u, min_lines):
+    print("[lines]")
+    lines = u.cmd("show_all_lines").split("\n")
+    check(lines[0] == "r" and lines[1] == "r:0" and len(lines) > min_lines, f"show_all_lines ({len(lines)} lines)")
+    f_c = float(u.cmd("calc_line_freq r:0:c"))
+    f_b1 = float(u.cmd("calc_line_freq r:0:b12"))
+    f_b2 = float(u.cmd("calc_line_freq r:0:b24"))
+    check(abs(f_c + f_b1 + f_b2 - 1) < 1e-4, f"root action frequencies sum to 1 ({f_c + f_b1 + f_b2:.5f})")
+    wins = u.cmd("show_win_evs OOP r:0:c:c:?:c:c:?:c:c").split()
+    check(len(wins) == 3 and float(wins[0]) == 40 and float(wins[1]) == 0 and float(wins[2]) == 20,
+          f"show_win_evs check-down {wins}")
+
+
+def run_big_tree(u, order):
+    """The real 25bb fixture tree (~6.4 GB float32 / ~3.3 GB small_strats); behind --big."""
+    print("[build + solve the real Pio script tree]")
+    est = u.cmd("estimate_schematic_tree")
+    check("MB" in est, "estimate_schematic_tree")
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree")
+    check_tree_shape(u, order)
+    u.cmd("set_accuracy 0.2")
+    u.cmd("set_info_freq 50")
+    u.send_raw("go 300 steps")
+    check(u.read_response() == "go ok!", "go returns immediately")
+    u.cmd("wait_for_solver")
+    res = u.cmd("calc_results").split("\n")
+    evo, evi = float(res[0].split(": ")[1]), float(res[1].split(": ")[1])
+    expl = float(res[4].split(": ")[1])
+    check(abs(evo + evi - 40) < 0.05, f"EV OOP + EV IP = pot ({evo:.3f} + {evi:.3f})")
+    check(expl < 0.4, f"exploitability {expl:.4f} chips (< 1% pot)")
+    check(any(m[0].startswith("SOLVER: stopped") for m in u.solver_msgs), "SOLVER: stopped message")
+    check(any(m and m[0].startswith("running time") for m in u.solver_msgs), "SOLVER info block")
+
+    print("[strategies / ranges / EVs]")
+    check_strategies(u, order, evo)
+    check_isomorphism(u, order)
+    check_locking(u)
+    check_save_load(u, "r:0:c:b24")
+    check_lines(u, 100)
+
+
+def run_small_tree(u, order):
+    """Default: the same coverage on a small tree that fits in a few hundred MB."""
+    print("[build + solve a small multi-street tree] (25bb fixture skipped; run with --big for it)")
+    set_small_tree(u)
+    est = u.cmd("estimate_schematic_tree")
+    check("MB" in est, f"estimate_schematic_tree ({est.splitlines()[-1]})")
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree")
+    check_tree_shape(u, order)
+    evo = solve_and_check(u, 400, 0.1)
+
+    print("[strategies / ranges / EVs]")
+    check_strategies(u, order, evo)
+    check_isomorphism(u, order)
+    check_locking(u)
+    check_save_load(u, "r:0:c:b12")
+    check_lines(u, 10)
+
+
+def main(exe, big=False):
     u = Upi(exe)
     try:
         print("[basics]")
@@ -140,115 +331,10 @@ def main(exe):
         # restore the exact floats
         load_fixture(u)
 
-        print("[build + solve the real Pio script tree]")
-        est = u.cmd("estimate_schematic_tree")
-        check("MB" in est, "estimate_schematic_tree")
-        check(u.cmd("build_tree") == "build_tree ok!", "build_tree")
-        check(u.cmd("is_tree_present") == "true", "is_tree_present")
-        node = u.cmd("show_node r").split("\n")
-        check(node[0] == "r" and node[1] == "ROOT" and node[2] == "Qh Qc 2c " and node[3] == "0 0 40 ", "show_node r")
-        node = u.cmd("show_node r:0").split("\n")
-        check(node[1] == "OOP_DEC" and node[4].endswith("children"), "show_node r:0")
-        kids = [k for k in u.cmd("show_children r:0").split("\n\n") if k.strip()]
-        names = [k.split("\n")[1].split(":")[-1] for k in kids]
-        check(names == ["b24", "b12", "c"], f"root actions in Pio order {names}")
-        u.cmd("set_accuracy 0.2")
-        u.cmd("set_info_freq 50")
-        u.send_raw("go 300 steps")
-        check(u.read_response() == "go ok!", "go returns immediately")
-        u.cmd("wait_for_solver")
-        res = u.cmd("calc_results").split("\n")
-        evo, evi = float(res[0].split(": ")[1]), float(res[1].split(": ")[1])
-        expl = float(res[4].split(": ")[1])
-        check(abs(evo + evi - 40) < 0.05, f"EV OOP + EV IP = pot ({evo:.3f} + {evi:.3f})")
-        check(expl < 0.4, f"exploitability {expl:.4f} chips (< 1% pot)")
-        check(any(m[0].startswith("SOLVER: stopped") for m in u.solver_msgs), "SOLVER: stopped message")
-        check(any(m and m[0].startswith("running time") for m in u.solver_msgs), "SOLVER info block")
-
-        print("[strategies / ranges / EVs]")
-        st = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
-        check(len(st) == 3 and all(len(l) == 1326 for l in st), "show_strategy shape")
-        live = [i for i in range(1326) if sum(l[i] for l in st) > 0]
-        check(all(abs(sum(l[i] for l in st) - 1) < 1e-4 for i in live), "strategies sum to 1")
-        board_blocked = [i for i, h in enumerate(order) if any(c in ("Qh", "Qc", "2c") for c in (h[:2], h[2:]))]
-        check(all(sum(l[i] for l in st) == 0 for i in board_blocked), "board-blocked hands have 0 strategy")
-        ev = u.cmd("calc_ev OOP r:0").split("\n")
-        evs, mus = floats(ev[0]), floats(ev[1])
-        rng = floats(u.cmd("show_range OOP r:0"))
-        # matchups are already weighted by the hand's reach (Pio semantics); EV is nan/inf off-range
-        pairs = [(e, m) for e, m in zip(evs, mus) if m > 0]
-        tot = sum(e * m for e, m in pairs) / sum(m for _, m in pairs)
-        check(abs(tot - evo) < 0.05, f"calc_ev root average {tot:.3f} matches calc_results {evo:.3f}")
-        # range after a bet = range * strategy
-        rb = floats(u.cmd("show_range OOP r:0:b12"))
-        check(all(abs(rb[i] - rng[i] * st[1][i]) < 1e-5 for i in range(1326)), "show_range after action = range * strategy")
-        eq = u.cmd("calc_eq_node OOP r:0").split("\n")
-        check(len(eq) == 3 and 0.3 < float(eq[2]) < 0.7, f"calc_eq_node total {float(eq[2]):.3f}")
-
-        print("[isomorphism: QhQc2c with flop iso -> turn cards of suits d/s are equivalent? (board uses h,c)]")
-        a = floats(u.cmd("show_strategy r:0:c:c:7d").split("\n")[0])
-        b = floats(u.cmd("show_strategy r:0:c:c:7s").split("\n")[0])
-        idx = {h: i for i, h in enumerate(order)}
-
-        def swap_ds(h):
-            t = {"d": "s", "s": "d"}
-            c1 = h[0] + t.get(h[1], h[1])
-            c2 = h[2] + t.get(h[3], h[3])
-            return idx.get(c1 + c2, idx.get(c2 + c1))
-
-        dev = max(abs(a[i] - b[swap_ds(h)]) for i, h in enumerate(order))
-        check(dev < 1e-6, f"7d and 7s turn strategies are suit-swapped copies (max dev {dev})")
-        n7s = u.cmd("show_node r:0:c:c:7s").split("\n")
-        check(n7s[0] == "r:0:c:c:7s" and n7s[2] == "Qh Qc 2c 7s ", "show_node keeps requested isomorphic card")
-        sp = u.cmd("show_children r:0:c:c")
-        check(sp.count("child ") == 49, "SPLIT_NODE lists all 49 turn cards")
-
-        print("[locking]")
-        before = u.cmd("show_strategy r:0")
-        u.cmd("lock_node r:0")
-        u.cmd("go 20 steps")
-        u.cmd("wait_for_solver")
-        after = u.cmd("show_strategy r:0")
-        bv, av = floats(before.replace("\n", " ")), floats(after.replace("\n", " "))
-        check(max(abs(x - y) for x, y in zip(bv, av)) < 1e-4, "locked node strategy unchanged by solving")
-        check("LOCKED" in u.cmd("show_node r:0"), "LOCKED flag")
-        u.cmd("unlock_node r:0")
-        pure = " ".join(["0"] * 1326 + ["1"] * 1326 + ["0"] * 1326)
-        check(u.cmd("set_strategy r:0 " + pure) == "set_strategy ok!", "set_strategy")
-        st2 = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
-        in_range = [i for i, w in enumerate(floats(u.cmd("show_range OOP r:0"))) if w > 0]
-        check(all(abs(st2[1][i] - 1) < 1e-4 for i in in_range), "set_strategy round-trips (in-range hands)")
-
-        print("[save / load]")
-        with tempfile.TemporaryDirectory() as td:
-            path = os.path.join(td, "t.cfr")
-            check(u.cmd(f'dump_tree "{path}"') == "dump_tree ok!", "dump_tree")
-            check(u.cmd(f'check_tree_health "{path}"') == "File OK", "check_tree_health")
-            meta = u.cmd(f'show_metadata "{path}"').split("\n")
-            check(meta[1] == "ROOT" and meta[2] == "Qh Qc 2c ", "show_metadata")
-            s_before = u.cmd("show_strategy r:0:c:b24")
-            u.cmd("free_tree")
-            check(u.cmd("is_tree_present") == "false", "free_tree")
-            check(u.cmd(f'load_tree "{path}"') == "load_tree ok!", "load_tree")
-            check(u.cmd("show_strategy r:0:c:b24") == s_before, "strategy identical after reload")
-            small = os.path.join(td, "small.cfr")
-            u.cmd(f'dump_tree "{small}" no_rivers')
-            check(os.path.getsize(small) < os.path.getsize(path), "no_rivers save is smaller")
-            with open(path, "r+b") as f:
-                f.seek(200)
-                f.write(b"\xff\xfe\xfd")
-            check(u.cmd(f'check_tree_health "{path}"') == "File CORRUPTED", "corruption detected")
-
-        print("[lines]")
-        lines = u.cmd("show_all_lines").split("\n")
-        check(lines[0] == "r" and lines[1] == "r:0" and len(lines) > 100, f"show_all_lines ({len(lines)} lines)")
-        f_c = float(u.cmd("calc_line_freq r:0:c"))
-        f_b1 = float(u.cmd("calc_line_freq r:0:b12"))
-        f_b2 = float(u.cmd("calc_line_freq r:0:b24"))
-        check(abs(f_c + f_b1 + f_b2 - 1) < 1e-4, f"root action frequencies sum to 1 ({f_c + f_b1 + f_b2:.5f})")
-        wins = u.cmd("show_win_evs OOP r:0:c:c:?:c:c:?:c:c").split()
-        check(len(wins) == 3 and float(wins[0]) == 40 and float(wins[1]) == 0 and float(wins[2]) == 20,
-              f"show_win_evs check-down {wins}")
+        if big:
+            run_big_tree(u, order)
+        else:
+            run_small_tree(u, order)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")
@@ -386,4 +472,5 @@ def main(exe):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "./solver"))
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    sys.exit(main(args[0] if args else "./solver", big="--big" in sys.argv))

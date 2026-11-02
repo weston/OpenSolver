@@ -68,7 +68,7 @@ int GameTree::showdown_board_id(const std::vector<int>& board) {
     str[p].resize(v.size());
     for (size_t i = 0; i < v.size(); ++i) {
       uint16_t h = v[i].second;
-      sb.ent[p][i] = {h, hcard[p][0][h], hcard[p][1][h], same_hand[p][h]};
+      sb.ent[p][i] = {h, hcard[p][0][h], hcard[p][1][h], static_cast<int16_t>(same_hand[p][h])};
       str[p][i] = v[i].first;
     }
   }

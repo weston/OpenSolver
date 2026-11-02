@@ -1,6 +1,7 @@
 # build outputs
 /build/
 /solver
+/solver-release
 *.o
 # local comparison runs against a real PioSOLVER (regenerate with tests/pio_compare/compare.py)
 /tests/pio_compare/*_results/

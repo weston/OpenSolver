@@ -16,10 +16,23 @@ public UPI documentation; it contains no PioSOLVER code.
 
 ```sh
 make            # builds ./solver (-O3, native CPU optimizations)
+make release    # builds ./solver-release: LTO + PGO (profile trained on the bench trees)
 make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
 make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
 ./solver        # talk UPI on stdin/stdout
 ```
+
+`make release` leaves the default build untouched and produces a second binary,
+`./solver-release`, with link-time optimization and profile-guided optimization
+(the profile is trained on `tests/pio_compare/bench_flop.txt` and the bench
+river/turn trees, single- and multi-threaded, by `bench/train_pgo.sh`). Results
+are identical to the default build; solve time is a few percent lower (see the
+benchmark table in the pull request history for #56). Clang needs
+`llvm-profdata` (shipped with the toolchain; on macOS it is found via `xcrun`).
+The native CPU flag (`-mcpu=native` on ARM, `-march=native` on x86) also applies
+to the release build; override `RELEASE_ARCH` for portable binaries, e.g.
+`make release RELEASE_ARCH=-march=x86-64-v3` on Linux or
+`make release RELEASE_ARCH=-mcpu=apple-m1` on Apple Silicon.
 
 A C++20 compiler (GCC or Clang), make, Python 3 (for tests), and zlib headers are
 required. On Ubuntu 24.04, install them with

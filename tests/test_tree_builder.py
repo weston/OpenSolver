@@ -43,16 +43,19 @@ def test_parse():
     check(cfg.board == "QhQc2c", "parse: board QhQc2c")
 
     flop_oop = cfg.street(0, tb.OOP)
-    check(flop_oop.bet == [Decimal(30), Decimal(60)], "parse: FlopConfig.BetSize 30,60")
-    check(flop_oop.raise_ == [Decimal(40)], "parse: FlopConfig.RaiseSize 40")
-    check(flop_oop.donk == [Decimal(30), Decimal(60)], "parse: FlopConfig.DonkBetSize 30,60")
+    check(flop_oop.bet == [tb.SizeSpec("pct", Decimal(30)), tb.SizeSpec("pct", Decimal(60))],
+          "parse: FlopConfig.BetSize 30,60")
+    check(flop_oop.raise_ == [tb.SizeSpec("pct", Decimal(40))], "parse: FlopConfig.RaiseSize 40")
+    check(flop_oop.donk == [tb.SizeSpec("pct", Decimal(30)), tb.SizeSpec("pct", Decimal(60))],
+          "parse: FlopConfig.DonkBetSize 30,60")
     check(not flop_oop.add_allin, "parse: flop has no AddAllin")
 
     river_oop, river_ip = cfg.street(2, tb.OOP), cfg.street(2, tb.IP)
-    check(river_oop.bet == [Decimal(65)], "parse: RiverConfig.BetSize 65")
+    check(river_oop.bet == [tb.SizeSpec("pct", Decimal(65))], "parse: RiverConfig.BetSize 65")
     check(river_oop.add_allin and river_ip.add_allin,
           "parse: RiverConfig.AddAllin and RiverConfigIP.AddAllin are True")
-    check(cfg.street(0, tb.IP).bet == [Decimal(30), Decimal(60)],
+    check(cfg.street(0, tb.IP).bet == [tb.SizeSpec("pct", Decimal(30)),
+                                       tb.SizeSpec("pct", Decimal(60))],
           "parse: FlopConfigIP.BetSize 30,60 lands on the IP config")
 
 
@@ -139,6 +142,220 @@ def test_add_allin_gate():
     check((0, 0, 0, 0, 0, 26, 230) in lines, "river check, bet 26, all-in line is present")
 
 
+GEO_SPR3 = """\
+#Pot#100
+#EffectiveStacks#300
+#AllinThreshold#100
+#FlopConfig.BetSize#e
+#TurnConfig.BetSize#e
+#RiverConfig.BetSize#e
+#FlopConfigIP.BetSize#e
+#TurnConfigIP.BetSize#e
+#RiverConfigIP.BetSize#e
+"""
+
+
+def test_parse_size_forms():
+    check(tb.parse_size_list("33, 75, 2e, 3x, a") == [
+        tb.SizeSpec("pct", Decimal(33)), tb.SizeSpec("pct", Decimal(75)),
+        tb.SizeSpec("geo", Decimal(2)), tb.SizeSpec("mult", Decimal(3)),
+        tb.SizeSpec("allin")], "parse: mixed list `33, 75, 2e, 3x, a`")
+    check(tb.parse_size_list("e") == [tb.SizeSpec("geo", None)], "parse: `e` = geometric over the rest")
+    check(tb.parse_size_list("2.5x") == [tb.SizeSpec("mult", Decimal("2.5"))],
+          "parse: decimal raise multiple")
+    for bad in ("2q", "x3", "e2", "0e", "-3", "-2x", "xx"):
+        try:
+            tb.parse_size_list(bad)
+            check(False, f"parse: {bad!r} is rejected")
+        except ValueError:
+            check(True, f"parse: {bad!r} is rejected")
+    check(tb.parse_size_list("") == [] and tb.parse_size_list(" , ") == [],
+          "parse: empty list stays empty")
+    try:
+        tb.parse_config("#Pot#100\n#EffectiveStacks#300\n#FlopConfig.BetSize#3x\n")
+        check(False, "parse: Nx in BetSize is rejected")
+    except ValueError:
+        check(True, "parse: Nx in BetSize is rejected")
+    cfg = tb.parse_config("#Pot#100\n#EffectiveStacks#300\n#FlopConfig.RaiseCap#2\n"
+                          "#TurnConfigIP.RaiseCap#1\n")
+    check(cfg.street(0, tb.OOP).raise_cap == 2 and cfg.street(0, tb.IP).raise_cap is None,
+          "parse: #FlopConfig.RaiseCap#2 sets OOP's cap")
+    check(tb._street_cap(cfg, 0) == 2 and tb._street_cap(cfg, 1) == 1
+          and tb._street_cap(cfg, 2) is None,
+          "street cap: one player's value applies; unset is uncapped")
+    cfg2 = tb.parse_config("#Pot#100\n#EffectiveStacks#300\n#FlopConfig.RaiseCap#3\n"
+                           "#FlopConfigIP.RaiseCap#2\n")
+    check(tb._street_cap(cfg2, 0) == 2, "street cap: the smaller of the two applies")
+
+
+def test_geometric_bets_spr3():
+    """Issue's hand example: pot 100, stack 300 (SPR 3).
+
+    2e: f = (sqrt(7) - 1)/2 = 82.29% -> rounds to 82; that f repeated on the second
+    street bets 82.29 then 217.71, 300.00 exactly (299 after per-street rounding).
+    3e: f = (7^(1/3) - 1)/2 = 45.65% -> 46; repeated, 45.65 + 87.64 + 167.98 = 300.00.
+    `e` recomputed each street (3, then 2, then 1 remaining) lands on the all-in exactly.
+    """
+    # Unrounded property: repeated f-bets put the stack in exactly (up to Decimal
+    # precision; fractional powers carry ~1e-25 residue).
+    for n in (2, 3):
+        f = tb._geo_fraction(300, 100, n)
+        pot, total = Decimal(100), Decimal(0)
+        for _ in range(n):
+            b = f * pot
+            pot += 2 * b
+            total += b
+        check(abs(total - 300) < Decimal("1e-15"),
+              f"{n}e unrounded cascade puts the 300 stack in exactly (error {300 - total})")
+        check(abs(pot - 700) < Decimal("1e-15"),
+              f"{n}e unrounded cascade grows the pot 100 -> 700")
+
+    bets2e = GEO_SPR3.replace("#FlopConfig.BetSize#e", "#FlopConfig.BetSize#2e")
+    cfg = tb.parse_config(bets2e)
+    root = tb.Node(0, (0, 0), tb.OOP, False, None)
+    check(tb._aggressive_totals(cfg, root) == [82],
+          "2e flop bet at SPR 3 is 82 (82.29% of 100)")
+
+    bets3e = GEO_SPR3.replace("#FlopConfig.BetSize#e", "#FlopConfig.BetSize#3e")
+    cfg = tb.parse_config(bets3e)
+    check(tb._aggressive_totals(cfg, root) == [46],
+          "3e flop bet at SPR 3 is 46 (45.65% of 100)")
+
+    # `e` on every street, bet called each time: 46 -> 133 -> 300 (exact all-in).
+    cfg = tb.parse_config(GEO_SPR3)
+    flop = tb.Node(0, (0, 0), tb.OOP, False, None)
+    turn = tb.Node(1, (46, 46), tb.OOP, False, tb.OOP)
+    river = tb.Node(2, (133, 133), tb.OOP, False, tb.OOP)
+    check(tb._aggressive_totals(cfg, flop) == [46], "e flop bet is the 3e size, 46")
+    check(tb._aggressive_totals(cfg, turn) == [133],
+          "e turn bet is 87 more, 133 total (2-street geometric from pot 192, 254 behind)")
+    check(tb._aggressive_totals(cfg, river) == [300],
+          "e river bet is the last 167 exactly -> the all-in")
+    check((46, 46, 133, 133, 300) in {tuple(l) for l in tb.build_lines(cfg)},
+          "OOP bet-call down-the-streets line is 46 46 133 133 300")
+
+    # `e` recomputed per street is the consistent staircase (46 -> 133 -> 300 above).
+    # A fixed `3e` instead recomputes a three-street fraction from the current pot/stacks
+    # every street and so never gets there: 46 -> 98 -> 147.
+    bets3e_all = GEO_SPR3.replace("BetSize#e", "BetSize#3e")
+    cfg3 = tb.parse_config(bets3e_all)
+    turn3e = tb.Node(1, (46, 46), tb.OOP, False, tb.OOP)
+    check(tb._aggressive_totals(cfg3, turn3e) == [98],
+          "3e recomputed on the turn is a 3-street fraction from pot 192: 52 more, 98")
+    river3e = tb.Node(2, (98, 98), tb.OOP, False, tb.OOP)
+    check(tb._aggressive_totals(cfg3, river3e) == [147],
+          "3e recomputed on the river is 49 more, 147 (no all-in: smaller each time)")
+
+
+def test_geometric_raises():
+    """A geometric raise is a geometric bet of the increment on the pot-if-called."""
+    cfg = tb.parse_config("#Pot#100\n#EffectiveStacks#300\n#AllinThreshold#100\n"
+                          "#FlopConfigIP.RaiseSize#2e\n")
+    faced = tb.Node(0, (50, 0), tb.IP, True, None)
+    check(tb._aggressive_totals(cfg, faced) == [137],
+          "2e raise vs a 50 bet: 50 + 43.54% of pot-if-called 200 = 137")
+
+    # Exactness property (unrounded, ~1e-25 Decimal residue): a called 2e raise leaves
+    # pot and stacks where the same fraction finishes the one remaining street exactly.
+    f = tb._geo_fraction(250, 200, 2)
+    raised = Decimal(50) + f * 200
+    behind = Decimal(300) - raised
+    pot = Decimal(100) + 2 * raised
+    check(abs(tb._geo_fraction(behind, pot, 1) - f) < Decimal("1e-15"),
+          "after a 2e raise is called, one more street of the same fraction gets it in")
+
+    # Rounded cascade: raise to 137 called -> pot 374, 163 behind; `e` (2 streets)
+    # bets 69 more, then the river shove is exactly the last 94.
+    cfg_e = tb.parse_config("#Pot#100\n#EffectiveStacks#300\n#AllinThreshold#100\n"
+                            "#TurnConfig.BetSize#e\n#RiverConfig.BetSize#e\n")
+    turn = tb.Node(1, (137, 137), tb.OOP, False, tb.IP)
+    check(tb._aggressive_totals(cfg_e, turn) == [206],
+          "after the called raise, e turn bet totals 206 (69 more)")
+    river = tb.Node(2, (206, 206), tb.OOP, False, tb.IP)
+    check(tb._aggressive_totals(cfg_e, river) == [300],
+          "river e shove is exactly the remaining 94")
+
+    one_e = tb.parse_config("#Pot#100\n#EffectiveStacks#300\n#AllinThreshold#100\n"
+                            "#FlopConfigIP.RaiseSize#1e\n")
+    check(tb._aggressive_totals(one_e, faced) == [300], "a 1e raise is the all-in")
+    three_e = tb.parse_config("#Pot#100\n#EffectiveStacks#300\n#AllinThreshold#100\n"
+                              "#FlopConfigIP.RaiseSize#3e\n")
+    check(tb._aggressive_totals(three_e, faced) == [102],
+          "3e raise vs 50: 50 + 25.93% of 200 = 102")
+
+
+def test_raise_multiples():
+    """Nx raises to N times the bet faced."""
+    cfg = tb.parse_config("#Pot#100\n#EffectiveStacks#10000\n#AllinThreshold#100\n"
+                          "#FlopConfigIP.RaiseSize#3x,2.5x\n")
+    faced = tb.Node(0, (50, 0), tb.IP, True, None)
+    check(tb._aggressive_totals(cfg, faced) == [125, 150],
+          "2.5x/3x vs a 50 bet raise to 125 and 150")
+    cfg = tb.parse_config("#Pot#100\n#EffectiveStacks#10000\n#AllinThreshold#100\n"
+                          "#FlopConfig.RaiseSize#3x\n")
+    rer = tb.Node(0, (12, 38), tb.OOP, True, None)
+    check(tb._aggressive_totals(cfg, rer) == [114],
+          "3x vs a raise to 38 re-raises to 114 (3 times the bet faced)")
+    tiny = tb.parse_config("#Pot#100\n#EffectiveStacks#200\n#AllinThreshold#100\n"
+                           "#FlopConfigIP.RaiseSize#30x\n")
+    check(tb._aggressive_totals(tiny, faced) == [200],
+          "a multiple past the stack is clamped to the all-in")
+
+
+def test_raise_cap():
+    """RaiseCap limits bets+raises per street; configured all-ins still offered."""
+    header = """\
+#Pot#100
+#EffectiveStacks#10000
+#AllinThreshold#100
+#FlopConfig.BetSize#50
+#FlopConfig.RaiseCap#2
+#FlopConfigIP.BetSize#50
+#FlopConfigIP.RaiseSize#40
+#FlopConfigIP.RaiseCap#2
+"""
+    cfg = tb.parse_config(header)
+    root = tb.Node(0, (0, 0), tb.OOP, False, None)
+    check(tb._aggressive_totals(cfg, root) == [50], "cap 2: the opening bet is allowed")
+    after_bet = tb.Node(0, (50, 0), tb.IP, True, None, 1)
+    check(tb._aggressive_totals(cfg, after_bet) == [130],
+          "cap 2: the raise over the bet is allowed (50 + 40% of 200)")
+    after_raise = tb.Node(0, (50, 130), tb.OOP, True, None, 2)
+    check(tb._aggressive_totals(cfg, after_raise) == [],
+          "cap 2: no re-raise once two aggressions have happened")
+
+    lines = {tuple(l) for l in tb.build_lines(cfg)}
+    check(lines == {(50, 130), (0, 50)},
+          "whole tree under cap 2 is bet-raise and check-bet (no escalation past it)")
+
+    # Cap 1: no raises at all, bets still allowed.
+    cap1 = tb.parse_config(header.replace("#FlopConfig.RaiseCap#2", "#FlopConfig.RaiseCap#1")
+                           .replace("#FlopConfigIP.RaiseCap#2", "#FlopConfigIP.RaiseCap#1"))
+    check(tb._aggressive_totals(cap1, after_bet) == [], "cap 1: a bet cannot be raised")
+    check(tb._street_cap(cap1, 1) is None and tb._street_cap(cap1, 2) is None,
+          "caps are per street")
+
+    # A configured all-in survives the cap: an `a` entry and AddAllin (gate passed).
+    allined = tb.parse_config("#Pot#100\n#EffectiveStacks#10000\n#AllinThreshold#100\n"
+                              "#FlopConfig.RaiseCap#1\n#FlopConfigIP.RaiseCap#1\n"
+                              "#FlopConfig.BetSize#50\n"
+                              "#FlopConfigIP.RaiseSize#40,a\n#FlopConfigIP.AddAllin#True\n")
+    check(tb._aggressive_totals(allined, after_bet) == [10000],
+          "at the cap the configured all-in is still offered")
+
+    # ...but an all-in produced only by AllinThreshold is a computed size: capped out.
+    thr = tb.parse_config("#Pot#100\n#EffectiveStacks#300\n#AllinThreshold#50\n"
+                          "#FlopConfig.RaiseCap#1\n#FlopConfigIP.RaiseCap#1\n"
+                          "#FlopConfig.BetSize#50\n#FlopConfigIP.RaiseSize#70\n")
+    check(tb._aggressive_totals(thr, after_bet) == [],
+          "at the cap a threshold-promoted all-in is not offered")
+    check(tb._aggressive_totals(tb.parse_config(
+        "#Pot#100\n#EffectiveStacks#300\n#AllinThreshold#50\n"
+        "#FlopConfig.BetSize#50\n#FlopConfigIP.RaiseSize#70\n"),
+        tb.Node(0, (50, 0), tb.IP, True, None)) == [300],
+        "the same 70% raise promotes to the all-in when uncapped")
+
+
 def test_rounding_is_nearest():
     """Truncating or always rounding up both break the fixture; nearest is required."""
     import decimal
@@ -212,7 +429,9 @@ def test_full_script():
 
 def main():
     for fn in (test_parse, test_matches_pioviewer, test_no_redundant_lines,
-               test_sizing_arithmetic, test_add_allin_gate, test_rounding_is_nearest,
+               test_sizing_arithmetic, test_add_allin_gate, test_parse_size_forms,
+               test_geometric_bets_spr3, test_geometric_raises, test_raise_multiples,
+               test_raise_cap, test_rounding_is_nearest,
                test_branch_ending_on_a_plain_bet, test_full_script):
         print(fn.__name__)
         fn()

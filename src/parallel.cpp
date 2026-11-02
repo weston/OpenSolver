@@ -83,16 +83,17 @@ void ThreadPool::worker_loop() {
   }
 }
 
-void ThreadPool::parallel_for(int n, const std::function<void(int)>& f) {
+void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool widen) {
   if (n <= 0) return;
-  if (n == 1 || parallel_width > nthreads_ / 2) {
+  if (n == 1 || (widen && parallel_width > nthreads_ / 2)) {
     for (int i = 0; i < n; ++i) f(i);
     return;
   }
   Job job;
   job.fn = &f;
   job.n = n;
-  job.width = static_cast<int>(std::min<int64_t>(nthreads_, static_cast<int64_t>(parallel_width) * n));
+  job.width = widen ? static_cast<int>(std::min<int64_t>(nthreads_, static_cast<int64_t>(parallel_width) * n))
+                    : parallel_width;
   size_t my_index;
   {
     std::lock_guard<std::mutex> lk(m_);

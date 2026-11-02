@@ -90,7 +90,33 @@ ignored, so a PioViewer save file works directly:
 ```
 
 `#<Street>Config.<Field>#` sets OOP, `#<Street>ConfigIP.<Field>#` sets IP; fields are
-`BetSize`, `DonkBetSize`, `RaiseSize` (comma-separated percentages) and `AddAllin`.
+`BetSize`, `DonkBetSize`, `RaiseSize` (comma-separated size lists), `AddAllin` and
+`RaiseCap`. Entries of a size list are not just percentages:
+
+| Form | Meaning |
+|---|---|
+| `75` | a percentage of the pot (bets) or of `pot_if_called` (raises), as before |
+| `2e`, `3e` | geometric over N streets (see below) |
+| `e` | geometric over the streets remaining (3 on the flop, 2 on the turn, 1 on the river) |
+| `3x`, `2.5x` | raise to N times the bet faced, `round(N x facing)` - only in `RaiseSize` |
+| `a` | the all-in |
+
+and they mix freely: `33, 75, 2e, 3x, a`.
+
+**Geometric sizes.** `Ne` is the pot fraction f that, bet and called on each of the next
+N streets counting this one, puts the remaining effective stack S in exactly. With P the
+current pot: `f = ((1 + 2·S/P)^(1/N) − 1) / 2`. Example: pot 100, stack 300 (SPR 3) gives
+`2e` = (√7−1)/2 = 82.3% -> a bet of 82. For a raise, the same formula runs on the
+pot-if-called with S the stack left after calling, and the raise increment is the
+geometric bet on that pot: `raise to facing + round(f x pot_if_called)` (so `1e` as a
+raise is the all-in). After a called geometric bet or raise, the same fraction continued
+on the remaining streets puts the stack in exactly, up to rounding to whole chips.
+
+**Raise cap.** `#<Street>Config[IP].RaiseCap#N` limits the street to N bets and raises in
+total, counting both players (if the two players' values differ, the smaller applies). At
+the cap only check, call and fold remain - except that a configured all-in (an `a` entry,
+or `AddAllin` whose pot gate below passes) is still offered. An all-in produced by the
+`AllinThreshold` rule is an ordinary computed size and does **not** bypass the cap.
 
 Amounts in a line are absolute - the total a player has put in since the hand started - so a
 check or call repeats the amount that player is already matched to. With
@@ -98,8 +124,8 @@ check or call repeats the amount that player is already matched to. With
 
 | Action | Total |
 |---|---|
-| bet | `invested + round(BetSize% x pot)`, or `DonkBetSize%` when OOP leads into the previous street's aggressor |
-| raise | `facing + round(RaiseSize% x pot_if_called)` |
+| bet | `invested + round(BetSize x pot)`, for BetSize a percentage or geometric fraction, or `DonkBetSize` when OOP leads into the previous street's aggressor |
+| raise | `facing + round(RaiseSize x pot_if_called)`, or `round(N x facing)` for an `Nx` entry |
 
 Rounding is to the nearest chip. Two all-in rules sit on top:
 
@@ -116,17 +142,121 @@ creates, so a line only has to reach the deepest bet of its branch.
 
 These rules were inferred from `tests/data/pio_25bbHU_2sizes.txt`, which carries both a config
 header and the 266 lines PioViewer generated from it; `tests/test_tree_builder.py` checks that
-the builder reproduces that set exactly. Two details the fixture cannot pin down: the tie-break
+the builder reproduces that set exactly. (The `Ne`/`Nx`/`a` size forms and `RaiseCap` are our
+own extensions, not something PioViewer writes; plain percentage files like the fixture are
+unaffected.) Two details the fixture cannot pin down: the tie-break
 when a size lands exactly on .5 (half-up and half-even both reproduce it), and `DonkBetSize`,
 which the fixture sets equal to `BetSize` on every street - donk nodes are reached, but their
 size is indistinguishable from an ordinary bet there.
+
+## Viewer
+
+A PioViewer-style browser UI, driven by a small local server that talks to `./solver` over UPI
+(Python 3 standard library only, plain HTML/JS, no build step):
+
+```sh
+make
+python3 viewer/server.py            # then open http://127.0.0.1:8765
+python3 viewer/server.py --solver ./solver-release --port 9000
+```
+
+The server binds to 127.0.0.1 only and exposes a fixed, whitelisted JSON API — there is no
+"run any UPI command" endpoint. Tree building and solving, plus `dump_tree` to a path you
+choose, are the only state-changing operations.
+
+Two views, light and dark themes (follows the system; toggle in the top bar):
+
+- **Build:**
+  - two 13×13 range editors side by side (OOP left, IP right). Click or drag to paint hands at the
+    weight set by the slider (0–100%); clicking a hand that already has that weight clears it.
+    The text box under each grid stays in sync both ways, in the solver's range syntax
+    (`AA,AKs:0.5,AsKs,22+,A5s-A2s`).
+  - a card-button board picker;
+  - pot, stack, bet/raise/donk sizes per street (expanded with `tools/tree_builder.py`: `33` % pot,
+    `2e` geometric over 2 streets, `3x` raise to 3×, `a` all-in), a per-street raise cap, and all-in
+    rules. Isomorphism is always on.
+  - a library (`~/.wsolver/library`, or `--library DIR`): save and load single ranges from each
+    editor, or whole spots (ranges, board, sizes, target) from the spot bar, in `/`-separated
+    folders, with search, preview, rename and delete.
+  - **Build & solve** with a target in % of the pot, and a live convergence chart
+    (exploitability on a log scale against time).
+- **Study:** a fixed layout, so nothing moves while you click through a line:
+  - the board as card graphics and the line so far as colored action chips grouped by street
+    (click one to return to that decision);
+  - an action strip with the overall frequency bar and one button per action (frequency and
+    combos). At chance nodes the strip becomes a card picker, and the matrix keeps showing the
+    last decision.
+  - the 13×13 matrix. **Bar height is the hand's weight in the acting player's range at the node**
+    (not normalized, so rarely reached hands show short bars), split by action frequency.
+    Strategy, Range and EV modes; OOP/IP for the latter two.
+  - side panel: per-combo strategy and EV for the hovered or pinned hand, node and range-EV
+    summary, both players' ranges.
+
+  Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`)
+  links to the current node and view.
+- **Re-solve (#117):** at any decision of the original tree, **Re-solve…** re-solves the subtree from
+  there in a second solver process. Either edit the sizes for the rest of the hand, or find the best
+  N sizes out of a candidate list. At a node facing a bet on its own street the candidates are
+  raise sizes (`3x` allowed). Results are ranked by the acting player's EV, and you can browse them
+  like the original tree; **↩ Original** in the action line, or ← at the subtree root, goes back.
+  This is unsafe re-solving: the opponent's range stays fixed at the node.
+- **Open / Save:** `dump_tree` (full / no rivers / flop only) and lazy `load_tree`. Browsing a
+  truncated save re-solves missing streets on demand, as in Pio.
+- **Library (API):** named ranges and full build-form configs saved in folders under
+  `~/.wsolver/library` (override with `--library DIR`): ranges as range-syntax `.txt` files,
+  configs as JSON with `"schema": 1`. Plain files you can also manage with Finder or git; every
+  name is confined to the library root (`..`, absolute paths and symlink escapes are refused).
+
+`python3 viewer/test_server.py ./solver` runs the viewer's integration tests (a small tree,
+~1 s; also part of `make test`). `python3 viewer/test_library.py` tests the library storage and
+its HTTP API without a solver.
+
+### Viewer: subgame re-solve and size search
+
+The server runs a **second solver process** (`viewer/resolve.py`) so a subtree can be
+re-solved with different bet sizes without touching the tree being browsed. At any
+decision node X it reads both players' ranges (`show_range`), the chips already in the
+middle (`show_node`'s pot line, passed verbatim to `set_pot`), the board, and the original
+stack (`show_effective_stack`), then builds a fresh tree rooted exactly at X from edited
+sizes — the same sizing fields as the build form, expanded by `tools/tree_builder.py`
+including any size syntax it learns in the future. Sizes for streets before X's street are
+ignored; a root that starts facing a bet automatically offers raises instead of bets (the
+one approximation: a lead on the *following* street uses bet sizes, never donk sizes, since
+the previous street's aggressor is not recoverable from a node snapshot). The solver's tree
+roots are always OOP-to-act, so when X is IP's decision the subgame gets a one-child
+"forced check" wrapper root and X itself sits at `r:0:c`; `subgame_root` in the API output
+says which.
+
+**This is unsafe re-solving** (the same caveat as Pio's on-the-fly recalculations): the
+opponent's range at X is frozen at its solved reach, with no gadget game accounting for
+the counterfactual value of having *avoided* X. Results are for exploring sizings, not for
+exploitability claims.
+
+Endpoints (all JSON; ids refer to the main tree, subgame browsing uses subgame ids):
+
+| Endpoint | In | Out |
+|---|---|---|
+| `GET /api/resolve/context?id=<node>` | a decision node of the main tree | `{board, street ("flop"/"turn"/"river"), actor, pot: {oop, ip, dead}, stack}` — exactly what the subgame setup will use. 400 for chance/terminal/preflop nodes |
+| `POST /api/resolve/start` | `{id, accuracy?, <sizing fields as in /api/generate>}` | starts a re-solve job; 400 on bad input or while another job runs |
+| `POST /api/resolve/search` | `{id, street?, candidates: "25,50,100", n, accuracy?, <other sizing fields>}` | starts a size search: the `n`-size subset of `candidates` (used as both players' `BetSize` on `street`, defaulting to X's street) with the highest EV for the acting player. All C(k, n) subsets are solved up to 12 combinations; above that, greedy forward selection |
+| `GET /api/resolve/status` | — | `{busy, kind ("resolve"/"search"), node, error, done, total, method, rows (each `{sizes, ev, ev_oop, ev_ip}`, the acting player's EV first), best, context, result (root EVs, node count, line count, accuracy, calc_results text), tree, solve}` — poll this for progress; `solve` is the subgame solver's own status |
+| `GET /api/resolve/node`, `/strategy`, `/range`, `/ev`, `/calc_results` | same as the main-tree endpoints | browse the (re-)solved subgame. After a search these show the table's **best** subset |
+| `POST /api/resolve/stop` | — | cancels the running job (restarts the subgame solver); no-op when idle |
+
+Each search candidate is solved to the requested (loose) accuracy; the comparison table
+grows under `rows` as candidates finish.
+
+`python3 viewer/test_resolve.py ./solver` runs the tests: same-sizes re-solves reproduce
+the original node's strategy within solver tolerance, an edited config produces exactly
+the tree a direct build of the generated lines produces, and the search agrees with an
+independent brute force on a small river spot.
 
 ## Windows
 
 `solver.exe` runs natively on Windows (verified on Windows 11 / Zen 5: all unit tests pass and every
 UPI probe matches the macOS build up to floating-point rounding).
 
-- **Native (MSYS2 UCRT64):** `pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-zlib make`,
+- **Native (MSYS2 UCRT64):** `pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-python make`,
   then `make` (produces `solver.exe`) and `make test`.
 - **Cross-compile from macOS/Linux:** install mingw-w64 (`brew install mingw-w64`), build zlib for it
   (`make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32- libz.a` in zlib's source), then
@@ -151,6 +281,9 @@ UPI probe matches the macOS build up to floating-point rounding).
 
 ## Command coverage
 
+See the [command compatibility and test reference](docs/commands.md) for all commands,
+their implementation status, known differences, and regression/probe coverage.
+
 `set_range` additionally accepts range text (`AA,KK:0.5,...`); Pio itself only accepts 1326 numbers.
 
 **Implemented:** is_ready, exit, set_end_string, reset_end_string, show_version, show_build_version,
@@ -171,15 +304,18 @@ show_categories, show_cats, show_cats_pp, set_display_iso, reset_display_iso, sh
 set_rake, set_icm, set_icm_point, reset_icm_tables, eliminate_path, lock_node, unlock_node,
 combo_lock_node, show_locked_combos, set_strategy, set_equal_strats, set_mes, round_up_to,
 lock_line, unlock_line, set_incentives_node, set_incentives_line, show_incentives,
-clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compress), free_tree,
+clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compress / lossless), free_tree,
 show_metadata, show_save_version, load_all_nodes, set_compression_precision,
-set_compression_level, check_tree_health.
+set_compression_level, check_tree_health, set_dcfr, set_predictive, set_avg_delay.
 
 **Saving and loading.** `dump_tree <file> [no_rivers|no_turns] [lossless]` writes a save for viewing.
 By default it keeps each node's displayed strategy, quantized to `set_compression_precision` bits (11, as
 in Pio: frequencies within 1/2047), and no regrets: saves are for browsing, not for resuming a solve.
+This quantization happens at the file layer regardless of `small_strats` — that knob selects the tree's
+in-RAM storage, not the save's, so "uncompressed" (small_strats off) is not the same as `lossless` (#100).
 `no_rivers` / `no_turns` drop the later streets, which are re-solved on demand as you browse them, as in
-Pio. `lossless` keeps everything exactly. Converged flop tree, 155 MB in RAM:
+Pio. `lossless` keeps everything exactly (a reload then displays strategies bit-identically). Converged
+flop tree, 155 MB in RAM:
 
 | save | size | PioSOLVER 3.10, same tree |
 |---|---|---|
@@ -217,11 +353,10 @@ For whole-hand accounting give the preflop investments per player (e.g. `set_pot
 Policy (owner decision, #10): match Pio wherever tools may depend on it (formats, codes, node ids,
 error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberate differences:
 
-- **`list_algorithms` reports `gamma 3`, not Pio's `gamma 2`.** The strings are otherwise identical.
-  Our DCFR default is γ=3 because it converges faster on every benchmark tree (see
-  `bench/dcfr_sweep.md`); the command reports the exponents actually in use rather than Pio's, since
-  silently printing a parameter we do not use would be worse than the byte difference. `set_dcfr`
-  restores 1.5/0/2 if exact parity matters.
+- **`list_algorithms` reports `alpha 1.3, beta 0, gamma 4`, not Pio's `alpha 1.5, beta 0, gamma 2`.**
+  The strings are otherwise identical. Our DCFR defaults converge faster on every benchmark tree (see
+  `bench/dcfr_sweep.md`), and the command reports the exponents actually in use rather than Pio's.
+  `set_dcfr 1.5 0 2` restores the published values if exact parity matters.
 - **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip files with one
   member per street segment plus an index (`src/upi_save.cpp`), and `show_save_version` reports our own
   format (5).
@@ -231,7 +366,8 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
 - `show_all_freqs` prints real frequencies (Pio 3.10 prints `nan`); `estimate_schematic_tree` reports
   real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `show_nuts` breaks
   ties in its own order; `node_count` counts every node in preflop trees.
-- `_pp` listings omit hands that are only in the opponent's range (#9).
+- `_pp` listings omit hands that are only in the opponent's range by default; Pio always lists the union
+  of both ranges. `set_union_hands on` (before `build_tree`) gives Pio's exact hand list (#9, #61).
 - Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
   there; results are identical with isomorphism on or off (#12).
 - **Preflop equity** (`calc_eq_preflop`, preflop all-ins) is exact: a 1326x1326 hand-vs-hand

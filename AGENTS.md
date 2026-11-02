@@ -108,6 +108,25 @@ Reading the numbers:
 - Absolute times are machine-relative; only before/after on the same machine means anything.
 - `bench/results.md` has an empty Pio column for the maintainer to fill from a licensed PioSOLVER on
   the same trees.
+- `bench/where-the-time-goes.md` is the measured cost map: self time per function per tree, the
+  dominant hotspot characterised, what is left ranked by size, and what has already been measured
+  and ruled out. Read it before starting performance work.
+
+**Measure with wall time**, via `/usr/bin/time` or `make bench`, which does it for you. Do *not* use
+`solver_time` for per-iteration cost: it is seconds since the process started, so it includes startup
+and, on a cold cache, the one-time generation of the preflop hand-vs-hand table. Two further traps,
+both of which have already produced wrong numbers in issue comments:
+
+- A `PfTable` layout change bumps the cache *header* version, so two binaries that differ there will
+  invalidate each other's cache and regenerate the table on **every** run when you A/B them. Read
+  that as solve time and you can be off by a factor of hundreds.
+- A tree's *share* of runtime is not its *amount*. The preflop betting tree is 98% showdown, and
+  also solves in 0.4 s, so optimizing it buys nothing. Check the absolute number before optimizing.
+
+When sanity-checking `.github/workflows/ci.yml` locally, note that Ruby's `YAML.safe_load` and
+Python's `yaml.safe_load` both silently keep the **last** of two duplicate mapping keys. A workflow
+with a duplicated job key passes a naive local parse and is then rejected by GitHub as a 0-second
+"workflow file issue". Re-read the file after a pull rather than appending to it blind.
 
 ## Layout
 
@@ -118,7 +137,7 @@ Reading the numbers:
 | `src/range.*` | range text parser/formatter (Pio itself only accepts 1326 floats) |
 | `src/action_tree.*` | `add_line`/`add_preflop_line` -> betting tree (implicit check/call/fold, Pio child order) |
 | `src/game.*` | full game tree: chance expansion, isomorphism, flop subsets, showdown orderings, storage (float32 or 16-bit) |
-| `src/solver.*` | vector-form DCFR (α=1.5, β=0, γ=3; `set_dcfr` overrides), best response, evaluation |
+| `src/solver.*` | vector-form DCFR (α=1.3, β=0, γ=4; `set_dcfr` overrides), best response, evaluation |
 | `src/parallel.*` | nested work-stealing thread pool + per-thread arenas |
 | `src/equity.*`, `src/categories.*` | calc_eq family, range explorer |
 | `src/pfh2h.*` | exact preflop hand-vs-hand win/tie table (suit-isomorphic generation, cached in ~/.cache/wsolver) |
@@ -131,7 +150,8 @@ Key invariants:
 - Isomorphic chance children are computed once; queries resolve real cards through a suit-permutation
   "frame" (`NodeRef::frame`).
 - Investments in the betting tree are absolute (they include `set_pot`'s per-player chips); payoffs are
-  share of the final pot minus own investment, plus a per-subtree `offset` inside preflop trees.
+  share of the final pot minus own investment. (`ActionNode::offset` exists for a per-subtree payoff
+  shift inside preflop trees but is currently always zero - see src/action_tree.hpp.)
 
 ## Comparing against PioSOLVER
 
@@ -142,6 +162,10 @@ machine with a licensed PioSOLVER, reachable over SSH) and optionally `PIO_KEY`,
 Piping a whole script over SSH to Windows can stall when it contains very long lines (e.g.
 `set_strategy` with 2x1326 numbers); use `pio_session.PioSession` (one command at a time) for those.
 `PIO_EXE` can point at our own `solver.exe` to compare the Windows build with the local one.
+`tests/pio_compare/remote_exe.py` makes a remote solver look like a local executable (it converts
+range text for Pio and starts it in its own folder). Use it with `bench/run.py --exe` to benchmark
+PioSOLVER and our `solver.exe` on the same machine. Compare there, never across machines. Pio prints
+progress only about every 0.5 s, so its sub-second times are upper bounds.
 
 **Most agents will not have Pio access.** In that case work from the recorded outputs: the probe
 scripts (`probe*.txt`), `tests/data/`, the facts below, and issue descriptions (which quote Pio output
@@ -159,6 +183,11 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   ordered runouts); out-of-range hands print `nan` / `inf`. Pio keeps per-player hand lists as the union of
   both ranges, so it has a counterfactual value for opponent-only hands and prints a *signed* `inf`; ours does
   that only under `set_union_hands on` (off by default, ~+23% solve time).
+- `calc_ev_pp <player> <node>` is `EV: <x>` plus one `<combo>: <ev>; <matchups>` row per hand of the **union**
+  of both ranges, for either player, sorted by EV descending (probe2: 149 lines = header + 148 for OOP and
+  IP alike; recorded in `tests/data/pio_probe2_calc_ev_pp.txt`, #61). Opponent-only hands show matchups
+  `0.00`. Tie order among equal-EV combos is not reproducible. `set_union_hands` is ours: Pio answers
+  `ERROR: Command set_union_hands not recognized`.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
 - `eliminate_path` is a one-time edit that moves the frequency to check/call.

@@ -2,219 +2,266 @@
   "meta": {
     "machine": "arm64 Darwin 27.2.0, 20 cores",
     "compiler": "Apple clang version 15.0.0 (clang-1500.3.9.4)",
-    "version": "0.1.0 (Nov  1 2026)",
+    "version": "0.1.0 (Nov  2 2026)",
     "info_freq": 5,
-    "extra": ""
+    "extra": "",
+    "pre_build": ""
   },
   "runs": [
     {
       "tree": "deep",
       "threads": 1,
-      "wall_seconds": 36.592,
-      "iterations": 135,
-      "final_exploitability": 0.074,
-      "peak_rss_mb": 232.8,
+      "wall_seconds": 25.957,
+      "iterations": 100,
+      "final_exploitability": 0.073,
+      "peak_rss_mb": 232.7,
       "reached": {
-        "0.01": 16.46,
-        "0.005": 23.127,
-        "0.002": 35.549
+        "0.01": 13.181,
+        "0.005": 16.776,
+        "0.002": 24.919
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
       "tree": "deep",
       "threads": 20,
-      "wall_seconds": 5.971,
-      "iterations": 135,
-      "final_exploitability": 0.074,
-      "peak_rss_mb": 237.6,
+      "wall_seconds": 4.173,
+      "iterations": 100,
+      "final_exploitability": 0.073,
+      "peak_rss_mb": 237.4,
       "reached": {
-        "0.01": 2.598,
-        "0.005": 3.667,
-        "0.002": 5.79
+        "0.01": 2.104,
+        "0.005": 2.683,
+        "0.002": 4.001
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
       "tree": "flop_3bet",
       "threads": 1,
-      "wall_seconds": 2.61,
+      "wall_seconds": 2.561,
       "iterations": 50,
-      "final_exploitability": 0.355,
-      "peak_rss_mb": 41.0,
+      "final_exploitability": 0.361,
+      "peak_rss_mb": 40.9,
       "reached": {
-        "0.01": 1.171,
-        "0.005": 1.687,
-        "0.002": 2.413
+        "0.01": 1.16,
+        "0.005": 1.668,
+        "0.002": 2.374
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
       "tree": "flop_3bet",
       "threads": 20,
-      "wall_seconds": 0.848,
+      "wall_seconds": 0.803,
       "iterations": 50,
-      "final_exploitability": 0.355,
-      "peak_rss_mb": 43.7,
+      "final_exploitability": 0.361,
+      "peak_rss_mb": 43.4,
       "reached": {
-        "0.01": 0.394,
-        "0.005": 0.555,
-        "0.002": 0.784
+        "0.01": 0.366,
+        "0.005": 0.528,
+        "0.002": 0.743
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
       "tree": "flop_srp_2",
       "threads": 1,
-      "wall_seconds": 10.659,
-      "iterations": 55,
-      "final_exploitability": 0.1,
-      "peak_rss_mb": 154.3,
+      "wall_seconds": 8.47,
+      "iterations": 45,
+      "final_exploitability": 0.097,
+      "peak_rss_mb": 154.6,
       "reached": {
-        "0.01": 5.382,
-        "0.005": 6.286,
-        "0.002": 9.899
+        "0.01": 4.493,
+        "0.005": 5.29,
+        "0.002": 7.74
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
       "tree": "flop_srp_2",
       "threads": 20,
-      "wall_seconds": 1.297,
-      "iterations": 55,
-      "final_exploitability": 0.1,
-      "peak_rss_mb": 160.4,
+      "wall_seconds": 1.047,
+      "iterations": 45,
+      "final_exploitability": 0.097,
+      "peak_rss_mb": 160.3,
       "reached": {
-        "0.01": 0.651,
-        "0.005": 0.759,
-        "0.002": 1.184
+        "0.01": 0.551,
+        "0.005": 0.645,
+        "0.002": 0.935
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
       "tree": "flop_srp_4",
       "threads": 1,
-      "wall_seconds": 23.126,
-      "iterations": 60,
-      "final_exploitability": 0.109,
+      "wall_seconds": 18.545,
+      "iterations": 50,
+      "final_exploitability": 0.091,
       "peak_rss_mb": 307.2,
       "reached": {
-        "0.01": 12.767,
-        "0.005": 14.585,
-        "0.002": 21.65
+        "0.01": 10.931,
+        "0.005": 12.487,
+        "0.002": 17.095
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
       "tree": "flop_srp_4",
       "threads": 20,
-      "wall_seconds": 3.054,
-      "iterations": 60,
-      "final_exploitability": 0.109,
-      "peak_rss_mb": 313.6,
+      "wall_seconds": 2.378,
+      "iterations": 50,
+      "final_exploitability": 0.091,
+      "peak_rss_mb": 313.3,
       "reached": {
-        "0.01": 1.69,
-        "0.005": 1.928,
-        "0.002": 2.855
+        "0.01": 1.407,
+        "0.005": 1.604,
+        "0.002": 2.183
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
       "tree": "preflop",
       "threads": 1,
-      "wall_seconds": 0.071,
+      "wall_seconds": 0.059,
+      "iterations": 30,
+      "final_exploitability": 0.024,
+      "peak_rss_mb": 16.1,
+      "reached": {
+        "0.01": 0.023,
+        "0.005": 0.031,
+        "0.002": 0.048
+      },
+      "extra": [],
+      "pre": [],
+      "error": null
+    },
+    {
+      "tree": "preflop",
+      "threads": 20,
+      "wall_seconds": 0.057,
+      "iterations": 30,
+      "final_exploitability": 0.024,
+      "peak_rss_mb": 16.4,
+      "reached": {
+        "0.01": 0.023,
+        "0.005": 0.031,
+        "0.002": 0.046
+      },
+      "extra": [],
+      "pre": [],
+      "error": null
+    },
+    {
+      "tree": "river",
+      "threads": 1,
+      "wall_seconds": 0.008,
+      "iterations": 70,
+      "final_exploitability": 0.191,
+      "peak_rss_mb": 2.8,
+      "reached": {
+        "0.01": 0.002,
+        "0.005": 0.003,
+        "0.002": 0.006
+      },
+      "extra": [],
+      "pre": [],
+      "error": null
+    },
+    {
+      "tree": "river",
+      "threads": 20,
+      "wall_seconds": 0.009,
+      "iterations": 70,
+      "final_exploitability": 0.191,
+      "peak_rss_mb": 3.0,
+      "reached": {
+        "0.01": 0.003,
+        "0.005": 0.004,
+        "0.002": 0.007
+      },
+      "extra": [],
+      "pre": [],
+      "error": null
+    },
+    {
+      "tree": "turn",
+      "threads": 1,
+      "wall_seconds": 0.116,
       "iterations": 35,
-      "final_exploitability": 0.028,
-      "peak_rss_mb": 16.2,
+      "final_exploitability": 0.199,
+      "peak_rss_mb": 5.5,
+      "reached": {
+        "0.01": 0.06,
+        "0.005": 0.074,
+        "0.002": 0.102
+      },
+      "extra": [],
+      "pre": [],
+      "error": null
+    },
+    {
+      "tree": "turn",
+      "threads": 20,
+      "wall_seconds": 0.068,
+      "iterations": 35,
+      "final_exploitability": 0.199,
+      "peak_rss_mb": 3.4,
       "reached": {
         "0.01": 0.035,
         "0.005": 0.043,
-        "0.002": 0.06
+        "0.002": 0.059
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
-      "tree": "preflop",
-      "threads": 20,
-      "wall_seconds": 0.091,
-      "iterations": 35,
-      "final_exploitability": 0.028,
-      "peak_rss_mb": 16.5,
-      "reached": {
-        "0.01": 0.045,
-        "0.005": 0.057,
-        "0.002": 0.08
-      },
-      "extra": [],
-      "error": null
-    },
-    {
-      "tree": "river",
+      "tree": "preflop_full",
       "threads": 1,
-      "wall_seconds": 0.009,
-      "iterations": 75,
-      "final_exploitability": 0.195,
-      "peak_rss_mb": 2.7,
+      "wall_seconds": 94.642,
+      "iterations": 20,
+      "final_exploitability": 0.024,
+      "peak_rss_mb": 2183.0,
       "reached": {
-        "0.01": 0.002,
-        "0.005": 0.003,
-        "0.002": 0.006
+        "0.01": 58.612,
+        "0.005": 58.612,
+        "0.002": 75.81
       },
       "extra": [],
+      "pre": [],
       "error": null
     },
     {
-      "tree": "river",
+      "tree": "preflop_full",
       "threads": 20,
-      "wall_seconds": 0.008,
-      "iterations": 75,
-      "final_exploitability": 0.195,
-      "peak_rss_mb": 3.0,
+      "wall_seconds": 10.286,
+      "iterations": 20,
+      "final_exploitability": 0.024,
+      "peak_rss_mb": 2195.5,
       "reached": {
-        "0.01": 0.002,
-        "0.005": 0.003,
-        "0.002": 0.006
+        "0.01": 5.826,
+        "0.005": 5.826,
+        "0.002": 7.422
       },
       "extra": [],
-      "error": null
-    },
-    {
-      "tree": "turn",
-      "threads": 1,
-      "wall_seconds": 0.143,
-      "iterations": 45,
-      "final_exploitability": 0.184,
-      "peak_rss_mb": 5.5,
-      "reached": {
-        "0.01": 0.073,
-        "0.005": 0.087,
-        "0.002": 0.129
-      },
-      "extra": [],
-      "error": null
-    },
-    {
-      "tree": "turn",
-      "threads": 20,
-      "wall_seconds": 0.084,
-      "iterations": 45,
-      "final_exploitability": 0.184,
-      "peak_rss_mb": 6.8,
-      "reached": {
-        "0.01": 0.043,
-        "0.005": 0.051,
-        "0.002": 0.076
-      },
-      "extra": [],
+      "pre": [],
       "error": null
     }
   ]

@@ -54,6 +54,22 @@ struct GameConfig {
   int32_t pot[3] = {0, 0, 0};      // set_pot: oop, ip, dead
   int32_t eff_stack = 0;
   Weights1326 range[2]{};          // OOP, IP
+  // iso_turn is off to match Pio's `set_isomorphism 1 0`, not because it does not pay: it
+  // applies when the tree's ROOT board is 4 cards (see game.cpp, `bl == 4 && cfg.iso_turn`),
+  // and on bench/trees/turn.upi (Kh9h4h2c) it collapses 1603 nodes to 1174 (-27%) and the
+  // solve from 0.753 s to 0.553 s (-26.5%, sd 0.8%).
+  //
+  // EV (55.111) and exploitability (0.121) match, but the solved STRATEGIES do not: per-hand
+  // frequencies differ by up to 0.008, because collapsing branches aggregates the CFR updates
+  // over equivalent runouts and so follows a different trajectory to the same equilibrium.
+  // The gap WIDENS with convergence rather than closing (0.006 at 60 iterations, 0.015 at
+  // 300, 0.056 at 1200), which looks alarming but is benign: at 1200 iterations both reach
+  // the same EVs (55.124 / 44.876) with exploitability 0.001 and 0.003. They are converging
+  // to different members of the equilibrium set, not one of them to a wrong answer.
+  //
+  // So this is not a free switch - a client diffing frequencies against Pio will see the
+  // difference, and it gets bigger the longer you solve. Worth `set_isomorphism 1 1` for a
+  // turn-rooted solve where only EV matters; not for one whose frequencies are compared.
   bool iso_flop = true, iso_turn = false;
   // Keep each player's hand list as the union of both ranges, like Pio, so hands only in
   // the opponent's range still get a slot (and therefore a counterfactual value) instead
@@ -202,6 +218,9 @@ class GameTree {
   bool compressed = false;
   ZVec<float> regrets;
   ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
+  // Predictive CFR (#71): the last instantaneous regret per slot, allocated on demand by
+  // set_predictive (never compressed, never saved — transient solver state). Empty when off.
+  ZVec<float> preds;
   ZVec<int16_t> regrets_q;
   ZVec<uint16_t> strat_q;
   std::vector<float> rscale, sscale;
@@ -253,7 +272,10 @@ class GameTree {
   bool build(const GameConfig& c, std::string& err, bool allocate = true);
   // Memory needed (bytes) for the current node set; valid after build(..., false).
   uint64_t memory_bytes() const { return memory_bytes_for(compressed); }
-  uint64_t memory_bytes_for(bool compress) const;
+  // with_preds: count the predictive array that set_predictive will allocate after the
+  // build. Already-allocated preds are counted regardless, so memory_bytes() is right
+  // once the feature is on; the flag is for the check that runs *before* allocation.
+  uint64_t memory_bytes_for(bool compress, bool with_preds = false) const;
   void allocate_storage();  // uses `compressed`
 
   // Payoff for player p at a terminal given outcome (1 win, 0 tie, -1 lose). With subtree=true the

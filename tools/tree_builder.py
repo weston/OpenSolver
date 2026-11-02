@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 OOP, IP = 0, 1
 STREETS = ("Flop", "Turn", "River")
@@ -42,12 +42,39 @@ raise to  facing   + round(RaiseSize% * pot_if_called)
 
 Rounding is half-up to whole chips.
 
+Size lists are comma-separated and mix free-form entries with plain percentages:
+
+  <number>    a percentage of the pot (bets) or of pot_if_called (raises), as above.
+  Ne          geometric over N streets, counting this one: the pot fraction f that, bet
+              and called on each of the N streets, puts the remaining effective stack S
+              in exactly, with P the current pot:
+
+                  f = ((1 + 2*S/P)^(1/N) - 1) / 2
+
+              For a raise, P is pot_if_called and S the stack left after calling, and the
+              raise total is facing + round(f * P) - i.e. the raise increment is a
+              geometric bet on the pot you would make by calling; a `1e` raise is all-in.
+              `e` alone means geometric over the streets remaining (3 on the flop, 2 on
+              the turn; on the river it is the shove).
+  Nx          raise to N times the bet faced: total = round(N * facing). Only valid in
+              RaiseSize lists.
+  a           the all-in.
+
+  e.g. `33, 75, 2e, 3x, a`.
+
 All-in rules:
   * AllinThreshold%: a bet or raise whose total reaches AllinThreshold% of the effective
     stack is replaced by the all-in. (At 67% with a 230 stack, anything >= 154 becomes 230.)
   * <Street>Config[IP].AddAllin: adds the all-in as an extra size alongside the configured
     ones, but only if AddAllinOnlyIfLessThanThisTimesThePot% of pot_if_called still exceeds
     the all-in - i.e. only once the pot is big enough relative to the remaining stack.
+
+Raise cap:
+  * <Street>Config[IP].RaiseCap#N caps the street at N bets and raises in total (counting
+    both players); when the two players' caps differ the smaller applies. At the cap only
+    check/call/fold remain - except that a configured all-in (an `a` entry, or AddAllin
+    whose pot gate passes) is still offered. An all-in produced by AllinThreshold is an
+    ordinary computed size and does not bypass the cap.
 """
 
 
@@ -59,12 +86,74 @@ def _pct(pct: Decimal, pot: int) -> int:
     return _round(pct * Decimal(pot) / Decimal(100))
 
 
+@dataclass(frozen=True)
+class SizeSpec:
+    """One entry of a size list. kind:
+    pct    value% of the pot (bet) or of pot_if_called (raise)
+    geo    geometric over `value` streets (None: the streets remaining), counting this one
+    mult   raise to `value` times the bet faced (raise lists only)
+    allin  the all-in
+    """
+    kind: str
+    value: Decimal | None = None
+
+
+def parse_size_list(value: str) -> list[SizeSpec]:
+    """Parse a comma-separated size list like `33, 75, 2e, e, 3x, a`.
+
+    Raises ValueError on malformed entries.
+    """
+    out: list[SizeSpec] = []
+    for part in value.replace(" ", "").split(","):
+        if not part:
+            continue
+        token = part.lower()
+        if token == "a":
+            out.append(SizeSpec("allin"))
+        elif token.endswith("e"):
+            n = token[:-1]
+            try:
+                n = int(n) if n else None
+            except ValueError:
+                raise ValueError(f"bad geometric size {part!r} (want Ne, N >= 1)")
+            if n is not None and n < 1:
+                raise ValueError(f"bad geometric size {part!r} (want N >= 1)")
+            out.append(SizeSpec("geo", None if n is None else Decimal(n)))
+        elif token.endswith("x"):
+            try:
+                mult = Decimal(token[:-1])
+            except InvalidOperation:
+                raise ValueError(f"bad raise multiple {part!r} (want Nx)")
+            if mult <= 0:
+                raise ValueError(f"bad raise multiple {part!r} (want N > 0)")
+            out.append(SizeSpec("mult", mult))
+        else:
+            try:
+                pct = Decimal(token)
+            except InvalidOperation:
+                raise ValueError(f"bad size {part!r} (want a percentage, Ne, Nx or a)")
+            if pct < 0:
+                raise ValueError(f"bad size {part!r} (want a percentage, Ne, Nx or a)")
+            out.append(SizeSpec("pct", pct))
+    return out
+
+
+def _geo_fraction(stack: int, pot: int, streets: int) -> Decimal | None:
+    """f = ((1 + 2*S/P)^(1/streets) - 1) / 2; None when the pot is empty."""
+    if pot <= 0:
+        return None
+    base = Decimal(1) + 2 * Decimal(stack) / Decimal(pot)
+    return (base ** (Decimal(1) / streets) - 1) / 2
+
+
 @dataclass
 class StreetConfig:
-    bet: list[Decimal] = field(default_factory=list)
-    donk: list[Decimal] = field(default_factory=list)
-    raise_: list[Decimal] = field(default_factory=list)
+    bet: list[SizeSpec] = field(default_factory=list)
+    donk: list[SizeSpec] = field(default_factory=list)
+    raise_: list[SizeSpec] = field(default_factory=list)
     add_allin: bool = False
+    # Max bets+raises on this street (counting both players); None = uncapped.
+    raise_cap: int | None = None
 
 
 @dataclass
@@ -84,8 +173,13 @@ class Config:
         return self.streets[street][player]
 
 
-def _sizes(value: str) -> list[Decimal]:
-    return [Decimal(part) for part in value.replace(" ", "").split(",") if part]
+def _sizes(value: str, field_name: str) -> list[SizeSpec]:
+    specs = parse_size_list(value)
+    if field_name in ("BetSize", "DonkBetSize"):
+        for spec in specs:
+            if spec.kind == "mult":
+                raise ValueError(f"{field_name} does not take raise multiples (Nx)")
+    return specs
 
 
 def parse_config(text: str) -> Config:
@@ -132,13 +226,20 @@ def parse_config(text: str) -> Config:
                 continue
             sc = cfg.streets[STREETS.index(street_name)][player]
             if field_name == "BetSize":
-                sc.bet = _sizes(value)
+                sc.bet = _sizes(value, field_name)
             elif field_name == "DonkBetSize":
-                sc.donk = _sizes(value)
+                sc.donk = _sizes(value, field_name)
             elif field_name == "RaiseSize":
-                sc.raise_ = _sizes(value)
+                sc.raise_ = _sizes(value, field_name)
             elif field_name == "AddAllin":
                 sc.add_allin = value.strip().lower() == "true"
+            elif field_name == "RaiseCap":
+                try:
+                    sc.raise_cap = int(value)
+                    if sc.raise_cap < 0:
+                        raise ValueError
+                except ValueError:
+                    raise ValueError(f"bad RaiseCap {value!r} (want a non-negative integer)")
     return cfg
 
 
@@ -150,6 +251,38 @@ class Node:
     acted: bool          # has the player to act already acted on this street?
     # the player who made the last aggressive action on the previous street, or None
     prev_aggressor: int | None
+    # bets + raises so far on this street (both players), for RaiseCap
+    aggr: int = 0
+
+
+def _street_cap(cfg: Config, street: int) -> int | None:
+    """The street's raise cap: the smaller of the two players' RaiseCap values, if any."""
+    caps = [sc.raise_cap for sc in cfg.streets[street] if sc.raise_cap is not None]
+    return min(caps) if caps else None
+
+
+def _size_total(spec: SizeSpec, *, geo_streets: int, mine: int, facing: int,
+                pot: int, pot_if_called: int, allin: int) -> int | None:
+    """The not-yet-clamped total a size entry asks for (None: not computable here)."""
+    if spec.kind == "pct":
+        base = pot_if_called if facing > mine else pot
+        return (facing if facing > mine else mine) + _pct(spec.value, base)
+    if spec.kind == "geo":
+        n = int(spec.value) if spec.value is not None else geo_streets
+        if facing > mine:
+            # The raise increment is a geometric bet on the pot you make by calling;
+            # S is what remains after calling.
+            f = _geo_fraction(allin - facing, pot_if_called, n)
+            return None if f is None else facing + _round(f * pot_if_called)
+        f = _geo_fraction(allin - max(mine, facing), pot, n)
+        return None if f is None else mine + _round(f * pot)
+    if spec.kind == "mult":
+        if facing <= mine:
+            return None  # rejected at parse time; defensive
+        return _round(spec.value * facing)
+    if spec.kind == "allin":
+        return allin
+    raise ValueError(f"unknown size kind {spec.kind!r}")
 
 
 def _aggressive_totals(cfg: Config, node: Node) -> list[int]:
@@ -162,14 +295,24 @@ def _aggressive_totals(cfg: Config, node: Node) -> list[int]:
     sc = cfg.street(node.street, me)
     allin = cfg.stack
 
-    totals: list[int] = []
     if facing > mine:
-        for pct in sc.raise_:
-            totals.append(facing + _pct(pct, pot_if_called))
+        specs = sc.raise_
     else:
         donk = node.prev_aggressor is not None and node.prev_aggressor != me
-        for pct in (sc.donk if donk and sc.donk else sc.bet):
-            totals.append(mine + _pct(pct, pot))
+        specs = sc.donk if donk and sc.donk else sc.bet
+
+    cap = _street_cap(cfg, node.street)
+    capped = cap is not None and node.aggr >= cap
+
+    totals: list[int] = []
+    for spec in specs:
+        if capped and spec.kind != "allin":
+            continue  # at the cap only a configured all-in survives (plus call/fold)
+        total = _size_total(spec, geo_streets=len(STREETS) - node.street, mine=mine,
+                            facing=facing, pot=pot, pot_if_called=pot_if_called,
+                            allin=allin)
+        if total is not None:
+            totals.append(total)
 
     # A bet/raise that gets close enough to the stack is replaced by the all-in.
     threshold = cfg.allin_threshold * Decimal(allin) / Decimal(100)
@@ -209,17 +352,17 @@ def _children(cfg: Config, node: Node) -> list[tuple[int, Node | None, bool]]:
                                       opp if facing > mine else None), False))
     else:
         out.append((matched, Node(node.street, (inv[0], inv[1]), opp, True,
-                                  node.prev_aggressor), False))
+                                  node.prev_aggressor, node.aggr), False))
 
     for total in _aggressive_totals(cfg, node):
         inv = [node.inv[0], node.inv[1]]
         inv[me] = total
         out.append((total, Node(node.street, (inv[0], inv[1]), opp, True,
-                                node.prev_aggressor), True))
+                                node.prev_aggressor, node.aggr + 1), True))
     return out
 
 
-def build_lines(cfg: Config) -> list[list[int]]:
+def build_lines(cfg: Config, start: Node | None = None) -> list[list[int]]:
     """Every maximal line of the tree described by `cfg`.
 
     A line only has to reach the deepest bet of its branch: the solver fills in check, call
@@ -227,6 +370,12 @@ def build_lines(cfg: Config) -> list[list[int]]:
     candidate, and the ones that are prefixes of a longer candidate get dropped. (With an
     all-in threshold in play the deepest action of a branch is always the all-in, but a
     config without one can bottom out on an ordinary raise, and that line is still needed.)
+
+    `start` overrides the root node, for trees whose root sits mid-hand (the viewer's
+    subgame re-solve, viewer/resolve.py): it carries the street index, the chips each
+    player has already invested (so a root that starts facing a bet has unequal
+    investments), the player to act, and whether that player is closing the action
+    (`acted`). The default is the usual fresh flop root.
     """
     candidates: list[tuple[int, ...]] = []
 
@@ -239,7 +388,7 @@ def build_lines(cfg: Config) -> list[list[int]]:
                 walk(nxt, history)
             history.pop()
 
-    walk(Node(0, (0, 0), OOP, False, None), [])
+    walk(start if start is not None else Node(0, (0, 0), OOP, False, None), [])
 
     # Drop any candidate that is a prefix of another: the longer line implies it.
     seen = set(candidates)

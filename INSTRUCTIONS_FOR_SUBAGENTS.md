@@ -137,6 +137,16 @@ gh pr view <pr> -R weston/WSolver --comments
 
 Address each comment by pushing more commits to the same branch and replying (signed) to the comment.
 Review the final diff and test results before squash-merging with `gh pr merge --squash`.
+
+CI rules (owner decisions, #97):
+- PR CI runs only the cheap Linux jobs (g++, clang++, mingw-w64 cross-build). macOS and native
+  Windows run after merge, on `main`. Run `make test` on your own machine before merging (macOS
+  agents cover the platform PR CI no longer does) and paste the output in the PR.
+- **A red check is never a reason to merge.** If CI cannot run (for example the Actions billing block
+  in #97: "The job was not started because recent account payments have failed..."), a PR may
+  merge only after someone **other than its author** has run `make test` on it merged with current
+  `main` and posted the result on the PR. Otherwise wait.
+- If a post-merge `main` run fails on macOS or Windows, fixing it comes before any other work.
 You may continue to the next issue while a PR awaits checks or review. Each time you start a new
 issue, first check your open PRs for review comments
 (`gh pr list -R weston/WSolver --state open` and look for your signature) and handle those first.

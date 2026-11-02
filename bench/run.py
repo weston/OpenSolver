@@ -80,33 +80,40 @@ def peak_rss_sampler(proc: subprocess.Popen, out: dict, interval: float = 0.05) 
 
 
 def build_script(name: str, threads: int, target: float, info_freq: int,
-                 max_seconds: int, extra: tuple[str, ...] = ()) -> str:
+                 max_seconds: int, extra: tuple[str, ...] = (),
+                 pre: tuple[str, ...] = ()) -> str:
     """Tree definition plus the commands that drive one measured solve."""
     if name == "fixture25bb":
         with open(FIXTURE_25BB) as fh:
             # The fixture ends in build_tree and carries its own ranges/board/lines.
             setup = [l.rstrip() for l in fh if l.strip() and not l.startswith("#")]
-        # set_threads has to precede build_tree, which the fixture already contains.
+        # set_threads and any --pre-build settings have to precede build_tree, which
+        # the fixture already contains.
         idx = next(i for i, l in enumerate(setup) if l.startswith("build_tree"))
-        setup.insert(idx, f"set_threads {threads}")
-        # Keep peak memory in reach of a normal machine.
-        setup.insert(idx, "small_strats on")
+        ins = []
+        # Keep peak memory in reach of a normal machine, unless --pre-build overrides.
+        if not any(l.startswith("small_strats") for l in pre):
+            ins.append("small_strats on")
+        ins.append(f"set_threads {threads}")
+        ins.extend(pre)
+        setup[idx:idx] = ins
         body = setup
     else:
         with open(os.path.join(TREES, f"{name}.upi")) as fh:
             setup = [l.rstrip() for l in fh if l.strip() and not l.startswith("#")]
         # A file may carry its own build command when commands must follow it (e.g.
         # preflop_full attaches schematic trees after build_preflop_tree). set_threads
-        # still has to come first, so it is inserted ahead of that line.
+        # and --pre-build settings still have to come first, so they are inserted
+        # ahead of that line.
         carried = next((i for i, l in enumerate(setup)
                         if l.startswith(("build_preflop_tree", "build_tree"))), None)
         if carried is not None:
-            setup.insert(carried, f"set_threads {threads}")
+            setup[carried:carried] = [f"set_threads {threads}"] + list(pre)
             body = setup
         else:
             preflop = any(l.startswith("add_preflop_line") for l in setup)
-            body = setup + [f"set_threads {threads}",
-                            "build_preflop_tree" if preflop else "build_tree"]
+            body = (setup + [f"set_threads {threads}"] + list(pre) +
+                    ["build_preflop_tree" if preflop else "build_tree"])
 
     # extra commands land after the build and before the solve, which is where settings
     # like set_dcfr have to be set.
@@ -134,8 +141,9 @@ def parse_progress(out: str) -> list[tuple[float, float]]:
 
 
 def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
-            info_freq: int, max_seconds: int, extra: tuple[str, ...] = ()) -> dict:
-    script = build_script(name, threads, min(targets), info_freq, max_seconds, extra)
+            info_freq: int, max_seconds: int, extra: tuple[str, ...] = (),
+            pre: tuple[str, ...] = ()) -> dict:
+    script = build_script(name, threads, min(targets), info_freq, max_seconds, extra, pre)
     proc = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, cwd=ROOT)
     rss: dict = {}
@@ -169,6 +177,7 @@ def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
         "peak_rss_mb": round(rss.get("peak_rss", 0) / 2**20, 1),
         "reached": reached,
         "extra": list(extra),
+        "pre": list(pre),
         "error": next((l for l in out.splitlines() if l.startswith("ERROR")), None),
     }
 
@@ -235,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--extra", default="",
                     help="semicolon-separated UPI commands inserted after the build and "
                          "before the solve, e.g. --extra 'set_dcfr 1.5 0 3'")
+    ap.add_argument("--pre-build", default="",
+                    help="semicolon-separated UPI commands inserted before the build "
+                         "command, e.g. --pre-build 'small_strats on' (overrides the "
+                         "25bb fixture's built-in small_strats on)")
     args = ap.parse_args(argv)
 
     if not os.path.exists(args.exe):
@@ -258,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                                   capture_output=True, text=True).stdout.strip().splitlines()[-1],
         "info_freq": args.info_freq,
         "extra": args.extra,
+        "pre_build": args.pre_build,
     }
 
     rows = []
@@ -266,7 +280,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {name} @ {threads} thread{'s' if threads > 1 else ''} ...",
                   end="", flush=True)
             r = run_one(args.exe, name, threads, targets, args.info_freq, args.max_seconds,
-                        tuple(c.strip() for c in args.extra.split(";") if c.strip()))
+                        tuple(c.strip() for c in args.extra.split(";") if c.strip()),
+                        tuple(c.strip() for c in args.pre_build.split(";") if c.strip()))
             rows.append(r)
             if r["error"]:
                 print(f" {r['error']}")

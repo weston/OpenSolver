@@ -1,8 +1,13 @@
 #include "solver.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
+
+#if PIO_SHOWDOWN_AVX512
+#include <immintrin.h>
+#endif
 
 #include "parallel.hpp"
 #include "pfh2h.hpp"
@@ -60,7 +65,161 @@ void Solver::fold_value(const GNode& n, int p, const float* ro, float* out) cons
   for (int h = 0; h < Hp; ++h) out[h] *= pay;
 }
 
+// One 8-byte word per 6-byte SdEntry: with the entry fields at fixed little-endian offsets this
+// replaces the ldrh + ldrb + ldrb field loads with a single load in the hot loops below (-1.2%
+// wall on flop_srp_2, -2.7% flop_3bet, -3.5% deep, bit-identical results; #57). Callers must pass
+// only entries before the array's last one, so the 2-byte overread stays inside the vector.
+static_assert(std::endian::native == std::endian::little, "SdEntry word loading assumes little-endian");
+static inline uint64_t sd_word(const SdEntry* e) {
+  uint64_t w;
+  std::memcpy(&w, e, 8);
+  return w;
+}
+static inline int sd_w_idx(uint64_t w) { return static_cast<int>(w & 0xffff); }
+static inline int sd_w_c1(uint64_t w) { return static_cast<int>((w >> 16) & 0xff); }
+static inline int sd_w_c2(uint64_t w) { return static_cast<int>((w >> 24) & 0xff); }
+static inline int sd_w_same(uint64_t w) { return static_cast<int16_t>((w >> 32) & 0xffff); }
+
+#if PIO_SHOWDOWN_AVX512
+// AVX-512 form of the showdown kernel (#89): same values as showdown_board_scalar, bit for bit
+// (tests/test_solver.cpp compares the two on every board of several trees). It needs AVX-512F, BW
+// and VBMI (Ice Lake / Zen 4 and later); without VBMI the entry fields would have to be gathered,
+// and gathers make it slower than scalar (measurements in #89).
+//
+// Why it pays at all when the loops are this short:
+//  - p's strength groups average ~6.5 hands, so one masked 16-lane step covers a whole group with no
+//    scalar tail, and the group's card indices are reused between the "lt" and "le" queries;
+//  - the 6-byte entries are unpacked with two contiguous masked loads and one vpermt2b, not gathers;
+//  - cs[] (52 floats) lives in 4 zmm registers: lookups are vpermt2ps, and the opponent pass adds
+//    into the registers under a lane mask (one add per touched lane, in the same order as scalar);
+//  - the final pass is computed 16 hands at a time; only its `out[idx] +=` stays scalar, because a
+//    gather + scatter there costs more than it saves.
+// The opponent pass itself stays sequential: cum and cs[] are running sums, and reassociating them
+// would change the results.
+static inline __mmask16 sd_tail_mask(int n) { return static_cast<__mmask16>(n >= 16 ? 0xffff : (1u << n) - 1); }
+
+// Dword k = 4 bytes of entry k starting at byte `boff` (0: idx | c1 | c2, 4: same | ...), for the
+// first popcount(m) entries at e (m is a prefix mask, <= 16 entries = 96 bytes). Bytes past them are
+// not read (masked loads); lanes outside m hold garbage and every caller masks them.
+static inline __m512i sd_words(const SdEntry* e, __mmask16 m, int boff) {
+  struct Tbl {
+    alignas(64) uint8_t b[2][64];
+  };
+  static const Tbl tbl = [] {
+    Tbl t{};
+    for (int o = 0; o < 2; ++o)
+      for (int j = 0; j < 64; ++j) t.b[o][j] = static_cast<uint8_t>(6 * (j / 4) + j % 4 + 4 * o);
+    return t;
+  }();
+  static_assert(sizeof(SdEntry) == 6);
+  const int nb = 6 * std::popcount(static_cast<unsigned>(m));
+  const __mmask64 m0 = nb >= 64 ? ~0ull : (1ull << nb) - 1;
+  const __mmask64 m1 = nb > 64 ? (1ull << (nb - 64)) - 1 : 0;
+  const char* p = reinterpret_cast<const char*>(e);
+  const __m512i lo = _mm512_maskz_loadu_epi8(m0, p), hi = _mm512_maskz_loadu_epi8(m1, p + 64);
+  return _mm512_permutex2var_epi8(lo, _mm512_load_si512(tbl.b[boff ? 1 : 0]), hi);
+}
+
+// cs[0..63] in 4 registers (cards 52..63 stay 0).
+struct CsRegs {
+  __m512 r[4] = {_mm512_setzero_ps(), _mm512_setzero_ps(), _mm512_setzero_ps(), _mm512_setzero_ps()};
+  __m512 operator()(__m512i c) const {
+    const __m512 lo = _mm512_permutex2var_ps(r[0], c, r[1]);
+    const __m512 hi = _mm512_permutex2var_ps(r[2], c, r[3]);
+    return _mm512_mask_blend_ps(_mm512_test_epi32_mask(c, _mm512_set1_epi32(32)), lo, hi);
+  }
+  // cs[c1] += x; cs[c2] += x (c1 != c2).
+  void add2(int c1, int c2, float x) {
+    const uint64_t m = (1ull << c1) | (1ull << c2);
+    const __m512 vx = _mm512_set1_ps(x);
+    for (int k = 0; k < 4; ++k) r[k] = _mm512_mask_add_ps(r[k], static_cast<__mmask16>(m >> (16 * k)), r[k], vx);
+  }
+};
+
+void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) {
+  const int o = 1 - p;
+  const SdEntry* pe = sb.ent[p].data();
+  const SdEntry* oe = sb.ent[o].data();
+  const int np = static_cast<int>(sb.ent[p].size());
+  const auto* gr = sb.groups[p].data();
+  const int ng = static_cast<int>(sb.groups[p].size());
+
+  ArenaScope sc;
+  float* ltv = sc.a.alloc(static_cast<size_t>(np) * 2);
+  float* lev = ltv + np;
+  CsRegs cs;
+  float cum = 0;
+  const __m512i b8 = _mm512_set1_epi32(0xff);
+  int i0 = 0, j0 = 0;
+  for (int g = 0; g < ng; ++g) {
+    const int i1 = gr[g].first, j1 = gr[g].second;
+    __m512i c1 = _mm512_setzero_si512(), c2 = c1;
+    if (i0 < i1) {
+      const __m512 vc = _mm512_set1_ps(cum);
+      for (int i = i0; i < i1; i += 16) {
+        const __mmask16 m = sd_tail_mask(i1 - i);
+        const __m512i w = sd_words(pe + i, m, 0);
+        c1 = _mm512_and_si512(_mm512_srli_epi32(w, 16), b8);
+        c2 = _mm512_srli_epi32(w, 24);
+        _mm512_mask_storeu_ps(ltv + i, m, _mm512_sub_ps(_mm512_sub_ps(vc, cs(c1)), cs(c2)));
+      }
+    }
+    for (int j = j0; j < j1; ++j) {
+      const SdEntry q = oe[j];
+      const float r = ro[q.idx];
+      cum += r;
+      cs.add2(q.c1, q.c2, r);
+    }
+    if (i0 < i1) {
+      const __m512 vc = _mm512_set1_ps(cum);
+      if (i1 - i0 <= 16) {  // the common case: c1/c2 still hold this group's cards
+        _mm512_mask_storeu_ps(lev + i0, sd_tail_mask(i1 - i0), _mm512_sub_ps(_mm512_sub_ps(vc, cs(c1)), cs(c2)));
+      } else {
+        for (int i = i0; i < i1; i += 16) {
+          const __mmask16 m = sd_tail_mask(i1 - i);
+          const __m512i w = sd_words(pe + i, m, 0);
+          c1 = _mm512_and_si512(_mm512_srli_epi32(w, 16), b8);
+          c2 = _mm512_srli_epi32(w, 24);
+          _mm512_mask_storeu_ps(lev + i, m, _mm512_sub_ps(_mm512_sub_ps(vc, cs(c1)), cs(c2)));
+        }
+      }
+    }
+    i0 = i1;
+    j0 = j1;
+  }
+  if (cum == 0.0f) return;
+  // The scalar line `out += a*ltv + b*le + L*compat` is contracted by the compiler (GCC's default
+  // -ffp-contract=fast for C++) to fma(L, compat, fma(a, ltv, b*le)); this is the same sequence.
+  const __m512 vc = _mm512_set1_ps(cum), va = _mm512_set1_ps(W - T), vb = _mm512_set1_ps(T - L),
+               vl = _mm512_set1_ps(L);
+  for (int i = 0; i < np; i += 16) {
+    const __mmask16 m = sd_tail_mask(np - i);
+    const __m512i w = sd_words(pe + i, m, 0);
+    const __m512i k1 = _mm512_and_si512(_mm512_srli_epi32(w, 16), b8);
+    const __m512i k2 = _mm512_srli_epi32(w, 24);
+    const __m512i same = _mm512_srai_epi32(_mm512_slli_epi32(sd_words(pe + i, m, 4), 16), 16);  // int16
+    const __m512 sr =
+        _mm512_mask_i32gather_ps(_mm512_setzero_ps(), _mm512_mask_cmpge_epi32_mask(m, same, _mm512_setzero_si512()),
+                                 same, ro, 4);
+    const __m512 le = _mm512_add_ps(_mm512_maskz_loadu_ps(m, lev + i), sr);
+    const __m512 compat = _mm512_add_ps(_mm512_sub_ps(_mm512_sub_ps(vc, cs(k1)), cs(k2)), sr);
+    const __m512 v =
+        _mm512_fmadd_ps(vl, compat, _mm512_fmadd_ps(va, _mm512_maskz_loadu_ps(m, ltv + i), _mm512_mul_ps(vb, le)));
+    _mm512_mask_storeu_ps(ltv + i, m, v);  // ltv[i..i+15] is consumed: reuse it for the values
+  }
+  for (int i = 0; i < np; ++i) out[pe[i].idx] += ltv[i];
+}
+#endif
+
 void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) const {
+#if PIO_SHOWDOWN_AVX512
+  showdown_board_avx512(sb, W, L, T, p, ro, out);
+#else
+  showdown_board_scalar(sb, W, L, T, p, ro, out);
+#endif
+}
+
+void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) {
   const int o = 1 - p;
   const SdEntry* pe = sb.ent[p].data();
   const SdEntry* oe = sb.ent[o].data();
@@ -70,6 +229,7 @@ void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, 
 
   // One pass in strength order (see ShowdownBoard::groups): cumulative opponent mass and per-card mass
   // give, for each of p's hands, the mass of strictly weaker (lt) and weaker-or-equal (le) opponents.
+  // The word-load loops stop one entry short and do a scalar tail so the 8-byte loads never overrun.
   ArenaScope sc;
   float* ltv = sc.a.alloc(static_cast<size_t>(np) * 2);
   float* lev = ltv + np;
@@ -78,15 +238,36 @@ void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, 
   int i0 = 0, j0 = 0;
   for (int g = 0; g < ng; ++g) {
     const int i1 = gr[g].first, j1 = gr[g].second;
-    for (int i = i0; i < i1; ++i) ltv[i] = cum - cs[pe[i].c1] - cs[pe[i].c2];
-    for (int j = j0; j < j1; ++j) {
-      const SdEntry q = oe[j];
+    for (int i = i0; i + 1 < i1; ++i) {
+      const uint64_t w = sd_word(pe + i);
+      ltv[i] = cum - cs[sd_w_c1(w)] - cs[sd_w_c2(w)];
+    }
+    if (i0 < i1) {
+      const SdEntry q = pe[i1 - 1];
+      ltv[i1 - 1] = cum - cs[q.c1] - cs[q.c2];
+    }
+    for (int j = j0; j + 1 < j1; ++j) {
+      const uint64_t w = sd_word(oe + j);
+      const float r = ro[sd_w_idx(w)];
+      cum += r;
+      cs[sd_w_c1(w)] += r;
+      cs[sd_w_c2(w)] += r;
+    }
+    if (j0 < j1) {
+      const SdEntry q = oe[j1 - 1];
       const float r = ro[q.idx];
       cum += r;
       cs[q.c1] += r;
       cs[q.c2] += r;
     }
-    for (int i = i0; i < i1; ++i) lev[i] = cum - cs[pe[i].c1] - cs[pe[i].c2];
+    for (int i = i0; i + 1 < i1; ++i) {
+      const uint64_t w = sd_word(pe + i);
+      lev[i] = cum - cs[sd_w_c1(w)] - cs[sd_w_c2(w)];
+    }
+    if (i0 < i1) {
+      const SdEntry q = pe[i1 - 1];
+      lev[i1 - 1] = cum - cs[q.c1] - cs[q.c2];
+    }
     i0 = i1;
     j0 = j1;
   }
@@ -94,12 +275,19 @@ void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, 
   // value = W*lt + L*(compat - le) + T*(le - lt) = (W - T)*lt + (T - L)*le + L*compat; the identical combo
   // (equal strength, inside "le") is subtracted twice by inclusion-exclusion and added back once.
   const float a = W - T, b = T - L;
-  for (int i = 0; i < np; ++i) {
-    const SdEntry q = pe[i];
-    const float sr = q.same >= 0 ? ro[q.same] : 0.0f;
+  for (int i = 0; i + 1 < np; ++i) {
+    const uint64_t w = sd_word(pe + i);
+    const float sr = sd_w_same(w) >= 0 ? ro[sd_w_same(w)] : 0.0f;
     const float le = lev[i] + sr;
+    const float compat = cum - cs[sd_w_c1(w)] - cs[sd_w_c2(w)] + sr;
+    out[sd_w_idx(w)] += a * ltv[i] + b * le + L * compat;
+  }
+  if (np > 0) {
+    const SdEntry q = pe[np - 1];
+    const float sr = q.same >= 0 ? ro[q.same] : 0.0f;
+    const float le = lev[np - 1] + sr;
     const float compat = cum - cs[q.c1] - cs[q.c2] + sr;
-    out[q.idx] += a * ltv[i] + b * le + L * compat;
+    out[q.idx] += a * ltv[np - 1] + b * le + L * compat;
   }
 }
 
@@ -143,12 +331,12 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
       }
       out[h] = static_cast<float>(acc + compat * L);
     };
-    if (parallel && Hp >= 32) {
-      std::function<void(int)> fn = body;
-      pool().parallel_for(Hp, fn);
-    } else {
-      for (int h = 0; h < Hp; ++h) body(h);
-    }
+    // Always serial. The work here is Hp * Ho, bounded by NUM_COMBOS^2 (~1.76M FMAs), which
+    // is below the crossover where a parallel_for dispatch pays for itself: measured on a
+    // 20-core machine, parallelising this cost 42% on a preflop betting tree (2.99 s vs
+    // 1.73 s for 2000 iterations) and nothing on a full preflop tree with flop subsets
+    // (5.72 s vs 5.67 s). Outer parallelism over chance children is unaffected (#110).
+    for (int h = 0; h < Hp; ++h) body(h);
     return;
   }
   const int nb = static_cast<int>(ar.boards.size());
@@ -185,12 +373,18 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     return;
   }
   const float* R = g_.regrets_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+  // Predictive (PCFR+-style, #71): match on R + the last instantaneous regret as an
+  // optimistic guess of the next one. Preds are transient solver state (zero until the
+  // node's first update), so this reduces to plain regret matching at t=1.
+  const float* P = (predictive && !g_.preds.empty()) ? g_.preds.data() + n.storage : nullptr;
   float* sum = sc.a.alloc_zero(H);
   for (int a = 0; a < A; ++a) {
     const float* r = R + static_cast<size_t>(a) * H;
+    const float* pr = P ? P + static_cast<size_t>(a) * H : nullptr;
     float* o = out + static_cast<size_t>(a) * H;
     for (int h = 0; h < H; ++h) {
-      float v = r[h] > 0.0f ? r[h] : 0.0f;
+      float v = r[h] + (pr ? pr[h] : 0.0f);
+      v = v > 0.0f ? v : 0.0f;
       o[h] = v;
       sum[h] += v;
     }
@@ -358,9 +552,22 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
   else if (actor == o || M == Walk::Evaluate || (n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) average_strategy(ni, sigma);
 
   if (actor == p) {
+    // Regret-based pruning (#51): in the CFR walk, an action whose current strategy is zero for
+    // every one of p's hands contributes exactly nothing to this iteration's strategy, cfv
+    // aggregate or strategy-sum rows; the only work lost by skipping its subtree is re-measuring
+    // its instantaneous regret, which is Brown & Sandholm's bounded approximation (solver.hpp).
+    // Never prune nodes whose update semantics must not change: locked, combo-locked, incentivised
+    // (rake/ICM bonuses are added to the regret update) or eliminated.
+    uint8_t* pruned = nullptr;
+    if (M == Walk::CFR && prune_this_iter_ &&
+        !(n.flags & (GF_LOCKED | GF_COMBO_LOCKED | GF_INCENTIVES | GF_ELIMINATED))) {
+      pruned = reinterpret_cast<uint8_t*>(sc.a.alloc(static_cast<size_t>((A + 3) / 4)));
+      for (int a = 0; a < A; ++a) pruned[a] = all_zero(sigma + static_cast<size_t>(a) * Hp, Hp) ? 1 : 0;
+    }
     float* cfv = sc.a.alloc(static_cast<size_t>(A) * Hp);
     float* rp2 = sc.a.alloc(Hp);
     for (int a = 0; a < A; ++a) {
+      if (pruned && pruned[a]) continue;  // cfv[a] intentionally left undefined
       const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
       float* ca = cfv + static_cast<size_t>(a) * Hp;
       const GNode& child = g_.nodes[ci];
@@ -418,6 +625,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     }
     std::memset(out, 0, sizeof(float) * Hp);
     for (int a = 0; a < A; ++a) {
+      if (pruned && pruned[a]) continue;  // its sigma row is zero: identical to the full sum
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       const float* c = cfv + static_cast<size_t>(a) * Hp;
       for (int h = 0; h < Hp; ++h) out[h] += sa[h] * c[h];
@@ -425,7 +633,12 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     if (M != Walk::CFR) return;
     if (n.flags & GF_LOCKED) return;
     float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+    // Average accumulation is skipped until t > avg_delay (#71): S stays untouched (zero),
+    // so the average starts from the first post-delay iteration like a warm-started run.
     float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+    // Predictive CFR stores each round's instantaneous regret for the next round's
+    // matching input; keep the array fresh whenever it is allocated.
+    float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
     const float pm = pos_mult_, nm = neg_mult_, sm = strat_mult_;
     const float* inc = nullptr;
     float* mass = nullptr;
@@ -444,31 +657,59 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     }
     float mr = 0.0f, ms = 0.0f;
     const bool fast = !lockmask && !inc;
+    const bool accum = accumulate_;
     for (int a = 0; a < A; ++a) {
       float* r = R + static_cast<size_t>(a) * Hp;
       float* s = S + static_cast<size_t>(a) * Hp;
+      float* pr = P ? P + static_cast<size_t>(a) * Hp : nullptr;
       const float* c = cfv + static_cast<size_t>(a) * Hp;
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       const float ia = inc ? inc[a] : 0.0f;
+      if (pruned && pruned[a]) {
+        // RBP pruned: the regret row is NOT touched (not even discounted). Discounting a frozen
+        // row makes it forget its magnitude exponentially (at beta=0 it halves every iteration)
+        // while the true update would keep it near its (negative) fixed point, so discounted
+        // frozen rows churn back into play at every revisiting iteration. A completely frozen row
+        // instead stays below the unpruned value until genuinely re-measured, so pruning only ever
+        // DELAYS a re-entry, never invents one. The strategy sum gets its usual discount: with
+        // sigma == 0 on the whole row that is exactly the unpruned update. (Skip it during the
+        // avg_delay phase, exactly like the unpruned rows do.)
+        for (int h = 0; h < Hp; ++h) {
+          if (accum) {
+            float y = s[h] * sm;
+            s[h] = y;
+            ms = y > ms ? y : ms;
+          }
+          float ax = std::fabs(r[h]);
+          mr = ax > mr ? ax : mr;
+        }
+        continue;
+      }
       if (fast && !g_.compressed) {
         // float32 storage: plain update (vectorizes; no max tracking needed)
         for (int h = 0; h < Hp; ++h) {
           float x = r[h];
           x *= x > 0.0f ? pm : nm;
-          r[h] = x + c[h] - out[h];
-          s[h] = s[h] * sm + rp[h] * sa[h];
+          const float inst = c[h] - out[h];
+          r[h] = x + inst;
+          if (pr) pr[h] = inst;
+          if (accum) s[h] = s[h] * sm + rp[h] * sa[h];
         }
       } else if (fast) {
         for (int h = 0; h < Hp; ++h) {
           float x = r[h];
           x *= x > 0.0f ? pm : nm;
-          x = x + c[h] - out[h];
+          const float inst = c[h] - out[h];
+          x = x + inst;
           r[h] = x;
-          float y = s[h] * sm + rp[h] * sa[h];
-          s[h] = y;
+          if (pr) pr[h] = inst;
           float ax = std::fabs(x);
           mr = ax > mr ? ax : mr;
-          ms = y > ms ? y : ms;
+          if (accum) {
+            float y = s[h] * sm + rp[h] * sa[h];
+            s[h] = y;
+            ms = y > ms ? y : ms;
+          }
         }
       } else {
         for (int h = 0; h < Hp; ++h) {
@@ -476,13 +717,15 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
           float x = r[h];
           x *= x > 0.0f ? pm : nm;
           float bonus = inc ? ia * mass[h] : 0.0f;
-          r[h] = x + c[h] + bonus - out[h];
-          s[h] = s[h] * sm + rp[h] * sa[h];
+          const float inst = c[h] + bonus - out[h];
+          r[h] = x + inst;
+          if (pr) pr[h] = inst;
+          if (accum) s[h] = s[h] * sm + rp[h] * sa[h];
         }
       }
     }
     g_.regrets_commit(n, R, fast ? mr : -1.0f);
-    g_.strat_commit(n, S, fast ? ms : -1.0f);
+    if (accum) g_.strat_commit(n, S, fast ? ms : -1.0f);
     return;
   }
 
@@ -579,25 +822,31 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
   if (!(n.flags & GF_LOCKED)) {
     float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
     float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+    // An unreached node had zero counterfactual values this round, so its instantaneous
+    // regret is zero: the prediction must not reuse a stale one from an earlier round.
+    float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
     const uint8_t* lockmask = nullptr;
     if (n.flags & GF_COMBO_LOCKED) {
       auto it = g_.combo_lock.find(ni);
       if (it != g_.combo_lock.end()) lockmask = it->second.data();
     }
     const float pm = pos_mult_, nm = neg_mult_, sm = strat_mult_;
+    const bool accum = accumulate_;
     for (int a = 0; a < A; ++a) {
       float* r = R + static_cast<size_t>(a) * Hp;
       float* s = S + static_cast<size_t>(a) * Hp;
+      float* pr = P ? P + static_cast<size_t>(a) * Hp : nullptr;
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       for (int h = 0; h < Hp; ++h) {
         if (lockmask && lockmask[h]) continue;
         float x = r[h];
         r[h] = x * (x > 0.0f ? pm : nm);
-        s[h] = s[h] * sm + rp[h] * sa[h];
+        if (pr) pr[h] = 0.0f;
+        if (accum) s[h] = s[h] * sm + rp[h] * sa[h];
       }
     }
     g_.regrets_commit(n, R);
-    g_.strat_commit(n, S);
+    if (accum) g_.strat_commit(n, S);
   }
   float* rp2 = sc.a.alloc(Hp);
   for (int a = 0; a < A; ++a) {
@@ -699,6 +948,11 @@ void Solver::iterate(int t) {
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
+  accumulate_ = t > avg_delay;  // set_avg_delay: the first t <= avg_delay only move regrets
+  // Every prune_period-th iteration is measured in full (the RBP revisiting schedule), and
+  // pruning activates only after two full periods (see Solver::pruning): pruning from t=1
+  // destroys convergence (flop_3bet to 0.2% pot: 50 -> 230 iterations at period 32).
+  prune_this_iter_ = pruning && t > 2 * prune_period && !(prune_period > 1 && t % prune_period == 0);
   for (int k = 0; k < 2; ++k) {
     int p = k == 0 ? first_player : 1 - first_player;
     ArenaScope sc;
@@ -714,6 +968,8 @@ void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
+  accumulate_ = t > avg_delay;
+  prune_this_iter_ = pruning && t > 2 * prune_period && !(prune_period > 1 && t % prune_period == 0);
   const float* r[2] = {r0, r1};
   for (int k = 0; k < 2; ++k) {
     int p = k == 0 ? first_player : 1 - first_player;

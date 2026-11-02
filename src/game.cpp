@@ -427,8 +427,9 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
       sp.start_inv[0] = sch->pot[0];
       sp.start_inv[1] = sch->pot[1];
       sp.dead = sch->pot[2];
-      // The schematic's pot stands for the preflop chips; subtract this player's preflop investment
-      // (relative to its schematic share) so preflop decisions see whole-hand payoffs.
+      // The schematic's pot stands for the preflop chips. Note `sp.offset` is deliberately
+      // left at zero: the whole-hand vs schematic-relative split is carried by the `subtree`
+      // flag in terminal_payoff, not by an offset (see #107).
       // Like Pio, the schematic's set_pot is taken literally: its per-player chips are investments that
       // payoffs subtract, its dead money is free money. (For whole-hand chips, give each player's
       // preflop investment in set_pot, e.g. `set_pot 100 100 0` after a 3-bet to 100.)
@@ -449,8 +450,11 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   return true;
 }
 
-uint64_t GameTree::memory_bytes_for(bool compress) const {
+uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
   uint64_t b = compress ? storage_floats * 4 + num_decisions * 8 : storage_floats * sizeof(float) * 2;
+  // Predictive CFR's `preds` is never compressed and is allocated after the build, so the
+  // pre-allocation check has to be told about it (#98).
+  if (with_preds || !preds.empty()) b += storage_floats * sizeof(float);
   b += nodes.size() * sizeof(GNode);
   b += chances.size() * (sizeof(ChanceInfo) + 64);
   for (auto& s : showdowns)
@@ -484,6 +488,7 @@ void GameTree::clear_storage() {
   lazy.reset();  // everything is zero now: nothing left to read from a save file
   std::fill(regrets.begin(), regrets.end(), 0.0f);
   std::fill(strat.begin(), strat.end(), 0.0f);
+  std::fill(preds.begin(), preds.end(), 0.0f);
   std::fill(regrets_q.begin(), regrets_q.end(), int16_t(0));
   std::fill(strat_q.begin(), strat_q.end(), uint16_t(0));
   std::fill(rscale.begin(), rscale.end(), 0.0f);

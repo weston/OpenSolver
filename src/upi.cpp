@@ -379,11 +379,11 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   if (!t->build(c, err, false)) throw CmdError{err};
   // Old tree memory is released before allocating the new one, so count it as available.
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
-  uint64_t full = t->memory_bytes_for(false), small = t->memory_bytes_for(true);
+  uint64_t full = t->memory_bytes_for(false, predictive_), small = t->memory_bytes_for(true, predictive_);
   if (small_strats_ == "on") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
   else t->compressed = c.preflop || full > avail * 9 / 10;  // auto: preflop trees always small (like Pio)
-  uint64_t need = t->memory_bytes();
+  uint64_t need = t->memory_bytes_for(t->compressed, predictive_);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board
   if (!mem_ignore && need > avail)
     throw CmdError{"not enough memory: need " + std::to_string(need >> 20) + " MB (" + std::to_string(small >> 20) +
@@ -395,11 +395,25 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   solver_ = std::make_unique<Solver>(*tree_);
   solver_->first_player = first_player_;
   solver_->params = dcfr_;
+  apply_pcfr_settings();
+  solver_->pruning = pruning_;
+  solver_->prune_period = prune_period_;
   tree_alg_ = algorithm_;
   iterations_ = 0;
   discount_restart_ = 0;
   solve_seconds_ = 0;
   return okmsg;
+}
+
+void Upi::apply_pcfr_settings() {
+  if (!solver_) return;
+  solver_->predictive = predictive_;
+  solver_->avg_delay = avg_delay_;
+  // resize() on an empty ZVec is a fresh calloc: zero pages, committed only when the
+  // solver first writes them (which during a solve is every iteration, but never at all
+  // while the feature stays off).
+  if (predictive_ && tree_ && tree_->preds.size() < tree_->storage_floats)
+    tree_->preds.resize(tree_->storage_floats);
 }
 
 std::string Upi::estimate_text() {
@@ -408,7 +422,7 @@ std::string Upi::estimate_text() {
   t.payoff = payoff_;
   std::string err;
   if (!t.build(cfg_, err, false)) throw CmdError{err};
-  uint64_t b = t.memory_bytes_for(false), bs = t.memory_bytes_for(true);
+  uint64_t b = t.memory_bytes_for(false, predictive_), bs = t.memory_bytes_for(true, predictive_);
   // Pio prints both algorithms; here v4_large = float32 storage, v4_small = 16-bit (small_strats).
   return "estimated tree size (v4_large): " + std::to_string(b >> 20) + " MB\nestimated tree size (v4_small): " +
          std::to_string(bs >> 20) + " MB";
@@ -648,6 +662,43 @@ void Upi::register_commands() {
     if (solver_) solver_->params = dcfr_;
     return std::string("set_dcfr ok!");
   };
+  // Not Pio commands: convergence experiments (#71), off / 0 by default.
+  // set_predictive on: PCFR+-style optimistic matching — the strategy at each node is
+  // matched on R + the last instantaneous regret. Costs one extra float per regret slot
+  // (lazily allocated, transient, never saved; harmless to leave allocated after "off").
+  H["set_predictive"] = [this](const Args& a) {
+    if (a.empty() || (a[0] != "on" && a[0] != "off")) throw CmdError{"incorrect or missing argument"};
+    if (solving_) throw CmdError{"stop the solver first"};
+    predictive_ = a[0] == "on";
+    apply_pcfr_settings();
+    return std::string("set_predictive ok!");
+  };
+  // set_avg_delay <n>: iterations 1..n only move regrets; the strategy average starts
+  // accumulating at iteration n+1 (warm-started average). 0 = accumulate from t=1.
+  H["set_avg_delay"] = [this](const Args& a) {
+    long long n = arg_int(a, 0, "iterations");
+    if (n < 0 || n > 1000000) throw CmdError{"incorrect or missing argument"};
+    avg_delay_ = static_cast<int>(n);
+    if (solver_) solver_->avg_delay = avg_delay_;
+    return std::string("set_avg_delay ok!");
+  };
+  // Not a Pio command. Regret-based pruning (#51, see Solver::pruning): from iteration
+  // 2*<period>+1 on, an action of the traverser whose current strategy is zero for every one of
+  // its hands is not re-measured that iteration; its regret row is frozen (not discounted or
+  // updated) until the next full iteration. Every <period>-th iteration (default 32) is measured
+  // in full. The strategy and the strategy-sum rows are untouched, so this is a
+  // convergence-speed knob, not an abstraction.
+  H["set_pruning"] = [this](const Args& a) {
+    if (a.empty() || (a[0] != "on" && a[0] != "off")) throw CmdError{"incorrect or missing argument"};
+    pruning_ = a[0] == "on";
+    if (a.size() > 1) prune_period_ = static_cast<int>(arg_int(a, 1, "period"));
+    if (prune_period_ < 0) throw CmdError{"incorrect or missing argument"};
+    if (solver_) {
+      solver_->pruning = pruning_;
+      solver_->prune_period = prune_period_;
+    }
+    return std::string("set_pruning ok!");
+  };
   // Not a Pio command: Pio always tracks the union. Opt-in here because the wider vectors
   // cost time and memory, and it has to be set before build_tree to take effect.
   H["set_union_hands"] = [this](const Args& a) {
@@ -719,10 +770,10 @@ void Upi::register_commands() {
   H["build_tree"] = [this](const Args& a) { return cmd_build_tree(a); };
   H["list_algorithms"] = [](const Args&) {
     return std::string(
-        "v4_small,DCFR,Discounted CFR (alpha 1.5, beta 0, gamma 3); this solver uses one algorithm for every code\n"
-        "v4_large,DCFR,Discounted CFR (alpha 1.5, beta 0, gamma 3)\n"
-        "pio_cfr,DCFR,Discounted CFR (alpha 1.5, beta 0, gamma 3)\n"
-        "original_pio,DCFR,Discounted CFR (alpha 1.5, beta 0, gamma 3)");
+        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4); this solver uses one algorithm for every code\n"
+        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
+        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
+        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)");
   };
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
@@ -753,7 +804,7 @@ void Upi::register_commands() {
     GameTree t;
     std::string err;
     if (!t.build(c, err, false)) throw CmdError{err};
-    return "estimated tree size: " + std::to_string(t.memory_bytes_for(true) >> 20) + " MB";
+    return "estimated tree size: " + std::to_string(t.memory_bytes_for(true, predictive_) >> 20) + " MB";
   };
   register_preflop_commands();
 

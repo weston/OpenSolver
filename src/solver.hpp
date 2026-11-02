@@ -11,13 +11,39 @@ namespace pio {
 enum class Walk { CFR, BestResponse, Evaluate };
 
 struct DcfrParams {
-  double alpha = 1.5;  // positive regret discount exponent
+  // Tuned on the benchmark suite (#52; bench/dcfr_sweep.md), not DCFR's published 1.5 / 0 / 2:
+  // alpha 1.3, gamma 4 reaches every target (1% .. 0.05% of the pot) in no more iterations than
+  // 1.5 / 0 / 3 on every bench tree, and far fewer on deep and wide trees (0.05%: deep 260 -> 180,
+  // flop_srp_4 105 -> 80, preflop 85 -> 60). alpha <= 1.2 is faster early but stalls at tight targets
+  // on rivers. set_dcfr overrides.
+  //
+  // The stall, quantified on flop_3bet at gamma 4 (independent check, #110 follow-up): alpha 1.2
+  // wins at loose targets and loses at tight ones, crossing over between 0.02% and 0.01% of pot.
+  //
+  //   alpha   to 0.05%   to 0.02%   to 0.01%   iterations
+  //   1.2       4.11 s     6.19 s    12.67 s      270
+  //   1.3       4.29 s     6.85 s    10.07 s      220
+  //
+  // So a sweep that stops at 0.05% picks 1.2 and is wrong. Any retune here must go to at least
+  // 0.01% of pot, and should prefer iteration counts (exact integers) over wall time.
+  double alpha = 1.3;  // positive regret discount exponent
   double beta = 0.0;   // negative regret discount exponent
-  // 3, not DCFR's published 2: a sweep over the benchmark suite (#52) found gamma 3 reaches
-  // every target in fewer iterations than 2 on every tree, by up to 19% of wall time. See
-  // set_dcfr to override, and bench/dcfr_sweep.md for the numbers.
-  double gamma = 3.0;  // strategy-sum discount exponent
+  double gamma = 4.0;  // strategy-sum discount exponent
 };
+
+// Showdown values against one river board: out[h] += value of p's hand h given opponent reach ro,
+// with W / L / T the win / loss / tie payoffs. showdown_board_scalar is the reference. x86 builds
+// with AVX-512F, BW and VBMI (-march=native on Zen 4+ / Ice Lake+) use showdown_board_avx512, which
+// must give the same floats bit for bit (#89; tests/test_solver.cpp checks). -DPIO_NO_AVX512 opts out.
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VBMI__) && !defined(PIO_NO_AVX512)
+#define PIO_SHOWDOWN_AVX512 1
+#else
+#define PIO_SHOWDOWN_AVX512 0
+#endif
+void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+#if PIO_SHOWDOWN_AVX512
+void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+#endif
 
 struct RootStats {
   double ev[2] = {0, 0};
@@ -33,6 +59,85 @@ class Solver {
   int first_player = 0;  // set_first_iteration_player
   bool parallel = true;
   bool write_best_response = false;  // BestResponse walks store the pure BR strategy (set_mes)
+  // #71 convergence experiments (set_predictive / set_avg_delay):
+  bool predictive = false;  // regret matching input is R + last instantaneous regret (PCFR+-style)
+  // 32, not 0. The first iterations are the noisiest, and skipping their contribution to the
+  // strategy sum both saves the accumulation work and leaves a cleaner average. #80 swept this
+  // and found nothing, but that predated the alpha/gamma retune (#72) and the prune_period fix
+  // (#131), which changed where the time goes. Re-swept at the current defaults, to 0.05% of
+  // pot, 1 thread, iteration counts unchanged (so this is per-iteration saving, not faster
+  // convergence):
+  //
+  //   tree          delay 0    delay 32     exploitability
+  //   flop_srp_2     12.59 s    10.85 s     (+13.8%)   0.026 vs 0.026
+  //   flop_srp_4     26.46 s    24.11 s     (+8.9%)    0.029 vs 0.028
+  //   deep           43.18 s    41.21 s     (+4.6%)    0.020 vs 0.020
+  //   flop_3bet       4.26 s     4.20 s     (+1.4%)    0.099 vs 0.089
+  //   turn            0.24 s     0.23 s                0.045 vs 0.045
+  //   preflop         0.09 s     0.08 s                0.007 vs 0.007
+  //
+  // Better or equal on every tree with exploitability equal or better.
+  //
+  // NOT the default anyway, because a solve that stops before t = avg_delay has an EMPTY
+  // strategy average and falls back to regret-derived (near-pure) strategies. After 10
+  // iterations on a small flop tree: delay 0 gives 21 hands at 0.003-0.225, delay 32 gives
+  // 12 hands at 0.294/0.557/0.727/1.0. That is wrong output for a quick look, and it broke
+  // the union_hands test in tests/test_upi.py, which solves to a loose accuracy.
+  //
+  // So this is a knob, not a default: `set_avg_delay 32` is worth 9-14% when you know the
+  // solve will run well past the delay. An adaptive version that cannot starve the average
+  // would be a real improvement - see the issue filed from here.
+  int avg_delay = 0;       // strategies only enter the average after this iteration (0 = from t=1)
+
+  // Regret-based pruning (set_pruning, #51; Brown & Sandholm, "Regret-Based Pruning in
+  // Extensive-Form Games", NIPS 2015). During a CFR walk only, an action of the traverser whose
+  // CURRENT strategy is exactly zero for every one of the traverser's hands is pruned: its subtree
+  // is not re-measured this iteration and its regret row is left completely untouched (frozen, not
+  // discounted). This changes nothing about this iteration's strategy, cfv aggregate or
+  // strategy-sum rows (the zero-strategy condition already guarantees "this action contributes 0
+  // everywhere"); the skipped instantaneous regret measurement is the bounded approximation RBP
+  // theory covers. Every prune_period-th iteration (default 32) is measured in full (the RBP
+  // revisiting schedule), which is when a frozen row can re-enter.
+  //
+  // Pruning activates only after two full periods (t > 2*prune_period). Bench: pruning from t=1
+  // is ruinous - early on about half of all rows are all-nonpositive at any moment and re-enter
+  // constantly, and frozen rows cannot re-enter until the next full iteration (flop_3bet to
+  // 0.2% pot: 50 -> 230 iterations at period 32, 90 at period 8; the damage scales with the
+  // period, and absolute chip margins do not fix it because early regret magnitudes are large).
+  // After the strategy settles, exact-zero rows are stable and rarer, so gating reproduces the
+  // unpruned iteration counts exactly on every bench tree while keeping the per-iteration savings
+  // of the long tail (deep to 0.05% pot: 33.1s -> 30.5s).
+  // Best-response, evaluate and strategy_only walks are never pruned.
+  bool pruning = true;  // on by default (#51): inactive before t > 2*prune_period, then never
+                        // slower and up to ~8% faster on long solves (bench data in the comment)
+  // 8, not 32. The period trades activation delay (pruning is inactive until t > 2*period)
+  // against how often a full measurement iteration is forced, and those pull opposite ways.
+  // At the targets the suite actually reports (0.2% of pot, reached in 35-100 iterations) the
+  // activation delay dominates: period 32 does not engage until t=64, so on flop_srp_2 - which
+  // reaches target at t=45 - pruning never ran at all. Measured to 0.2% of pot, 1 thread:
+  //
+  //   tree          iters   period 8   period 32
+  //   flop_srp_4      50     17.24 s    18.72 s   (+7.9%)
+  //   flop_srp_2      45      7.78 s     8.25 s   (+5.7%)
+  //   deep           100     24.92 s    25.49 s   (+2.2%)
+  //   flop_3bet       50      2.41 s     2.43 s   (+0.8%)
+  //   turn            35      0.10 s     0.10 s   (=)
+  //
+  // Better or equal on every tree, results bit-identical. The crossover is past ~100
+  // iterations: at 180 on deep, period 32 wins back 1.3% (26.23 s vs 26.58 s), because by
+  // then the activation delay is amortised and the forced full iterations dominate.
+  //
+  // CAREFUL if you raise it. The period sets BOTH the measurement frequency and the
+  // activation delay (`t > 2 * prune_period`), so raising it pushes activation out too and
+  // can switch pruning off entirely for a short solve. `set_pruning on 64` delays activation
+  // to t=128, and every bench tree reaches 0.2% of pot by t=100, so pruning never runs:
+  // flop_srp_2 goes 7.71 s -> 8.22 s, i.e. slower than the default despite asking for more
+  // pruning. Only raise it for runs that will go well past 2x the new period.
+  //
+  // Decoupling the two (a separate warmup field) was tried and rejected: it removes the
+  // footgun but is ~1.3% slower, because the extra int changes this struct's layout, and at
+  // fixed warmup the period sweep showed no consistent winner across trees.
+  int prune_period = 8;  // <= 1: never force a full iteration
 
   // CFR iterations restricted to the subtree at `ni` with the given (canonical) reaches.
   void iterate_subtree(uint32_t ni, int t, const float* r0, const float* r1);
@@ -68,6 +173,8 @@ class Solver {
 
   GameTree& g_;
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;
+  bool accumulate_ = true;  // t > avg_delay: whether this iteration feeds the strategy sum
+  bool prune_this_iter_ = false;  // set by iterate/iterate_subtree; read-only during walks
 };
 
 }  // namespace pio

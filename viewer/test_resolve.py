@@ -1,0 +1,553 @@
+#!/usr/bin/env python3
+"""Tests for viewer/resolve.py: subgame re-solve and N-size search.
+
+Usage: python3 viewer/test_resolve.py [path-to-solver]
+
+Unit tests for the pure pieces (subset search, mid-hand tree-builder start nodes), then
+integration tests against the real solver binary on tiny trees:
+
+  * a re-solve with the SAME sizes as the original tree reproduces the original node's
+    strategy (and EVs) within solver tolerance (measured, asserted below);
+  * re-solving with one extra size changes the tree, and the subgame's node_count equals
+    a scratch build of the exact line list the tree builder produced for that config;
+  * the size search over a candidate list on a small river spot, solved to a loose
+    accuracy, agrees with an independent brute force over all subsets run in the test.
+
+River spots solve in well under a second each, so the brute force check is cheap.
+"""
+import itertools
+import json
+import os
+import sys
+import tempfile
+import threading
+import unittest
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import ThreadingHTTPServer
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+
+import server as vsrv  # noqa: E402
+import library as vlib  # noqa: E402
+import resolve as vresolve  # noqa: E402
+import tree_builder as tb  # noqa: E402
+
+SOLVER = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") \
+    else os.path.join(REPO, "solver")
+
+# Same small tree as viewer/test_server.py: pot 40, stack 60, one/one bet size per street.
+CFG = {
+    "range_oop": "AA,KK,QQ,JJ,TT,AK,AQ,AJs,KQs",
+    "range_ip": "AA,KK,QQ,JJ,TT,99,AK,AQ,KQs",
+    "board": "QhQc2c", "pot": 40, "stack": 60,
+    "flop_bet": "60", "flop_raise": "50",
+    "turn_bet": "60", "turn_raise": "50",
+    "river_bet": "65", "river_raise": "50", "river_allin": True,
+    "allin_threshold": 50, "add_allin_limit": 300, "iso": True,
+}
+SIZING = {k: v for k, v in CFG.items() if k not in ("range_oop", "range_ip", "board", "iso")}
+
+# Strategy agreement between the original tree and a same-sizes re-solve. Both trees are
+# solved to accuracy 0.05 chips (of a 40-chip pot). A same-sizes re-solve of the ROOT is
+# bit-identical (same lines, same ranges -> same tree layout), so per-combo frequencies
+# match exactly there. A mid-hand re-solve has the same public tree but a different
+# internal layout, so DCFR trajectories diverge microscopically and genuinely
+# indifferent combos mix differently no matter the accuracy: the comparisons there are
+# per-action frequencies aggregated over the acting player's range (measured max diff
+# 0.006 at accuracy 0.05) and the range-weighted node EV (measured 0.011 chips).
+STRAT_TOL = 0.05   # per-combo action frequency, root re-solve (measured 0.0000)
+AGG_TOL = 0.01     # range-aggregated action frequency, mid-hand re-solve (measured 0.006)
+EV_TOL = 0.15      # chips; both solves target <= 0.05 chips of exploitability, 40 pot
+ACC = "0.05"
+
+
+def _agg(rows, reach):
+    """Range-weighted frequency of each action, one per strategy row."""
+    tot = sum(x or 0 for x in reach) or 1.0
+    out = []
+    for row in rows:
+        vals = vsrv.parse_floats(row, 1326) if isinstance(row, str) else row
+        out.append(sum((x or 0) * (w or 0) for x, w in zip(vals, reach)) / tot)
+    return out
+
+
+def _weighted_ev(ev_line, reach):
+    vals = vsrv.parse_floats(ev_line, 1326)
+    tot = sum(x or 0 for x in reach) or 1.0
+    return sum((x or 0) * (w or 0) for x, w in zip(vals, reach)) / tot
+
+
+# ---------------------------------------------------------------- pure unit tests
+
+class SearchSubsetTest(unittest.TestCase):
+    def test_brute_evaluates_every_subset(self):
+        scored = {}
+        scores = {("25", "75"): 3.0, ("25", "50"): 1.0, ("25", "100"): 2.0}
+        def score(sub):
+            scored[sub] = True
+            return scores.get(sub, 0.0)
+        rows, best, method = vresolve.search_best_subset(["25", "50", "75", "100"], 2, score)
+        self.assertEqual(method, "brute")
+        self.assertEqual(len(scored), 6)          # C(4, 2)
+        self.assertEqual(best["sizes"], ["25", "75"])
+        self.assertEqual(best["ev"], 3.0)
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(len(r["sizes"]) == 2 for r in rows))
+
+    def test_greedy_skips_the_full_product(self):
+        calls = []
+        weights = {"30": 1.0, "55": 1.1, "80": 0.9, "130": 0.4, "200": 0.3, "400": 0.2}
+        def score(sub):
+            calls.append(sub)
+            return sum(weights[c] for c in sub) + (2.0 if "130" in sub else 0.0)
+        candidates = list(weights)
+        rows, best, method = vresolve.search_best_subset(candidates, 2, score, brute_limit=3)
+        self.assertEqual(method, "greedy")
+        self.assertEqual(len(calls), 6 + 5)       # k + (k-1), not C(6, 2) = 15
+        self.assertEqual(len(best["sizes"]), 2)
+        # greedy seeds on the best singleton (2.4 for 130) and extends: must be the path taken
+        self.assertEqual(best["sizes"], ["55", "130"])
+        self.assertAlmostEqual(best["ev"], 0.4 + 1.1 + 2.0)
+
+    def test_brute_limit_boundary_exactly(self):
+        def score(sub):
+            return 0.0
+        # C(5, 2) = 10 > limit 3 -> greedy even though brute would be cheap
+        _, _, method = vresolve.search_best_subset(["1", "2", "3", "4", "5"], 2, score,
+                                                   brute_limit=3)
+        self.assertEqual(method, "greedy")
+        _, _, method = vresolve.search_best_subset(["1", "2", "3", "4", "5"], 2, score,
+                                                   brute_limit=10)
+        self.assertEqual(method, "brute")
+
+    def test_bad_n_rejected(self):
+        with self.assertRaises(vsrv.SolverError):
+            vresolve.search_best_subset(["1", "2"], 3, lambda s: 0.0)
+
+
+class SizeFormsTest(unittest.TestCase):
+    """Size fields accept the tree builder's grammar: percentages, geometric Ne,
+    raise multiples Nx (raise fields only), a (tools/tree_builder.py SIZING_RULES)."""
+
+    def test_field_sizes_grammar(self):
+        self.assertEqual(
+            vresolve._field_sizes({"flop_raise": "33, 2e, 3x, a"}, "flop_raise",
+                                  allow_mult=True), "33,2e,3x,a")
+        self.assertEqual(vresolve._field_sizes({"flop_bet": " 50 ,75 "}, "flop_bet"),
+                         "50,75")
+        for bad in ("bogus", "3x", "100e"):  # mults are raise-only; Ne takes N <= 99
+            with self.assertRaises(vsrv.SolverError, msg=bad):
+                vresolve._field_sizes({"flop_bet": bad}, "flop_bet")
+
+    def test_size_key_orders_mixed_forms(self):
+        self.assertEqual(sorted(["a", "3x", "2e", "75", "33", "e"],
+                                key=vresolve._size_key),
+                         ["33", "75", "e", "2e", "3x", "a"])
+
+    def test_raise_multiple_builds(self):
+        # IP faces 10; 3x -> raise to 30; OOP's 3x re-raise (90) hits the all-in
+        lines = _lines(_ctx("IP", "river", 10, 0, 20, 100), {"river_raise": "3x"})
+        self.assertEqual(lines, [[10, 30, 100]])
+
+    def test_geometric_sizes_build(self):
+        # "e" on the lone remaining street is the shove (S = 96 on top of the 4 in)
+        lines = _lines(_ctx("OOP", "river", 4, 4, 20, 100), {"river_bet": "e"})
+        self.assertEqual(set(map(tuple, lines)), {(100,), (4, 100)})
+        # "2e": f = (sqrt(1 + 2*96/28) - 1)/2 = 0.901...; bet to 4 + round(.901*28) = 29
+        lines = _lines(_ctx("OOP", "river", 4, 4, 20, 100), {"river_bet": "2e"})
+        self.assertEqual(set(map(tuple, lines)), {(29,), (4, 29)})
+
+    def test_raise_cap_passthrough(self):
+        # without a cap the re-raise continues to the all-in; cap 1 stops at IP's raise
+        lines = _lines(_ctx("IP", "river", 10, 0, 20, 100), {"river_raise": "50"})
+        self.assertEqual(lines, [[10, 30, 100]])
+        lines = _lines(_ctx("IP", "river", 10, 0, 20, 100),
+                       {"river_raise": "50", "river_raisecap": 1})
+        self.assertEqual(lines, [[10, 30]])
+
+
+def kill_solver(s):
+    try:
+        s.proc.kill()
+        s.proc.wait(timeout=10)
+        for f in (s.proc.stdin, s.proc.stdout):
+            f.close()
+    except Exception:
+        pass
+
+
+def _ctx(actor, street, oop, ip, dead, stack):
+    return {"actor": actor, "street": street,
+            "pot": {"oop": oop, "ip": ip, "dead": dead}, "stack": stack}
+
+
+def _lines(ctx, body):
+    cfg, start = vresolve.build_config(tb, ctx, body)
+    return tb.build_lines(cfg, start)
+
+
+class StartNodeTest(unittest.TestCase):
+    """build_lines from a mid-hand root: amounts stay absolute (chips already in included)."""
+
+    def test_oop_root_fresh_street_bets_for_both_players(self):
+        # dead 20, each player 4 in (28 in the middle), stack 100, one 50% river bet
+        lines = _lines(_ctx("OOP", "river", 4, 4, 20, 100), {"river_bet": "50"})
+        self.assertEqual(set(map(tuple, lines)), {(4, 18), (18,)})  # 4 + 50% * 28
+
+    def test_ip_root_facing_a_bet_wraps_in_a_forced_check(self):
+        # IP faces OOP's bet to 10; the wrapper root is OOP "checking" at 10, then IP's
+        # raise: pot_if_called = 20 + 2*10 = 40; raise to 10 + 50%*40 = 30; OOP's
+        # re-raise to 30 + 50%*80 = 70 hits the 67% all-in threshold of the 100 stack
+        lines = _lines(_ctx("IP", "river", 10, 0, 20, 100),
+                       {"river_bet": "50", "river_raise": "50"})
+        self.assertEqual(lines, [[10, 30, 100]])
+
+    def test_ip_root_matched_stacks_check_back_root(self):
+        # the wrapper check (4) is OOP's only option even though river bets are configured
+        lines = _lines(_ctx("IP", "river", 4, 4, 20, 100), {"river_bet": "50"})
+        self.assertEqual(lines, [[4, 18]])  # 4 = wrapper check; 18 = 4 + 50%*28
+
+    def test_oop_root_facing_a_lead_offers_raises(self):
+        # OOP leads are possible below the subgame root: OOP is the one facing the bet
+        lines = _lines(_ctx("OOP", "turn", 0, 24, 40, 60),
+                       {"turn_bet": "60", "turn_raise": "50"})
+        # pot_if_called = 40 + 2*24 = 88; raise to 24 + 50%*88 = 68 -> all-in at 60.
+        # (The raise is the line's deepest action; the 24 call is implicit.)
+        self.assertEqual(lines, [[60]])
+
+    def test_street_progression_from_midstreet_root(self):
+        cfg, start = vresolve.build_config(tb, _ctx("IP", "flop", 10, 0, 20, 100),
+                                           {"flop_raise": "50", "turn_bet": "50"})
+        self.assertEqual(start.street, 0)
+        self.assertEqual(start.inv, (10, 0))
+        self.assertEqual(start.to_act, tb.OOP)
+        lines = tb.build_lines(cfg, start)
+        # call through to the turn: 10 (wrapper), 10 (call), then OOP's turn bet.
+        # turn pot = 20 + 20 = 40, bet to 10 + 20 = 30
+        self.assertIn([10, 10, 30], lines)
+
+
+# ---------------------------------------------------------------- integration
+
+class ResolveIntegrationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.main = vsrv.Solver(SOLVER)
+        cls.mgr = vresolve.ResolveManager(cls.main, vsrv.Solver, SOLVER)
+        vsrv.set_resolver(cls.mgr)
+        cls.http = ThreadingHTTPServer(("127.0.0.1", 0), vsrv.Handler)
+        cls.http.solver = cls.main
+        cls.http.library = vlib.Library(tempfile.mkdtemp(prefix="wsolver-test-library-"))
+        cls.http.daemon_threads = True
+        threading.Thread(target=cls.http.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.http.server_port}"
+        st, d = cls.req("/api/generate", "POST", CFG)
+        assert st == 200, d
+        st, d = cls.req("/api/build", "POST", {})
+        assert st == 200, d
+        cls.main.cmds([f"set_accuracy {ACC}", "go", "wait_for_solver"], timeout=600)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.http.shutdown()
+        cls.http.server_close()
+        for s in (cls.main, cls.mgr.rsolver):
+            kill_solver(s)
+
+    @classmethod
+    def req(cls, path, method="GET", body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json"} if method == "POST" else {}
+        if method == "POST" and data is None:
+            data = b"{}"
+        r = urllib.request.Request(cls.base + path, data=data, headers=headers,
+                                   method=method)
+        try:
+            with urllib.request.urlopen(r, timeout=120) as f:
+                return f.status, json.load(f)
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    @classmethod
+    def wait_job(cls, timeout=300):
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            st, d = cls.req("/api/resolve/status")
+            assert st == 200, d
+            if not d["busy"]:
+                return d
+            time.sleep(0.1)
+        raise AssertionError("re-solve job did not finish")
+
+    # ---- context ----
+
+    def test_10_context_root(self):
+        st, d = self.req("/api/resolve/context?id=r:0")
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["board"], "QhQc2c")
+        self.assertEqual(d["street"], "flop")
+        self.assertEqual(d["pot"], {"oop": 0, "ip": 0, "dead": 40})
+        self.assertEqual(d["stack"], 60)
+        self.assertEqual(d["actor"], "OOP")
+
+    def test_11_context_midstreet_facing_bet(self):
+        st, d = self.req("/api/resolve/context?id=r:0:b24")
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["actor"], "IP")
+        self.assertEqual(d["pot"], {"oop": 24, "ip": 0, "dead": 40})
+        self.assertEqual(d["street"], "flop")
+
+    def test_12_context_street_start_after_call(self):
+        st, d = self.req("/api/resolve/context?id=" + urllib.parse.quote("r:0:b24:c:5d"))
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["street"], "turn")
+        self.assertEqual(d["board"], "QhQc2c5d")
+        self.assertEqual(d["actor"], "OOP")
+        self.assertEqual(d["pot"], {"oop": 24, "ip": 24, "dead": 40})
+
+    def test_13_context_rejects_chance_and_terminal(self):
+        st, d = self.req("/api/resolve/context?id=" + urllib.parse.quote("r:0:c:c"))
+        self.assertEqual(st, 400)
+        self.assertIn("not a decision node", d["error"])
+        st, d = self.req("/api/resolve/context?id=" + urllib.parse.quote("r:0:f"))
+        self.assertEqual(st, 400)
+
+    # ---- re-solve ----
+
+    def test_20_browse_before_any_resolve_fails(self):
+        st, d = self.req("/api/resolve/node?id=r:0")
+        self.assertEqual(st, 400)
+        self.assertIn("no subgame", d["error"])
+
+    def test_21_same_sizes_reproduce_root_strategy_and_evs(self):
+        st, d = self.req("/api/resolve/start", "POST",
+                         dict(SIZING, id="r:0", accuracy=ACC))
+        self.assertEqual(st, 200, d)
+        st_ = self.wait_job()
+        self.assertIsNone(st_["error"], st_["error"])
+        self.assertEqual(st_["kind"], "resolve")
+        res = st_["result"]
+        self.assertEqual(res["node"], "r:0")
+        self.assertEqual(res["subgame_root"], "r:0")
+        # strategy at the root must match the original tree's root strategy
+        main_rows = self.main.cmd("show_strategy r:0").split("\n")
+        st, d = self.req("/api/resolve/strategy?id=r:0")
+        self.assertEqual(st, 200, d)
+        self.assertNotIn("raw", d)
+        self.assertEqual(len(main_rows), len(d["freq"]),
+                         "child count differs between original and same-sizes re-solve")
+        worst = 0.0
+        for a, row in zip(main_rows, d["freq"]):
+            for x, y in zip(vsrv.parse_floats(a, 1326), row):
+                if x is not None and y is not None:
+                    worst = max(worst, abs(x - y))
+        print(f"  max |strategy diff| main vs same-size re-solve: {worst:.4f}")
+        self.assertLess(worst, STRAT_TOL)
+        # root EVs: re-solve EVs (same absolute accounting) match the original tree's
+        main_evs = vresolve.parse_evs(self.main.cmd("calc_results"))
+        self.assertLess(abs(main_evs["OOP"] - res["ev"]["OOP"]), EV_TOL, res)
+        self.assertLess(abs(main_evs["IP"] - res["ev"]["IP"]), EV_TOL, res)
+        self.assertAlmostEqual(res["ev"]["OOP"] + res["ev"]["IP"], 40.0, places=2)
+
+    def test_22_same_sizes_midstreet_reproduce_strategy(self):
+        # node facing a bet: the per-player pot mapping matters here
+        st, d = self.req("/api/resolve/start", "POST",
+                         dict(SIZING, id="r:0:b24", accuracy=ACC))
+        self.assertEqual(st, 200, d)
+        st_ = self.wait_job()
+        self.assertIsNone(st_["error"], st_["error"])
+        self.assertEqual(st_["result"]["pot"], {"oop": 24, "ip": 0, "dead": 40})
+        self.assertEqual(st_["result"]["actor"], "IP")
+        self.assertEqual(st_["result"]["subgame_root"], "r:0:c")
+        main_rows = self.main.cmd("show_strategy r:0:b24").split("\n")
+        # in the subgame the node sits behind the forced-check wrapper
+        st, d = self.req("/api/resolve/strategy?id=" + urllib.parse.quote("r:0:c"))
+        self.assertEqual(st, 200, d)
+        self.assertNotIn("raw", d)
+        self.assertEqual(len(main_rows), len(d["freq"]))
+        reach = vsrv.parse_floats(self.main.cmd("show_range IP r:0:b24"), 1326)
+        # compare the range-aggregated action frequencies and the node EV: the internal
+        # layout differs, so genuinely indifferent combos mix differently in the two
+        # solves no matter the accuracy (see the module docstring)
+        ga, gb = _agg(main_rows, reach), _agg(d["freq"], reach)
+        for i, (a, b) in enumerate(zip(ga, gb)):
+            print(f"  action {i}: main {a:.4f} re-solve {b:.4f}")
+            self.assertAlmostEqual(a, b, delta=AGG_TOL)
+        ev_main = _weighted_ev(self.main.cmd("calc_ev IP r:0:b24").split("\n")[0], reach)
+        ev_sub = _weighted_ev(self.mgr.rsolver.cmd("calc_ev IP r:0:c").split("\n")[0], reach)
+        print(f"  node EV IP: main {ev_main:.4f} re-solve {ev_sub:.4f}")
+        self.assertAlmostEqual(ev_main, ev_sub, delta=EV_TOL)
+
+    def test_23_added_size_changes_tree_and_node_count_matches(self):
+        body = dict(SIZING, flop_bet="60,30")
+        st, d = self.req("/api/resolve/start", "POST", dict(body, id="r:0", accuracy=1.0))
+        self.assertEqual(st, 200, d)
+        st_ = self.wait_job()
+        self.assertIsNone(st_["error"], st_["error"])
+        res = st_["result"]
+        # the subgame tree must be exactly the tree for the edited config: build the
+        # same line list in a scratch solver and compare node counts
+        ctx = vresolve.read_context(self.main, "r:0")
+        cfg, start = vresolve.build_config(tb, ctx, body)
+        lines = tb.format_lines(tb.build_lines(cfg, start))
+        self.assertEqual(res["lines"], len(lines))
+        scratch = vsrv.Solver(SOLVER)
+        try:
+            scratch.cmds(["set_range OOP " + self.main.cmd("show_range OOP r:0"),
+                          "set_range IP " + self.main.cmd("show_range IP r:0"),
+                          "set_board QhQc2c", "set_eff_stack 60", "set_pot 0 0 40",
+                          "set_isomorphism 1 0", "clear_lines"] + lines + ["build_tree"])
+            self.assertEqual(res["node_count"], scratch.cmd("node_count"))
+        finally:
+            kill_solver(scratch)
+        # browsing the subgame works after the job
+        st, d = self.req("/api/resolve/node?id=r:0")
+        self.assertEqual(st, 200, d)
+        self.assertGreater(len(d["children"]), 2)  # two bet sizes + check
+
+    def test_24_bad_requests(self):
+        st, d = self.req("/api/resolve/start", "POST", {"id": "r:0", "flop_bet": "bogus"})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/resolve/start", "POST", {"id": "r:0", "flop_bet": "3x"})
+        self.assertEqual(st, 400)  # raise multiples are raise-fields-only
+        st, d = self.req("/api/resolve/start", "POST", {"id": "r:0", "flop_raisecap": -1})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/resolve/start", "POST", {"id": "r:0\nshow_version"})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/resolve/status", "POST", {})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/resolve/search", "POST",
+                         {"id": "r:0", "candidates": "50", "n": 1})
+        self.assertEqual(st, 400)  # need >= 2 candidates
+        st, d = self.req("/api/resolve/search", "POST",
+                         {"id": "r:0", "candidates": "50,80", "n": 5})
+        self.assertEqual(st, 400)  # n > len(candidates)
+        st, d = self.req("/api/resolve/search", "POST",
+                         {"id": "r:0", "candidates": "50,3x", "n": 1})
+        self.assertEqual(st, 400)  # candidates become bet sizes: no Nx
+        st, d = self.req("/api/resolve/stop", "POST", {})
+        self.assertEqual(st, 200)  # stop with no job is a no-op
+
+    def test_25_geometric_size_end_to_end(self):
+        # #114 grammar through the API: "2e" is geometric over 2 streets from the flop:
+        # f = (sqrt(1 + 2*60/40) - 1)/2 = 0.5 -> a 20-chip bet into the 40 pot
+        body = dict(SIZING, flop_bet="2e")
+        st, d = self.req("/api/resolve/start", "POST", dict(body, id="r:0", accuracy=1.0))
+        self.assertEqual(st, 200, d)
+        st_ = self.wait_job()
+        self.assertIsNone(st_["error"], st_["error"])
+        res = st_["result"]
+        # node count must match a scratch build of the exact lines for that config
+        ctx = vresolve.read_context(self.main, "r:0")
+        cfg, start = vresolve.build_config(tb, ctx, body)
+        lines = tb.format_lines(tb.build_lines(cfg, start))
+        self.assertEqual(res["lines"], len(lines))
+        scratch = vsrv.Solver(SOLVER)
+        try:
+            scratch.cmds(["set_range OOP " + self.main.cmd("show_range OOP r:0"),
+                          "set_range IP " + self.main.cmd("show_range IP r:0"),
+                          "set_board QhQc2c", "set_eff_stack 60", "set_pot 0 0 40",
+                          "set_isomorphism 1 0", "clear_lines"] + lines + ["build_tree"])
+            self.assertEqual(res["node_count"], scratch.cmd("node_count"))
+        finally:
+            kill_solver(scratch)
+        st, d = self.req("/api/resolve/node?id=r:0")
+        self.assertEqual(st, 200, d)
+        self.assertIn("r:0:b20", [c["id"] for c in d["children"]])  # the 2e = 50% bet
+
+    # ---- size search on a small river spot, checked against brute force ----
+
+    # nuts vs bluffcatchers on 5 cards: bigger bets clearly better -> a stable argmax
+    RIVER = {"range_oop": "AA,KK", "range_ip": "JJ,TT",
+             "board": "QhQc2c7h2s", "pot": 40, "stack": 200}
+    CANDS = ["25", "50", "100", "150"]
+    ACC = 1.0  # loose; both the search and the test's brute force use it
+
+    def test_30_river_search_matches_independent_brute_force(self):
+        # rebuild the main tree as a river-root spot for the search
+        self.main.cmds(["set_range OOP " + self.RIVER["range_oop"],
+                        "set_range IP " + self.RIVER["range_ip"],
+                        "set_board " + self.RIVER["board"],
+                        f"set_eff_stack {self.RIVER['stack']}",
+                        f"set_pot 0 0 {self.RIVER['pot']}",
+                        "clear_lines", "add_line 10", "add_line 20",
+                        "build_tree", f"set_accuracy {self.ACC}", "go", "wait_for_solver"],
+                       timeout=600)
+        st, d = self.req("/api/resolve/context?id=r:0")
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["street"], "river")
+        actor = d["actor"]
+
+        body = {"id": "r:0", "street": "river", "candidates": ",".join(self.CANDS),
+                "n": 2, "river_raise": "50", "accuracy": self.ACC,
+                "allin_threshold": 100000, "add_allin_limit": 300}
+        st, d = self.req("/api/resolve/search", "POST", body)
+        self.assertEqual(st, 200, d)
+        st_ = self.wait_job()
+        self.assertIsNone(st_["error"], st_["error"])
+        self.assertEqual(st_["method"], "brute")
+        self.assertEqual(len(st_["rows"]), 6)  # C(4, 2)
+        best = st_["best"]
+
+        # independent brute force: solve every subset directly in a scratch solver
+        ctx = vresolve.read_context(self.main, "r:0", with_ranges=True)
+        scratch = vsrv.Solver(SOLVER)
+        brute = {}
+        try:
+            for sub in itertools.combinations(self.CANDS, 2):
+                cfg, start = vresolve.build_config(tb, ctx, body, (2, ",".join(sub)))
+                lines = tb.format_lines(tb.build_lines(cfg, start))
+                pot = ctx["pot"]
+                scratch.cmds(["set_range OOP " + ctx["range_oop"],
+                              "set_range IP " + ctx["range_ip"],
+                              "set_board " + ctx["board"],
+                              f"set_eff_stack {ctx['stack']}",
+                              f"set_pot {pot['oop']} {pot['ip']} {pot['dead']}",
+                              "set_isomorphism 1 0", "clear_lines"] + lines +
+                             ["build_tree", f"set_accuracy {self.ACC}", "go",
+                              "wait_for_solver"], timeout=600)
+                evs = vresolve.parse_evs(scratch.cmd("calc_results"))
+                brute[tuple(sorted(sub, key=vresolve._size_key))] = evs[actor]
+        finally:
+            kill_solver(scratch)
+
+        for row in st_["rows"]:
+            key = tuple(row["sizes"])
+            self.assertIn(key, brute)
+            self.assertAlmostEqual(row["ev"], brute[key], delta=0.3,
+                                   msg=f"subset {key}: search {row['ev']} vs brute {brute[key]}")
+        # the search's best subset must attain the brute-force maximum (up to solve noise)
+        self.assertAlmostEqual(best["ev"], max(brute.values()), delta=0.3)
+        # and browsing afterwards shows the best subset's tree, not the last candidate's
+        self.assertIsNotNone(st_["result"])
+        self.assertEqual(st_["result"]["ev"][actor], best["ev"])
+
+    def test_31_search_at_a_node_facing_a_bet_varies_raises(self):
+        # main tree is the river spot from test_30: r:0:b10 is IP facing OOP's 10 bet.
+        # Bets cannot happen there, so the candidates must become IP's raise sizes;
+        # with no river_raise configured, any raise child proves they were applied.
+        st, d = self.req("/api/resolve/context?id=r:0:b10")
+        self.assertEqual(st, 200, d)
+        self.assertTrue(d["facing"])
+        body = {"id": "r:0:b10", "candidates": "50,100,3x", "n": 1, "accuracy": self.ACC,
+                "allin_threshold": 100000, "add_allin_limit": 300}
+        st, d = self.req("/api/resolve/search", "POST", body)
+        self.assertEqual(st, 200, d)
+        st_ = self.wait_job()
+        self.assertIsNone(st_["error"], st_["error"])
+        self.assertEqual(len(st_["rows"]), 3)
+        st, d = self.req("/api/resolve/node?id=" + urllib.parse.quote("r:0:c"))
+        self.assertEqual(st, 200, d)
+        kids = [c["id"] for c in d["children"]]
+        self.assertTrue(any(k.startswith("r:0:c:b") for k in kids), kids)
+
+
+if __name__ == "__main__":
+    unittest.main(argv=["test_resolve.py", "-v"] if sys.argv[1:] and not sys.argv[1].startswith("-")
+                  else sys.argv)

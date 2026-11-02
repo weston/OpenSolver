@@ -66,3 +66,41 @@ jobs:
       # minutes of solving, which a hosted runner does not have.
       - name: Unit and end-to-end tests
         run: make test
+
+  # Guards the Windows target from #3: a change that does not compile for Windows at all is
+  # the common breakage, and cross-compiling catches it without a Windows runner. This only
+  # builds - running the tests on Windows needs a native job, see the follow-up issue.
+  windows-cross:
+    name: Windows (mingw-w64 cross-build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Debian's default x86_64-w64-mingw32-g++ uses the win32 thread model, where
+      # std::thread and std::mutex are unavailable; src/parallel.cpp needs them. The -posix
+      # alternative links winpthreads and provides them.
+      WIN_CXX: x86_64-w64-mingw32-g++-posix
+    steps:
+      - uses: actions/checkout@v4
+
+      # libz-mingw-w64-dev drops zlib.h and a MinGW libz.a into the cross prefix that the
+      # compiler already searches, so ZLIB_DIR is not needed here.
+      - name: Install mingw-w64 and zlib
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++-mingw-w64-x86-64 libz-mingw-w64-dev
+
+      - name: Toolchain
+        run: |
+          "$WIN_CXX" --version
+          "$WIN_CXX" -dumpmachine
+          "$WIN_CXX" -v 2>&1 | grep -i 'thread model' || true
+
+      - name: Cross-build solver.exe
+        run: make windows -j"$(getconf _NPROCESSORS_ONLN)"
+
+      - name: Check the artifact is a Windows binary
+        run: |
+          test -f build/win/solver.exe
+          file build/win/solver.exe
+          file build/win/solver.exe | grep -q 'PE32+ executable'

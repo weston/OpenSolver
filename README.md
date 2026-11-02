@@ -151,6 +151,9 @@ UPI probe matches the macOS build up to floating-point rounding).
 
 ## Command coverage
 
+See the [command compatibility and test reference](docs/commands.md) for all commands,
+their implementation status, known differences, and regression/probe coverage.
+
 `set_range` additionally accepts range text (`AA,KK:0.5,...`); Pio itself only accepts 1326 numbers.
 
 **Implemented:** is_ready, exit, set_end_string, reset_end_string, show_version, show_build_version,

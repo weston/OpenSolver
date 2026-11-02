@@ -11,6 +11,7 @@
 #include "categories.hpp"
 #include "equity.hpp"
 #include "eval.hpp"
+#include "nn_warm.hpp"
 #include "parallel.hpp"
 #include "range.hpp"
 #include "upi.hpp"
@@ -1022,6 +1023,32 @@ std::string Upi::cmd_dump_train(const Args& a) {
   return "dump_train ok! nodes=" + std::to_string(nrec) + " bytes=" + std::to_string(bytes);
 }
 
+// NN warm start (#59): warm_start <net.wsnb> [pseudo_iterations=300]
+// Writes the net's predicted average strategy into the tree's strategy sums
+// and pretends `pseudo_iterations` of CFR history. River roots only (v1).
+std::string Upi::cmd_warm_start(const Args& a) {
+  if (a.size() < 1 || a.size() > 2) throw CmdError{"incorrect or missing argument"};
+  require_tree();
+  int pseudo = 300;
+  if (a.size() == 2) pseudo = std::stoi(a[1]);
+  NnModel model;
+  try {
+    model = NnModel::load(a[0]);
+  } catch (const std::runtime_error& e) {
+    throw CmdError{e.what()};
+  }
+  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+  NodeRef root = resolve("r:0");
+  uint64_t n;
+  try {
+    n = nn_warm_start(*tree_, model, root.frame, root.board, pseudo);
+  } catch (const std::runtime_error& e) {
+    throw CmdError{e.what()};
+  }
+  return "warm_start ok! nodes=" + std::to_string(n) +
+         " pseudo_iterations=" + std::to_string(pseudo);
+}
+
 // ---------------------------------------------------------------------------------------------
 
 void Upi::register_node_commands() {
@@ -1142,6 +1169,7 @@ void Upi::register_node_commands() {
   };
   H["print_all_strats"] = [this](const Args&) { return cmd_print_all_strats(); };
   H["dump_train"] = [this](const Args& a) { return cmd_dump_train(a); };
+  H["warm_start"] = [this](const Args& a) { return cmd_warm_start(a); };
   H["node_count"] = [this](const Args&) { return cmd_node_count(); };
   H["show_nuts"] = [this](const Args& a) { return cmd_show_nuts(a); };
 

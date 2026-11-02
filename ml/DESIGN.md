@@ -159,6 +159,32 @@ linear output). Stdlib-only `--selftest` parses it back; `export.load_net` +
 `export.forward` are the **reference forward** the C++ port must match
 (verified `max |torch - stdlib| = 3e-6` over random inputs on this machine).
 
+## Solver-side warm start (stage 3)
+
+`warm_start <wsnb> [pseudo_iterations]` (default 300) loads a `WSNW0001` net
+and walks a freshly built river tree (`build_tree` with exactly 5 board cards,
+no chance nodes below the root, no locked/eliminated flags), recomputing the
+normative features of `ml/features.py` node by node in C++ (`src/nn_warm.cpp`).
+
+At each decision node it evaluates the strat net on every
+(hand, action), softmaxes, and writes `reach_p(hand) * sigma(action|hand)`
+into the node's strategy-sum rows, then descends with the acting player's
+reach replaced by that product row (seats alternate, so reach vectors swap
+roles child by child; hand counts may differ between players). It finally sets
+`tree.iterations = pseudo_iterations`: `average_strategy` normalises the sums
+per hand, so the tree behaves exactly as if K iterations of DCFR had produced
+the predicted average strategy — the "begin with a good average, zero regrets"
+construction of Brown & Sandholm (AAAI 2016), minus the regret half. K is a
+trust knob for later A/B sweeps: DCFR's forgetting factor decays the preload
+at `(t/(t+1))^gamma`, so larger K keeps net strategies around longer.
+
+Strategy rows are the only state written; regrets stay zero. The command
+refuses non-fresh trees (`iterations != 0`), so warm start never blends with
+partially solved state. `tests/test_upi.py` pins the port against a tiny
+seeded `ml/tests/fixture.wsnb` (hidden=8): C++ per-node strategies match the
+stdlib reference forward to ~5e-8, on the root and a deeper node, independent
+of K.
+
 ## Layout
 
 | path | what |
@@ -169,8 +195,11 @@ linear output). Stdlib-only `--selftest` parses it back; `export.load_net` +
 | `ml/features.py` | normative feature encoder `WSDT0001` -> model inputs (stage 2; pure stdlib) |
 | `ml/train.py` | training harness (stage 2; the only torch-dependent tool) |
 | `ml/export.py` | `.pt` -> `WSNW0001` export + stdlib reference forward (stage 3 input) |
+| `ml/make_fixture_net.py` | regenerates the tiny seeded test net (stage 3) |
 | `ml/tests/fixture.wsdt` | one small solved spot (committed; used by the loader self-test) |
+| `ml/tests/fixture.wsnb` | committed test net for the C++ warm_start check |
 | `ml/tests/test_features.py` | encoder tests: replay, shapes, canonicalisation invariance |
+| `src/nn_warm.{hpp,cpp}` | `WSNW0001` loader + C++ warm-start tree walk (stage 3) |
 
 Data directories live OUTSIDE the repo (default `~/wsolver-data/river_v1`) — the
 10k-spot corpus is GBs and regenerable from the manifest + generator.

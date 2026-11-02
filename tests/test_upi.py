@@ -372,6 +372,94 @@ def run_small_tree(u, order):
     check_dump_train(u)
 
 
+def check_warm_start(u):
+    """warm_start (#59): net-predicted average strategies, checked against the
+    normative python reference (ml/features.py + ml/export.py) at two nodes."""
+    import math
+    sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..", "ml")))
+    import features as wf
+    import loader as wl
+    import export as we
+
+    wsnb = os.path.abspath(os.path.join(HERE, "..", "ml", "tests", "fixture.wsnb"))
+    net = we.load_net(wsnb)
+    check(net["meta"]["hidden"] == 8, "fixture net is the tiny hidden=8 test net")
+
+    check(u.cmd("warm_start").startswith("ERROR"), "warm_start needs a filename")
+    check(u.cmd("warm_start /nonexistent_net.wsnb").startswith("ERROR"), "warm_start missing file errors")
+
+    for c in ["set_board KhQs7d4c2s",
+              "set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s",
+              "set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s",
+              "set_pot 0 0 100", "set_eff_stack 200", "clear_lines",
+              "add_line 50", "add_line 0 50", "build_tree"]:
+        resp = u.cmd(c)
+        check("ERROR" not in resp, f"warm_start setup {c!r} -> {resp.strip()}")
+
+    resp = u.cmd("warm_start " + wsnb)
+    check(re.fullmatch(r"warm_start ok! nodes=\d+ pseudo_iterations=300\n?", resp),
+          f"warm_start response ({resp.strip()})")
+    check(u.cmd("show_iters") == "300", "pseudo iterations visible on show_iters")
+    check(u.cmd("warm_start " + wsnb).startswith("ERROR"),
+          "warm_start twice refused (tree already has iterations)")
+
+    def children(node):
+        return [k.split("\n")[1].split(":")[-1]
+                for k in u.cmd("show_children " + node).split("\n\n") if k.strip()]
+
+    def predict(node, player, reach_p, reach_o):
+        """Expected strategies per Pio combo, from the normative python path."""
+        kids = children(node)
+        sup_p = [i for i, w in enumerate(reach_p) if w > 0]
+        sup_o = [i for i, w in enumerate(reach_o) if w > 0]
+        combos = [sup_o, sup_o]
+        combos[player] = sup_p
+        spot = wl.Spot(board=["Kh", "Qs", "7d", "4c", "2s"], start_pot=100.0,
+                       eff_stack=200.0, iterations=0, exploitability=0.0,
+                       root_matchups=0.0, combos=combos, hand_weights=[[], []])
+        rec = wl.NodeRecord(path=node, player=player, actions=kids, strat=[],
+                            reach_player=[reach_p[i] for i in sup_p],
+                            reach_opp=[reach_o[i] for i in sup_o],
+                            ev_player=[], ev_opp=[])
+        g = wf.global_f(spot, rec)
+        hs = wf.hand_fs(spot, rec)
+        acts = [wf.action_f(a, 100.0) for a in kids]
+        out = {}
+        for ci, h in zip(sup_p, hs):
+            logits = [we.forward(net["strat"], g + h + a) for a in acts]
+            mx = max(logits)
+            e = [math.exp(x - mx) for x in logits]
+            stot = sum(e)
+            out[ci] = [x / stot for x in e]
+        return kids, out
+
+    def compare(node, player, reach_p, reach_o, tol=2e-3):
+        kids, exp = predict(node, player, reach_p, reach_o)
+        rows = [floats(l) for l in u.cmd("show_strategy " + node).split("\n")]
+        check(len(rows) == len(kids), f"{node}: {len(kids)} strategy rows")
+        worst = 0.0
+        for a in range(len(kids)):
+            for ci, e in exp.items():
+                worst = max(worst, abs(rows[a][ci] - e[a]))
+        check(worst < tol, f"{node}: net strategies match python reference (max dev {worst:.2e})")
+        return kids, exp
+
+    r0 = floats(u.cmd("show_range OOP r:0"))
+    r1 = floats(u.cmd("show_range IP r:0"))
+    kids0, root_pred = compare("r:0", 0, r0, r1)
+    # deeper node: after OOP checks, OOP reach = range * root check strategy,
+    # which exercises the walk's reach propagation and history features.
+    ca = kids0.index("c")
+    r0_after_c = [r0[ci] * (root_pred[ci][ca] if ci in root_pred else 0.0) for ci in range(1326)]
+    compare("r:0:c", 1, r1, r0_after_c)
+    # pseudo iterations must not change the strategies (only CFR dynamics)
+    st_a = u.cmd("show_strategy r:0")
+    check(u.cmd("build_tree") == "build_tree ok!", "rebuild resets tree")
+    check(u.cmd("warm_start " + wsnb + " 7").startswith("warm_start ok!"), "re-warm with K=7")
+    check(u.cmd("show_strategy r:0") == st_a, "strategies independent of pseudo_iterations")
+    check(u.cmd("show_iters") == "7", "show_iters reflects K=7")
+
+
 def check_dump_train(u):
     print("[dump_train: binary per-node training records (#59)]")
     import struct as st_
@@ -610,6 +698,8 @@ def main(exe, big=False):
         check(abs(evo + evi - 100) < 0.05, f"pruning: EV OOP + EV IP = pot ({evo:.3f} + {evi:.3f})")
         check(expl < 0.05, f"pruning: river exploitability {expl:.5f}")
         u.cmd("set_pruning off")
+
+        check_warm_start(u)
         print("[misc]")
         check(u.cmd("show_effective_stack") == "200", "show_effective_stack")
         memory = u.cmd("show_memory")

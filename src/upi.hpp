@@ -120,6 +120,7 @@ class Upi {
   std::string cmd_print_all_strats();
   std::string cmd_node_count();
   std::string cmd_dump_train(const Args& a);
+  std::string cmd_warm_start(const Args& a);
   std::string cmd_bench();
   std::string cmd_solve_partial(const Args& a);
   std::string cmd_explo_partial(const Args& a);

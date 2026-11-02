@@ -5,10 +5,14 @@ on:
   push:
     branches: [main]
 
-# A new push to the same branch supersedes the previous run.
+# A new push to a pull request supersedes the previous run. Pushes to main are not
+# cancelled: each commit there is something we may later want to point at, and two merges
+# landing seconds apart would otherwise leave the first one with no completed run.
+# PR runs and main runs are already in separate groups (refs/pull/N/merge vs
+# refs/heads/main), so they never cancel each other.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:

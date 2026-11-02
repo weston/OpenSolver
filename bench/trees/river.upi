@@ -1,0 +1,11 @@
+# River, single decision street. Smallest tree in the suite: measures per-iteration
+# overhead and terminal (showdown) evaluation rather than tree traversal.
+set_range OOP 22+,A2s+,K7s+,Q9s+,J9s+,T9s,ATo+,KJo+
+set_range IP 22+,A4s+,K8s+,Q9s+,J9s+,T9s,98s,A9o+,KTo+,QJo
+set_board KhQs7d4c2s
+set_pot 0 0 100
+set_eff_stack 400
+add_line 33 100 400
+add_line 0 33 100 400
+add_line 0 75 225 400
+add_line 75 225 400

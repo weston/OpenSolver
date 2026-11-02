@@ -1,0 +1,11 @@
+# Three-bet flop pot: big pot, low SPR, so most branches end in an all-in quickly.
+set_range OOP 77+,A4s+,K9s+,QTs+,JTs,AJo+,KQo
+set_range IP TT+,AQs+,AKo,A5s,KQs
+set_board Ah8c3d
+set_pot 0 0 200
+set_eff_stack 400
+add_line 0 60 180 400
+add_line 60 180 400
+add_line 0 0 60 180 400
+add_line 0 60 60 200 200
+add_line 60 60 200 200

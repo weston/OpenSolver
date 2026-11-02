@@ -1,0 +1,12 @@
+# Deep stacks: long raise chains on every street, the deepest tree in the suite.
+set_range OOP 22+,A2s+,K5s+,Q8s+,J8s+,T8s+,97s+,87s,76s,A9o+,KTo+,QJo
+set_range IP 22+,A2s+,K7s+,Q9s+,J9s+,T9s,98s,ATo+,KJo+
+set_board Js7h3c
+set_pot 0 0 40
+set_eff_stack 2000
+add_line 0 13 13 40 40 120
+add_line 13 40 120 360 360 1080
+add_line 13 13 40 40 120 120
+add_line 0 30 90 270 270 810
+add_line 30 90 270 810 810 2000
+add_line 0 0 30 30 90 90

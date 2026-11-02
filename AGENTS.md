@@ -82,6 +82,33 @@ python3 tests/test_upi.py ./solver
 `tests/test_categories.cpp` compares the range explorer byte-for-byte against recorded Pio output in
 `tests/data/pio_categories/`.
 
+## Benchmarking
+
+The owner's metric is **wall time to reach a target exploitability**, not iterations per second: a
+faster iteration that converges more slowly is not an improvement. Every performance PR reports
+before/after numbers from this suite.
+
+```sh
+make bench                                   # all trees, 1 thread and all threads -> bench/results.{json,md}
+python3 bench/run.py --trees flop_srp_2 --threads 1    # one tree, one mode
+python3 bench/run.py --include-25bb          # also the 25bb fixture (several GB, minutes per run)
+```
+
+`bench/trees/*.upi` are clean-room tree definitions (setup only, no `build_tree`): a river, a turn, a
+flop single-raised pot with 2 and with 4 sizes, a flop 3-bet pot, a deep-stack tree and a preflop
+tree. `bench/run.py` appends `set_threads`, the build, the accuracy target and the solve, then parses
+the periodic `SOLVER:` blocks to find when each target was first crossed - one solve yields all
+three targets (1%, 0.5%, 0.2% of the starting pot) instead of re-solving per target.
+
+Reading the numbers:
+- Times are to the first report at or below the target, so `set_info_freq` (default 5) bounds how far
+  past it a run can go. Exploitability is only computed when the solver reports, and that costs a
+  best-response pass, so comparisons are only valid at the same `--info-freq`.
+- Peak RSS is sampled from `ps`, which can under-report on trees that finish in well under a second.
+- Absolute times are machine-relative; only before/after on the same machine means anything.
+- `bench/results.md` has an empty Pio column for the maintainer to fill from a licensed PioSOLVER on
+  the same trees.
+
 ## Layout
 
 | Path | What |

@@ -1,0 +1,13 @@
+# Turn: two decision streets plus one river chance node, so lines are turn actions
+# followed by river actions only.
+set_range OOP 22+,A2s+,K7s+,Q9s+,J9s+,T9s,ATo+,KJo+
+set_range IP 22+,A4s+,K8s+,Q9s+,J9s+,T9s,98s,A9o+,KTo+,QJo
+set_board Kh9h4h2c
+set_pot 0 0 100
+set_eff_stack 400
+add_line 0 0 33 33
+add_line 0 33 33 100 100
+add_line 0 33 33 100 400
+add_line 33 100 100 300 300
+add_line 33 33 100 100
+add_line 75 225 225

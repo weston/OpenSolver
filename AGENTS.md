@@ -118,7 +118,7 @@ Reading the numbers:
 | `src/range.*` | range text parser/formatter (Pio itself only accepts 1326 floats) |
 | `src/action_tree.*` | `add_line`/`add_preflop_line` -> betting tree (implicit check/call/fold, Pio child order) |
 | `src/game.*` | full game tree: chance expansion, isomorphism, flop subsets, showdown orderings, storage (float32 or 16-bit) |
-| `src/solver.*` | vector-form DCFR (α=1.5, β=0, γ=2), best response, evaluation |
+| `src/solver.*` | vector-form DCFR (α=1.3, β=0, γ=5; tuned on bench/, #52), best response, evaluation |
 | `src/parallel.*` | nested work-stealing thread pool + per-thread arenas |
 | `src/equity.*`, `src/categories.*` | calc_eq family, range explorer |
 | `src/pfh2h.*` | exact preflop hand-vs-hand win/tie table (suit-isomorphic generation, cached in ~/.cache/wsolver) |

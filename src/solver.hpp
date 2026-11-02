@@ -10,10 +10,14 @@ namespace pio {
 
 enum class Walk { CFR, BestResponse, Evaluate };
 
+// Discounted CFR (Brown & Sandholm 2019). The paper's 1.5 / 0 / 2 was retuned on bench/ (#52):
+// alpha 1.3 and gamma 5 reach every target in fewer iterations on every bench tree (e.g. 0.05% pot:
+// deep 280 -> 180, flop SRP 4 sizes 130 -> 75, preflop 100 -> 55). Lower alpha (<= 1.2) is faster early
+// but stalls at tight targets on rivers.
 struct DcfrParams {
-  double alpha = 1.5;  // positive regret discount exponent
+  double alpha = 1.3;  // positive regret discount exponent
   double beta = 0.0;   // negative regret discount exponent
-  double gamma = 2.0;  // strategy-sum discount exponent
+  double gamma = 5.0;  // strategy-sum discount exponent
 };
 
 struct RootStats {

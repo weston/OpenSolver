@@ -23,3 +23,18 @@
 | river | 20 | 75 | 3 MB | 0.00 | 0.00 | 0.01 | 0.1950 |  |
 | turn | 1 | 45 | 5.5 MB | 0.07 | 0.09 | 0.13 | 0.1840 |  |
 | turn | 20 | 45 | 6.8 MB | 0.04 | 0.05 | 0.08 | 0.1840 |  |
+
+## Full preflop tree (opt-in, `--include-preflop`)
+
+`preflop_full` (25-flop subset x 3 schematic postflop trees = 75 subtrees, wide 25bb-HU
+ranges, 16-bit storage) is several GB and minutes per run, so it is not part of the
+default `make bench`. Rows below were measured on a different machine than the table
+above (arm64 Darwin 27.2.0, 10 cores, Apple clang 21.0.0, Nov 1 2026) — do not compare
+absolute numbers across the two tables. (This section was dropped by #70's regeneration
+and is restored with fresh post-#70, DCFR γ=3 numbers; the γ=2-era run took 50
+iterations and 139.67 s / 25.15 s to 0.2% of pot.)
+
+| tree | threads | iters | peak RSS | to 1% pot | to 0.5% pot | to 0.2% pot | final expl | Pio (same tree) |
+|---|---|---|---|---|---|---|---|---|
+| preflop_full | 1 | 25 | 2182.7 MB | 38.09 | 52.42 | 66.74 | 0.0280 |  |
+| preflop_full | 10 | 25 | 2190.1 MB | 6.93 | 9.51 | 12.10 | 0.0280 |  |

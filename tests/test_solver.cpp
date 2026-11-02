@@ -31,7 +31,10 @@ static bool parallel_equivalence() {
       if (!parse_range("AA,KK,JJ,AQs,KQo", weights, err)) return false;
       cfg.range[1] = weights;
       cfg.pot[2] = 60;
-      cfg.eff_stack = 200;
+      // Keep bets below all-in: early all-in kernels intentionally partition
+      // runout sums by thread count, which can change float rounding even with
+      // the original scheduler. Ordinary chance reductions have a fixed order.
+      cfg.eff_stack = 1000;
       cfg.iso_flop = iso;
       cfg.lines.add = {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {20, 200}};
       GameTree g;

@@ -583,6 +583,8 @@ function wireBuild() {
       $("build-out").textContent = `built: ${r.node_count} nodes`;
       $("btn-solve").disabled = false;
       $("hdr-tree").classList.remove("hidden");
+      state.node = null;
+      gotoNode("r:0");  // new tree: the browse tab must not keep showing "no tree" or the old tree
     } catch (e) { showErr(String(e.message || e)); }
   };
   $("btn-solve").onclick = async () => {
@@ -604,8 +606,8 @@ function wireIO() {
       showErr(null);
       await post("/api/load", { path: $("f-path").value.trim() });
       $("io-out").textContent = "loaded (lazy: streets load as you browse them)";
+      state.node = null;  // a different tree: start at its root, not the old node id
       switchTab("browse");
-      gotoNode("r:0");
     } catch (e) { showErr(String(e.message || e)); }
   };
   $("btn-save").onclick = async () => {
@@ -632,6 +634,16 @@ function switchTab(name) {
   for (const id of ["browse", "build", "io"]) {
     $("tab-" + id).classList.toggle("hidden", id !== name);
   }
+  // Re-read the current node on every visit: a tree may have been built, solved further or
+  // loaded since the browse tab was last drawn (it used to stay blank until a page reload).
+  if (name === "browse") refreshBrowse();
+}
+
+async function refreshBrowse() {
+  try {
+    const st = await get("/api/status");
+    if (st.tree) gotoNode(state.node ? state.nodeId : "r:0");
+  } catch (e) { /* poll() reports server errors */ }
 }
 
 async function boot() {

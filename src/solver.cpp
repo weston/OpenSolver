@@ -331,12 +331,12 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
       }
       out[h] = static_cast<float>(acc + compat * L);
     };
-    if (parallel && Hp >= 32) {
-      std::function<void(int)> fn = body;
-      pool().parallel_for(Hp, fn);
-    } else {
-      for (int h = 0; h < Hp; ++h) body(h);
-    }
+    // Always serial. The work here is Hp * Ho, bounded by NUM_COMBOS^2 (~1.76M FMAs), which
+    // is below the crossover where a parallel_for dispatch pays for itself: measured on a
+    // 20-core machine, parallelising this cost 42% on a preflop betting tree (2.99 s vs
+    // 1.73 s for 2000 iterations) and nothing on a full preflop tree with flop subsets
+    // (5.72 s vs 5.67 s). Outer parallelism over chance children is unaffected (#110).
+    for (int h = 0; h < Hp; ++h) body(h);
     return;
   }
   const int nb = static_cast<int>(ar.boards.size());

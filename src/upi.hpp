@@ -170,6 +170,7 @@ class Upi {
   long long iterations_ = 0;
   double solve_seconds_ = 0;  // accumulated solving time for the tree
   double accuracy_ = 0;       // 0 = never
+  DcfrParams dcfr_;           // set_dcfr: DCFR discount exponents (defaults 1.5 / 0 / 2)
   bool accuracy_fraction_ = false;
   double recalc_accuracy_[3] = {0, 0, 0};
   int always_recalc_street_ = 0, always_recalc_ms_ = 0;

@@ -166,27 +166,31 @@ std::string Upi::pfmt(const char* f, double v) const {
   return buf;
 }
 
-std::string Upi::fmt(double v) const {
-  char buf[64];
-  if (std::isnan(v)) return "nan";
-  float f = static_cast<float>(v);
-  auto r = std::to_chars(buf, buf + sizeof(buf), f);
-  return std::string(buf, r.ptr);
+// Pio prints computed values as the float rounded to 9 significant digits (printf "%.9g": "0.570510685",
+// "2821.31494", "1.05068034e-06", "60"), which round-trips a float exactly; verified on every vector
+// and scalar in tests/pio_compare/probe*.txt against PioSOLVER 3.10.1 (#125).
+static char* put_float(char* buf, char* end, float f) {
+  if (std::isnan(f)) {
+    std::memcpy(buf, "nan", 3);
+    return buf + 3;
+  }
+  return std::to_chars(buf, end, f, std::chars_format::general, 9).ptr;
 }
 
+std::string Upi::fmt(double v) const {
+  char buf[64];
+  return std::string(buf, put_float(buf, buf + sizeof(buf), static_cast<float>(v)));
+}
+
+// One value per hand (or class) as Pio prints it: "%.9g " each, so the line ends in a space.
 std::string Upi::floats_line(const float* v, int n) const {
   std::string s;
-  s.reserve(static_cast<size_t>(n) * 8);
+  s.reserve(static_cast<size_t>(n) * 10);
   char buf[32];
   for (int i = 0; i < n; ++i) {
-    if (i) s += ' ';
-    float f = v[i];
-    if (std::isnan(f)) {
-      s += "nan";
-      continue;
-    }
-    auto r = std::to_chars(buf, buf + sizeof(buf), f);
-    s.append(buf, r.ptr);
+    char* e = put_float(buf, buf + sizeof(buf), v[i]);
+    *e++ = ' ';
+    s.append(buf, e);
   }
   return s;
 }
@@ -536,10 +540,7 @@ void Upi::register_commands() {
   };
   H["show_hand_order"] = [](const Args&) {
     std::string s;
-    for (int i = 0; i < NUM_COMBOS; ++i) {
-      if (i) s += ' ';
-      s += combo_str(i);
-    }
+    for (int i = 0; i < NUM_COMBOS; ++i) s += combo_str(i) + " ";  // trailing space, like Pio
     return s;
   };
   H["show_preflop_order"] = [](const Args&) { return std::string(kPreflopOrder); };

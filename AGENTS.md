@@ -179,6 +179,11 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - An all-in before the river is an `END_NODE` (no chance nodes); its value averages all runouts.
 - Node blocks: `id`, type, board (trailing space; `---` preflop), pot `oop ip dead ` (trailing space),
   `<n> children`, `flags: <f> ` and a blank line. `show_children` concatenates `child i:` + block.
+- Computed floats print as `%.9g` of the float32 (`0.570510685`, `1.05068034e-06`, `60`); every 1326- or
+  169-value line is `"%.9g "` per value, so it **ends in a space** (`show_hand_order` too). `_pp` listings
+  and `show_locked_combos` end with a blank line before `END`; `show_incentives` is `"%f "` per action;
+  `calc_eq_preflop` prints `nan` for classes with 0 matchups. `compare.py` compares numbers with a
+  tolerance, so diff byte-for-byte to see these (#125).
 - `calc_ev`/`calc_eq` matchups are weighted by the hand's own reach (`calc_eq` also times the number of
   ordered runouts); out-of-range hands print `nan` / `inf`. Pio keeps per-player hand lists as the union of
   both ranges, so it has a counterfactual value for opponent-only hands and prints a *signed* `inf`; ours does

@@ -62,8 +62,14 @@ struct GameConfig {
   // EV (55.111) and exploitability (0.121) match, but the solved STRATEGIES do not: per-hand
   // frequencies differ by up to 0.008, because collapsing branches aggregates the CFR updates
   // over equivalent runouts and so follows a different trajectory to the same equilibrium.
+  // The gap WIDENS with convergence rather than closing (0.006 at 60 iterations, 0.015 at
+  // 300, 0.056 at 1200), which looks alarming but is benign: at 1200 iterations both reach
+  // the same EVs (55.124 / 44.876) with exploitability 0.001 and 0.003. They are converging
+  // to different members of the equilibrium set, not one of them to a wrong answer.
+  //
   // So this is not a free switch - a client diffing frequencies against Pio will see the
-  // difference. Worth `set_isomorphism 1 1` for a turn-rooted solve where that does not matter.
+  // difference, and it gets bigger the longer you solve. Worth `set_isomorphism 1 1` for a
+  // turn-rooted solve where only EV matters; not for one whose frequencies are compared.
   bool iso_flop = true, iso_turn = false;
   // Keep each player's hand list as the union of both ranges, like Pio, so hands only in
   // the opponent's range still get a slot (and therefore a counterfactual value) instead

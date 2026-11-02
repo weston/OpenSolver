@@ -326,6 +326,9 @@ int main() {
     CHECK(format_range(y) == f1);
   }
 
+  // SCRATCH: deliberate failure to prove the CI jobs fail the check (not for merge).
+  CHECK(1 == 2);
+
   if (failures) {
     std::printf("%d FAILURE(S)\n", failures);
     return 1;

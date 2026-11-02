@@ -99,8 +99,18 @@ class Solver {
   //
   // Better or equal on every tree, results bit-identical. The crossover is past ~100
   // iterations: at 180 on deep, period 32 wins back 1.3% (26.23 s vs 26.58 s), because by
-  // then the activation delay is amortised and the forced full iterations dominate. Raise it
-  // via `set_pruning on <period>` for very long runs.
+  // then the activation delay is amortised and the forced full iterations dominate.
+  //
+  // CAREFUL if you raise it. The period sets BOTH the measurement frequency and the
+  // activation delay (`t > 2 * prune_period`), so raising it pushes activation out too and
+  // can switch pruning off entirely for a short solve. `set_pruning on 64` delays activation
+  // to t=128, and every bench tree reaches 0.2% of pot by t=100, so pruning never runs:
+  // flop_srp_2 goes 7.71 s -> 8.22 s, i.e. slower than the default despite asking for more
+  // pruning. Only raise it for runs that will go well past 2x the new period.
+  //
+  // Decoupling the two (a separate warmup field) was tried and rejected: it removes the
+  // footgun but is ~1.3% slower, because the extra int changes this struct's layout, and at
+  // fixed warmup the period sweep showed no consistent winner across trees.
   int prune_period = 8;  // <= 1: never force a full iteration
 
   // CFR iterations restricted to the subtree at `ni` with the given (canonical) reaches.

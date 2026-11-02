@@ -1,6 +1,7 @@
 #include "solver.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 
@@ -60,6 +61,21 @@ void Solver::fold_value(const GNode& n, int p, const float* ro, float* out) cons
   for (int h = 0; h < Hp; ++h) out[h] *= pay;
 }
 
+// One 8-byte word per 6-byte SdEntry: with the entry fields at fixed little-endian offsets this
+// replaces the ldrh + ldrb + ldrb field loads with a single load in the hot loops below (-1.2%
+// wall on flop_srp_2, -2.7% flop_3bet, -3.5% deep, bit-identical results; #57). Callers must pass
+// only entries before the array's last one, so the 2-byte overread stays inside the vector.
+static_assert(std::endian::native == std::endian::little, "SdEntry word loading assumes little-endian");
+static inline uint64_t sd_word(const SdEntry* e) {
+  uint64_t w;
+  std::memcpy(&w, e, 8);
+  return w;
+}
+static inline int sd_w_idx(uint64_t w) { return static_cast<int>(w & 0xffff); }
+static inline int sd_w_c1(uint64_t w) { return static_cast<int>((w >> 16) & 0xff); }
+static inline int sd_w_c2(uint64_t w) { return static_cast<int>((w >> 24) & 0xff); }
+static inline int sd_w_same(uint64_t w) { return static_cast<int16_t>((w >> 32) & 0xffff); }
+
 void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) const {
   const int o = 1 - p;
   const SdEntry* pe = sb.ent[p].data();
@@ -70,6 +86,7 @@ void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, 
 
   // One pass in strength order (see ShowdownBoard::groups): cumulative opponent mass and per-card mass
   // give, for each of p's hands, the mass of strictly weaker (lt) and weaker-or-equal (le) opponents.
+  // The word-load loops stop one entry short and do a scalar tail so the 8-byte loads never overrun.
   ArenaScope sc;
   float* ltv = sc.a.alloc(static_cast<size_t>(np) * 2);
   float* lev = ltv + np;
@@ -78,15 +95,36 @@ void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, 
   int i0 = 0, j0 = 0;
   for (int g = 0; g < ng; ++g) {
     const int i1 = gr[g].first, j1 = gr[g].second;
-    for (int i = i0; i < i1; ++i) ltv[i] = cum - cs[pe[i].c1] - cs[pe[i].c2];
-    for (int j = j0; j < j1; ++j) {
-      const SdEntry q = oe[j];
+    for (int i = i0; i + 1 < i1; ++i) {
+      const uint64_t w = sd_word(pe + i);
+      ltv[i] = cum - cs[sd_w_c1(w)] - cs[sd_w_c2(w)];
+    }
+    if (i0 < i1) {
+      const SdEntry q = pe[i1 - 1];
+      ltv[i1 - 1] = cum - cs[q.c1] - cs[q.c2];
+    }
+    for (int j = j0; j + 1 < j1; ++j) {
+      const uint64_t w = sd_word(oe + j);
+      const float r = ro[sd_w_idx(w)];
+      cum += r;
+      cs[sd_w_c1(w)] += r;
+      cs[sd_w_c2(w)] += r;
+    }
+    if (j0 < j1) {
+      const SdEntry q = oe[j1 - 1];
       const float r = ro[q.idx];
       cum += r;
       cs[q.c1] += r;
       cs[q.c2] += r;
     }
-    for (int i = i0; i < i1; ++i) lev[i] = cum - cs[pe[i].c1] - cs[pe[i].c2];
+    for (int i = i0; i + 1 < i1; ++i) {
+      const uint64_t w = sd_word(pe + i);
+      lev[i] = cum - cs[sd_w_c1(w)] - cs[sd_w_c2(w)];
+    }
+    if (i0 < i1) {
+      const SdEntry q = pe[i1 - 1];
+      lev[i1 - 1] = cum - cs[q.c1] - cs[q.c2];
+    }
     i0 = i1;
     j0 = j1;
   }
@@ -94,12 +132,19 @@ void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, 
   // value = W*lt + L*(compat - le) + T*(le - lt) = (W - T)*lt + (T - L)*le + L*compat; the identical combo
   // (equal strength, inside "le") is subtracted twice by inclusion-exclusion and added back once.
   const float a = W - T, b = T - L;
-  for (int i = 0; i < np; ++i) {
-    const SdEntry q = pe[i];
-    const float sr = q.same >= 0 ? ro[q.same] : 0.0f;
+  for (int i = 0; i + 1 < np; ++i) {
+    const uint64_t w = sd_word(pe + i);
+    const float sr = sd_w_same(w) >= 0 ? ro[sd_w_same(w)] : 0.0f;
     const float le = lev[i] + sr;
+    const float compat = cum - cs[sd_w_c1(w)] - cs[sd_w_c2(w)] + sr;
+    out[sd_w_idx(w)] += a * ltv[i] + b * le + L * compat;
+  }
+  if (np > 0) {
+    const SdEntry q = pe[np - 1];
+    const float sr = q.same >= 0 ? ro[q.same] : 0.0f;
+    const float le = lev[np - 1] + sr;
     const float compat = cum - cs[q.c1] - cs[q.c2] + sr;
-    out[q.idx] += a * ltv[i] + b * le + L * compat;
+    out[q.idx] += a * ltv[np - 1] + b * le + L * compat;
   }
 }
 

@@ -161,7 +161,8 @@ struct StreetSegments {
 // recorded and reported by the next command).
 struct LazyStore {
   std::string path;
-  uint8_t file_mode = 0;           // save's storage mode byte (bit 0: 16-bit records)
+  uint8_t file_mode = 0;           // save's mode byte (see upi_save.cpp)
+  uint8_t precision = 0;           // bits per value of quantised records (mode bit 2)
   StreetSegments seg;
   std::vector<uint64_t> offset;    // per segment: byte offset of its gzip member (0 = not in file)
   std::unique_ptr<std::atomic<uint8_t>[]> loaded;

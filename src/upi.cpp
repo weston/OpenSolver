@@ -379,11 +379,11 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   if (!t->build(c, err, false)) throw CmdError{err};
   // Old tree memory is released before allocating the new one, so count it as available.
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
-  uint64_t full = t->memory_bytes_for(false), small = t->memory_bytes_for(true);
+  uint64_t full = t->memory_bytes_for(false, predictive_), small = t->memory_bytes_for(true, predictive_);
   if (small_strats_ == "on") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
   else t->compressed = c.preflop || full > avail * 9 / 10;  // auto: preflop trees always small (like Pio)
-  uint64_t need = t->memory_bytes();
+  uint64_t need = t->memory_bytes_for(t->compressed, predictive_);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board
   if (!mem_ignore && need > avail)
     throw CmdError{"not enough memory: need " + std::to_string(need >> 20) + " MB (" + std::to_string(small >> 20) +
@@ -422,7 +422,7 @@ std::string Upi::estimate_text() {
   t.payoff = payoff_;
   std::string err;
   if (!t.build(cfg_, err, false)) throw CmdError{err};
-  uint64_t b = t.memory_bytes_for(false), bs = t.memory_bytes_for(true);
+  uint64_t b = t.memory_bytes_for(false, predictive_), bs = t.memory_bytes_for(true, predictive_);
   // Pio prints both algorithms; here v4_large = float32 storage, v4_small = 16-bit (small_strats).
   return "estimated tree size (v4_large): " + std::to_string(b >> 20) + " MB\nestimated tree size (v4_small): " +
          std::to_string(bs >> 20) + " MB";
@@ -804,7 +804,7 @@ void Upi::register_commands() {
     GameTree t;
     std::string err;
     if (!t.build(c, err, false)) throw CmdError{err};
-    return "estimated tree size: " + std::to_string(t.memory_bytes_for(true) >> 20) + " MB";
+    return "estimated tree size: " + std::to_string(t.memory_bytes_for(true, predictive_) >> 20) + " MB";
   };
   register_preflop_commands();
 

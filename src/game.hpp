@@ -256,7 +256,10 @@ class GameTree {
   bool build(const GameConfig& c, std::string& err, bool allocate = true);
   // Memory needed (bytes) for the current node set; valid after build(..., false).
   uint64_t memory_bytes() const { return memory_bytes_for(compressed); }
-  uint64_t memory_bytes_for(bool compress) const;
+  // with_preds: count the predictive array that set_predictive will allocate after the
+  // build. Already-allocated preds are counted regardless, so memory_bytes() is right
+  // once the feature is on; the flag is for the check that runs *before* allocation.
+  uint64_t memory_bytes_for(bool compress, bool with_preds = false) const;
   void allocate_storage();  // uses `compressed`
 
   // Payoff for player p at a terminal given outcome (1 win, 0 tie, -1 lose). With subtree=true the

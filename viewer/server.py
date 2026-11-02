@@ -70,6 +70,7 @@ class Solver:
         self.dead = False
         self.version = ""
         self.generation = 0
+        self.series = []         # convergence points of the current tree: {t, explo, ev_oop, ev_ip}
         self.start()
 
     def start(self):
@@ -96,8 +97,11 @@ class Solver:
                         if l2 == END:
                             break
                         block.append(l2)
+                    point = parse_progress_point(block)
                     with self.state_lock:
                         self.progress = block
+                        if point is not None:
+                            self.series.append(point)
                         self.events += 1
                 elif line.startswith("SOLVER:"):
                     with self.state_lock:
@@ -159,6 +163,10 @@ class Solver:
                     "solver_status": self.solver_status, "events": self.events,
                     "tree": self.tree_present, "version": self.version}
 
+    def reset_series(self):
+        with self.state_lock:
+            self.series = []
+
     def restart(self):
         with self.cmd_lock:
             try:
@@ -170,6 +178,7 @@ class Solver:
                 pass
             self.start()  # cmd_lock is an RLock, cmd() inside start() is fine
             self.tree_present = False
+            self.reset_series()
             with self.state_lock:
                 self.dead = False
                 self.solving = False
@@ -185,6 +194,21 @@ def parse_num(tok):
     if not math.isfinite(v):
         return None
     return float(f"{v:.6g}")
+
+
+def parse_progress_point(block):
+    """One periodic SOLVER: block -> a convergence point, or None if it lacks the fields (#115)."""
+    vals = {}
+    for line in block:
+        key, _, val = line.partition(":")
+        try:
+            vals[key.strip()] = float(val)
+        except ValueError:
+            continue
+    if "running time" not in vals or "Exploitable for" not in vals:
+        return None
+    return {"t": vals["running time"], "explo": vals["Exploitable for"],
+            "ev_oop": vals.get("EV OOP"), "ev_ip": vals.get("EV IP")}
 
 
 def parse_floats(line, expect=None):
@@ -291,6 +315,20 @@ def api(solver, lib, method, path, query, body):
                      "reach": parse_floats(solver.cmd(f"show_range {actor} " + node_id), NUM_COMBOS),
                      "ev": ev_pair(solver, actor, node_id)}
 
+    if path == "/api/path":
+        # Every node from the root to `id`, in one call, so the UI can draw the action line (#112).
+        node_id = node_id_arg(query)
+        toks = node_id.split(":")
+        ids = [":".join(toks[:i]) for i in range(2, len(toks) + 1)] if len(toks) >= 2 else [node_id]
+        with solver.cmd_lock:
+            nodes = [parse_node_block(solver.cmd("show_node " + i)) for i in ids]
+            stack = parse_num(solver.cmd("show_effective_stack").split()[0])
+        return 200, {"nodes": nodes, "eff_stack": stack}
+
+    if path == "/api/convergence":
+        with solver.state_lock:
+            return 200, {"points": list(solver.series), "solving": solver.solving}
+
     if path == "/api/range":
         node_id = node_id_arg(query)
         return 200, {"oop": parse_floats(solver.cmd("show_range OOP " + node_id), NUM_COMBOS),
@@ -341,6 +379,7 @@ def api(solver, lib, method, path, query, body):
     if path == "/api/build":
         solver.cmd("build_tree")
         solver.tree_present = True
+        solver.reset_series()
         return 200, {"node_count": solver.cmd("node_count")}
 
     if path == "/api/solve":
@@ -348,7 +387,9 @@ def api(solver, lib, method, path, query, body):
         acc = b.get("accuracy", 0.05)
         if not isinstance(acc, (int, float)) or acc < 0:
             raise SolverError("bad accuracy")
-        solver.cmds([f"set_accuracy {acc:g}", "go"])
+        # Report (and check the target) every 10 iterations: a smoother convergence chart (#115)
+        # and less overshoot past the target than the default 25.
+        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq 10", "go"])
         return 200, {"ok": True}
 
     if path == "/api/stop":
@@ -366,6 +407,7 @@ def api(solver, lib, method, path, query, body):
         path_arg = safe_path(b.get("path", ""))
         solver.cmds(["stop", "wait_for_solver", f'load_tree "{path_arg}"'])
         solver.tree_present = True
+        solver.reset_series()
         return 200, {"ok": True}
 
     if path == "/api/restart":
@@ -422,19 +464,42 @@ def op_generate(solver, b):
     except (KeyError, TypeError, ValueError):
         raise SolverError("bad pot/stack/all-in numbers")
 
-    def sizes(key):
+    tb = load_tree_builder()
+
+    def sizes(key, allow_mult=True):
         val = no_newlines(str(b.get(key, "")), key).strip()
         if not val:
             return ""
         parts = [p.strip() for p in val.split(",") if p.strip()]
         try:
-            for p in parts:
-                f = float(p)
-                if f < 0 or f > 100000:
-                    raise ValueError
+            specs = tb.parse_size_list(val)
         except ValueError:
+            raise SolverError(f"bad sizes in {key} "
+                              "(want percentages, geometric Ne, raise multiples Nx, or a)")
+        if len(specs) != len(parts):
             raise SolverError(f"bad sizes in {key}")
+        for spec in specs:
+            if spec.kind == "mult":
+                if not allow_mult or spec.value > 1000:
+                    raise SolverError(f"bad sizes in {key} (Nx is for raise fields, N <= 1000)")
+            elif spec.kind == "geo":
+                if spec.value is not None and spec.value > 99:
+                    raise SolverError(f"bad sizes in {key} (Ne takes N <= 99)")
+            elif spec.kind == "pct" and spec.value > 100000:
+                raise SolverError(f"bad sizes in {key}")
         return ",".join(parts)
+
+    def raise_cap(key):
+        val = b.get(key)
+        if val is None or val == "":
+            return None
+        try:
+            cap = int(val)
+            if cap < 0 or cap > 99:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise SolverError(f"bad {key} (want a non-negative integer)")
+        return cap
 
     header = [
         f"#Pot#{pot}",
@@ -445,10 +510,11 @@ def op_generate(solver, b):
     if board:
         header.append(f"#Board#{board}")
     for street, name in (("flop", "Flop"), ("turn", "Turn"), ("river", "River")):
-        bet = sizes(f"{street}_bet")
+        bet = sizes(f"{street}_bet", allow_mult=False)
         rais = sizes(f"{street}_raise")
-        donk = sizes(f"{street}_donk")
+        donk = sizes(f"{street}_donk", allow_mult=False)
         allin = bool(b.get(f"{street}_allin"))
+        cap = raise_cap(f"{street}_raisecap")
         for player in ("", "IP"):
             if bet:
                 header.append(f"#{name}Config{player}.BetSize#{bet}")
@@ -458,28 +524,38 @@ def op_generate(solver, b):
                 header.append(f"#{name}Config.DonkBetSize#{donk}")
             if allin:
                 header.append(f"#{name}Config{player}.AddAllin#True")
+            if cap is not None:
+                header.append(f"#{name}Config{player}.RaiseCap#{cap}")
 
-    tb = load_tree_builder()
-    cfg = tb.parse_config("\n".join(header))
-    lines = tb.format_lines(tb.build_lines(cfg))
+    try:
+        cfg = tb.parse_config("\n".join(header))
+        lines = tb.format_lines(tb.build_lines(cfg))
+    except (ValueError, ArithmeticError) as e:
+        raise SolverError(f"bad sizes: {e}")
     if not lines:
         raise SolverError("config produced no lines (check bet/raise sizes)")
 
-    iso = bool(b.get("iso", True))
+    # Isomorphism is always on (owner decision, #113); an "iso" field from old clients is ignored.
     cmds = ["stop", "wait_for_solver",
             "set_range OOP " + range_oop,
             "set_range IP " + range_ip]
     if board:
         cmds.append("set_board " + board)
     cmds += [f"set_eff_stack {stack}", f"set_pot 0 0 {pot}",
-             "set_isomorphism 1 0" if iso else "set_isomorphism 0 0", "clear_lines"]
+             "set_isomorphism 1 0", "clear_lines"]
     cmds += lines
     solver.cmds(cmds)
     solver.tree_present = False
+    solver.reset_series()
     return {"lines": len(lines), "sample": [l[len("add_line "):] for l in lines[:8]]}
 
 
 # ---------------------------------------------------------------- HTTP layer
+
+STATIC_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*\.(html|js|css|svg)")
+STATIC_TYPES = {"html": "text/html; charset=utf-8", "js": "text/javascript; charset=utf-8",
+                "css": "text/css; charset=utf-8", "svg": "image/svg+xml"}
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -501,14 +577,16 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self, path):
         if not self._allowed("GET"):
             return
-        name = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}.get(path)
-        if not name:
+        # Flat files in viewer/static only: the name pattern has no separators or dots beyond the
+        # extension, so "..", subdirectories and absolute paths can never match.
+        name = "index.html" if path == "/" else path[1:]
+        m = STATIC_NAME_RE.fullmatch(name)
+        full = os.path.join(STATIC, name)
+        if not m or not os.path.isfile(full):
             self._send(404, {"error": "not found"})
             return
-        ctype = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
-                 "style.css": "text/css; charset=utf-8"}[name]
-        with open(os.path.join(STATIC, name), "rb") as f:
-            self._send(200, f.read(), ctype)
+        with open(full, "rb") as f:
+            self._send(200, f.read(), STATIC_TYPES[m.group(1)])
 
     def _allowed(self, method):
         """Refuse requests a web page on another site could make (#48 follow-up).

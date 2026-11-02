@@ -453,6 +453,8 @@ def check_union_hands(u):
         return {
             "evs": (res[0], res[1], res[4]),
             "ev_pp": combos(u.cmd("calc_ev_pp OOP r:0")),
+            "ev_pp_ip": combos(u.cmd("calc_ev_pp IP r:0")),
+            "ev_pp_lines": len(u.cmd("calc_ev_pp OOP r:0").split("\n")),
             "strat_pp": combos(u.cmd("show_strategy_pp r:0")),
             "deep": u.cmd("calc_ev OOP r:0:b20:b200").split("\n")[0].split(),
         }
@@ -468,6 +470,19 @@ def check_union_hands(u):
           f"the added hands are exactly the six 88 combos ({added})")
     check(len(on["strat_pp"]) == 148 and sorted(set(on["strat_pp"]) - set(off["strat_pp"])) == added,
           "show_strategy_pp lists the same opponent-only hands")
+
+    # #61: recorded PioSOLVER 3.10.1 output on this exact tree. Pio always lists the union, for
+    # both players: an "EV: <x>" header plus 148 rows (the "150 lines" in #9 counted more than the
+    # response). With set_union_hands on we list the same hands; only the order among equal-EV
+    # (suit-isomorphic) combos may differ, which depends on last-bit float noise.
+    with open(os.path.join(HERE, "data", "pio_probe2_calc_ev_pp.txt")) as f:
+        blocks = [b for b in f.read().split("END\n") if b.strip()]
+    pio = [[l.split(":")[0] for l in b.split("\n") if re.match(r"^[2-9TJQKA][cdhs][2-9TJQKA][cdhs]:", l)]
+           for b in blocks]
+    check(len(pio) == 2 and len(pio[0]) == 148 and len(pio[1]) == 148, "recorded Pio calc_ev_pp: 148 rows per player")
+    check(sorted(on["ev_pp"]) == sorted(pio[0]), "calc_ev_pp OOP with union_hands lists exactly Pio's hands")
+    check(sorted(on["ev_pp_ip"]) == sorted(pio[1]), "calc_ev_pp IP with union_hands lists exactly Pio's hands")
+    check(on["ev_pp_lines"] == 149, f"calc_ev_pp response is EV header + 148 rows like Pio ({on['ev_pp_lines']} lines)")
 
     # Equilibrium must not move: the extra hands enter with reach 0.
     check(off["evs"] == on["evs"], f"equilibrium unchanged by union_hands ({off['evs']} vs {on['evs']})")

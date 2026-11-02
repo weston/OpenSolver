@@ -5,6 +5,10 @@
 #include <cmath>
 #include <cstring>
 
+#if PIO_SHOWDOWN_AVX512
+#include <immintrin.h>
+#endif
+
 #include "parallel.hpp"
 #include "pfh2h.hpp"
 
@@ -76,7 +80,146 @@ static inline int sd_w_c1(uint64_t w) { return static_cast<int>((w >> 16) & 0xff
 static inline int sd_w_c2(uint64_t w) { return static_cast<int>((w >> 24) & 0xff); }
 static inline int sd_w_same(uint64_t w) { return static_cast<int16_t>((w >> 32) & 0xffff); }
 
+#if PIO_SHOWDOWN_AVX512
+// AVX-512 form of the showdown kernel (#89): same values as showdown_board_scalar, bit for bit
+// (tests/test_solver.cpp compares the two on every board of several trees). It needs AVX-512F, BW
+// and VBMI (Ice Lake / Zen 4 and later); without VBMI the entry fields would have to be gathered,
+// and gathers make it slower than scalar (measurements in #89).
+//
+// Why it pays at all when the loops are this short:
+//  - p's strength groups average ~6.5 hands, so one masked 16-lane step covers a whole group with no
+//    scalar tail, and the group's card indices are reused between the "lt" and "le" queries;
+//  - the 6-byte entries are unpacked with two contiguous masked loads and one vpermt2b, not gathers;
+//  - cs[] (52 floats) lives in 4 zmm registers: lookups are vpermt2ps, and the opponent pass adds
+//    into the registers under a lane mask (one add per touched lane, in the same order as scalar);
+//  - the final pass is computed 16 hands at a time; only its `out[idx] +=` stays scalar, because a
+//    gather + scatter there costs more than it saves.
+// The opponent pass itself stays sequential: cum and cs[] are running sums, and reassociating them
+// would change the results.
+static inline __mmask16 sd_tail_mask(int n) { return static_cast<__mmask16>(n >= 16 ? 0xffff : (1u << n) - 1); }
+
+// Dword k = 4 bytes of entry k starting at byte `boff` (0: idx | c1 | c2, 4: same | ...), for the
+// first popcount(m) entries at e (m is a prefix mask, <= 16 entries = 96 bytes). Bytes past them are
+// not read (masked loads); lanes outside m hold garbage and every caller masks them.
+static inline __m512i sd_words(const SdEntry* e, __mmask16 m, int boff) {
+  struct Tbl {
+    alignas(64) uint8_t b[2][64];
+  };
+  static const Tbl tbl = [] {
+    Tbl t{};
+    for (int o = 0; o < 2; ++o)
+      for (int j = 0; j < 64; ++j) t.b[o][j] = static_cast<uint8_t>(6 * (j / 4) + j % 4 + 4 * o);
+    return t;
+  }();
+  static_assert(sizeof(SdEntry) == 6);
+  const int nb = 6 * std::popcount(static_cast<unsigned>(m));
+  const __mmask64 m0 = nb >= 64 ? ~0ull : (1ull << nb) - 1;
+  const __mmask64 m1 = nb > 64 ? (1ull << (nb - 64)) - 1 : 0;
+  const char* p = reinterpret_cast<const char*>(e);
+  const __m512i lo = _mm512_maskz_loadu_epi8(m0, p), hi = _mm512_maskz_loadu_epi8(m1, p + 64);
+  return _mm512_permutex2var_epi8(lo, _mm512_load_si512(tbl.b[boff ? 1 : 0]), hi);
+}
+
+// cs[0..63] in 4 registers (cards 52..63 stay 0).
+struct CsRegs {
+  __m512 r[4] = {_mm512_setzero_ps(), _mm512_setzero_ps(), _mm512_setzero_ps(), _mm512_setzero_ps()};
+  __m512 operator()(__m512i c) const {
+    const __m512 lo = _mm512_permutex2var_ps(r[0], c, r[1]);
+    const __m512 hi = _mm512_permutex2var_ps(r[2], c, r[3]);
+    return _mm512_mask_blend_ps(_mm512_test_epi32_mask(c, _mm512_set1_epi32(32)), lo, hi);
+  }
+  // cs[c1] += x; cs[c2] += x (c1 != c2).
+  void add2(int c1, int c2, float x) {
+    const uint64_t m = (1ull << c1) | (1ull << c2);
+    const __m512 vx = _mm512_set1_ps(x);
+    for (int k = 0; k < 4; ++k) r[k] = _mm512_mask_add_ps(r[k], static_cast<__mmask16>(m >> (16 * k)), r[k], vx);
+  }
+};
+
+void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) {
+  const int o = 1 - p;
+  const SdEntry* pe = sb.ent[p].data();
+  const SdEntry* oe = sb.ent[o].data();
+  const int np = static_cast<int>(sb.ent[p].size());
+  const auto* gr = sb.groups[p].data();
+  const int ng = static_cast<int>(sb.groups[p].size());
+
+  ArenaScope sc;
+  float* ltv = sc.a.alloc(static_cast<size_t>(np) * 2);
+  float* lev = ltv + np;
+  CsRegs cs;
+  float cum = 0;
+  const __m512i b8 = _mm512_set1_epi32(0xff);
+  int i0 = 0, j0 = 0;
+  for (int g = 0; g < ng; ++g) {
+    const int i1 = gr[g].first, j1 = gr[g].second;
+    __m512i c1 = _mm512_setzero_si512(), c2 = c1;
+    if (i0 < i1) {
+      const __m512 vc = _mm512_set1_ps(cum);
+      for (int i = i0; i < i1; i += 16) {
+        const __mmask16 m = sd_tail_mask(i1 - i);
+        const __m512i w = sd_words(pe + i, m, 0);
+        c1 = _mm512_and_si512(_mm512_srli_epi32(w, 16), b8);
+        c2 = _mm512_srli_epi32(w, 24);
+        _mm512_mask_storeu_ps(ltv + i, m, _mm512_sub_ps(_mm512_sub_ps(vc, cs(c1)), cs(c2)));
+      }
+    }
+    for (int j = j0; j < j1; ++j) {
+      const SdEntry q = oe[j];
+      const float r = ro[q.idx];
+      cum += r;
+      cs.add2(q.c1, q.c2, r);
+    }
+    if (i0 < i1) {
+      const __m512 vc = _mm512_set1_ps(cum);
+      if (i1 - i0 <= 16) {  // the common case: c1/c2 still hold this group's cards
+        _mm512_mask_storeu_ps(lev + i0, sd_tail_mask(i1 - i0), _mm512_sub_ps(_mm512_sub_ps(vc, cs(c1)), cs(c2)));
+      } else {
+        for (int i = i0; i < i1; i += 16) {
+          const __mmask16 m = sd_tail_mask(i1 - i);
+          const __m512i w = sd_words(pe + i, m, 0);
+          c1 = _mm512_and_si512(_mm512_srli_epi32(w, 16), b8);
+          c2 = _mm512_srli_epi32(w, 24);
+          _mm512_mask_storeu_ps(lev + i, m, _mm512_sub_ps(_mm512_sub_ps(vc, cs(c1)), cs(c2)));
+        }
+      }
+    }
+    i0 = i1;
+    j0 = j1;
+  }
+  if (cum == 0.0f) return;
+  // The scalar line `out += a*ltv + b*le + L*compat` is contracted by the compiler (GCC's default
+  // -ffp-contract=fast for C++) to fma(L, compat, fma(a, ltv, b*le)); this is the same sequence.
+  const __m512 vc = _mm512_set1_ps(cum), va = _mm512_set1_ps(W - T), vb = _mm512_set1_ps(T - L),
+               vl = _mm512_set1_ps(L);
+  for (int i = 0; i < np; i += 16) {
+    const __mmask16 m = sd_tail_mask(np - i);
+    const __m512i w = sd_words(pe + i, m, 0);
+    const __m512i k1 = _mm512_and_si512(_mm512_srli_epi32(w, 16), b8);
+    const __m512i k2 = _mm512_srli_epi32(w, 24);
+    const __m512i same = _mm512_srai_epi32(_mm512_slli_epi32(sd_words(pe + i, m, 4), 16), 16);  // int16
+    const __m512 sr =
+        _mm512_mask_i32gather_ps(_mm512_setzero_ps(), _mm512_mask_cmpge_epi32_mask(m, same, _mm512_setzero_si512()),
+                                 same, ro, 4);
+    const __m512 le = _mm512_add_ps(_mm512_maskz_loadu_ps(m, lev + i), sr);
+    const __m512 compat = _mm512_add_ps(_mm512_sub_ps(_mm512_sub_ps(vc, cs(k1)), cs(k2)), sr);
+    const __m512 v =
+        _mm512_fmadd_ps(vl, compat, _mm512_fmadd_ps(va, _mm512_maskz_loadu_ps(m, ltv + i), _mm512_mul_ps(vb, le)));
+    _mm512_mask_storeu_ps(ltv + i, m, v);  // ltv[i..i+15] is consumed: reuse it for the values
+  }
+  for (int i = 0; i < np; ++i) out[pe[i].idx] += ltv[i];
+}
+#endif
+
 void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) const {
+#if PIO_SHOWDOWN_AVX512
+  showdown_board_avx512(sb, W, L, T, p, ro, out);
+#else
+  showdown_board_scalar(sb, W, L, T, p, ro, out);
+#endif
+}
+
+void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) {
   const int o = 1 - p;
   const SdEntry* pe = sb.ent[p].data();
   const SdEntry* oe = sb.ent[o].data();

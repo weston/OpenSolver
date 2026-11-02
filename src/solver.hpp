@@ -16,10 +16,34 @@ struct DcfrParams {
   // 1.5 / 0 / 3 on every bench tree, and far fewer on deep and wide trees (0.05%: deep 260 -> 180,
   // flop_srp_4 105 -> 80, preflop 85 -> 60). alpha <= 1.2 is faster early but stalls at tight targets
   // on rivers. set_dcfr overrides.
+  //
+  // The stall, quantified on flop_3bet at gamma 4 (independent check, #110 follow-up): alpha 1.2
+  // wins at loose targets and loses at tight ones, crossing over between 0.02% and 0.01% of pot.
+  //
+  //   alpha   to 0.05%   to 0.02%   to 0.01%   iterations
+  //   1.2       4.11 s     6.19 s    12.67 s      270
+  //   1.3       4.29 s     6.85 s    10.07 s      220
+  //
+  // So a sweep that stops at 0.05% picks 1.2 and is wrong. Any retune here must go to at least
+  // 0.01% of pot, and should prefer iteration counts (exact integers) over wall time.
   double alpha = 1.3;  // positive regret discount exponent
   double beta = 0.0;   // negative regret discount exponent
   double gamma = 4.0;  // strategy-sum discount exponent
 };
+
+// Showdown values against one river board: out[h] += value of p's hand h given opponent reach ro,
+// with W / L / T the win / loss / tie payoffs. showdown_board_scalar is the reference. x86 builds
+// with AVX-512F, BW and VBMI (-march=native on Zen 4+ / Ice Lake+) use showdown_board_avx512, which
+// must give the same floats bit for bit (#89; tests/test_solver.cpp checks). -DPIO_NO_AVX512 opts out.
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VBMI__) && !defined(PIO_NO_AVX512)
+#define PIO_SHOWDOWN_AVX512 1
+#else
+#define PIO_SHOWDOWN_AVX512 0
+#endif
+void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+#if PIO_SHOWDOWN_AVX512
+void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+#endif
 
 struct RootStats {
   double ev[2] = {0, 0};

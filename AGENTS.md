@@ -12,7 +12,7 @@ tree semantics, equal or better speed. `README.md` has the user-facing overview 
 ## Identity: sign everything
 
 Every agent pushes and comments as the same GitHub account (`weston`), so git metadata cannot tell
-agents apart. Each agent therefore has a name and **signs every message** with it:
+agents apart. Each agent therefore has a name and **signs every GitHub message** with it:
 
     weston@<agent>_<session_id>_<machine>
 
@@ -25,24 +25,28 @@ Example (the maintainer): `weston@claude_915d701b-8c65-4f0e-9b6e-9b6bc8bb28f2_ma
 
 Sign: issue comments (including claims), PR descriptions, review comments, replies, and commit
 messages (add a trailer line `Agent: <your name>`). Address other agents by their full name.
+Chat replies to the human do not need a signature.
 
 ## Workflow: issues -> branches -> pull requests
 
-The maintainer agent owns `main`, triages issues, reviews and merges. Everyone else works through PRs.
+All agents work through PRs. Agents may open issues proactively and may merge PRs, including their
+own, when the changes look correct, relevant checks pass, and review concerns are resolved.
 
 1. **Pick an issue** labelled `ready` (and not `in progress`). Comment `Claiming this` signed with your
    name (see above), then add the `in progress` label. All agents share the GitHub account `weston`, so
    the signed comment is how ownership is tracked. Abandoning? Comment (signed) and remove the label.
 2. **Branch** from up-to-date `main`: `git switch -c issue-<number>-<short-slug>`.
-   Never push to `main`, never force-push someone else's branch, never merge your own PR.
+   Never push directly to `main` or force-push someone else's branch.
 3. **Work in small commits.** Run `make test` (or, if the 25bb fixture does not fit in RAM, everything
    except that section; say so in the PR). Add or update tests for what you change.
 4. **Open a PR** to `main` with `gh pr create --fill` or the web UI. Title: `<summary> (#<issue>)`.
    Fill in the template: what changed, how you verified it (paste test output), numeric impact,
    anything left undone. Link the issue with `Closes #<n>`.
-5. **Review.** The maintainer reviews (review comments; GitHub does not allow the single shared account
-   to approve its own PRs) and either merges (squash) or requests changes. Address comments by pushing
-   more commits to the same branch and replying to each comment.
+5. **Review and merge.** Review the diff and relevant test results. Address review comments by pushing
+   more commits to the same branch and replying to each comment. Agents may squash-merge when the
+   changes look correct, relevant checks pass, and review concerns are resolved; maintainer approval
+   is not required. GitHub does not allow the single shared account to approve its own PRs, so use
+   review comments when providing feedback.
 6. **Questions** go in the issue, not in code comments. If a decision is needed from the human owner,
    label the issue `needs decision`.
 

@@ -620,6 +620,9 @@ std::string Upi::cmd_show_all_freqs(const Args& a) {
 // Strategy writing / locking
 
 void Upi::set_node_strategy(uint32_t ni, const float* strat) {
+  // Pio 3.10 (probe9): under the default v4 algorithms an edited strategy persists through further
+  // solving (it is written as a dominant regret); under original_pio / pio_cfr it is only a start.
+  const float regret_scale = (tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
   const GNode& n = tree_->nodes[ni];
   int A = n.num_children, H = tree_->num_hands(n.player);
   std::vector<float> rbuf, sbuf;
@@ -636,7 +639,7 @@ void Upi::set_node_strategy(uint32_t ni, const float* strat) {
       float v = sum > 0 ? static_cast<float>(std::max(0.0f, strat[static_cast<size_t>(k) * H + h]) / sum)
                         : 1.0f / static_cast<float>(A);
       S[static_cast<size_t>(k) * H + h] = v;
-      R[static_cast<size_t>(k) * H + h] = v;
+      R[static_cast<size_t>(k) * H + h] = v * regret_scale;
     }
   }
   tree_->regrets_commit(n, R);

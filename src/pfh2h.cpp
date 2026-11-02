@@ -261,6 +261,7 @@ std::string cache_dir() {
   if (const char* d = std::getenv("WSOLVER_CACHE_DIR")) return d;
   if (const char* x = std::getenv("XDG_CACHE_HOME")) return std::string(x) + "/wsolver";
   if (const char* h = std::getenv("HOME")) return std::string(h) + "/.cache/wsolver";
+  if (const char* w = std::getenv("LOCALAPPDATA")) return std::string(w) + "/wsolver";  // Windows
   return {};
 }
 

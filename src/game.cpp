@@ -1,5 +1,6 @@
 #include "game.hpp"
 #include "parallel.hpp"
+#include "pfh2h.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -139,6 +140,10 @@ int GameTree::allin_runouts_id(const std::vector<int>& board) {
     // (Solver::showdown_value handles `exact` entries; no sampled boards).
     ar.exact = true;
     ar.scale = 1.0f;
+    // Load or generate the table now, on the building thread. Generating it lazily from inside a
+    // solver worker would deadlock: generation uses the thread pool, whose other workers would be
+    // blocked on this static initialiser.
+    (void)pf_table();
   } else if (board.size() == 4) {
     for (int c : avail) {
       b.push_back(c);

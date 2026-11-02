@@ -184,8 +184,8 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   both ranges, so it has a counterfactual value for opponent-only hands and prints a *signed* `inf`; ours does
   that only under `set_union_hands on` (off by default, ~+23% solve time).
 - `calc_ev_pp <player> <node>` is `EV: <x>` plus one `<combo>: <ev>; <matchups>` row per hand of the **union**
-  of both ranges, for either player, sorted by EV descending (probe2: 149 lines = header + 148 for OOP and
-  IP alike; recorded in `tests/data/pio_probe2_calc_ev_pp.txt`, #61). Opponent-only hands show matchups
+  of both ranges, for either player, sorted by EV descending (probe2: header + 148 rows for OOP and IP
+  alike, then a blank line, which is the "150 lines" of #9; recorded in `tests/data/pio_probe2_calc_ev_pp.txt`, #61). Opponent-only hands show matchups
   `0.00`. Tie order among equal-EV combos is not reproducible. `set_union_hands` is ours: Pio answers
   `ERROR: Command set_union_hands not recognized`.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect

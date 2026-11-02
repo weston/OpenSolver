@@ -194,6 +194,12 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
 
   Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`)
   links to the current node and view.
+- **Re-solve (#117):** at any decision of the original tree, **Re-solve…** re-solves the subtree from
+  there in a second solver process. Either edit the sizes for the rest of the hand, or find the best
+  N sizes out of a candidate list. At a node facing a bet on its own street the candidates are
+  raise sizes (`3x` allowed). Results are ranked by the acting player's EV, and you can browse them
+  like the original tree; **↩ Original** in the action line, or ← at the subtree root, goes back.
+  This is unsafe re-solving: the opponent's range stays fixed at the node.
 - **Open / Save:** `dump_tree` (full / no rivers / flop only) and lazy `load_tree`. Browsing a
   truncated save re-solves missing streets on demand, as in Pio.
 - **Library (API):** named ranges and full build-form configs saved in folders under

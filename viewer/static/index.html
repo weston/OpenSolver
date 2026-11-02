@@ -42,6 +42,8 @@
     <div class="study-main">
       <div class="node-head">
         <div id="node-title" class="node-title"></div>
+        <span id="subgame-tag" class="tag busy hidden" title="Browsing a re-solved subtree (opponent range fixed at the re-solve node)">Re-solved</span>
+        <button id="btn-resolve" class="btn small hidden" title="Re-solve this subtree with other sizes">Re-solve…</button>
         <div class="seg" id="view-seg">
           <button data-mode="strategy" class="active">Strategy</button>
           <button data-mode="range">Range</button>
@@ -208,6 +210,51 @@
     <div class="topbar-spacer"></div>
     <button id="lib-cancel" class="btn ghost">Cancel</button>
     <button id="lib-ok" class="btn primary">Load</button>
+  </div>
+</dialog>
+
+<dialog id="resolve-dialog" class="dialog rs">
+  <div class="rs-head">
+    <div>
+      <h2>Re-solve from here</h2>
+      <div id="rs-context" class="rs-context"></div>
+    </div>
+    <div class="seg" id="rs-tabs">
+      <button data-tab="edit" class="active">Edit sizes</button>
+      <button data-tab="search">Find best sizes</button>
+    </div>
+  </div>
+  <div class="rs-body">
+    <div id="rs-edit">
+      <table class="sizes rs-sizes">
+        <thead><tr><th></th><th>Bet</th><th>Raise</th><th>Donk</th><th title="Maximum bets + raises on the street">Cap</th><th>All-in</th></tr></thead>
+        <tbody id="rs-rows"></tbody>
+      </table>
+    </div>
+    <div id="rs-search" class="hidden">
+      <div class="rs-search-form">
+        <label class="field"><span>Street</span><select id="rs-street"></select></label>
+        <label class="field grow"><span id="rs-cand-label">Candidate bet sizes</span><input id="rs-candidates" value="25, 33, 50, 75, 100, 150" spellcheck="false"></label>
+        <label class="field"><span>Keep</span><select id="rs-n"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+      </div>
+      <p class="hint">Solves the subtree once per subset of N candidates (greedy above 12 subsets) and ranks them by the acting player's EV. Other streets use the sizes from <i>Edit sizes</i>.</p>
+    </div>
+    <div class="rs-acc">
+      <label class="field"><span>Accuracy per solve</span><div class="suffix"><input id="rs-accuracy" type="number" step="0.1" min="0.05" value="0.5"><i>% pot</i></div></label>
+      <p class="hint rs-caveat">The opponent's range stays fixed at this node (unsafe re-solving, as in Pio's subtree re-solves). Results are shown in memory; the saved tree is unchanged.</p>
+    </div>
+    <div id="rs-progress" class="rs-progress hidden">
+      <div class="rs-bar"><span id="rs-bar-fill"></span></div>
+      <div id="rs-status" class="rs-status"></div>
+      <table id="rs-table" class="rs-table"></table>
+    </div>
+  </div>
+  <div class="lib-foot">
+    <button id="rs-stop" class="btn danger hidden">Stop</button>
+    <div class="topbar-spacer"></div>
+    <button id="rs-close" class="btn ghost">Close</button>
+    <button id="rs-browse" class="btn hidden">Browse result →</button>
+    <button id="rs-go" class="btn primary">Re-solve</button>
   </div>
 </dialog>
 

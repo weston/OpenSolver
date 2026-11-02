@@ -7,6 +7,7 @@ import { initStudy, gotoNode, showEmpty, study, applyUrlState } from "./study.js
 import { initBuild, updateProgress, treeLoadedElsewhere } from "./build.js";
 import { drawSpark } from "./chart.js";
 import { initLibrary } from "./library.js";
+import { initResolve, openResolve } from "./resolve.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -128,6 +129,8 @@ async function boot() {
   } catch (e) { fail("Cannot reach the viewer server: " + e.message); return; }
   initStudy();
   initLibrary();
+  initResolve();
+  $("btn-resolve").onclick = () => openResolve(study.id);
   initBuild({ built: async () => { app.tree = true; await refreshRootPot(); study.reset(); } });
 
   const st = await get("/api/status");

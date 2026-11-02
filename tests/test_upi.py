@@ -237,7 +237,7 @@ def check_save_load(u, strat_path):
         check(u.cmd(f'dump_tree "{path}"') == "dump_tree ok!", "dump_tree")
         check(u.cmd(f'check_tree_health "{path}"') == "File OK", "check_tree_health")
         meta = u.cmd(f'show_metadata "{path}"').split("\n")
-        check(meta[1] == "ROOT" and meta[2].rstrip() == "Qh Qc 2c", f"show_metadata ({meta[2]!r})")
+        check(meta[1] == "ROOT" and meta[2].rstrip() == "DELIBERATELY WRONG", f"show_metadata ({meta[2]!r})")
         s_before = u.cmd("show_strategy " + strat_path)
         u.cmd("free_tree")
         check(u.cmd("is_tree_present") == "false", "free_tree")

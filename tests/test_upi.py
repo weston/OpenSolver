@@ -468,6 +468,51 @@ def check_union_hands(u):
     u.cmd("free_tree")
 
 
+def check_go_partial(u):
+    """go_partial (#153): asynchronous subtree solves, like `go` but below a node."""
+    print("[go_partial: asynchronous subtree solving]")
+    set_small_tree(u)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree for go_partial")
+    u.cmd("set_accuracy 0")
+    u.cmd("go 200 steps")
+    u.cmd("wait_for_solver")
+    root_strat = u.cmd("show_strategy r:0")
+    child_strat = u.cmd("show_strategy r:0:c")
+
+    # A step-limited subtree solve: progress blocks are marked, DCFR clock restarts,
+    # strategies at and below the node change, everything above is bit-identical.
+    u.solver_msgs.clear()
+    u.cmd("set_info_freq 10")
+    check(u.cmd("go_partial r:0:c 100 steps") == "go_partial ok!", "go_partial returns immediately")
+    u.cmd("wait_for_solver")
+    blocks = [b for b in u.solver_msgs if b and b[0].startswith("partial: ")]
+    check(blocks and all(b[0] == "partial: r:0:c" for b in blocks), f"progress blocks marked partial: r:0:c ({len(blocks)})")
+    text = "\n".join(blocks[-1]) if blocks else ""
+    check("Exploitable for:" in text and "EV OOP:" in text, "partial block has the stats block")
+    check(any(b and b[0].startswith("SOLVER: stopped (required number of steps done") for b in u.solver_msgs),
+          "stopped (required number of steps done)")
+    check(u.cmd("show_strategy r:0") == root_strat, "strategy above the node is untouched")
+    check(u.cmd("show_strategy r:0:c") != child_strat, "the subtree's strategy changed")
+
+    # An accuracy-driven subtree solve stops on the subtree exploitability target.
+    u.solver_msgs.clear()
+    u.cmd("set_accuracy 0.02")
+    check(u.cmd("go_partial r:0:c") == "go_partial ok!", "go_partial with an accuracy target")
+    u.cmd("wait_for_solver")
+    blocks = [b for b in u.solver_msgs if b and b[0].startswith("partial: ")]
+    m = re.search(r"Exploitable for: ([-\d.eE+]+)", "\n".join(blocks[-1])) if blocks else None
+    # the check runs at the report that crossed the target: printed value can round up by 0.0005
+    check(m is not None and float(m.group(1)) <= 0.0205, f"stops at the target ({m and m.group(1)} <= 0.02)")
+    check(any(b and b[0].startswith("SOLVER: stopped (required accuracy reached") for b in u.solver_msgs),
+          "stopped (required accuracy reached)")
+    check(u.cmd("show_strategy r:0") == root_strat, "strategy above the node still untouched")
+
+    check(u.cmd("go_partial").startswith("ERROR"), "go_partial needs an argument")
+    check(u.cmd("go_partial r:0:bogus").startswith("ERROR"), "go_partial on a bad node errors")
+    check(u.cmd("go_partial r:0:c 2 eons").startswith("ERROR"), "go_partial on a bad unit errors")
+    u.cmd("free_tree")
+
+
 def main(exe, big=False):
     u = Upi(exe)
     try:
@@ -497,6 +542,8 @@ def main(exe, big=False):
         check_calc_eq_preflop_exact(u)
 
         check_union_hands(u)
+
+        check_go_partial(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")

@@ -71,6 +71,8 @@ class Solver:
         self.version = ""
         self.generation = 0
         self.series = []         # convergence points of the current tree: {t, explo, ev_oop, ev_ip}
+        self.partial = None      # live/last subtree solve (#153): {node, pot, accuracy, done, ...}
+        self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
         self.start()
 
     def start(self):
@@ -99,9 +101,16 @@ class Solver:
                         block.append(l2)
                     point = parse_progress_point(block)
                     with self.state_lock:
-                        self.progress = block
-                        if point is not None:
-                            self.series.append(point)
+                        # A "partial: <node>" first line marks a subtree (solve further) solve:
+                        # its numbers are relative to the node's pot, so they must not enter the
+                        # main tree's convergence series (#153).
+                        if block and block[0].startswith("partial: ") and self.partial:
+                            self.partial["progress"] = block[1:]
+                            self.partial["point"] = point
+                        else:
+                            self.progress = block
+                            if point is not None:
+                                self.series.append(point)
                         self.events += 1
                 elif line.startswith("SOLVER:"):
                     with self.state_lock:
@@ -112,6 +121,9 @@ class Solver:
                             self.progress = []
                         elif msg.startswith("stopped"):
                             self.solving = False
+                            if self.partial:
+                                self.partial["done"] = True
+                                self.partial["stopped"] = msg[len("stopped ("):-1] or "requested"
                         self.events += 1
                 else:
                     q.put(line)
@@ -159,13 +171,27 @@ class Solver:
 
     def state(self):
         with self.state_lock:
+            partial = dict(self.partial) if self.partial else None
+            if partial:
+                partial["progress"] = list(partial["progress"])
             return {"solving": self.solving, "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
-                    "tree": self.tree_present, "version": self.version}
+                    "tree": self.tree_present, "version": self.version,
+                    "partial": partial, "loaded_file": self.loaded_file}
 
     def reset_series(self):
         with self.state_lock:
             self.series = []
+
+    def start_partial(self, node_id, accuracy, pot):
+        """Mark the subtree solve in flight, so the pump routes its blocks here (#153)."""
+        with self.state_lock:
+            self.partial = {"node": node_id, "accuracy": accuracy, "pot": pot,
+                            "done": False, "stopped": None, "progress": [], "point": None}
+
+    def clear_partial(self):
+        with self.state_lock:
+            self.partial = None
 
     def restart(self):
         with self.cmd_lock:
@@ -184,6 +210,8 @@ class Solver:
                 self.solving = False
                 self.progress = []
                 self.solver_status = ""
+                self.partial = None
+                self.loaded_file = False
 
 
 # ---------------------------------------------------------------- parsing UPI outputs
@@ -390,7 +418,9 @@ def api(solver, lib, method, path, query, body):
     if path == "/api/build":
         solver.cmd("build_tree")
         solver.tree_present = True
+        solver.loaded_file = False
         solver.reset_series()
+        solver.clear_partial()
         return 200, {"node_count": solver.cmd("node_count")}
 
     if path == "/api/solve":
@@ -401,7 +431,11 @@ def api(solver, lib, method, path, query, body):
         # Report (and check the target) every 10 iterations: a smoother convergence chart (#115)
         # and less overshoot past the target than the default 25.
         solver.cmds([f"set_accuracy {acc:g}", "set_info_freq 10", "go"])
+        solver.clear_partial()
         return 200, {"ok": True}
+
+    if path == "/api/solve_node":
+        return 200, op_solve_node(solver, need_body(body))
 
     if path == "/api/stop":
         return 200, {"text": solver.cmd("stop")}
@@ -418,7 +452,9 @@ def api(solver, lib, method, path, query, body):
         path_arg = safe_path(b.get("path", ""))
         solver.cmds(["stop", "wait_for_solver", f'load_tree "{path_arg}"'])
         solver.tree_present = True
+        solver.loaded_file = True
         solver.reset_series()
+        solver.clear_partial()
         return 200, {"ok": True}
 
     if path == "/api/restart":
@@ -534,6 +570,46 @@ def sizing_header(b, tb):
     return header
 
 
+def op_solve_node(solver, b):
+    """POST /api/solve_node (#153): continue solving the in-memory tree from a node down.
+
+    accuracy is a target exploitability in chips (the UI sends % of the node's pot, converted).
+    At the tree root this is exactly a continued whole-tree solve. Otherwise the solver runs
+    `go_partial <id>`: async subtree iterations (solve_partial's iterate_subtree path) whose
+    progress blocks are marked "partial: <id>" and routed into state()["partial"].
+    """
+    node_id = node_id_arg({"id": [str(b.get("id", "r:0"))]})
+    try:
+        acc = float(b.get("accuracy"))
+    except (TypeError, ValueError):
+        raise SolverError("bad accuracy")
+    if not math.isfinite(acc) or acc <= 0 or acc > 1e9:
+        raise SolverError("bad accuracy (want a positive number, chips)")
+    if solver.state()["solving"]:
+        raise SolverError("the solver is already running (stop it first)")
+    if node_id in ("r", "r:0"):
+        # continuing at the root IS the whole-tree solve (issue's suggested design)
+        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq 10", "go"])
+        solver.clear_partial()
+        return {"ok": True, "root": True}
+    if solver.loaded_file:
+        raise SolverError("solve further is not available for a tree loaded from a file "
+                          "(view-only saves carry no solver state to continue from)")
+    with solver.cmd_lock:
+        node = parse_node_block(solver.cmd("show_node " + node_id))
+        if node["type"] not in ("OOP_DEC", "IP_DEC"):
+            raise SolverError(f"{node['type']} is not a decision node")
+        pot = sum(p or 0 for p in node["pot"])
+        # mark in flight BEFORE go_partial returns, so the pump routes the first block right
+        solver.start_partial(node_id, acc, pot)
+        try:
+            solver.cmds([f"set_accuracy {acc:g}", "set_info_freq 10", "go_partial " + node_id])
+        except SolverError:
+            solver.clear_partial()
+            raise
+    return {"ok": True, "node": node_id, "pot": pot}
+
+
 def op_generate(solver, b):
     """PioViewer-style bet sizes -> add_lines via tools/tree_builder.py, then configure the solver."""
     range_oop = no_newlines(str(b.get("range_oop", "")).strip(), "range_oop")
@@ -584,7 +660,9 @@ def op_generate(solver, b):
     cmds += lines
     solver.cmds(cmds)
     solver.tree_present = False
+    solver.loaded_file = False
     solver.reset_series()
+    solver.clear_partial()
     return {"lines": len(lines), "sample": [l[len("add_line "):] for l in lines[:8]]}
 
 

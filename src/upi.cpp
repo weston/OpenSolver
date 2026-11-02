@@ -394,6 +394,7 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   tree_ = std::move(t);
   solver_ = std::make_unique<Solver>(*tree_);
   solver_->first_player = first_player_;
+  solver_->params = dcfr_;
   tree_alg_ = algorithm_;
   iterations_ = 0;
   discount_restart_ = 0;
@@ -632,6 +633,21 @@ void Upi::register_commands() {
     cfg_.iso_turn = a.size() > 1 ? arg_int(a, 1, "turn") != 0 : false;
     return std::string("set_isomorphism ok!");
   };
+  // Not a Pio command. Exposes the DCFR discount exponents so the benchmark suite can
+  // sweep them (#52) without a rebuild per point: positive regrets are scaled by
+  // t^alpha/(t^alpha+1), negative by t^beta/(t^beta+1), the strategy sum by
+  // (t/(t+1))^gamma. beta very negative underflows to 0, i.e. CFR+'s "discard negative
+  // regrets"; alpha must stay small, since a large exponent overflows t^alpha to inf and
+  // inf/(inf+1) is NaN.
+  H["set_dcfr"] = [this](const Args& a) {
+    if (a.size() < 3) throw CmdError{"incorrect or missing argument"};
+    double al = arg_double(a, 0, "alpha"), be = arg_double(a, 1, "beta"), ga = arg_double(a, 2, "gamma");
+    if (!(al > 0.0) || al > 10.0 || be > 10.0 || !(ga >= 0.0) || ga > 10.0)
+      throw CmdError{"incorrect or missing argument"};
+    dcfr_ = DcfrParams{al, be, ga};
+    if (solver_) solver_->params = dcfr_;
+    return std::string("set_dcfr ok!");
+  };
   // Not a Pio command: Pio always tracks the union. Opt-in here because the wider vectors
   // cost time and memory, and it has to be set before build_tree to take effect.
   H["set_union_hands"] = [this](const Args& a) {
@@ -703,10 +719,10 @@ void Upi::register_commands() {
   H["build_tree"] = [this](const Args& a) { return cmd_build_tree(a); };
   H["list_algorithms"] = [](const Args&) {
     return std::string(
-        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 5); this solver uses one algorithm for every code\n"
-        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 5)\n"
-        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 5)\n"
-        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 5)");
+        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4); this solver uses one algorithm for every code\n"
+        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
+        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
+        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)");
   };
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};

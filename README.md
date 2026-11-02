@@ -7,7 +7,7 @@ A heads-up no-limit hold'em solver (postflop trees and full preflop trees) with 
 public UPI documentation; it contains no PioSOLVER code.
 
 - C++20, single binary, no dependencies beyond zlib (ships with macOS).
-- Vector-form **Discounted CFR** (α=1.5, β=0, γ=2) with exact card removal, no abstraction.
+- Vector-form **Discounted CFR** (α=1.5, β=0, γ=3) with exact card removal, no abstraction. `set_dcfr` overrides the exponents.
 - Multi-threaded over turn/river cards with a nested work-stealing pool.
 - Suit **isomorphism** (flop trees on by default, like Pio's `set_isomorphism 1 0`).
 - Optional 16-bit compressed storage (`small_strats`), roughly halving memory.
@@ -217,6 +217,10 @@ For whole-hand accounting give the preflop investments per player (e.g. `set_pot
 Policy (owner decision, #10): match Pio wherever tools may depend on it (formats, codes, node ids,
 error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberate differences:
 
+- **`list_algorithms` reports `alpha 1.3, beta 0, gamma 4`, not Pio's `alpha 1.5, beta 0, gamma 2`.**
+  The strings are otherwise identical. Our DCFR defaults converge faster on every benchmark tree (see
+  `bench/dcfr_sweep.md`), and the command reports the exponents actually in use rather than Pio's.
+  `set_dcfr 1.5 0 2` restores the published values if exact parity matters.
 - **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip files with one
   member per street segment plus an index (`src/upi_save.cpp`), and `show_save_version` reports our own
   format (5).

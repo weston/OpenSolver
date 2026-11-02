@@ -1040,7 +1040,11 @@ void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
-  accumulate_ = t > avg_delay;
+  // Partial re-solves (solve_partial, the on-demand street re-solves of truncated saves) are short
+  // and often stop before the delay, so with avg_reset they accumulate from t = 1 and ignore the
+  // delay: a global reset would wipe the rest of the tree, and skipping would leave the subtree's
+  // average empty (#135 review). That is exactly their behaviour before the default became 32.
+  accumulate_ = avg_reset ? true : t > avg_delay;
   prune_this_iter_ = pruning && t > 2 * prune_period && !(prune_period > 1 && t % prune_period == 0);
   const float* r[2] = {r0, r1};
   for (int k = 0; k < 2; ++k) {

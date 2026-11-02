@@ -183,12 +183,12 @@ For whole-hand accounting give the preflop investments per player (e.g. `set_pot
 
 | Tree | Memory | Time |
 |---|---|---|
-| Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 2.3 s -> 0.06% pot |
+| Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 1.6 s -> 0.06% pot |
 | Real Pio 25bb HU script, 2 sizes everywhere | 6.4 GB (3.3 GB with `small_strats`) | ~1 s / iteration |
 
 Single-threaded on the same tree (`tests/pio_compare/bench_flop.txt`), PioSOLVER-edge 3.10.1 on a Zen 5
-runs 60 iterations in 4.6 s vs 6.9 s here, but this solver's DCFR reaches lower exploitability per
-iteration (0.119 vs 0.182 chips after 60), so time-to-accuracy is within ~10%.
+runs 60 iterations in 4.63 s vs 4.73 s here (Apple M4), and this solver's DCFR reaches lower
+exploitability per iteration (0.119 vs 0.182 chips after 60), so it reaches a given accuracy sooner.
 
 `build_tree` checks free memory and switches to compressed storage automatically when float32
 storage would not fit (`small_strats auto`; force with `on` / `off`).

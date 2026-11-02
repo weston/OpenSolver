@@ -98,11 +98,13 @@ struct AllinRunouts {
 
 struct ShowdownBoard {
   uint64_t mask;
-  // Per player: hands sorted by strength ascending (board-blocked hands excluded). For position i of
-  // player p's list, lt_end/le_end give how many opponent entries are strictly weaker / not stronger;
-  // these depend only on the board, so the showdown sweep needs no strength comparisons.
+  // Per player: hands sorted by strength ascending (board-blocked hands excluded).
   std::vector<SdEntry> ent[2];
-  std::vector<uint16_t> lt_end[2], le_end[2];
+  // Per perspective p: strength groups in ascending order, as cumulative end positions
+  // (end in p's entries, end in the opponent's entries). For each group the kernel queries
+  // "strictly weaker" mass for p's hands, adds the group's opponent hands, then queries "weaker or
+  // equal", so every opponent hand is touched once and the loops have no data-dependent branches.
+  std::vector<std::pair<uint16_t, uint16_t>> groups[2];
 };
 
 class GameTree {

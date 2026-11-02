@@ -16,6 +16,16 @@ struct DcfrParams {
   // 1.5 / 0 / 3 on every bench tree, and far fewer on deep and wide trees (0.05%: deep 260 -> 180,
   // flop_srp_4 105 -> 80, preflop 85 -> 60). alpha <= 1.2 is faster early but stalls at tight targets
   // on rivers. set_dcfr overrides.
+  //
+  // The stall, quantified on flop_3bet at gamma 4 (independent check, #110 follow-up): alpha 1.2
+  // wins at loose targets and loses at tight ones, crossing over between 0.02% and 0.01% of pot.
+  //
+  //   alpha   to 0.05%   to 0.02%   to 0.01%   iterations
+  //   1.2       4.11 s     6.19 s    12.67 s      270
+  //   1.3       4.29 s     6.85 s    10.07 s      220
+  //
+  // So a sweep that stops at 0.05% picks 1.2 and is wrong. Any retune here must go to at least
+  // 0.01% of pot, and should prefer iteration counts (exact integers) over wall time.
   double alpha = 1.3;  // positive regret discount exponent
   double beta = 0.0;   // negative regret discount exponent
   double gamma = 4.0;  // strategy-sum discount exponent

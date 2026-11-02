@@ -262,6 +262,25 @@ def card_token(s):
 NODE_ID_RE = re.compile(r"[rR][:0-9A-Za-z?]*")
 
 
+def combo_class(combo):
+    """"AhKd" -> "AKo" (the matrix class names used by the frontend)."""
+    a, b = combo[0], combo[2]
+    if a == b:
+        return a + b
+    hi, lo = (a, b) if RANKS.index(a) < RANKS.index(b) else (b, a)
+    return hi + lo + ("s" if combo[1] == combo[3] else "o")
+
+
+def class_sort_key(cls):
+    """Matrix (row-major) order: pairs on the diagonal, suited above, offsuit below."""
+    hi, lo = cls[0], cls[1]
+    if len(cls) == 2:
+        k = RANKS.index(hi)
+        return (k, k)
+    k = (RANKS.index(hi), RANKS.index(lo))
+    return k if cls[2] == "s" else (k[1], k[0])
+
+
 def node_id_arg(query, name="id", default="r:0"):
     """A node id becomes part of a UPI command line; anything outside the Pio id alphabet
     (digits, letters, ':', '?') could inject solver commands, so reject it."""
@@ -344,6 +363,13 @@ def api(solver, lib, method, path, query, body):
         node_id = node_id_arg(query)
         return 200, {"oop": parse_floats(solver.cmd("show_range OOP " + node_id), NUM_COMBOS),
                      "ip": parse_floats(solver.cmd("show_range IP " + node_id), NUM_COMBOS)}
+
+    if path == "/api/categories":
+        node_id = node_id_arg(query)
+        player = query.get("player", ["actor"])[0].upper()
+        if player not in ("OOP", "IP", "ACTOR"):
+            raise SolverError("player must be OOP, IP or actor")
+        return 200, categories_at(solver, node_id, player)
 
     if path == "/api/ev":
         node_id = node_id_arg(query)
@@ -433,6 +459,113 @@ def ev_pair(solver, player, node_id):
     ev = parse_floats(lines[0], NUM_COMBOS)
     matchups = parse_floats(lines[1], NUM_COMBOS) if len(lines) > 1 else None
     return {"ev": ev, "matchups": matchups}
+
+
+def hand_order(solver):
+    """show_hand_order, cached on the solver (the Pio hand order never changes)."""
+    if not getattr(solver, "hand_order_cache", None):
+        solver.hand_order_cache = solver.cmd("show_hand_order").split()
+    return solver.hand_order_cache
+
+
+def categories_at(solver, node_id, player):
+    """Made-hand and draw category report at a decision node (#154).
+
+    Chance and terminal nodes fall back to the closest decision above them, the same
+    rule the Study matrix uses. Shares, per-category strategies and EVs are for
+    `player` ("actor" resolves to the decision's actor; the toggle in the UI passes
+    OOP/IP explicitly). Each category row carries its weighted combos, share of the
+    range, a range-weighted strategy per child action (only when the queried player
+    is the one to act), a range-and-matchups-weighted EV (the same average the Node
+    tab shows), and the matrix classes its combos live in.
+    """
+    player = player.upper()
+    empty = {"id": None, "board": "", "actor": None, "player": player if player != "ACTOR" else None,
+             "total": 0, "made_names": [], "draw_names": [], "made": [], "draws": []}
+    with solver.cmd_lock:
+        toks = node_id.split(":")
+        node = None
+        while len(toks) >= 2:
+            node = parse_node_block(solver.cmd("show_node " + ":".join(toks)))
+            if node["type"] in ("OOP_DEC", "IP_DEC"):
+                break
+            toks.pop()
+        if node is None or node["type"] not in ("OOP_DEC", "IP_DEC"):
+            return empty
+        nid = ":".join(toks)
+        actor = "OOP" if node["type"] == "OOP_DEC" else "IP"
+        if player == "ACTOR":
+            player = actor
+        board = "".join(node["board"].split())
+        if len(board) < 6:  # preflop decisions have no categories
+            return {**empty, "id": nid, "actor": actor, "player": player}
+
+        names = solver.cmd("show_category_names").split("\n")
+        made_names, draw_names = names[0].split(), names[1].split()
+        cat_lines = solver.cmd("show_categories " + board).split("\n")
+        made_ids = [int(t) for t in cat_lines[0].split()]
+        draw_ids = [int(t) for t in cat_lines[1].split()]
+        if len(made_ids) != NUM_COMBOS or len(draw_ids) != NUM_COMBOS:
+            raise SolverError("unexpected show_categories output")
+        reach = parse_floats(solver.cmd(f"show_range {player} {nid}"), NUM_COMBOS)
+        order = hand_order(solver)
+
+        strat_rows = None
+        if player == actor:
+            rows = [l for l in solver.cmd("show_strategy " + nid).split("\n") if l.strip()]
+            if all(len(r.split()) == NUM_COMBOS for r in rows):
+                strat_rows = [parse_floats(r, NUM_COMBOS) for r in rows]
+
+        ev_lines = solver.cmd(f"calc_ev {player} {nid}").split("\n")
+        evs = parse_floats(ev_lines[0], NUM_COMBOS)
+        mus = parse_floats(ev_lines[1], NUM_COMBOS) if len(ev_lines) > 1 else None
+
+    def new_acc(cid):
+        return {"id": cid, "combos": 0.0,
+                "strat": [0.0] * len(strat_rows) if strat_rows else None,
+                "ev_num": 0.0, "ev_den": 0.0, "classes": set()}
+
+    accs = {}
+    for i in range(NUM_COMBOS):
+        w = reach[i] or 0
+        if w <= 0:
+            continue
+        cls = combo_class(order[i])
+        for key in (("m", made_ids[i]), ("d", draw_ids[i])):
+            if key[1] < 0:  # blocked combo on a flop/turn board
+                continue
+            acc = accs.setdefault(key, new_acc(key[1]))
+            acc["combos"] += w
+            if acc["strat"] is not None:
+                for j, row in enumerate(strat_rows):
+                    acc["strat"][j] += w * (row[i] or 0)
+            mu = mus[i] if mus else 1
+            if evs[i] is not None and mu and mu > 0:
+                acc["ev_num"] += w * mu * evs[i]
+                acc["ev_den"] += w * mu
+            acc["classes"].add(cls)
+
+    total = sum(w for w in reach if w)
+
+    def row(key, names):
+        acc = accs[key]
+        combos, cid = acc["combos"], acc["id"]
+        r = {"id": cid, "name": names[cid] if cid < len(names) else str(cid),
+             "combos": round(combos, 4), "pct": combos / total if total else 0,
+             "strategy": [round(x / combos, 6) if combos else 0 for x in acc["strat"]]
+                         if acc["strat"] is not None else None,
+             "ev": round(acc["ev_num"] / acc["ev_den"], 4) if acc["ev_den"] > 0 else None,
+             "classes": sorted(acc["classes"], key=class_sort_key)}
+        return r
+
+    made = [row(k, made_names) for k in sorted(accs) if k[0] == "m" and accs[k]["combos"] > 0]
+    draws = [row(k, draw_names) for k in sorted(accs) if k[0] == "d" and accs[k]["combos"] > 0]
+    made.reverse()   # strongest made hands first; best draws first
+    draws.reverse()
+    return {"id": nid, "board": board, "actor": actor, "player": player,
+            "total": round(total, 4),
+            "made_names": made_names, "draw_names": draw_names,
+            "made": made, "draws": draws}
 
 
 def require_post(method):

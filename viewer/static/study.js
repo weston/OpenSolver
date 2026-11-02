@@ -20,6 +20,10 @@ const S = {
   ev: {},            // player -> /api/ev of the current node
   pinned: null,      // class pinned by click
   hover: null,
+  cats: null,        // {key, data} cache for the Categories tab (#154)
+  catsPlayer: null,  // OOP/IP override in that tab; null = the actor
+  catHl: null,       // Set of classes highlighted by a hovered category row
+  catPin: null,      // {name, classes} pinned by clicking a category row
   side: "hand",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
@@ -148,6 +152,8 @@ export async function gotoNode(id) {
     if (seq !== S.seq) return;
     Object.assign(S, { id, path: p.nodes, eff: p.eff_stack || 0, cur, dec, decId, range: null, ev: {}, loaded: true });
     if (S.pinned && !H.byClass[S.pinned]) S.pinned = null;
+    // a pinned/hovered category is board-dependent: it does not survive navigation
+    S.catPin = null; S.catHl = null;
     if (S.mode !== "strategy") await loadModeData();
     if (seq !== S.seq) return;
     render();
@@ -457,6 +463,7 @@ function renderMatrix() {
     note.textContent = S.mode === "ev" ? `${pl} EV per class, in chips (pot ${fmtChips(pot)})` : `${pl} range at this node — bar height = weight`;
   }
   markSel();
+  markCatHl();
 }
 
 function markSel() {
@@ -467,11 +474,12 @@ function markSel() {
 /* ---- side panel ---- */
 
 function renderSide() {
-  for (const k of ["hand", "node", "ranges"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
+  for (const k of ["hand", "node", "ranges", "cats"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
   document.querySelectorAll(".side-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.side === S.side));
   if (S.side === "hand") renderHand();
   else if (S.side === "node") renderNodePanel();
-  else renderRangesPanel();
+  else if (S.side === "ranges") renderRangesPanel();
+  else renderCatsPanel();
 }
 
 function renderHand() {
@@ -613,6 +621,124 @@ async function renderRangesPanel() {
   }
 }
 
+/* ---- categories tab (#154): made-hand and draw breakdown of the range at hand ---- */
+
+const DRAW_LABEL = {
+  no_draw: "No draw", bdfd_1card: "Backdoor FD (1 card)", bdfd_2card: "Backdoor FD (2 cards)",
+  "4out_straight_draw": "4-out straight draw", "8out_straight_draw": "8-out straight draw",
+  flush_draw: "Flush draw", combo_draw: "Combo draw",
+};
+
+const prettyCat = (name) => DRAW_LABEL[name] || name.replace(/[-_]/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+
+/** Apply the category hover/pin highlight to the matrix cells. */
+function markCatHl() {
+  if (!cells) return;
+  const set = S.catPin ? S.catPin.classes : S.catHl;
+  for (const x of cells) x.c.classList.toggle("cat-hl", !!(set && set.has(x.cls)));
+  $("matrix").classList.toggle("catmode", !!S.catPin);
+}
+
+async function renderCatsPanel() {
+  const box = $("side-cats");
+  const seq = S.seq;
+  const d = S.dec;
+  if (!S.decId || !d || !d.freq) {
+    box.dataset.key = "";
+    box.textContent = "";
+    box.appendChild(el("div", "side-empty", "Categories need a flop (or later) decision — preflop nodes have no board."));
+    return;
+  }
+  const pl = S.catsPlayer || d.actor;
+  const key = `${S.base}|${S.decId}|${pl}`;
+  if (!S.cats || S.cats.key !== key) {
+    let data;
+    try { data = await get(`${S.base}/categories?id=${q(S.decId)}&player=${pl}`); } catch (e) { fail(e); return; }
+    S.cats = { key, data };
+  }
+  if (seq !== S.seq || S.side !== "cats") return;
+  // renderSide runs on every matrix hover; rebuilding the list then would reset its scroll
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const data = S.cats.data;
+  box.textContent = "";
+
+  const head = el("div", "cats-head");
+  head.append(el("span", `badge ${pl.toLowerCase()}`, pl), el("span", "muted num", `${fmt(data.total)} combos`));
+  const seg = el("div", "seg small");
+  for (const p of ["OOP", "IP"]) {
+    const b = el("button", p === pl ? "active" : "", p);
+    b.onclick = () => { S.catsPlayer = p; renderCatsPanel(); };
+    seg.appendChild(b);
+  }
+  head.appendChild(seg);
+  box.appendChild(head);
+
+  if (!data.made.length) {
+    box.appendChild(el("div", "side-empty", "No board at this node — categories start on the flop."));
+    return;
+  }
+  const pi = S.path.findIndex((p) => p.id === S.decId);
+  const acts = actionsOf(d, pi);
+  if (pl !== data.actor) {
+    box.appendChild(el("div", "hint cats-note", `${pl} is not to act here — shares and EVs only, no strategy.`));
+  }
+  const section = (title, rows) => {
+    box.appendChild(el("h3", null, title));
+    rows.forEach((c) => box.appendChild(catRow(c, acts, box)));
+  };
+  section("Made hands", data.made);
+  const draws = data.draws.filter((c) => c.name !== "no_draw" || data.draws.length > 1);
+  if (draws.length) section("Draws", draws);
+  box.appendChild(el("div", "hint cats-note", "Hover a row to light up its hands in the matrix; click to pin."));
+}
+
+function catRow(c, acts, box) {
+  const row = el("div", "cat-row");
+  row.dataset.cat = c.name;
+  if (S.catPin && S.catPin.name === c.name) row.classList.add("sel");
+  const top = el("div", "cat-top");
+  top.append(el("span", "cat-name", prettyCat(c.name)),
+             el("span", "cat-share num", `${fmt(c.combos, c.combos < 10 ? 1 : 0)} c · ${fmt(c.pct * 100, c.pct < 0.1 ? 1 : 0)}%`),
+             el("span", "cat-ev num", c.ev != null ? fmtChips(c.ev) : "—"));
+  top.title = "Combos and share of the range; EV in chips (reach- and matchup-weighted)";
+  row.appendChild(top);
+  if (c.strategy) {
+    const bar = el("div", "mini-bar cat-bar");
+    const tip = `<div class="t">${prettyCat(c.name)}</div>` +
+      acts.map((a) => `<div class="r"><span>${`${a.label} ${a.sub}`.trim()}</span><b>${fmt((c.strategy[a.k] || 0) * 100)}%</b></div>`).join("");
+    acts.forEach((a) => {
+      const f = c.strategy[a.k] || 0;
+      if (f <= 0.0005) return;
+      const sp = el("span");
+      sp.style.background = a.color;
+      sp.style.width = (f * 100).toFixed(1) + "%";
+      bar.appendChild(sp);
+    });
+    row.appendChild(bar);
+    const mix = el("div", "cat-mix");
+    acts.forEach((a) => {
+      const f = c.strategy[a.k] || 0;
+      if (f <= 0.0005) return;
+      const itm = el("span", "cat-mix-item");
+      const sw = el("span", "sw");
+      sw.style.background = a.color;
+      itm.append(sw, el("span", null, `${a.label} ${a.sub}`.trim()), el("b", null, fmt(f * 100, f < 0.1 ? 1 : 0) + "%"));
+      mix.appendChild(itm);
+    });
+    row.appendChild(mix);
+    row.onmousemove = (ev) => showTip(ev, tip);
+  }
+  row.onmouseenter = () => { S.catHl = new Set(c.classes); if (!S.catPin) markCatHl(); };
+  row.onmouseleave = () => { S.catHl = null; hideTip(); if (!S.catPin) markCatHl(); };
+  row.onclick = () => {
+    S.catPin = S.catPin && S.catPin.name === c.name ? null : { name: c.name, classes: new Set(c.classes) };
+    markCatHl();
+    box.querySelectorAll(".cat-row").forEach((r) => r.classList.toggle("sel", !!S.catPin && S.catPin.name === r.dataset.cat));
+  };
+  return row;
+}
+
 /** Up one node: the parent (deals are steps too); at a re-solved subtree's root, back to the original. */
 function goUp() {
   if (S.sub && S.id === S.sub.root) { exitSubgame(); return; }
@@ -648,7 +774,10 @@ export function initStudy() {
     if (e.key === "ArrowLeft" || e.key === "Backspace") {
       e.preventDefault();
       goUp();
-    } else if (e.key === "Escape") { S.pinned = null; markSel(); renderSide(); }
+    } else if (e.key === "Escape") {
+      S.pinned = null; S.catPin = null; S.catHl = null;
+      markSel(); markCatHl(); renderSide();
+    }
   });
 }
 
@@ -671,7 +800,7 @@ function urlState() {
 export function applyUrlState(params) {
   if (["strategy", "range", "ev"].includes(params.mode)) S.mode = params.mode;
   if (["OOP", "IP"].includes(params.player)) S.player = params.player;
-  if (["hand", "node", "ranges"].includes(params.side)) S.side = params.side;
+  if (["hand", "node", "ranges", "cats"].includes(params.side)) S.side = params.side;
   if (params.pin && H.byClass[params.pin]) S.pinned = params.pin;
   document.querySelectorAll("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.mode === S.mode));
 }

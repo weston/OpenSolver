@@ -195,6 +195,55 @@ class ViewerTest(unittest.TestCase):
         self.assertEqual(st, 200, d)
         self.assertEqual(len(d["ev"]), 1326)
 
+    def test_08b_categories(self):
+        # #154: category breakdown at the root decision (pre-solve strategies are uniform)
+        st, d = self.req("/api/categories?id=r:0")
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["board"], CFG["board"])
+        self.assertEqual(d["id"], "r:0")
+        self.assertEqual(d["player"], d["actor"])  # default player is the actor
+        # category shares partition the range: made and draw buckets each sum to it
+        self.assertAlmostEqual(sum(c["combos"] for c in d["made"]), d["total"], places=3)
+        self.assertAlmostEqual(sum(c["combos"] for c in d["draws"]), d["total"], places=3)
+        for c in d["made"] + d["draws"]:
+            self.assertAlmostEqual(c["pct"], c["combos"] / d["total"], places=4)
+        # hand-counted categories of the known test range on QhQc2c:
+        # AA + KK are overpairs (12 combos), JJ + TT underpairs, QsQd is quads
+        by_name = {c["name"]: c for c in d["made"]}
+        self.assertAlmostEqual(by_name["overpair"]["combos"], 12.0, places=4)
+        self.assertAlmostEqual(by_name["underpair"]["combos"], 12.0, places=4)
+        self.assertAlmostEqual(by_name["quads"]["combos"], 1.0, places=4)
+        self.assertEqual(set(by_name["overpair"]["classes"]), {"AA", "KK"})
+        self.assertIn("AQs", by_name["trips"]["classes"])  # trips: AQ + KQs (10 combos)
+        self.assertAlmostEqual(by_name["trips"]["combos"], 10.0, places=4)
+        # per-category strategies agree with the range-weighted strategy of the node:
+        # reconstruct the overall action mix from the category rows and compare it
+        # against /api/strategy's own rows
+        st, s = self.req("/api/strategy?id=r:0")
+        self.assertEqual(st, 200, s)
+        tot = sum(w or 0 for w in s["reach"])
+        for j, row in enumerate(s["freq"]):
+            overall = sum((f or 0) * (w or 0) for f, w in zip(row, s["reach"])) / tot
+            from_cats = sum(c["combos"] * c["strategy"][j] for c in d["made"]) / d["total"]
+            self.assertAlmostEqual(from_cats, overall, places=3)
+        # EVs are present for in-range categories
+        self.assertIsNotNone(by_name["overpair"]["ev"])
+        # the opponent toggle reports shares/EVs but no strategy
+        st, d2 = self.req("/api/categories?id=r:0&player=IP")
+        self.assertEqual(st, 200, d2)
+        self.assertTrue(all(c["strategy"] is None for c in d2["made"]))
+        self.assertAlmostEqual(sum(c["combos"] for c in d2["made"]), d2["total"], places=3)
+        # chance and terminal nodes fall back to the last decision, like the matrix
+        st, d3 = self.req("/api/categories?id=" + urllib.parse.quote("r:0:c:c"))
+        self.assertEqual(st, 200, d3)
+        self.assertEqual(d3["id"], "r:0:c")  # checked-through flop -> deal turn
+        self.assertEqual(d3["actor"], "IP")
+        # bad inputs
+        st, _ = self.req("/api/categories?id=r:0&player=BB")
+        self.assertEqual(st, 400)
+        st, _ = self.req("/api/categories?id=" + urllib.parse.quote("r:0\nshow_version"))
+        self.assertEqual(st, 400)
+
     def test_09_solve_with_live_progress(self):
         st, d = self.req("/api/solve", "POST", {"accuracy": 1.0})
         self.assertEqual(st, 200, d)

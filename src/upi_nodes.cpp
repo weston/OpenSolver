@@ -165,12 +165,15 @@ std::string Upi::show_node_text(const NodeRef& r) const {
   std::vector<std::string> flags;
   if (r.pseudo_root) {
     s += std::to_string(c.pot[0]) + " " + std::to_string(c.pot[1]) + " " + std::to_string(c.pot[2]) + " \n";
+    if (tree_->incomplete) flags.push_back("INCOMPLETE_TREE");
     if ((pf || tree_->root_board_len() == 3) && (tree_->cfg.iso_flop)) flags.push_back("ISOMORPHISM_ON");
     if (pf) {
       flags.push_back("SMALL_STRATS");
+    } else if (tree_->fast_loaded || tree_->loaded_compressed) {
+      if (tree_->fast_loaded) flags.push_back("FAST_LOAD");
+      if (tree_->loaded_compressed) flags.push_back("COMPRESSED");
     } else {
       if (tree_->iterations == 0) flags.push_back("NEW_TREE");
-      if (tree_->incomplete) flags.push_back("INCOMPLETE_TREE");
       flags.push_back(alg_flag());
     }
   } else {
@@ -185,8 +188,16 @@ std::string Upi::show_node_text(const NodeRef& r) const {
       if (n.flags & GF_LOCKED) flags.push_back("LOCKED");
       if (n.flags & GF_COMBO_LOCKED) flags.push_back("COMBO_LOCKED");
       if (n.flags & GF_INCENTIVES) flags.push_back("INCENTIVES");
-      if (!pf) flags.push_back(alg_flag());
-      else if (n.board_len >= 3) flags.push_back("SMALL_STRATS");
+      if (tree_->recalced.count(r.node)) {
+        flags.push_back("ALREADY_RECALCED");
+        flags.push_back(alg_flag());
+      } else if (pf) {
+        if (n.board_len >= 3) flags.push_back("SMALL_STRATS");
+      } else if (tree_->loaded_compressed) {
+        flags.push_back("COMPRESSED");
+      } else {
+        flags.push_back(alg_flag());
+      }
     }
   }
   s += std::to_string(children) + " children\nflags: ";
@@ -275,6 +286,7 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
   TreePause np(pause_requests_, tree_mu_, pause_cv_);
   NodeRef r = resolve(a[0]);
   if (r.pseudo_root || tree_->nodes[r.node].kind != ANodeKind::Decision) throw CmdError{"incorrect node"};
+  ensure_recalced(r);
   const GNode& n = tree_->nodes[r.node];
   int actor = n.player, A = n.num_children, H = tree_->num_hands(actor);
   std::vector<float> sig(static_cast<size_t>(A) * H);
@@ -342,6 +354,7 @@ std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
   TreePause np(pause_requests_, tree_mu_, pause_cv_);
   NodeRef r = resolve(a[1]);
   if (r.pseudo_root) r = resolve("r:0");
+  ensure_recalced(r);
   std::vector<float> r0, r1;
   node_reach(r, r0, r1);
   const float* rp = p == 0 ? r0.data() : r1.data();
@@ -393,6 +406,7 @@ std::string Upi::cmd_calc_eq(const Args& a, bool pp, bool node) {
     TreePause np(pause_requests_, tree_mu_, pause_cv_);
     NodeRef r = resolve(a[1]);
     if (r.pseudo_root) r = resolve("r:0");
+    ensure_recalced(r);
     std::vector<float> r0, r1;
     node_reach(r, r0, r1);
     to_1326(p, r.frame, (p == 0 ? r0 : r1).data(), hero.data());
@@ -757,9 +771,10 @@ double Upi::explo_at(const NodeRef& r, std::vector<float>& r0, std::vector<float
   return st.exploitability;
 }
 
-void Upi::solve_subtree(const NodeRef& r, double accuracy, long long max_iters) {
+void Upi::solve_subtree(const NodeRef& r, double accuracy, long long max_iters, double max_seconds) {
   std::vector<float> r0, r1;
   node_reach(r, r0, r1);
+  auto t0 = std::chrono::steady_clock::now();
   for (long long t = 1; t <= max_iters; ++t) {
     solver_->iterate_subtree(r.node, static_cast<int>(t), r0.data(), r1.data());
     if (t % 25 == 0 || t == max_iters) {
@@ -767,7 +782,38 @@ void Upi::solve_subtree(const NodeRef& r, double accuracy, long long max_iters) 
       double e = explo_at(r, a0, a1);
       if (accuracy > 0 && e <= accuracy) break;
     }
+    if (max_seconds > 0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > max_seconds) break;
   }
+}
+
+void Upi::ensure_recalced(const NodeRef& r) {
+  if (!tree_ || r.pseudo_root) return;
+  // Which street must be re-solved: the first one missing from a truncated save, or the street chosen
+  // with set_always_recalc (3 = flop, 4 = turn, 5 = river).
+  int street = 0;
+  if (tree_->missing_street) street = tree_->missing_street;
+  if (always_recalc_street_ >= 3 && (street == 0 || always_recalc_street_ < street)) street = always_recalc_street_;
+  if (street == 0 || tree_->nodes[r.node].board_len < street) return;
+  // The street root is the decision node reached right after the deal into `street`.
+  NodeRef sub = r;
+  size_t cut = 0;  // no deal into `street` on the path: the tree root starts that street
+  for (size_t i = 0; i < r.steps.size(); ++i) {
+    const GNode& from = tree_->nodes[r.steps[i].node];
+    const GNode& to = tree_->nodes[i + 1 < r.steps.size() ? r.steps[i + 1].node : r.node];
+    if (from.kind == ANodeKind::Chance && to.board_len >= street) {
+      cut = i + 1;
+      break;
+    }
+  }
+  sub.steps.assign(r.steps.begin(), r.steps.begin() + static_cast<long>(cut));
+  sub.node = cut < r.steps.size() ? r.steps[cut].node : r.node;
+  if (tree_->nodes[sub.node].kind != ANodeKind::Decision || tree_->recalced.count(sub.node)) return;
+  const ActionNode& an = tree_->an(tree_->nodes[sub.node]);
+  double pot = an.dead + an.inv[0] + an.inv[1];
+  double acc = recalc_accuracy_[std::clamp(street - 3, 0, 2)] * pot;
+  double secs = always_recalc_ms_ > 0 ? always_recalc_ms_ / 1000.0 : 0.0;
+  solve_subtree(sub, acc, 5000, secs);
+  tree_->recalced.insert(sub.node);
 }
 
 std::string Upi::cmd_solve_partial(const Args& a) {
@@ -778,6 +824,7 @@ std::string Upi::cmd_solve_partial(const Args& a) {
   double acc = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
   if (acc <= 0) acc = 0.0002 * tree_->cfg.start_pot();
   solve_subtree(r, acc, 3000);
+  tree_->recalced.insert(r.node);
   return "solve_partial ok!";
 }
 
@@ -786,6 +833,7 @@ std::string Upi::cmd_explo_partial(const Args& a) {
   TreePause np(pause_requests_, tree_mu_, pause_cv_);
   NodeRef r = resolve(a[0]);
   if (r.pseudo_root) r = resolve("r:0");
+  ensure_recalced(r);
   std::vector<float> r0, r1;
   return pfmt("%f", explo_at(r, r0, r1));
 }
@@ -794,6 +842,7 @@ std::string Upi::cmd_solve_all_splits(const Args& a) {
   if (a.empty() || (a[0] != "turns" && a[0] != "rivers")) throw CmdError{"incorrect or missing argument"};
   require_tree();
   stop_solver();
+  if (tree_->fast_loaded) throw CmdError{"Can't do that on partially loaded tree - please call load_all_nodes"};
   int street = a[0] == "turns" ? 4 : 5;
   std::vector<uint32_t> locked;
   for (uint32_t ni = 0; ni < tree_->nodes.size(); ++ni) {
@@ -816,6 +865,7 @@ std::string Upi::cmd_solve_all_splits(const Args& a) {
   }
   for (uint32_t ni : locked) lock_node_impl(ni, false);
   tree_->incomplete = false;
+  tree_->missing_street = 0;
   return "solve_all_splits ok!";
 }
 
@@ -1001,11 +1051,13 @@ void Upi::register_node_commands() {
   // ---- partial trees ----
   H["rebuild_tree"] = [this](const Args&) {
     require_tree();
+    if (tree_->fast_loaded) throw CmdError{"Can't do that on partially loaded tree - please call load_all_nodes"};
     tree_alg_ = algorithm_;
     return std::string("rebuild_tree ok!");
   };
   H["estimate_rebuild_tree"] = [this](const Args&) {
     require_tree();
+    if (tree_->fast_loaded) throw CmdError{"Can't do that on partially loaded tree - please call load_all_nodes"};
     return "Rebuild tree. Memory needed: " + std::to_string(tree_->memory_bytes() >> 20) + " MB; available: " +
            std::to_string(available_memory_bytes() >> 20) + " MB\nestimate_rebuild_tree ok!";
   };

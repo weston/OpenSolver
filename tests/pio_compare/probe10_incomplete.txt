@@ -1,0 +1,50 @@
+# Probe 10 (issue #8): truncated saves and on-demand recalculation.
+set_range OOP AA:0.5,KK,QQ:0.25,JJ,TT,99,AK:0.75,AQ,AJ,KQ,KJ,QJ,JT,T9
+set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ:0.5,KQ,QJ,JT
+set_board Kh9h4h
+set_pot 0 0 60
+set_eff_stack 200
+add_line 20 20 60 60 200
+add_line 0 20 20 60 60
+add_line 0 0 40
+add_line 20 200
+build_tree
+set_info_freq 1000
+go 150 steps
+wait_for_solver
+calc_results
+show_strategy r:0:c:c:2c
+show_strategy r:0:c:c:2c:c:c:3d
+dump_tree "C:\Users\Owner\AppData\Local\Temp\oupi_p10_noriv.cfr" no_rivers
+dump_tree "C:\Users\Owner\AppData\Local\Temp\oupi_p10_noturn.cfr" no_turns
+free_tree
+load_tree "C:\Users\Owner\AppData\Local\Temp\oupi_p10_noriv.cfr"
+show_node r
+show_node r:0
+show_node r:0:c:c:2c
+show_strategy r:0:c:c:2c
+show_strategy r:0:c:c:2c:c:c:3d
+calc_results
+show_settings
+set_recalc_accuracy 0.01 0.01 0.01
+set_always_recalc 5 3000
+show_strategy r:0:c:c:2c:c:c:3d
+show_node r:0:c:c:2c:c:c:3d
+calc_ev OOP r:0:c:c:2c:c:c:3d
+explo_partial r:0:c:c:2c:c:c:3d
+set_always_recalc 0 0
+free_tree
+load_tree "C:\Users\Owner\AppData\Local\Temp\oupi_p10_noturn.cfr"
+show_node r
+show_strategy r:0
+show_strategy r:0:c:c:2c
+solve_partial r:0:c:c:2c
+show_strategy r:0:c:c:2c
+explo_partial r:0:c:c:2c
+estimate_rebuild_tree
+rebuild_tree
+show_node r
+show_strategy r:0:c:c:2c:c:c:3d
+solve_all_splits rivers
+show_strategy r:0:c:c:2c:c:c:3d
+calc_results

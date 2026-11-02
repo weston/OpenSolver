@@ -47,6 +47,7 @@ import server as vsrv
 
 STREET_INDEX = {"flop": 0, "turn": 1, "river": 2}
 STREET_NAME = {0: "flop", 1: "turn", 2: "river"}
+CARD_TOKEN = re.compile(r"^[2-9TJQKA][cdhs]$")   # a dealt-card token inside a node id
 BRUTE_FORCE_LIMIT = 12     # evaluate all C(k, n) subsets at or below this; greedy above
 DEFAULT_ACCURACY = 0.5     # chips; for both re-solves and each search candidate
 SOLVE_TIMEOUT = 24 * 3600  # a subgame solve can legitimately take a long time
@@ -132,6 +133,46 @@ def read_context(main, node_id, with_ranges=False):
     return ctx
 
 
+def _prev_aggressor(tb, ctx):
+    """The previous street's aggressor at ctx's node, recovered from its node id (#152).
+
+    The id encodes the whole line (r:0:<action or dealt card>:...), so - unlike a bare
+    node snapshot - it says who was aggressive on the street before the subgame root's
+    street: an OOP lead there is then - correctly - a donk lead, and follows the donk
+    rule like in a full build. Returns tb.OOP / tb.IP, or None (leads use bet sizes, the
+    old approximation) when the id is missing, the root sits on the tree's first street,
+    the previous street saw no aggression, or any token is unrecognized.
+    """
+    node_id = str(ctx.get("id", "") or "")
+    tokens = node_id.split(":")[2:]  # drop "r" and the root token
+    street = STREET_INDEX.get(ctx.get("street"))
+    if street is None:
+        return None
+    # the street the id's first token is on: ctx's street minus the dealt cards in the id
+    cur = street - sum(1 for t in tokens if CARD_TOKEN.match(t))
+    if cur < 0:
+        return None
+    to_act, pending, aggr, prev = tb.OOP, False, None, None
+    for tok in tokens:
+        if CARD_TOKEN.match(tok):
+            if pending:
+                return None           # a card cannot arrive with a bet still open
+            prev, aggr = aggr, None   # street boundary: remember who was aggressive
+            cur += 1
+            to_act, pending = tb.OOP, False
+        elif tok == "c":
+            if pending:
+                pending = False       # a call ends the street (a card token follows)
+            elif to_act == tb.OOP:
+                to_act = tb.IP        # OOP checked; IP to act behind
+            # IP's check behind also ends the street; the card token carries it
+        elif tok.startswith("b") and tok[1:].isdigit():
+            aggr, to_act, pending = to_act, 1 - to_act, True
+        else:
+            return None               # unknown token: don't guess
+    return prev if cur == street else None
+
+
 def start_node(tb, ctx):
     """The build_lines root for a subgame starting at ctx.
 
@@ -144,12 +185,12 @@ def start_node(tb, ctx):
     its only line), and the node corresponding to X in the subgame is r:0:c instead
     of r:0 (ctx["subgame_root"]).
 
-    The previous street's aggressor is not recoverable from a node snapshot, so
-    prev_aggressor stays None: a lead on a later street uses bet sizes, never donk
-    sizes (documented approximation).
+    The previous street's aggressor comes from the node id's token walk
+    (_prev_aggressor, #152). It stays None - a lead on the root street then uses bet
+    sizes, never donk sizes - when the id doesn't say (documented approximation).
     """
     return tb.Node(STREET_INDEX[ctx["street"]], (ctx["pot"]["oop"], ctx["pot"]["ip"]),
-                   tb.OOP, False, None)
+                   tb.OOP, False, _prev_aggressor(tb, ctx))
 
 
 def build_config(tb, ctx, body, bet_override=None):

@@ -416,7 +416,19 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   uint64_t full = t->memory_bytes_for(false, predictive_), small = t->memory_bytes_for(true, predictive_);
   if (small_strats_ == "on") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
-  else t->compressed = c.preflop || full > avail * 9 / 10;  // auto: preflop trees always small (like Pio)
+  else {
+    // auto: 16-bit storage for preflop trees (like Pio), when float32 does not fit, and when the
+    // float32 tree is large for the thread count. 16-bit now converges in the same number of
+    // iterations as float32 on every bench tree (the old 1.8x penalty, #55, no longer reproduces),
+    // so the choice is speed per iteration: half the bytes win once (float32 bytes x threads)
+    // reaches about 2 GB, and the conversion arithmetic loses below that. Measured time to 0.05%
+    // of pot: M4 10 threads deep -12%, flop_srp_4 -19%, flop_srp_2 +11%, flop_3bet +10%;
+    // Zen 5 32 threads flop_srp_4 -24%, deep -10%, flop_srp_2 -9%, flop_3bet +7%; Zen 5 1 thread
+    // deep +20% (all on the right side of the threshold).
+    const uint64_t th = threads_ > 0 ? static_cast<uint64_t>(threads_)
+                                     : std::max<uint64_t>(1, std::thread::hardware_concurrency());
+    t->compressed = c.preflop || full > avail * 9 / 10 || full * th >= (uint64_t(2) << 30);
+  }
   uint64_t need = t->memory_bytes_for(t->compressed, predictive_);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board
   if (!mem_ignore && need > avail)

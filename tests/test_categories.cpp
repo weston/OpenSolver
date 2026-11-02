@@ -1,7 +1,7 @@
 // Byte-exact tests for the range explorer against captured PioSOLVER 3.10
 // outputs in tests/data/pio_categories/. Run from the repository root:
-//   clang++ -std=c++20 -O2 -Wall -Wextra -o build/test_categories \
-//     tests/test_categories.cpp src/categories.cpp src/eval.cpp src/cards.cpp
+//   make build/test_categories   (or: clang++ -std=c++20 -O2 -o build/test_categories
+//   tests/test_categories.cpp src/categories.cpp src/eval.cpp src/cards.cpp)
 //   ./build/test_categories
 // Prints ALL PASSED and returns 0 only when every file matches exactly.
 #include <fstream>

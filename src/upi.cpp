@@ -1,7 +1,14 @@
 // UPI core: input loop, output/END handling, settings, tree building, solving thread.
 #include "upi.hpp"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <charconv>
@@ -84,7 +91,11 @@ std::string join(const std::vector<std::string>& a, size_t from, const char* sep
 }  // namespace
 
 uint64_t total_memory_bytes() {
-#if defined(__APPLE__)
+#if defined(_WIN32)
+  MEMORYSTATUSEX st{};
+  st.dwLength = sizeof(st);
+  return GlobalMemoryStatusEx(&st) ? static_cast<uint64_t>(st.ullTotalPhys) : 0;
+#elif defined(__APPLE__)
   uint64_t mem = 0;
   size_t len = sizeof(mem);
   sysctlbyname("hw.memsize", &mem, &len, nullptr, 0);
@@ -96,7 +107,11 @@ uint64_t total_memory_bytes() {
 }
 
 uint64_t available_memory_bytes() {
-#if defined(__APPLE__)
+#if defined(_WIN32)
+  MEMORYSTATUSEX st{};
+  st.dwLength = sizeof(st);
+  return GlobalMemoryStatusEx(&st) ? static_cast<uint64_t>(st.ullAvailPhys) : 0;
+#elif defined(__APPLE__)
   vm_size_t page = 0;
   host_page_size(mach_host_self(), &page);
   vm_statistics64_data_t vm{};

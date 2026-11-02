@@ -2,9 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
-#include <random>
 
 #include "eval.hpp"
+#include "pfh2h.hpp"
 
 namespace pio {
 
@@ -184,42 +184,41 @@ int preflop_class_of_name(const std::string& name) {
 
 PreflopEquity preflop_equity(const std::array<float, NUM_COMBOS>& hero, const std::array<float, NUM_COMBOS>& villain,
                              int boards) {
+  (void)boards;  // exact via the hand-vs-hand table; the Monte Carlo count is ignored
+  const PfTable& t = pf_table();
   PreflopEquity res;
   res.eq.assign(169, 0);
   res.matchups.assign(169, 0);
   Live h = live_hands(hero, 0), v = live_hands(villain, 0);
-  std::vector<double> win(h.combos.size(), 0), tie(h.combos.size(), 0), compat(h.combos.size(), 0);
-  std::mt19937_64 rng(12345);
-  int b5[5];
-  for (int it = 0; it < boards; ++it) {
-    uint64_t m = 0;
-    for (int i = 0; i < 5; ++i) {
-      int c;
-      do {
-        c = static_cast<int>(rng() % NUM_CARDS);
-      } while (m & card_bit(c));
-      m |= card_bit(c);
-      b5[i] = c;
-    }
-    accumulate_board(b5, h, v, win.data(), tie.data(), compat.data());
-  }
   std::vector<double> cw(169, 0), cn(169, 0), cm(169, 0);
-  double csall[NUM_CARDS] = {0}, total = 0;
+  double csall[NUM_CARDS] = {0}, vtotal = 0;
   for (size_t i = 0; i < v.combos.size(); ++i) {
-    total += v.w[i];
+    vtotal += v.w[i];
     csall[COMBOS[v.combos[i]].hi] += v.w[i];
     csall[COMBOS[v.combos[i]].lo] += v.w[i];
   }
+  const double inv_n = 1.0 / PF_BOARDS_PER_PAIR;
   double num = 0, den = 0;
   for (size_t i = 0; i < h.combos.size(); ++i) {
     int hc = h.combos[i];
     int k = preflop_class(hc);
-    double mu = total - csall[COMBOS[hc].hi] - csall[COMBOS[hc].lo] + v.by_combo[hc];
+    double mu = vtotal - csall[COMBOS[hc].hi] - csall[COMBOS[hc].lo] + v.by_combo[hc];  // card removal
+    // Exactly: equity vs the villain range = sum_o w_o * (win(h,o) + tie(h,o)/2) / C(48,5).
+    const uint32_t* wrow = t.win.data() + static_cast<size_t>(hc) * NUM_COMBOS;
+    const uint32_t* trow = t.tie.data() + static_cast<size_t>(hc) * NUM_COMBOS;
+    uint64_t hm = combo_mask(hc);
+    double eq = 0;
+    for (size_t j = 0; j < v.combos.size(); ++j) {
+      int oc = v.combos[j];
+      if (combo_mask(oc) & hm) continue;
+      eq += static_cast<double>(v.w[j]) * (wrow[oc] + 0.5 * trow[oc]);
+    }
+    eq *= inv_n;
     cm[k] += h.w[i] * mu;
-    cw[k] += h.w[i] * (win[i] + 0.5 * tie[i]);
-    cn[k] += h.w[i] * compat[i];
-    num += h.w[i] * (win[i] + 0.5 * tie[i]);
-    den += h.w[i] * compat[i];
+    cw[k] += h.w[i] * eq;
+    cn[k] += h.w[i] * mu;
+    num += h.w[i] * eq;
+    den += h.w[i] * mu;
   }
   for (int k = 0; k < 169; ++k) {
     res.eq[k] = cn[k] > 0 ? static_cast<float>(cw[k] / cn[k]) : 0.0f;

@@ -94,6 +94,7 @@ python3 tests/test_upi.py ./solver
 | `src/solver.*` | vector-form DCFR (α=1.5, β=0, γ=2), best response, evaluation |
 | `src/parallel.*` | nested work-stealing thread pool + per-thread arenas |
 | `src/equity.*`, `src/categories.*` | calc_eq family, range explorer |
+| `src/pfh2h.*` | exact preflop hand-vs-hand win/tie table (suit-isomorphic generation, cached in ~/.cache/wsolver) |
 | `src/upi*.cpp` | command processor, node queries, save/load |
 | `tests/pio_compare/` | black-box comparison harness against a real PioSOLVER |
 

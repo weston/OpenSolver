@@ -314,6 +314,20 @@ def run_small_tree(u, order):
     check_lines(u, 10)
 
 
+def check_calc_eq_preflop_exact(u):
+    print("[calc_eq_preflop: exact equities match recorded PioSOLVER output]")
+    u.cmd("set_range OOP 22+,A2s+,K9s+,Q9s+,J9s+,T9s,ATo+,KJo+")
+    u.cmd("set_range IP 22+,A2s+,K5s+,Q8s+,J8s+,T8s+,97s+,87s,76s,A2o+,K9o+,QTo+,JTo")
+    r = u.cmd("calc_eq_preflop OOP").split("\n")
+    eq = floats(r[0])
+    # Recorded Pio output (issue #5): classes AA AKs AKo KK AQs AQo KQo KQs and the total.
+    want = [0.850457072, 0.653672099, 0.636298418, 0.760216177,
+            0.627568841, 0.608110905, 0.491490602, 0.517899454]
+    ok8 = all(abs(a - b) < 1e-6 for a, b in zip(eq[:8], want))
+    check(len(eq) == 169 and ok8, f"first 8 class equities match Pio to 1e-6 ({eq[:8]})")
+    check(abs(float(r[2]) - 0.550421774) < 1e-6, f"total equity matches Pio ({r[2]})")
+
+
 def main(exe, big=False):
     u = Upi(exe)
     try:
@@ -339,6 +353,8 @@ def main(exe, big=False):
             u.cmd("small_strats auto")  # run_big_tree pins 16-bit storage; later sections use the default
         else:
             run_small_tree(u, order)
+
+        check_calc_eq_preflop_exact(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")
@@ -463,6 +479,29 @@ def main(exe, big=False):
             u.cmd(f'dump_tree "{path}"'); u.cmd("free_tree")
             check(u.cmd(f'load_tree "{path}"') == "load_tree ok!", "load preflop tree")
             check(u.cmd("show_strategy r:0:b25:c:7c7d2h") == s_before, "preflop tree strategies survive save/load")
+
+        print("[pure preflop exit: exact equity at all-in terminals]")
+        u.cmd("set_range OOP AA")
+        u.cmd("set_range IP KK")
+        u.cmd("set_pot 10 5 0")
+        u.cmd("set_eff_stack 25")
+        u.cmd("clear_preflop_lines")
+        u.cmd("add_preflop_line 25 25")
+        u.cmd("build_preflop_tree")
+        # The exit r:0:b25:c is a preflop all-in showdown (END_NODE): EV per hand must equal
+        # pot * equity - investment = 50 * eq - 25, with eq the exact table-based equity.
+        eq_aa = floats(u.cmd("calc_eq_preflop OOP").split("\n")[0])[0]  # class AA
+        evs = floats(u.cmd("calc_ev OOP r:0:b25:c").split("\n")[0])
+        aa_idx = [i for i, h in enumerate(order) if h[0] == "A" and h[2] == "A"]
+        ev_aa = sum(evs[i] for i in aa_idx) / len(aa_idx)
+        check(abs(ev_aa - (50 * eq_aa - 25)) < 0.05,
+              f"preflop all-in exit EV {ev_aa:.4f} == 50*{eq_aa:.6f}-25 = {50*eq_aa-25:.4f}")
+        u.cmd("set_accuracy 0")
+        u.cmd("go 50 steps")
+        u.cmd("wait_for_solver")
+        res = u.cmd("calc_results").split("\n")
+        ex = float(res[4].split(": ")[1])
+        check(ex < 0.05, f"pure preflop all-in tree converges (explo {ex:.4f})")
     finally:
         u.close()
     print()

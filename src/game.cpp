@@ -134,25 +134,10 @@ int GameTree::allin_runouts_id(const std::vector<int>& board) {
     if (!(mask & card_bit(c))) avail.push_back(c);
   std::vector<int> b = board;
   if (board.empty()) {
-    // Preflop all-in (or a pure preflop tree's exits): average over a fixed sample of boards.
-    const int kSamples = 3000;
-    uint64_t x = 0x9E3779B97F4A7C15ULL;
-    for (int s = 0; s < kSamples; ++s) {
-      std::vector<int> bb;
-      uint64_t m = 0;
-      while (bb.size() < 5) {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        int card = static_cast<int>(x % NUM_CARDS);
-        if (m & card_bit(card)) continue;
-        m |= card_bit(card);
-        bb.push_back(card);
-      }
-      ar.boards.push_back(static_cast<uint32_t>(showdown_board_id(bb)));
-    }
-    // A board is compatible with a given pair of hands with probability C(48,5)/C(52,5).
-    ar.scale = static_cast<float>(1.0 / (kSamples * (1712304.0 / 2598960.0)));
+    // Preflop all-in (or a pure preflop tree's exits): exact equity via the hand-vs-hand table
+    // (Solver::showdown_value handles `exact` entries; no sampled boards).
+    ar.exact = true;
+    ar.scale = 1.0f;
   } else if (board.size() == 4) {
     for (int c : avail) {
       b.push_back(c);

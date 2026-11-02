@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "parallel.hpp"
+#include "pfh2h.hpp"
 
 namespace pio {
 
@@ -115,6 +116,41 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
   }
   // All-in before the river: average the showdown over every runout.
   const AllinRunouts& ar = g_.allins[n.aux];
+  if (ar.exact) {
+    // Preflop all-in / pure preflop exit: exact equity via the hand-vs-hand table. For hand h,
+    // value(h) = sum_o ro[o] * (W*win(h,o) + T*tie(h,o) + L*lose(h,o)) / C(48,5) over disjoint o;
+    // with unit payoff u = L + (W - L)*win/N + (T - L)*tie/N this is a matrix-vector product.
+    const PfTable& t = pf_table();
+    const int o = 1 - p;
+    const int Hp = g_.num_hands(p);
+    const int Ho = g_.num_hands(o);
+    const uint16_t* phands = g_.hands[p].data();
+    const uint16_t* ohands = g_.hands[o].data();
+    const double a = static_cast<double>(W - L) / PF_BOARDS_PER_PAIR;
+    const double b = static_cast<double>(T - L) / PF_BOARDS_PER_PAIR;
+    auto body = [&](int h) {
+      uint64_t m = combo_mask(phands[h]);
+      const uint32_t* wrow = t.win.data() + static_cast<size_t>(phands[h]) * NUM_COMBOS;
+      const uint32_t* trow = t.tie.data() + static_cast<size_t>(phands[h]) * NUM_COMBOS;
+      double acc = 0.0, compat = 0.0;
+      for (int j = 0; j < Ho; ++j) {
+        float r = ro[j];
+        if (r == 0.0f) continue;
+        uint32_t oc = ohands[j];
+        if (combo_mask(oc) & m) continue;  // card removal
+        compat += r;
+        acc += r * (a * wrow[oc] + b * trow[oc]);
+      }
+      out[h] = static_cast<float>(acc + compat * L);
+    };
+    if (parallel && Hp >= 32) {
+      std::function<void(int)> fn = body;
+      pool().parallel_for(Hp, fn);
+    } else {
+      for (int h = 0; h < Hp; ++h) body(h);
+    }
+    return;
+  }
   const int nb = static_cast<int>(ar.boards.size());
   const int chunks = parallel ? std::min(nb, 4 * pool().threads()) : 1;
   ArenaScope sc;

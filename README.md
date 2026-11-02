@@ -148,7 +148,7 @@ set_range, set_eff_stack, set_board, set_pot, add_line, remove_line, force_line,
 build_tree, list_algorithms, set_algorithm, ignore_mem_check, small_strats,
 estimate_schematic_tree, show_memory, is_tree_present, show_node, show_children,
 show_effective_stack, show_range, show_strategy, show_strategy_pp, calc_ev, calc_ev_pp, calc_eq,
-calc_eq_pp, calc_eq_node, calc_eq_preflop (Monte Carlo), calc_results, calc_matchups_line,
+calc_eq_pp, calc_eq_node, calc_eq_preflop (exact), calc_results, calc_matchups_line,
 calc_line_freq, calc_global_freq, show_all_lines, show_all_freqs, show_win_evs,
 add_info_line, reset_tree_info, show_tree_info, rebuild_tree, estimate_rebuild_tree,
 solve_partial, solve_all_splits, explo_partial, stdoutredi, stdoutredi_append, stdoutback,
@@ -169,7 +169,8 @@ add preflop lines (absolute amounts incl. blinds; the SB = IP acts first), `buil
 `set_pot`/`set_eff_stack`/`add_line` for its postflop tree and `add_schematic_tree <exit>`; finally
 `add_all_flops` and `go`. Each subset flop stands for its whole suit-isomorphism class (its values are
 averaged over suit permutations; deal probabilities are normalized per hand pair by
-inclusion-exclusion), preflop all-ins use a fixed sample of 3000 boards. As in Pio, each schematic's
+inclusion-exclusion), and preflop all-ins / pure-preflop exits use exact equity from the
+hand-vs-hand table (see below). As in Pio, each schematic's
 `set_pot` is taken literally: its per-player chips are investments and its dead money is free money.
 For whole-hand accounting give the preflop investments per player (e.g. `set_pot 100 100 0` after a
 3-bet to 100); `set_pot 0 0 200` makes the 200 dead money.
@@ -190,8 +191,11 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
 - `_pp` listings omit hands that are only in the opponent's range (#9).
 - Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
   there; results are identical with isomorphism on or off (#12).
-- **Preflop equity** (`calc_eq_preflop`, preflop all-ins) currently uses board sampling (about 0.3%
-  from Pio's exact values; matchups match exactly); exact tables are in progress (#5).
+- **Preflop equity** (`calc_eq_preflop`, preflop all-ins) is exact: a 1326x1326 hand-vs-hand
+  win/tie table is generated once per machine with our own evaluator (suit-isomorphic reduction,
+  multithreaded; ~13 s on an Apple M4, 13.4 MB) and cached under `~/.cache/wsolver/pf_h2h_v1.bin`
+  (override with `WSOLVER_CACHE_DIR`; `XDG_CACHE_HOME` is honored). Values match Pio's exact
+  tables to its output precision.
 
 Verified against PioSOLVER-edge 3.10.1 with `tests/pio_compare/` (black-box: same UPI scripts on both,
 response-by-response diff): formats, tree shapes (`node_count` matches on postflop trees), hand order,

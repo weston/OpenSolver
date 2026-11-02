@@ -256,24 +256,29 @@ def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
             u.cmd("free_tree")
             check(u.cmd(f'load_tree "{path}" full') == "load_tree ok!", "load_tree full")
             check(u.cmd("print_all_strats") == all_before, "every strategy identical after full load")
-        # Default saves quantise to set_compression_precision bits (11): frequencies within 1/2047,
-        # far smaller; no_regrets keeps only the strategies (browse-only).
+        # Default saves keep only the displayed strategies, quantised to set_compression_precision bits
+        # (11): frequencies within 1/2047 and far smaller. The flop-only workflow: save no_turns, browse,
+        # and the later streets are re-solved on demand.
         sizes = {"lossless": os.path.getsize(path)}
-        for opt in ("", "no_regrets"):
+        for opt in ("", "no_turns"):
             q = os.path.join(td, f"q{opt}.cfr")
             check(u.cmd(f'dump_tree "{q}" {opt}'.rstrip()) == "dump_tree ok!", f"dump_tree {opt or '(default)'}")
             sizes[opt or "default"] = os.path.getsize(q)
-            cur = u.cmd("show_strategy " + strat_path)
             u.cmd("free_tree")
             u.cmd(f'load_tree "{q}"')
-            got = [u.cmd("show_strategy " + d) for d in (strat_path,) + tuple(deep_paths)]
-            want = [s_before] + deep_before
+            got = [u.cmd("show_strategy " + d) for d in (strat_path,) + (tuple(deep_paths) if not opt else ())]
+            want = [s_before] + (deep_before if not opt else [])
             diff = max(abs(float(x) - float(y)) for a, b in zip(want, got) for x, y in zip(a.split(), b.split()))
             check(diff < 1.0 / 2047 + 1e-6, f"{opt or 'default'} save: strategies within 11-bit precision (max diff {diff:.2e})")
+            if opt and deep_paths:
+                turn = deep_paths[0]
+                r = u.cmd("show_strategy " + turn)
+                check(not r.startswith("ERROR") and "ALREADY_RECALCED" in u.cmd("show_node " + turn),
+                      f"no_turns save: {turn} re-solved on demand")
             u.cmd("free_tree")
             u.cmd(f'load_tree "{path}" full')
-        check(sizes["default"] * 2 < sizes["lossless"] and sizes["no_regrets"] * 2 < sizes["default"],
-              f"save sizes: lossless {sizes['lossless'] >> 10} KB > default {sizes['default'] >> 10} KB > no_regrets {sizes['no_regrets'] >> 10} KB")
+        check(sizes["default"] * 2 < sizes["lossless"] and sizes["no_turns"] * 10 < sizes["default"],
+              f"save sizes: lossless {sizes['lossless'] >> 10} KB > default {sizes['default'] >> 10} KB > no_turns {sizes['no_turns'] >> 10} KB")
         small = os.path.join(td, "small.cfr")
         u.cmd(f'dump_tree "{small}" no_rivers lossless')
         check(os.path.getsize(small) < os.path.getsize(path), "no_rivers save is smaller")

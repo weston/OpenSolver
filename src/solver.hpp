@@ -13,7 +13,10 @@ enum class Walk { CFR, BestResponse, Evaluate };
 struct DcfrParams {
   double alpha = 1.5;  // positive regret discount exponent
   double beta = 0.0;   // negative regret discount exponent
-  double gamma = 2.0;  // strategy-sum discount exponent
+  // 3, not DCFR's published 2: a sweep over the benchmark suite (#52) found gamma 3 reaches
+  // every target in fewer iterations than 2 on every tree, by up to 19% of wall time. See
+  // set_dcfr to override, and bench/dcfr_sweep.md for the numbers.
+  double gamma = 3.0;  // strategy-sum discount exponent
 };
 
 struct RootStats {

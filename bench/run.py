@@ -80,7 +80,7 @@ def peak_rss_sampler(proc: subprocess.Popen, out: dict, interval: float = 0.05) 
 
 
 def build_script(name: str, threads: int, target: float, info_freq: int,
-                 max_seconds: int) -> str:
+                 max_seconds: int, extra: tuple[str, ...] = ()) -> str:
     """Tree definition plus the commands that drive one measured solve."""
     if name == "fixture25bb":
         with open(FIXTURE_25BB) as fh:
@@ -108,7 +108,9 @@ def build_script(name: str, threads: int, target: float, info_freq: int,
             body = setup + [f"set_threads {threads}",
                             "build_preflop_tree" if preflop else "build_tree"]
 
-    return "\n".join(body + [
+    # extra commands land after the build and before the solve, which is where settings
+    # like set_dcfr have to be set.
+    return "\n".join(body + list(extra) + [
         f"set_accuracy {target} fraction",
         f"set_info_freq {info_freq}",
         f"go {max_seconds} seconds" if max_seconds else "go",
@@ -132,8 +134,8 @@ def parse_progress(out: str) -> list[tuple[float, float]]:
 
 
 def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
-            info_freq: int, max_seconds: int) -> dict:
-    script = build_script(name, threads, min(targets), info_freq, max_seconds)
+            info_freq: int, max_seconds: int, extra: tuple[str, ...] = ()) -> dict:
+    script = build_script(name, threads, min(targets), info_freq, max_seconds, extra)
     proc = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, cwd=ROOT)
     rss: dict = {}
@@ -166,6 +168,7 @@ def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
         "final_exploitability": final,
         "peak_rss_mb": round(rss.get("peak_rss", 0) / 2**20, 1),
         "reached": reached,
+        "extra": list(extra),
         "error": next((l for l in out.splitlines() if l.startswith("ERROR")), None),
     }
 
@@ -229,6 +232,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--include-preflop", action="store_true",
                     help="also run the full preflop tree (several GB, minutes per run)")
     ap.add_argument("--out", default="", help="write <out>.json and <out>.md")
+    ap.add_argument("--extra", default="",
+                    help="semicolon-separated UPI commands inserted after the build and "
+                         "before the solve, e.g. --extra 'set_dcfr 1.5 0 3'")
     args = ap.parse_args(argv)
 
     if not os.path.exists(args.exe):
@@ -251,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         "version": subprocess.run([args.exe], input="show_build_version\nexit\n",
                                   capture_output=True, text=True).stdout.strip().splitlines()[-1],
         "info_freq": args.info_freq,
+        "extra": args.extra,
     }
 
     rows = []
@@ -258,7 +265,8 @@ def main(argv: list[str] | None = None) -> int:
         for threads in modes:
             print(f"  {name} @ {threads} thread{'s' if threads > 1 else ''} ...",
                   end="", flush=True)
-            r = run_one(args.exe, name, threads, targets, args.info_freq, args.max_seconds)
+            r = run_one(args.exe, name, threads, targets, args.info_freq, args.max_seconds,
+                        tuple(c.strip() for c in args.extra.split(";") if c.strip()))
             rows.append(r)
             if r["error"]:
                 print(f" {r['error']}")

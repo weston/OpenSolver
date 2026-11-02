@@ -565,14 +565,18 @@ def op_generate(solver, b):
     if not lines:
         raise SolverError("config produced no lines (check bet/raise sizes)")
 
-    # Isomorphism is always on (owner decision, #113); an "iso" field from old clients is ignored.
+    # Isomorphism is always on (owner decision, #113), for turn cards too: "1 1" also merges
+    # suit-isomorphic turns when the tree starts on the turn (26% fewer nodes and faster on turn
+    # trees, #137; EV and exploitability identical, strategies within <1 point of the "1 0" solve,
+    # both equilibria). The UPI default stays "1 0" for Pio output parity. An "iso" field from old
+    # clients is ignored.
     cmds = ["stop", "wait_for_solver",
             "set_range OOP " + range_oop,
             "set_range IP " + range_ip]
     if board:
         cmds.append("set_board " + board)
     cmds += [f"set_eff_stack {stack}", f"set_pot 0 0 {pot}",
-             "set_isomorphism 1 0", "clear_lines"]
+             "set_isomorphism 1 1", "clear_lines"]
     cmds += lines
     solver.cmds(cmds)
     solver.tree_present = False

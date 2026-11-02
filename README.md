@@ -132,6 +132,7 @@ UPI probe matches the macOS build up to floating-point rounding).
 | Node types | `ROOT`, `OOP_DEC`, `IP_DEC`, `SPLIT_NODE`, `END_NODE`. All-ins before the river are `END_NODE`s whose value averages over every runout (no chance nodes), exactly like Pio. |
 | Children order | Bets/raises largest first, then check/call, then fold; dealt cards from `As` down to `2c`. `show_all_lines` walks the reverse order with `?` card markers. |
 | EVs | Chips relative to the tree start: payoff = share of the final pot - own chips invested in the tree, so `EV OOP + EV IP = starting pot`. `calc_ev` matchups are weighted by the hand's own reach (Pio semantics); out-of-range hands print `nan`/`inf`. |
+| Hands of either range | By default each player's hand list is their own range. `set_union_hands on` (before `build_tree`) makes it the union of both, like Pio: a hand only in the opponent's range gets a slot with reach 0, so `calc_ev` reports the **sign** of its counterfactual value (`inf`/`-inf` rather than a bare `inf`) and `calc_ev_pp`/`show_strategy_pp` list it. The equilibrium is unchanged; vectors get wider (about +23% solve time on `bench_flop`), which is why it is off by default. |
 | SOLVER output | `SOLVER: started`, periodic `SOLVER:` blocks (running time, EVs, MES, `Exploitable for`) ending in END, and `SOLVER: stopped (<reason>)`. Command responses never interleave with these. |
 | Isomorphism | Querying a non-canonical card (e.g. `7s` when it mirrors `7d`) returns the suit-swapped strategy; node IDs keep the card you asked for. |
 
@@ -143,7 +144,7 @@ UPI probe matches the macOS build up to floating-point rounding).
 show_settings, bench, load_script, load_script_silent, skip_if_done, LABEL:, echo, repeat,
 show_hand_order, show_preflop_order, go, stop, wait_for_solver, take_a_break, solver_time,
 set_threads, set_info_freq, set_accuracy, set_recalc_accuracy, set_always_recalc (stored),
-set_isomorphism, change_step / show_step (stored), show_iters, set_first_iteration_player,
+set_isomorphism, set_union_hands, change_step / show_step (stored), show_iters, set_first_iteration_player,
 set_range, set_eff_stack, set_board, set_pot, add_line, remove_line, force_line, clear_lines,
 build_tree, list_algorithms, set_algorithm, ignore_mem_check, small_strats,
 estimate_schematic_tree, show_memory, is_tree_present, show_node, show_children,
@@ -160,6 +161,16 @@ lock_line, unlock_line, set_incentives_node, set_incentives_line, show_incentive
 clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compress), free_tree,
 show_metadata, show_save_version, load_all_nodes, set_compression_precision,
 set_compression_level, check_tree_health.
+
+**Saving and loading.** `dump_tree <file> [no_rivers|no_turns]` writes a full save, or one without the
+river (or turn and river) strategies. Those are much smaller, and the missing streets are re-solved on
+demand when you browse them. `load_tree <file>` is **lazy** (Pio's "fast" load): it reads only the
+tree's settings, and each street segment (the decisions between two card deals) is decompressed the
+first time it is accessed. Big saves open instantly and use memory only for what you look at (e.g. a
+155 MB tree: 0.02 s and 13 MB to open and browse vs 0.22 s and 155 MB for `load_tree <file> full`).
+`load_all_nodes` reads the rest in parallel. Solving and saving do that automatically, and
+`rebuild_tree` / `solve_all_splits` require it, as in Pio. Saves from older versions (v2, v3) still
+load, eagerly.
 
 **Preflop trees:** add_preflop_line, remove_preflop_line, clear_preflop_lines, build_preflop_tree,
 add_to_subset, reset_subset, show_subset, recover_subset, add_schematic_tree, add_all_flops,
@@ -180,8 +191,9 @@ For whole-hand accounting give the preflop investments per player (e.g. `set_pot
 Policy (owner decision, #10): match Pio wherever tools may depend on it (formats, codes, node ids,
 error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberate differences:
 
-- **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip streams
-  (`src/upi_save.cpp`), and `show_save_version` reports our own format.
+- **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip files with one
+  member per street segment plus an index (`src/upi_save.cpp`), and `show_save_version` reports our own
+  format (4).
 - **One algorithm.** `set_algorithm` accepts every Pio code but all map to DCFR; `list_algorithms`
   keeps Pio's codes with honest descriptions.
 - **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.

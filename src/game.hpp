@@ -2,8 +2,12 @@
 // per-player hand lists, showdown orderings and strategy storage.
 #pragma once
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
+#include <mutex>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -51,6 +55,11 @@ struct GameConfig {
   int32_t eff_stack = 0;
   Weights1326 range[2]{};          // OOP, IP
   bool iso_flop = true, iso_turn = false;
+  // Keep each player's hand list as the union of both ranges, like Pio, so hands only in
+  // the opponent's range still get a slot (and therefore a counterfactual value) instead
+  // of being filtered out. They enter with reach 0, so the equilibrium is unaffected; the
+  // cost is wider vectors. Off by default: see set_union_hands.
+  bool union_hands = false;
   LineSet lines;
   int32_t start_pot() const { return pot[0] + pot[1] + pot[2]; }
   bool full_preflop() const { return preflop && !schematics.empty(); }
@@ -110,6 +119,61 @@ struct ShowdownBoard {
   std::vector<std::pair<uint16_t, uint16_t>> groups[2];
 };
 
+// Allocator for big zero-initialised arrays: calloc memory and no per-element construction, so the OS
+// hands out untouched zero pages lazily. A lazily loaded tree only commits RAM for what gets read.
+template <class T>
+struct ZeroAlloc {
+  using value_type = T;
+  ZeroAlloc() = default;
+  template <class U>
+  ZeroAlloc(const ZeroAlloc<U>&) {}
+  T* allocate(size_t n) {
+    void* p = std::calloc(n ? n : 1, sizeof(T));
+    if (!p) throw std::bad_alloc();
+    return static_cast<T*>(p);
+  }
+  void deallocate(T* p, size_t) { std::free(p); }
+  template <class U>
+  void construct(U*) noexcept {}  // value-init: calloc memory is already zero
+  template <class U, class... A>
+  void construct(U* p, A&&... a) {
+    ::new (static_cast<void*>(p)) U(std::forward<A>(a)...);
+  }
+  template <class U>
+  bool operator==(const ZeroAlloc<U>&) const { return true; }
+  template <class U>
+  bool operator!=(const ZeroAlloc<U>&) const { return false; }
+};
+template <class T>
+using ZVec = std::vector<T, ZeroAlloc<T>>;
+
+class GameTree;
+
+// Street segments: the decision nodes between two card deals (the tree root starts segment 0). Saves
+// store each segment as its own gzip member so a lazily loaded tree can read any one of them alone.
+struct StreetSegments {
+  std::vector<uint32_t> node_seg;           // per node: segment id (UINT32_MAX for non-decision nodes)
+  std::vector<std::vector<uint32_t>> segs;  // decision nodes of each segment, in save order
+};
+
+// Lazy-load state for a tree loaded with `load_tree` (fast). Segments are read from the save file the
+// first time any accessor touches one of their nodes. Thread-safe; loads never throw (errors are
+// recorded and reported by the next command).
+struct LazyStore {
+  std::string path;
+  uint8_t file_mode = 0;           // save's storage mode byte (bit 0: 16-bit records)
+  StreetSegments seg;
+  std::vector<uint64_t> offset;    // per segment: byte offset of its gzip member (0 = not in file)
+  std::unique_ptr<std::atomic<uint8_t>[]> loaded;
+  std::atomic<size_t> remaining{0};
+  std::mutex mu[64];
+  std::atomic<bool> failed{false};
+  std::mutex err_mu;
+  std::string error;
+  // Reads segment `s` into the tree's storage; throws on I/O or format errors.
+  void (*load_fn)(const GameTree&, const LazyStore&, uint32_t s) = nullptr;
+};
+
 class GameTree {
  public:
   GameConfig cfg;
@@ -135,10 +199,10 @@ class GameTree {
   // Strategy storage. Uncompressed: float32 arrays indexed by GNode::storage. Compressed: int16 regrets and
   // uint16 strategy sums with one float scale per decision node (indexed by GNode::aux).
   bool compressed = false;
-  std::vector<float> regrets;
-  std::vector<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
-  std::vector<int16_t> regrets_q;
-  std::vector<uint16_t> strat_q;
+  ZVec<float> regrets;
+  ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
+  ZVec<int16_t> regrets_q;
+  ZVec<uint16_t> strat_q;
   std::vector<float> rscale, sscale;
   uint64_t storage_floats = 0;
   uint64_t num_decisions = 0;
@@ -153,6 +217,21 @@ class GameTree {
   void regrets_commit(const GNode& n, const float* data, float maxabs = -1.0f);  // maxabs < 0: compute
   void strat_commit(const GNode& n, const float* data, float maxval = -1.0f);
   void clear_storage();  // all regrets / strategy sums to 0
+
+  // Lazy loading (see LazyStore). Every accessor above calls ensure_loaded first.
+  std::unique_ptr<LazyStore> lazy;
+  void ensure_loaded(const GNode& n) const {
+    if (lazy) lazy_touch(static_cast<uint32_t>(&n - nodes.data()));
+  }
+  void lazy_touch(uint32_t node) const;
+  // Loads every segment (in parallel) and drops the lazy state. Not concurrent with other tree access.
+  // Returns false (with err) if a segment could not be read.
+  bool load_all(std::string& err);
+  bool take_lazy_error(std::string& err);  // true (and clears it) if a lazy load failed since the last call
+  // Quantise into 16-bit storage without the lazy-load hook (used by the loader itself).
+  void regrets_store(const GNode& n, const float* data, float maxabs = -1.0f);
+  void strat_store(const GNode& n, const float* data, float maxval = -1.0f);
+  StreetSegments street_segments() const;
 
   // Per-node extras (keyed by node index)
   std::unordered_map<uint32_t, std::vector<uint8_t>> combo_lock;  // per local hand: 1 = locked

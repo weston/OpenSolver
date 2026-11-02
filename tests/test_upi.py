@@ -230,7 +230,7 @@ def check_locking(u):
     check(all(abs(st2[1][i] - 1) < 1e-4 for i in in_range), "set_strategy round-trips (in-range hands)")
 
 
-def check_save_load(u, strat_path):
+def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
     print("[save / load]")
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "t.cfr")
@@ -239,13 +239,46 @@ def check_save_load(u, strat_path):
         meta = u.cmd(f'show_metadata "{path}"').split("\n")
         check(meta[1] == "ROOT" and meta[2].rstrip() == "Qh Qc 2c", f"show_metadata ({meta[2]!r})")
         s_before = u.cmd("show_strategy " + strat_path)
+        deep_before = [u.cmd("show_strategy " + d) for d in deep_paths]
+        bad = [d for d, r in zip(deep_paths, deep_before) if r.startswith("ERROR") or len(r.split()) < 10]
+        check(not bad, f"deep test nodes exist {bad}")
+        all_before = u.cmd("print_all_strats") if whole_tree else None
         u.cmd("free_tree")
         check(u.cmd("is_tree_present") == "false", "free_tree")
+        # Default (fast) load is lazy: node data is decompressed per street segment on first access.
         check(u.cmd(f'load_tree "{path}"') == "load_tree ok!", "load_tree")
+        check("FAST_LOAD" in u.cmd("show_node r"), "fast load flag")
+        deep_after = [u.cmd("show_strategy " + d) for d in reversed(deep_paths)][::-1]
+        check(deep_after == deep_before, f"lazy reads of {len(deep_paths)} deep nodes (deepest first) are exact")
         check(u.cmd("show_strategy " + strat_path) == s_before, "strategy identical after reload")
+        if whole_tree:
+            check(u.cmd("print_all_strats") == all_before, "every strategy identical after lazy load")
+            u.cmd("free_tree")
+            check(u.cmd(f'load_tree "{path}" full') == "load_tree ok!", "load_tree full")
+            check(u.cmd("print_all_strats") == all_before, "every strategy identical after full load")
         small = os.path.join(td, "small.cfr")
         u.cmd(f'dump_tree "{small}" no_rivers')
         check(os.path.getsize(small) < os.path.getsize(path), "no_rivers save is smaller")
+        if deep_paths:
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{small}"')
+            flags = u.cmd("show_node r")
+            check("INCOMPLETE_TREE" in flags and "FAST_LOAD" in flags, "no_rivers: incomplete + fast-load flags")
+            check(u.cmd("show_strategy " + strat_path) == s_before, "no_rivers: lazily loaded strategy exact")
+            check(u.cmd("rebuild_tree").startswith("ERROR"), "rebuild_tree needs load_all_nodes")
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{path}"')
+            u.cmd("set_equal_strats")  # must not be undone by later lazy reads of the file
+            eq_lazy = [u.cmd("show_strategy " + d) for d in deep_paths]
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{path}" full')
+            u.cmd("set_equal_strats")
+            eq_full = [u.cmd("show_strategy " + d) for d in deep_paths]
+            check(eq_lazy == eq_full and eq_lazy[0] != deep_before[0], "set_equal_strats on a lazily loaded tree sticks")
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{small}"')
+        # The tree must not depend on the temp file any more (it is corrupted, then deleted, below).
+        check(u.cmd("load_all_nodes") == "load_all_nodes ok!", "load_all_nodes")
         with open(path, "r+b") as f:
             f.seek(200)
             f.write(b"\xff\xfe\xfd")
@@ -270,6 +303,9 @@ def run_big_tree(u, order):
     print("[build + solve the real Pio script tree]")
     est = u.cmd("estimate_schematic_tree")
     check("MB" in est, "estimate_schematic_tree")
+    # 6.4 GB in float32: pin 16-bit storage so the tree fits 16 GB machines and the save/load round
+    # trip below is exact (auto mode could otherwise save float32 and reload compressed, see #40).
+    u.cmd("small_strats on")
     check(u.cmd("build_tree") == "build_tree ok!", "build_tree")
     check_tree_shape(u, order)
     u.cmd("set_accuracy 0.2")
@@ -307,7 +343,8 @@ def run_small_tree(u, order):
     check_strategies(u, order, evo)
     check_isomorphism(u, order)
     check_locking(u)
-    check_save_load(u, "r:0:c:b12")
+    check_save_load(u, "r:0:c:b12", deep_paths=("r:0:c:c:3d", "r:0:c:b12:c:Ad:c", "r:0:c:c:Ks:c:c:3h", "r:0:b12:c:7d:c:c:9s"),
+                    whole_tree=True)
     check_lines(u, 10)
 
 
@@ -323,6 +360,69 @@ def check_calc_eq_preflop_exact(u):
     ok8 = all(abs(a - b) < 1e-6 for a, b in zip(eq[:8], want))
     check(len(eq) == 169 and ok8, f"first 8 class equities match Pio to 1e-6 ({eq[:8]})")
     check(abs(float(r[2]) - 0.550421774) < 1e-6, f"total equity matches Pio ({r[2]})")
+
+
+def check_union_hands(u):
+    """set_union_hands: opponent-only hands get a slot, a signed inf and _pp rows (#9)."""
+    print("[set_union_hands: hands of either range]")
+    # IP holds 88, OOP does not, and the board blocks none of it: exactly 6 opponent-only
+    # combos for OOP. Nothing else differs between the two ranges in OOP's direction.
+    setup = [
+        "set_range OOP AA:0.5,KK,QQ:0.25,JJ,TT,99,AK:0.75,AQ,AJ,KQ,KJ,QJ,JT,T9",
+        "set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ:0.5,KQ,QJ,JT",
+        "set_board Kh9h4h",
+        "set_pot 0 0 60",
+        "set_eff_stack 200",
+        "clear_lines ",
+        "add_line 20 20 60 60 200",
+        "add_line 0 20 20 60 60",
+        "add_line 0 0 40",
+        "add_line 20 200",
+    ]
+
+    def solve(union):
+        u.cmd("free_tree")
+        for c in setup:
+            u.cmd(c)
+        check(u.cmd("set_union_hands " + ("on" if union else "off")) == "set_union_hands ok!",
+              f"set_union_hands {'on' if union else 'off'} accepted")
+        u.cmd("build_tree")
+        u.cmd("set_accuracy 5")
+        u.cmd("go")
+        u.cmd("wait_for_solver")
+        res = u.cmd("calc_results").split("\n")
+        combos = lambda out: [l.split(":")[0] for l in out.split("\n") if re.match(r"^[2-9TJQKA][cdhs][2-9TJQKA][cdhs]:", l)]
+        return {
+            "evs": (res[0], res[1], res[4]),
+            "ev_pp": combos(u.cmd("calc_ev_pp OOP r:0")),
+            "strat_pp": combos(u.cmd("show_strategy_pp r:0")),
+            "deep": u.cmd("calc_ev OOP r:0:b20:b200").split("\n")[0].split(),
+        }
+
+    off, on = solve(False), solve(True)
+
+    check(u.cmd("set_union_hands maybe").startswith("ERROR"), "set_union_hands rejects a bad argument")
+
+    added = sorted(set(on["ev_pp"]) - set(off["ev_pp"]))
+    check(len(off["ev_pp"]) == 142 and len(on["ev_pp"]) == 148,
+          f"calc_ev_pp lists the union ({len(off['ev_pp'])} -> {len(on['ev_pp'])}, expected 142 -> 148)")
+    check(added == ["8d8c", "8h8c", "8h8d", "8s8c", "8s8d", "8s8h"],
+          f"the added hands are exactly the six 88 combos ({added})")
+    check(len(on["strat_pp"]) == 148 and sorted(set(on["strat_pp"]) - set(off["strat_pp"])) == added,
+          "show_strategy_pp lists the same opponent-only hands")
+
+    # Equilibrium must not move: the extra hands enter with reach 0.
+    check(off["evs"] == on["evs"], f"equilibrium unchanged by union_hands ({off['evs']} vs {on['evs']})")
+
+    # Deep node where OOP has 20 in and faces an all-in: the opponent-only hands have a
+    # negative counterfactual value, so Pio's signed -inf rather than a bare inf.
+    n_off = sorted(t for t in off["deep"] if t in ("inf", "-inf"))
+    n_on = sorted(t for t in on["deep"] if t in ("inf", "-inf"))
+    check(n_off == ["inf"] * 6, f"without union_hands the six hands print unsigned inf ({n_off[:2]}...)")
+    check(n_on == ["-inf"] * 6, f"with union_hands they print -inf, the sign of their cfv ({n_on[:2]}...)")
+
+    u.cmd("set_union_hands off")
+    u.cmd("free_tree")
 
 
 def main(exe, big=False):
@@ -347,10 +447,13 @@ def main(exe, big=False):
 
         if big:
             run_big_tree(u, order)
+            u.cmd("small_strats auto")  # run_big_tree pins 16-bit storage; later sections use the default
         else:
             run_small_tree(u, order)
 
         check_calc_eq_preflop_exact(u)
+
+        check_union_hands(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")

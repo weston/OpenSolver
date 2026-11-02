@@ -10,6 +10,7 @@ contains both the config header and the 266 lines it generated
 Usage:
     python3 tools/tree_builder.py CONFIG            # print add_line commands
     python3 tools/tree_builder.py CONFIG --full     # print a complete UPI script
+    python3 tools/tree_builder.py CONFIG --pio-compat   # PioViewer's donk fallback (below)
 
 CONFIG is any file containing `#Key#Value` header lines; extra content (ranges, add_line
 commands already present, build_tree) is ignored, so a PioViewer save file can be fed in
@@ -39,6 +40,12 @@ pot_if_called = dead pot + 2 * max(invested)          (the pot once the pending 
 bet   to  invested + round(BetSize%   * pot)           (DonkBetSize% when OOP leads into
                                                         the previous street's aggressor)
 raise to  facing   + round(RaiseSize% * pot_if_called)
+
+Donk rule (#152, differs from PioViewer): when OOP leads into the previous street's
+aggressor, only DonkBetSize sizes are offered - an empty DonkBetSize means OOP cannot
+lead at all (check only), and AddAllin adds no all-in lead either. PioViewer instead
+falls back to BetSize for an empty donk list; --pio-compat reproduces that (useful when
+diffing against a PioViewer save whose DonkBetSize is unset).
 
 Rounding is half-up to whole chips.
 
@@ -168,6 +175,11 @@ class Config:
     ranges: dict[str, str] = field(default_factory=dict)
     raw_set_range: dict[str, str] = field(default_factory=dict)
     isomorphism: str = "1 0"
+    # PioViewer behavior: an empty DonkBetSize falls back to BetSize for an OOP lead into
+    # the previous street's aggressor. The default (False) is the owner's rule (#152): an
+    # empty donk list means OOP cannot lead at all. Not read from the config file; set by
+    # the CLI's --pio-compat flag. The viewer never sets it.
+    pio_compat: bool = False
 
     def street(self, street: int, player: int) -> StreetConfig:
         return self.streets[street][player]
@@ -295,11 +307,26 @@ def _aggressive_totals(cfg: Config, node: Node) -> list[int]:
     sc = cfg.street(node.street, me)
     allin = cfg.stack
 
+    no_donk_lead = False
     if facing > mine:
         specs = sc.raise_
     else:
+        # Leading into the previous street's aggressor is a donk bet. Under the owner's
+        # rule (#152) an empty OOP DonkBetSize means OOP cannot lead at all: no fallback to
+        # BetSize, and AddAllin below adds no all-in lead either. (PioViewer falls back to
+        # BetSize; the --pio-compat CLI flag / cfg.pio_compat restores that.)
+        # IP keeps the old behavior: structurally the same spot - leading into OOP after
+        # OOP was the previous aggressor, which postflop only happens after OOP checked -
+        # is not a donk bet, and PioViewer gives IP its BetSize there (the recorded
+        # fixture's check-bet lines depend on it).
         donk = node.prev_aggressor is not None and node.prev_aggressor != me
-        specs = sc.donk if donk and sc.donk else sc.bet
+        strict = donk and me == OOP and not cfg.pio_compat
+        specs = sc.donk if donk and (sc.donk or strict) else sc.bet
+
+        # OOP leading with no donk sizes configured: not only are no donk bets offered,
+        # the AddAllin gate below must not add an all-in lead either (explicit
+        # decision, #152). A non-empty donk list enables it as usual.
+        no_donk_lead = strict and not sc.donk
 
     cap = _street_cap(cfg, node.street)
     capped = cap is not None and node.aggr >= cap
@@ -319,7 +346,7 @@ def _aggressive_totals(cfg: Config, node: Node) -> list[int]:
     totals = [allin if Decimal(t) >= threshold else t for t in totals]
     totals = [min(t, allin) for t in totals]
 
-    if sc.add_allin:
+    if sc.add_allin and not no_donk_lead:
         limit = cfg.add_allin_max_pot_mult * Decimal(pot_if_called) / Decimal(100)
         if Decimal(allin) < limit:
             totals.append(allin)
@@ -436,6 +463,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rules", action="store_true", help="print the inferred sizing rules")
     ap.add_argument("--compare", action="store_true",
                     help="diff against the add_line commands already in the file")
+    ap.add_argument("--pio-compat", action="store_true",
+                    help="expand like PioViewer: an empty DonkBetSize falls back to "
+                         "BetSize (default: an empty donk list means OOP cannot lead)")
     args = ap.parse_args(argv)
 
     if args.rules:
@@ -447,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.config) as fh:
         text = fh.read()
     cfg = parse_config(text)
+    cfg.pio_compat = args.pio_compat
     lines = build_lines(cfg)
 
     if args.compare:

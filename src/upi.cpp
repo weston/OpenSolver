@@ -278,7 +278,7 @@ std::string Upi::stats_block(const RootStats& st, double running_time) {
   return buf;
 }
 
-void Upi::start_solver(double seconds, long long steps) {
+void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   require_tree();
   if (solving_) return;
   if (solver_thread_.joinable()) solver_thread_.join();
@@ -287,16 +287,33 @@ void Upi::start_solver(double seconds, long long steps) {
   if (!tree_->load_all(lerr)) throw CmdError{"cannot read the tree's file: " + lerr};
   stop_flag_ = false;
   solving_ = true;
-  solver_thread_ = std::thread([this, seconds, steps] { solver_thread_main(seconds, steps); });
+  solver_thread_ = std::thread([this, seconds, steps, sub = std::move(sub)] { solver_thread_main(seconds, steps, std::move(sub)); });
 }
 
-void Upi::solver_thread_main(double seconds, long long steps) {
+void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps) {
+  auto job = std::make_shared<SubtreeJob>();
+  job->root = r.node;
+  job->id = r.id;
+  node_reach(r, job->r0, job->r1);
+  job->pot = tree_->cfg.start_pot();
+  const GNode& n = tree_->nodes[r.node];
+  if (n.kind == ANodeKind::Decision) {
+    const ActionNode& an = tree_->an(n);
+    job->pot = an.dead + an.inv[0] + an.inv[1];
+  }
+  start_solver(seconds, steps, std::move(job));
+}
+
+void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   out_raw("SOLVER: started\n");
   auto t0 = std::chrono::steady_clock::now();
-  double base = solve_seconds_;
+  double base = sub ? 0.0 : solve_seconds_;
   long long done = 0;
   std::string reason = "requested";
   const std::string endl_str = end_string_.empty() ? "END" : end_string_;
+  // A partial solve without an info frequency would never check its stop conditions:
+  // fall back to solve_subtree's every-25-iterations cadence.
+  const long long sub_freq = sub ? (info_freq_ > 0 ? info_freq_ : 25) : info_freq_;
   for (;;) {
     if (stop_flag_) {
       reason = stop_reason_.empty() ? "requested" : stop_reason_;
@@ -312,20 +329,37 @@ void Upi::solver_thread_main(double seconds, long long steps) {
     RootStats st{};
     {
       std::lock_guard<std::mutex> lk(tree_mu_);
-      ++tree_->iterations;
-      ++iterations_;
-      // DCFR discount clock; restarted when the payoff model changes (warm start, fast adaptation).
-      solver_->iterate(static_cast<int>(tree_->iterations - discount_restart_));
+      // DCFR discount clock: the tree's own counter for a whole solve (restarted when the payoff
+      // model changes), a fresh 1..N for a subtree solve (exactly what solve_partial does).
+      if (sub) {
+        solver_->iterate_subtree(sub->root, static_cast<int>(done + 1), sub->r0.data(), sub->r1.data());
+      } else {
+        ++tree_->iterations;
+        ++iterations_;
+        solver_->iterate(static_cast<int>(tree_->iterations - discount_restart_));
+      }
       ++done;
       double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-      solve_seconds_ = base + el;
+      if (!sub) solve_seconds_ = base + el;
       bool limit = (steps > 0 && done >= steps) || (seconds > 0 && el >= seconds);
-      if (info_freq_ > 0 && (tree_->iterations % info_freq_ == 0)) report = true;
+      long long tick = sub ? done : tree_->iterations;
+      if (sub_freq > 0 && (tick % sub_freq == 0)) report = true;
       if (limit) report = true;
       if (report) {
-        st = solver_->root_stats();
-        out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
-        double target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
+        double target;
+        if (sub) {
+          RootStats pst{};
+          explo_at_reach(sub->root, sub->r0.data(), sub->r1.data(), &pst);
+          st = pst;
+          // A "partial:" first line marks the block as a subtree solve's (the viewer routes it
+          // away from the whole-tree convergence series).
+          out_raw("SOLVER:\npartial: " + sub->id + "\n" + stats_block(st, el) + endl_str + "\n");
+          target = accuracy_fraction_ ? accuracy_ * sub->pot : accuracy_;
+        } else {
+          st = solver_->root_stats();
+          out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
+          target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
+        }
         if (accuracy_ > 0 && st.exploitability <= target) {
           reason = "required accuracy reached";
           break;
@@ -382,7 +416,19 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   uint64_t full = t->memory_bytes_for(false, predictive_), small = t->memory_bytes_for(true, predictive_);
   if (small_strats_ == "on") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
-  else t->compressed = c.preflop || full > avail * 9 / 10;  // auto: preflop trees always small (like Pio)
+  else {
+    // auto: 16-bit storage for preflop trees (like Pio), when float32 does not fit, and when the
+    // float32 tree is large for the thread count. 16-bit now converges in the same number of
+    // iterations as float32 on every bench tree (the old 1.8x penalty, #55, no longer reproduces),
+    // so the choice is speed per iteration: half the bytes win once (float32 bytes x threads)
+    // reaches about 2 GB, and the conversion arithmetic loses below that. Measured time to 0.05%
+    // of pot: M4 10 threads deep -12%, flop_srp_4 -19%, flop_srp_2 +11%, flop_3bet +10%;
+    // Zen 5 32 threads flop_srp_4 -24%, deep -10%, flop_srp_2 -9%, flop_3bet +7%; Zen 5 1 thread
+    // deep +20% (all on the right side of the threshold).
+    const uint64_t th = threads_ > 0 ? static_cast<uint64_t>(threads_)
+                                     : std::max<uint64_t>(1, std::thread::hardware_concurrency());
+    t->compressed = c.preflop || full > avail * 9 / 10 || full * th >= (uint64_t(2) << 30);
+  }
   uint64_t need = t->memory_bytes_for(t->compressed, predictive_);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board
   if (!mem_ignore && need > avail)
@@ -599,6 +645,30 @@ void Upi::register_commands() {
     start_solver(secs, steps);
     return std::string("\x01");
   };
+  // Ours (#153): continue solving a subtree asynchronously, exactly like `go` but iterating
+  // below a node (Solver::iterate_subtree, the solve_partial path) with a fresh DCFR clock.
+  // Progress blocks are marked with a "partial: <node>" first line; `stop` works as usual;
+  // the accuracy target refers to the node's pot when given as a fraction. Pio has no such
+  // command; the viewer's "Solve further" button is the client.
+  H["go_partial"] = [this](const Args& a) {
+    require_tree();
+    if (a.empty() || a.size() > 3) throw CmdError{"incorrect or missing argument"};
+    double secs = 0;
+    long long steps = 0;
+    if (a.size() > 1) {
+      double v = arg_double(a, 1, "amount");
+      std::string unit = a.size() > 2 ? a[2] : "seconds";
+      if (unit == "steps" || unit == "step") steps = static_cast<long long>(v);
+      else if (unit == "seconds" || unit == "second" || unit == "s") secs = v;
+      else throw CmdError{"incorrect or missing argument"};
+    }
+    NodeRef r = resolve(a[0]);
+    if (r.pseudo_root) r = resolve("r:0");
+    if (solving_) return std::string("go_partial ok!");
+    out_raw(std::string("go_partial ok!\n") + (end_string_.empty() ? "" : end_string_ + "\n"));
+    start_subtree_solve(r, secs, steps);
+    return std::string("\x01");
+  };
   H["stop"] = [this](const Args&) {
     stop_solver();
     return std::string("stop ok!");
@@ -653,12 +723,25 @@ void Upi::register_commands() {
   // (t/(t+1))^gamma. beta very negative underflows to 0, i.e. CFR+'s "discard negative
   // regrets"; alpha must stay small, since a large exponent overflows t^alpha to inf and
   // inf/(inf+1) is NaN.
+  // set_dcfr alpha beta gamma [beta_late switch]: three values give constant exponents (the
+  // published DCFR form); five add the beta schedule (beta -> beta_late after iteration `switch`).
   H["set_dcfr"] = [this](const Args& a) {
-    if (a.size() < 3) throw CmdError{"incorrect or missing argument"};
+    if (a.size() != 3 && a.size() != 5) throw CmdError{"incorrect or missing argument"};
     double al = arg_double(a, 0, "alpha"), be = arg_double(a, 1, "beta"), ga = arg_double(a, 2, "gamma");
     if (!(al > 0.0) || al > 10.0 || be > 10.0 || !(ga >= 0.0) || ga > 10.0)
       throw CmdError{"incorrect or missing argument"};
-    dcfr_ = DcfrParams{al, be, ga};
+    DcfrParams d;
+    d.alpha = al;
+    d.beta = be;
+    d.gamma = ga;
+    d.beta_switch = 0;
+    if (a.size() == 5) {
+      d.beta_late = arg_double(a, 3, "beta_late");
+      long long sw = arg_int(a, 4, "switch");
+      if (d.beta_late > 10.0 || sw < 0 || sw > 1000000000) throw CmdError{"incorrect or missing argument"};
+      d.beta_switch = static_cast<int>(sw);
+    }
+    dcfr_ = d;
     if (solver_) solver_->params = dcfr_;
     return std::string("set_dcfr ok!");
   };
@@ -771,10 +854,10 @@ void Upi::register_commands() {
   H["build_tree"] = [this](const Args& a) { return cmd_build_tree(a); };
   H["list_algorithms"] = [](const Args&) {
     return std::string(
-        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4); this solver uses one algorithm for every code\n"
-        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
-        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
-        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)");
+        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4); this solver uses one algorithm for every code\n"
+        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
+        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
+        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)");
   };
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};

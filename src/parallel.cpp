@@ -85,7 +85,11 @@ void ThreadPool::worker_loop() {
 
 void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool widen) {
   if (n <= 0) return;
-  if (n == 1 || (widen && parallel_width > nthreads_ / 2)) {
+  // Inline once ancestors already expose enough parallel work - for width-neutral jobs too (#145's
+  // sibling actions): publishing them unconditionally made every turn decision inside a parallel
+  // turn fan-out a job of its own, thousands per iteration on big trees, and the scheduler mutex
+  // then serialised everything (13 GB tree: 32 threads 2.6x slower than 16).
+  if (n == 1 || parallel_width > nthreads_ / 2) {
     for (int i = 0; i < n; ++i) f(i);
     return;
   }

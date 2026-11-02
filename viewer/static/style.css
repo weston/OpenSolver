@@ -396,6 +396,27 @@ input.invalid, textarea.invalid { border-color: var(--danger); box-shadow: 0 0 0
 .range-head { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 8px; }
 .range-head:first-child { margin-top: 2px; }
 
+/* categories tab (#154) */
+.cats-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.cats-head .badge { flex: none; }
+.cats-head .seg { margin-left: auto; }
+.cats-note { margin: 2px 0 8px; }
+.cat-row { padding: 6px 8px 7px; margin: 0 -8px 2px; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
+.cat-row:hover { background: var(--surface-2); }
+.cat-row.sel { background: var(--accent-soft); border-color: var(--accent); }
+.cat-top { display: flex; align-items: baseline; gap: 10px; }
+.cat-name { font-weight: 650; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cat-share { color: var(--text-3); font-size: 11.5px; flex: none; }
+.cat-ev { font-weight: 650; font-size: 12px; flex: none; min-width: 42px; text-align: right; }
+.cat-bar { margin-top: 6px; height: 7px; }
+.cat-mix { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 5px; font-size: 11.5px; color: var(--text-2); }
+.cat-mix-item { display: inline-flex; align-items: center; gap: 5px; }
+.cat-mix-item .sw { width: 8px; height: 8px; border-radius: 3px; flex: none; }
+.cat-mix-item b { font-weight: 650; color: var(--text); }
+.cell.cat-hl { box-shadow: inset 0 0 0 2px var(--accent); z-index: 1; }
+.matrix.catmode .cell { transition: box-shadow .12s, opacity .2s; }
+.matrix.catmode .cell:not(.blank):not(.cat-hl) { opacity: .38; }
+
 /* ------------------------------------------------------------------ build */
 
 #view-build { overflow-y: auto; }
@@ -608,3 +629,11 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
   padding: 12px 14px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--accent); }
 .rs-next-text { color: var(--text-2); font-size: 12.5px; }
 .rs-next-text b { color: var(--text); }
+/* back button at the start of the action line */
+.path-back {
+  flex: none; width: 28px; height: 34px; margin-right: 4px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2);
+  font-size: 20px; line-height: 1; display: grid; place-items: center; padding-bottom: 2px;
+}
+.path-back:hover:not(:disabled) { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
+.path-back:disabled { opacity: .35; cursor: default; }

@@ -34,7 +34,7 @@ comes from our own generated table; the first use can be expensive.
 ## Commands
 
 
-134 commands: 131 public command names plus 3 local extensions/aliases.
+135 commands: 131 public command names plus 4 local extensions/aliases.
 
 | Command (implementation) | Implemented? | Pio match | Behavior / limits | Regression / comparison input |
 |---|---|---|---|---|
@@ -78,6 +78,7 @@ comes from our own generated table; the first use can be expensive.
 | [`force_line`](../src/upi.cpp#L711) | Yes | Unverified | Keeps lines leading to the forced prefix. | — |
 | [`free_tree`](../src/upi.cpp#L831) | Yes | Unverified | Releases the active tree. | [UPI](../tests/test_upi.py#L448), [probe10_incomplete](../tests/pio_compare/probe10_incomplete.txt), [probe2_flop](../tests/pio_compare/probe2_flop.txt) |
 | [`go`](../src/upi.cpp#L572) | Yes | Unverified | Starts asynchronous solving; accepts seconds or steps and accuracy stops. | [UPI](../tests/test_upi.py#L151), [probe10_incomplete](../tests/pio_compare/probe10_incomplete.txt), [probe1_river](../tests/pio_compare/probe1_river.txt), [probe2_flop](../tests/pio_compare/probe2_flop.txt), [probe3_workflow](../tests/pio_compare/probe3_workflow.txt), [probe4_preflop](../tests/pio_compare/probe4_preflop.txt), [probe5_preflop_full](../tests/pio_compare/probe5_preflop_full.txt), [probe8_rake_icm](../tests/pio_compare/probe8_rake_icm.txt), [probe9_locking](../tests/pio_compare/probe9_locking.txt) |
+| [`go_partial`](../src/upi.cpp#L641) | Yes | Differs | Extension: like `go` but iterating only below the named node (the `solve_partial` path), with a fresh DCFR clock and progress blocks marked `partial: <id>`; fraction accuracies refer to the node's pot; not a Pio command (the viewer's "Solve further", #153). | [UPI](../tests/test_upi.py) |
 | [`ignore_mem_check`](../src/upi.cpp#L735) | Yes | Unverified | On/off switch for the build-time memory check. | [probe3_workflow](../tests/pio_compare/probe3_workflow.txt) |
 | [`is_ready`](../src/upi.cpp#L449) | Yes | Unverified | Readiness response. | [UPI](../tests/test_upi.py#L455), [probe1_river](../tests/pio_compare/probe1_river.txt) |
 | [`is_tree_present`](../src/upi.cpp#L837) | Yes | Unverified | Whether an active materialized tree exists. | [UPI](../tests/test_upi.py#L164), [probe1_river](../tests/pio_compare/probe1_river.txt), [probe2_flop](../tests/pio_compare/probe2_flop.txt), [probe4_preflop](../tests/pio_compare/probe4_preflop.txt), [probe5_preflop_full](../tests/pio_compare/probe5_preflop_full.txt) |

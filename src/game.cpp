@@ -449,8 +449,11 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   return true;
 }
 
-uint64_t GameTree::memory_bytes_for(bool compress) const {
+uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
   uint64_t b = compress ? storage_floats * 4 + num_decisions * 8 : storage_floats * sizeof(float) * 2;
+  // Predictive CFR's `preds` is never compressed and is allocated after the build, so the
+  // pre-allocation check has to be told about it (#98).
+  if (with_preds || !preds.empty()) b += storage_floats * sizeof(float);
   b += nodes.size() * sizeof(GNode);
   b += chances.size() * (sizeof(ChanceInfo) + 64);
   for (auto& s : showdowns)

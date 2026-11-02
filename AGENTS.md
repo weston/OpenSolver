@@ -123,6 +123,9 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
 - `eliminate_path` is a one-time edit that moves the frequency to check/call.
+- `set_strategy` under the default v4 algorithms persists through further solving (we write it as a
+  dominant regret); under `original_pio`/`pio_cfr` it is only a starting point (probe9). Best
+  responses (MES, exploitability) never deviate at locked nodes or locked combos.
 - Rake (`set_rake frac cap`) and ICM payoffs match Pio exactly (probe8). Rake and ICM are last-one-wins;
   `set_icm` before any `set_icm_point` prints `ERROR: set_icm ICM points not defined.` then `set_icm ok!`
   and leaves ICM off; `reset_icm_tables` leaves rake alone and counts as defined tables.

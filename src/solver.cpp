@@ -322,7 +322,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
   ArenaScope sc;
   float* sigma = sc.a.alloc(static_cast<size_t>(A) * Ha);
   if (M == Walk::CFR) current_strategy(ni, sigma);
-  else if (actor == o || M == Walk::Evaluate) average_strategy(ni, sigma);
+  else if (actor == o || M == Walk::Evaluate || (n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) average_strategy(ni, sigma);
 
   if (actor == p) {
     float* cfv = sc.a.alloc(static_cast<size_t>(A) * Hp);
@@ -347,6 +347,22 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       for (int a = 1; a < A; ++a) {
         const float* c = cfv + static_cast<size_t>(a) * Hp;
         for (int h = 0; h < Hp; ++h) out[h] = std::max(out[h], c[h]);
+      }
+      // A best response cannot deviate where the strategy is locked (whole node or locked combos);
+      // this is what makes MES / exploitability meaningful in node-locking workflows (Pio does the same).
+      if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) {
+        const uint8_t* lockmask = nullptr;
+        if (!(n.flags & GF_LOCKED)) {
+          auto it = g_.combo_lock.find(ni);
+          if (it != g_.combo_lock.end()) lockmask = it->second.data();
+        }
+        for (int h = 0; h < Hp; ++h) {
+          if (lockmask && !lockmask[h]) continue;
+          float v = 0.0f;
+          for (int a = 0; a < A; ++a) v += sigma[static_cast<size_t>(a) * Hp + h] * cfv[static_cast<size_t>(a) * Hp + h];
+          out[h] = v;
+        }
+        return;
       }
       if (write_best_response && !(n.flags & GF_LOCKED)) {
         // set_mes: store the pure best response as both strategy and regrets.

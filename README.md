@@ -121,6 +121,39 @@ when a size lands exactly on .5 (half-up and half-even both reproduce it), and `
 which the fixture sets equal to `BetSize` on every street - donk nodes are reached, but their
 size is indistinguishable from an ordinary bet there.
 
+## Viewer
+
+A PioViewer-style browser UI, driven by a small local server that talks to `./solver` over UPI
+(Python 3 standard library only, plain HTML/JS, no build step):
+
+```sh
+make
+python3 viewer/server.py            # then open http://127.0.0.1:8765
+python3 viewer/server.py --solver ./solver-release --port 9000
+```
+
+The server binds to 127.0.0.1 only and exposes a fixed, whitelisted JSON API — there is no
+"run any UPI command" endpoint. Tree building and solving, plus `dump_tree` to a path you
+choose, are the only state-changing operations.
+
+What it does:
+
+- **Build & solve:** PioViewer-style ranges/board/pot/stack/bet sizes (expanded with
+  `tools/tree_builder.py`), `estimate_tree` memory estimate, `build_tree`, then `go` with live
+  exploitability and iteration progress, and `stop`.
+- **Browse:** breadcrumb of Pio node ids (`r:0:c:b24:...`), one button per child action with its
+  overall frequency, and a 52-card picker at chance nodes (blocked cards disabled).
+- **Strategy grid:** the 13x13 hand matrix with per-class stacked bars, aggregated over the combos
+  of each class weighted by the acting player's range at the node (`show_range`), a color legend
+  with overall action frequencies, and per-combo details on click (strategy, range weight, EV
+  from `calc_ev`).
+- **Range view** for both players and an **EV view** per player at any node.
+- **Save/load:** `dump_tree` (full / `no_rivers` / `no_turns`) and lazy `load_tree` — browsing a
+  truncated save re-solves missing streets on demand, as in Pio.
+
+`python3 viewer/test_server.py ./solver` runs the viewer's integration tests (a small tree,
+~1 s; also part of `make test`).
+
 ## Windows
 
 `solver.exe` runs natively on Windows (verified on Windows 11 / Zen 5: all unit tests pass and every

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WSolver Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <span class="logo">WSolver Viewer</span>
+  <span id="hdr-status" class="badge">connecting…</span>
+  <span id="hdr-tree" class="badge hidden">tree</span>
+  <span id="hdr-solving" class="badge badge-solving hidden">solving</span>
+  <span id="hdr-exploit" class="badge badge-muted"></span>
+  <nav>
+    <button class="tab active" data-tab="browse">Browse</button>
+    <button class="tab" data-tab="build">Build &amp; solve</button>
+    <button class="tab" data-tab="io">Save / load</button>
+  </nav>
+</header>
+
+<div id="err" class="hidden"></div>
+
+<!-- ==================== BROWSE ==================== -->
+<section id="tab-browse" class="tabpage">
+  <div id="breadcrumb"></div>
+  <div id="node-info"></div>
+  <div id="node-body"></div>
+  <div id="details"></div>
+</section>
+
+<!-- ==================== BUILD & SOLVE ==================== -->
+<section id="tab-build" class="tabpage hidden">
+  <div class="panels">
+    <div class="panel">
+      <h3>Setup</h3>
+      <label>OOP range <input id="f-range-oop" size="40" value="AA,KK,QQ,JJ,TT,AK,AQ,AJs,KQ,QJs,JTs"></label>
+      <label>IP range <input id="f-range-ip" size="40" value="AA,KK,QQ,JJ,TT,99,AK,AQ,AJs,KQs"></label>
+      <div class="row">
+        <label>Board <input id="f-board" size="10" value="QhQc2c"></label>
+        <label>Pot <input id="f-pot" type="number" value="40" min="0"></label>
+        <label>Stack <input id="f-stack" type="number" value="230" min="0"></label>
+        <label class="chk"><input id="f-iso" type="checkbox" checked> isomorphism</label>
+      </div>
+      <h3>Sizes (% pot, comma-separated)</h3>
+      <table class="sizes">
+        <tr><th></th><th>Bet</th><th>Raise</th><th>Donk (OOP)</th><th>+ all-in</th></tr>
+        <tr><td>Flop</td><td><input id="f-flop-bet" value="30,60" size="8"></td><td><input id="f-flop-raise" value="50" size="6"></td><td><input id="f-flop-donk" value="" size="6" placeholder=""></td><td><input id="f-flop-allin" type="checkbox"></td></tr>
+        <tr><td>Turn</td><td><input id="f-turn-bet" value="60" size="8"></td><td><input id="f-turn-raise" value="50" size="6"></td><td><input id="f-turn-donk" value="" size="6"></td><td><input id="f-turn-allin" type="checkbox"></td></tr>
+        <tr><td>River</td><td><input id="f-river-bet" value="65" size="8"></td><td><input id="f-river-raise" value="50" size="6"></td><td><input id="f-river-donk" value="" size="6"></td><td><input id="f-river-allin" type="checkbox" checked></td></tr>
+      </table>
+      <div class="row">
+        <label>All-in threshold % <input id="f-allin-threshold" type="number" value="67"></label>
+        <label>Add all-in if &lt; % pot <input id="f-allin-limit" type="number" value="300"></label>
+      </div>
+      <div class="row">
+        <button id="btn-generate">Generate lines</button>
+        <button id="btn-estimate" disabled>Estimate</button>
+        <button id="btn-build" disabled>Build tree</button>
+      </div>
+      <div id="build-out"></div>
+    </div>
+    <div class="panel">
+      <h3>Solve</h3>
+      <div class="row">
+        <label>Accuracy (chips of pot share) <input id="f-accuracy" type="number" step="0.001" value="0.1"></label>
+        <button id="btn-solve" disabled>Solve</button>
+        <button id="btn-stop">Stop</button>
+      </div>
+      <pre id="solve-progress">not solving</pre>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== SAVE / LOAD ==================== -->
+<section id="tab-io" class="tabpage hidden">
+  <div class="panel">
+    <h3>Save / load</h3>
+    <p class="hint">Paths are resolved by the solver process (relative to the directory the server was started in).</p>
+    <label>Path <input id="f-path" value="tree.cfr" size="50"></label>
+    <div class="row">
+      <button id="btn-load">Load tree</button>
+      <button id="btn-save">Save tree</button>
+      <label class="chk"><input id="f-norivers" type="checkbox"> no_rivers</label>
+      <label class="chk"><input id="f-noturns" type="checkbox"> no_turns</label>
+    </div>
+    <div id="io-out"></div>
+    <h3>Solver</h3>
+    <div class="row"><button id="btn-restart">Restart solver process</button><span id="solver-ver"></span></div>
+  </div>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>

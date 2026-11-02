@@ -312,6 +312,21 @@ def main(exe):
         check(u.cmd("show_board_no_iso") == "Kh Qs 7d 4c 2s ", "show_board_no_iso")
         u.cmd("reset_display_iso")
 
+        print("[truncated saves: on-demand recalc]")
+        for c in ["set_range OOP AA,KK,QQ,JJ,TT,99,AK,AQ,AJ,KQ,KJ,QJ,JT,T9", "set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ,KQ,QJ,JT",
+                  "set_board Kh9h4h", "set_pot 0 0 60", "set_eff_stack 200", "clear_lines", "add_line 20 20 60 60 200",
+                  "add_line 0 20 20 60 60", "add_line 0 0 40", "set_rake 0 0", "build_tree", "go 100 steps", "wait_for_solver"]:
+            u.cmd(c)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "noturns.cfr")
+            u.cmd(f'dump_tree "{path}" no_turns'); u.cmd("free_tree"); u.cmd(f'load_tree "{path}"')
+            check("INCOMPLETE_TREE" in u.cmd("show_node r") and "FAST_LOAD" in u.cmd("show_node r"), "truncated load flags")
+            check(u.cmd("rebuild_tree").endswith("please call load_all_nodes"), "rebuild_tree needs load_all_nodes")
+            st = [floats(l) for l in u.cmd("show_strategy r:0:c:c:2c").split("\n")]
+            check(any(x > 0 for l in st for x in l), "missing turn re-solved on demand")
+            check("ALREADY_RECALCED" in u.cmd("show_node r:0:c:c:2c"), "ALREADY_RECALCED flag")
+            check(float(u.cmd("explo_partial r:0:c:c:2c")) < 0.06, "recalc reaches recalc accuracy (0.1% pot)")
+
         print("[preflop tree]")
         for c in ["set_range OOP QQ+,AKs,AKo,KQs", "set_range IP QQ+,AK,AQs,KQs,JTs", "set_pot 10 5 0",
                   "set_eff_stack 1000", "clear_preflop_lines", "add_preflop_line 25 25", "add_preflop_line 25 100 100",

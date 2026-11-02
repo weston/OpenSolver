@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "action_tree.hpp"
@@ -154,7 +155,11 @@ class GameTree {
   std::unordered_map<uint32_t, uint32_t> eliminated;              // bitmask of removed actions
 
   long long iterations = 0;  // CFR iterations run on this tree
-  bool incomplete = false;  // a truncated save was loaded (later streets unsolved)
+  bool incomplete = false;
+  int missing_street = 0;     // first street without saved strategies (4 = turn, 5 = river); 0 = none
+  bool fast_loaded = false;   // loaded without `full` (Pio: some commands need load_all_nodes)
+  bool loaded_compressed = false;
+  std::unordered_set<uint32_t> recalced;  // street roots re-solved on demand  // a truncated save was loaded (later streets unsolved)
 
   int num_hands(int p) const { return static_cast<int>(hands[p].size()); }
   int root_board_len() const { return static_cast<int>(cfg.board.size()); }

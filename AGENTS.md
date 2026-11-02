@@ -127,6 +127,11 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
 - `eliminate_path` is a one-time edit that moves the frequency to check/call.
+- Truncated saves (`dump_tree ... no_turns|no_rivers`) load with root flags `INCOMPLETE_TREE ...
+  FAST_LOAD COMPRESSED`; browsing a missing street re-solves that street's subtree on demand to
+  `set_recalc_accuracy` (fraction of the pot; defaults 0.0025 0.001 0.0005) and flags it
+  `ALREADY_RECALCED`. `set_always_recalc <street> <ms>` does the same for present streets.
+  `rebuild_tree`, `estimate_rebuild_tree`, `solve_all_splits` need `load_all_nodes` first (probe10).
 - `set_strategy` under the default v4 algorithms persists through further solving (we write it as a
   dominant regret); under `original_pio`/`pio_cfr` it is only a starting point (probe9). Best
   responses (MES, exploitability) never deviate at locked nodes or locked combos.

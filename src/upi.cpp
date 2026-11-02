@@ -789,7 +789,10 @@ void Upi::register_commands() {
   H["dump_tree"] = [this](const Args& a) { return cmd_dump_tree(a); };
   H["load_tree"] = [this](const Args& a) { return cmd_load_tree(a); };
   H["show_metadata"] = [this](const Args& a) { return cmd_show_metadata(a); };
-  H["load_all_nodes"] = [](const Args&) { return std::string("load_all_nodes ok!"); };
+  H["load_all_nodes"] = [this](const Args&) {
+    if (tree_) tree_->fast_loaded = false;
+    return std::string("load_all_nodes ok!");
+  };
   H["set_compression_precision"] = [this](const Args& a) {
     long long v = arg_int(a, 0, "precision");
     if (v < 6 || v > 16) throw CmdError{"incorrect or missing argument"};

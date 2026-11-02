@@ -169,6 +169,9 @@ class Solver {
   void run_actions(const GNode& n, int A, F& act);
   void strategy_only(uint32_t ni, int p, const float* rp);
   void flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, const float* rp, const float* ro, float* out);
+  // Evaluate and BestResponse in one traversal (root_stats): ev = on-policy values, br = best
+  // response values, both for player p against the opponent's average strategy.
+  void walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br);
   void fold_value(const GNode& n, int p, const float* ro, float* out) const;
   void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
   void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) const;

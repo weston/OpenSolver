@@ -977,7 +977,12 @@ void Solver::iterate(int t) {
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
-  accumulate_ = t > avg_delay;  // set_avg_delay: the first t <= avg_delay only move regrets
+  if (avg_reset) {
+    accumulate_ = true;
+    if (avg_delay > 0 && t == avg_delay + 1) reset_strategy_sums();  // drop the early iterates now
+  } else {
+    accumulate_ = t > avg_delay;  // set_avg_delay: the first t <= avg_delay only move regrets
+  }
   // Every prune_period-th iteration is measured in full (the RBP revisiting schedule), and
   // pruning activates only after two full periods (see Solver::pruning): pruning from t=1
   // destroys convergence (flop_3bet to 0.2% pot: 50 -> 230 iterations at period 32).
@@ -987,6 +992,44 @@ void Solver::iterate(int t) {
     ArenaScope sc;
     float* out = sc.a.alloc(g_.num_hands(p));
     walk_t<Walk::CFR>(0, p, g_.init_reach[p].data(), g_.init_reach[1 - p].data(), out);
+  }
+}
+
+void Solver::reset_strategy_sums() {
+  // Locked nodes keep their locked strategy in the strat array; combo-locked nodes keep it for the
+  // locked combos. Everything else restarts from zero, exactly as if accumulation had been skipped.
+  const int N = static_cast<int>(g_.nodes.size());
+  auto task = [&](int chunk) {
+    const int nchunks = std::min(N, 4 * pool().threads());
+    const int lo = static_cast<int>(static_cast<int64_t>(N) * chunk / nchunks);
+    const int hi = static_cast<int>(static_cast<int64_t>(N) * (chunk + 1) / nchunks);
+    for (int ni = lo; ni < hi; ++ni) {
+      const GNode& n = g_.nodes[ni];
+      if (n.kind != ANodeKind::Decision || (n.flags & GF_LOCKED)) continue;
+      const int A = n.num_children, H = g_.num_hands(n.player);
+      ArenaScope sc;
+      float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+      const uint8_t* lockmask = nullptr;
+      if (n.flags & GF_COMBO_LOCKED) {
+        auto it = g_.combo_lock.find(static_cast<uint32_t>(ni));
+        if (it != g_.combo_lock.end()) lockmask = it->second.data();
+      }
+      if (!lockmask) {
+        std::memset(S, 0, sizeof(float) * static_cast<size_t>(A) * H);
+      } else {
+        for (int a = 0; a < A; ++a)
+          for (int h = 0; h < H; ++h)
+            if (!lockmask[h]) S[static_cast<size_t>(a) * H + h] = 0.0f;
+      }
+      g_.strat_commit(n, S);
+    }
+  };
+  const int nchunks = std::min(N, 4 * pool().threads());
+  if (parallel && nchunks > 1) {
+    std::function<void(int)> fn = task;
+    pool().parallel_for(nchunks, fn);
+  } else {
+    for (int c = 0; c < nchunks; ++c) task(c);
   }
 }
 

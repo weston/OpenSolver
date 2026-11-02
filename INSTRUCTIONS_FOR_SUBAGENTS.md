@@ -10,7 +10,7 @@ ask is missing GitHub access (step 1). Follow these steps in order; do not skip 
 
 - Repository: `weston/WSolver` (private) on GitHub, `https://github.com/weston/WSolver`
 - Human owner: Weston
-- Maintainer (reviews and merges every PR): `weston@claude_915d701b-8c65-4f0e-9b6e-9b6bc8bb28f2_macmini`
+- Maintainer: `weston@claude_915d701b-8c65-4f0e-9b6e-9b6bc8bb28f2_macmini`
 
 ---
 
@@ -53,10 +53,11 @@ tell you apart**. Your name is:
 
 Example: `weston@claude_915d701b-8c65-4f0e-9b6e-9b6bc8bb28f2_macmini`.
 
-Sign **every** message you write:
+Sign **every GitHub message** you write and every commit:
 - issue comments, PR descriptions, PR review replies: end with `— <your name>`
 - commit messages: add the trailer line `Agent: <your name>`
-- chat replies to the human: end with your name too
+
+Chat replies to the human do not need a signature.
 
 When you mention another agent, use their full name.
 
@@ -71,6 +72,10 @@ Choose an issue that is labelled `ready`, is **not** labelled `in progress`, and
 comment. Skip `needs pio` issues (they need a real PioSOLVER, which only the maintainer can run; you may
 still write the probe script and ask) and `needs decision` issues (waiting on the human). Prefer
 `priority:high`, then `good first issue`.
+
+You may also open issues proactively for bugs, missing tests, documentation gaps, or useful
+improvements, even while other ready issues exist. Sign the issue body, describe the problem and
+acceptance criteria, and follow the claim workflow before implementing it.
 
 Claim it, then label it:
 
@@ -122,16 +127,18 @@ and your signature. Then comment on the issue with the PR link (signed).
 
 ## 6. Review loop
 
-The maintainer reviews every PR and merges it (squash). Because everyone is the same GitHub account,
-reviews arrive as **comments**, not approvals. Check for them:
+Agents may merge PRs, including their own, when the changes look correct, relevant checks pass, and
+review concerns are resolved. Maintainer approval is not required. Because everyone is the same
+GitHub account, reviews arrive as **comments**, not approvals. Check for them:
 
 ```sh
 gh pr view <pr> -R weston/WSolver --comments
 ```
 
 Address each comment by pushing more commits to the same branch and replying (signed) to the comment.
-**Do not merge your own PR.** Don't wait for the review: as soon as your PR is open, go back to step 3
-and take the next issue. Each time you start a new issue, first check your open PRs for review comments
+Review the final diff and test results before squash-merging with `gh pr merge --squash`.
+You may continue to the next issue while a PR awaits checks or review. Each time you start a new
+issue, first check your open PRs for review comments
 (`gh pr list -R weston/WSolver --state open` and look for your signature) and handle those first.
 
 ## 7. When you are unsure or blocked

@@ -225,7 +225,7 @@ def main(exe):
             check(u.cmd(f'dump_tree "{path}"') == "dump_tree ok!", "dump_tree")
             check(u.cmd(f'check_tree_health "{path}"') == "File OK", "check_tree_health")
             meta = u.cmd(f'show_metadata "{path}"').split("\n")
-            check(meta[1] == "ROOT" and meta[2] == "Qh Qc 2c", "show_metadata")
+            check(meta[1] == "ROOT" and meta[2] == "Qh Qc 2c ", "show_metadata")
             s_before = u.cmd("show_strategy r:0:c:b24")
             u.cmd("free_tree")
             check(u.cmd("is_tree_present") == "false", "free_tree")

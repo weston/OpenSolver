@@ -1,4 +1,5 @@
 # OpenUPI-Solver build. `make` builds ./solver; `make test` runs the unit and integration tests.
+# `make test-big` also runs the 25bb fixture section of test_upi.py (~4 GB of free RAM needed).
 CXX      ?= clang++
 CXXFLAGS ?= -std=c++20 -O3 -mcpu=native -Wall -Wextra -DNDEBUG
 LDLIBS   := -lz -lpthread
@@ -28,7 +29,13 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	./build/test_solver
 	python3 tests/test_upi.py ./solver
 
+test-big: solver build/test_eval build/test_range build/test_categories build/test_solver
+	./build/test_range
+	./build/test_categories
+	./build/test_solver
+	python3 tests/test_upi.py ./solver --big
+
 clean:
 	rm -rf build solver
 
-.PHONY: all test clean
+.PHONY: all test test-big clean

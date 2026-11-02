@@ -102,7 +102,7 @@ git switch -c issue-<n>-<short-slug>
   PioSOLVER code or data files.
 - No secrets, keys, passwords, hostnames or personal data in commits.
 - Run the tests before you push: `make && ./build/test_eval && ./build/test_range && ./build/test_categories && ./build/test_solver && python3 tests/test_upi.py ./solver`.
-  (The 25bb section of `test_upi.py` needs about 3.5 GB of free RAM; if it does not fit, say so in the PR.)
+  (`test_upi.py` defaults to a small tree that fits in ~1 GB; the 25bb fixture section runs only with `--big` and needs about 3.5 GB of free RAM — run it on a large-RAM machine when your change could affect it, otherwise say so in the PR.)
 
 Commit messages end with your trailer:
 

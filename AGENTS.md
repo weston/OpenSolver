@@ -37,8 +37,9 @@ own, when the changes look correct, relevant checks pass, and review concerns ar
    the signed comment is how ownership is tracked. Abandoning? Comment (signed) and remove the label.
 2. **Branch** from up-to-date `main`: `git switch -c issue-<number>-<short-slug>`.
    Never push directly to `main` or force-push someone else's branch.
-3. **Work in small commits.** Run `make test` (or, if the 25bb fixture does not fit in RAM, everything
-   except that section; say so in the PR). Add or update tests for what you change.
+3. **Work in small commits.** Run `make test` (small memory footprint by default; `make test-big` runs
+   the 25bb fixture and needs ~3.5 GB of free RAM — say so in the PR if you could not run it).
+   Add or update tests for what you change.
 4. **Open a PR** to `main` with `gh pr create --fill` or the web UI. Title: `<summary> (#<issue>)`.
    Fill in the template: what changed, how you verified it (paste test output), numeric impact,
    anything left undone. Link the issue with `Closes #<n>`.
@@ -71,7 +72,8 @@ Pio comparison scripts take the host from `PIO_SSH`.
 
 ```sh
 make                       # ./solver (clang++ -O3 -mcpu=native; zlib)
-make test                  # unit tests + tests/test_upi.py (end-to-end; solves a real 25bb tree, ~3.3 GB RAM)
+make test                  # unit tests + tests/test_upi.py (end-to-end on a small tree, < 1 GB RAM)
+make test-big              # same, but test_upi.py solves the real 25bb tree (~3.5 GB free RAM needed)
 ./build/test_eval          # exhaustive evaluator check (all 133M 7-card hands, ~2 s)
 ./build/test_solver big    # convergence + timing on river / turn / flop trees
 python3 tests/test_upi.py ./solver

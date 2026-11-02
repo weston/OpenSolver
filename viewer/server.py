@@ -273,6 +273,13 @@ def node_id_arg(query, name="id", default="r:0"):
 
 # ---------------------------------------------------------------- the API
 
+_resolver = None  # resolve.ResolveManager, set by main()/tests; owns the 2nd solver
+
+
+def set_resolver(resolver):
+    global _resolver
+    _resolver = resolver
+
 
 def lib_query(query, name="name"):
     """Query-arg wrapper for library endpoints; LibraryError -> 400 via the handler."""
@@ -281,6 +288,10 @@ def lib_query(query, name="name"):
 
 def api(solver, lib, method, path, query, body):
     """Dispatch one API call; returns (status, data)."""
+    if path == "/api/resolve" or path.startswith("/api/resolve/"):
+        if _resolver is None:
+            raise SolverError("re-solve support not initialized")
+        return _resolver.api(method, path, query, body)
     if path == "/api/status":
         return 200, solver.state()
     if path == "/api/hand_order":
@@ -658,6 +669,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     solver = Solver(os.path.abspath(args.solver))
+    import resolve as vresolve  # local import: server/main <-> resolve module cycle
+    set_resolver(vresolve.ResolveManager(solver, Solver, os.path.abspath(args.solver)))
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     srv.solver = solver
@@ -670,10 +683,11 @@ def main(argv=None):
         pass
     finally:
         srv.server_close()
-        try:
-            solver.proc.kill()
-        except Exception:
-            pass
+        for s in ([solver] + ([_resolver.rsolver] if _resolver else [])):
+            try:
+                s.proc.kill()
+            except Exception:
+                pass
     return 0
 
 

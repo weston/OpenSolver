@@ -201,6 +201,46 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
 ~1 s; also part of `make test`). `python3 viewer/test_library.py` tests the library storage and
 its HTTP API without a solver.
 
+### Viewer: subgame re-solve and size search
+
+The server runs a **second solver process** (`viewer/resolve.py`) so a subtree can be
+re-solved with different bet sizes without touching the tree being browsed. At any
+decision node X it reads both players' ranges (`show_range`), the chips already in the
+middle (`show_node`'s pot line, passed verbatim to `set_pot`), the board, and the original
+stack (`show_effective_stack`), then builds a fresh tree rooted exactly at X from edited
+sizes — the same sizing fields as the build form, expanded by `tools/tree_builder.py`
+including any size syntax it learns in the future. Sizes for streets before X's street are
+ignored; a root that starts facing a bet automatically offers raises instead of bets (the
+one approximation: a lead on the *following* street uses bet sizes, never donk sizes, since
+the previous street's aggressor is not recoverable from a node snapshot). The solver's tree
+roots are always OOP-to-act, so when X is IP's decision the subgame gets a one-child
+"forced check" wrapper root and X itself sits at `r:0:c`; `subgame_root` in the API output
+says which.
+
+**This is unsafe re-solving** (the same caveat as Pio's on-the-fly recalculations): the
+opponent's range at X is frozen at its solved reach, with no gadget game accounting for
+the counterfactual value of having *avoided* X. Results are for exploring sizings, not for
+exploitability claims.
+
+Endpoints (all JSON; ids refer to the main tree, subgame browsing uses subgame ids):
+
+| Endpoint | In | Out |
+|---|---|---|
+| `GET /api/resolve/context?id=<node>` | a decision node of the main tree | `{board, street ("flop"/"turn"/"river"), actor, pot: {oop, ip, dead}, stack}` — exactly what the subgame setup will use. 400 for chance/terminal/preflop nodes |
+| `POST /api/resolve/start` | `{id, accuracy?, <sizing fields as in /api/generate>}` | starts a re-solve job; 400 on bad input or while another job runs |
+| `POST /api/resolve/search` | `{id, street?, candidates: "25,50,100", n, accuracy?, <other sizing fields>}` | starts a size search: the `n`-size subset of `candidates` (used as both players' `BetSize` on `street`, defaulting to X's street) with the highest EV for the acting player. All C(k, n) subsets are solved up to 12 combinations; above that, greedy forward selection |
+| `GET /api/resolve/status` | — | `{busy, kind ("resolve"/"search"), node, error, done, total, method, rows (each `{sizes, ev, ev_oop, ev_ip}`, the acting player's EV first), best, context, result (root EVs, node count, line count, accuracy, calc_results text), tree, solve}` — poll this for progress; `solve` is the subgame solver's own status |
+| `GET /api/resolve/node`, `/strategy`, `/range`, `/ev`, `/calc_results` | same as the main-tree endpoints | browse the (re-)solved subgame. After a search these show the table's **best** subset |
+| `POST /api/resolve/stop` | — | cancels the running job (restarts the subgame solver); no-op when idle |
+
+Each search candidate is solved to the requested (loose) accuracy; the comparison table
+grows under `rows` as candidates finish.
+
+`python3 viewer/test_resolve.py ./solver` runs the tests: same-sizes re-solves reproduce
+the original node's strategy within solver tolerance, an edited config produces exactly
+the tree a direct build of the generated lines produces, and the search agrees with an
+independent brute force on a small river spot.
+
 ## Windows
 
 `solver.exe` runs natively on Windows (verified on Windows 11 / Zen 5: all unit tests pass and every

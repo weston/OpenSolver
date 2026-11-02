@@ -78,16 +78,21 @@ class Solver {
   //
   // Better or equal on every tree with exploitability equal or better.
   //
-  // NOT the default anyway, because a solve that stops before t = avg_delay has an EMPTY
-  // strategy average and falls back to regret-derived (near-pure) strategies. After 10
-  // iterations on a small flop tree: delay 0 gives 21 hands at 0.003-0.225, delay 32 gives
-  // 12 hands at 0.294/0.557/0.727/1.0. That is wrong output for a quick look, and it broke
-  // the union_hands test in tests/test_upi.py, which solves to a loose accuracy.
-  //
-  // So this is a knob, not a default: `set_avg_delay 32` is worth 9-14% when you know the
-  // solve will run well past the delay. An adaptive version that cannot starve the average
-  // would be a real improvement - see the issue filed from here.
+  // The old way to apply it (skip accumulation for t <= avg_delay) leaves the average EMPTY if a
+  // solve stops before the delay, falling back to near-pure regret-derived strategies. #135 fixed
+  // that with avg_reset: accumulate from t = 1 and zero the sums at t = avg_delay + 1, which is
+  // bit-identical past the delay and keeps the full average before it. Measured then (1 thread,
+  // time to 0.2% / 0.05% of pot): flop_srp_4 -11% / -4%, flop_srp_2 0 / -9%, deep -1% / -2%,
+  // flop_3bet, turn, river, preflop unchanged. Accumulation itself is only 2.5-6% of an
+  // iteration, so the gain is convergence (a cleaner average), not skipped work.
+  // The UPI default is 32 (Upi::avg_delay_); this struct's 0 keeps library callers (tests) exact.
   int avg_delay = 0;       // strategies only enter the average after this iteration (0 = from t=1)
+  // How the delay is applied (#135). false: iterations t <= avg_delay skip accumulation, so a solve
+  // stopped before the delay has an EMPTY average. true (default): accumulate from t = 1 and zero
+  // the strategy sums at the start of iteration avg_delay + 1, so the average is never empty and
+  // every run past the delay is bit-identical to the skipping version.
+  bool avg_reset = true;
+  void reset_strategy_sums();  // zero every unlocked strategy sum (locked strategies are kept)
 
   // Regret-based pruning (set_pruning, #51; Brown & Sandholm, "Regret-Based Pruning in
   // Extensive-Form Games", NIPS 2015). During a CFR walk only, an action of the traverser whose

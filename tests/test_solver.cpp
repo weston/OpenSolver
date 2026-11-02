@@ -53,6 +53,34 @@ int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
   int fails = 0;
+  // #71 convergence experiments still converge: predictive regret matching (PCFR+-style,
+  // matching input R + last instantaneous regret) and a delayed strategy average.
+  {
+    auto pcfr = [&](bool predictive, int delay) {
+      GameConfig cfg;
+      parse_cards("KhQs7d4c2s", cfg.board);
+      std::string err;
+      RangeWeights w;
+      if (!parse_range("AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s", w, err)) return false;
+      for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+      if (!parse_range("AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s", w, err)) return false;
+      for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+      cfg.pot[2] = 100;
+      cfg.eff_stack = 200;
+      cfg.lines.add = {{75, 200}, {0, 75, 200}, {0, 50}, {75}};
+      GameTree g;
+      if (!g.build(cfg, err)) return false;
+      if (predictive) g.preds.resize(g.storage_floats);  // what set_predictive allocates
+      Solver s(g);
+      s.predictive = predictive;
+      s.avg_delay = delay;
+      for (int t = 1; t <= 300; ++t) s.iterate(t);
+      return s.root_stats().exploitability < 0.003 * 100;
+    };
+    bool ok1 = pcfr(true, 0), ok2 = pcfr(false, 25), ok3 = pcfr(true, 25);
+    std::printf("  %s\n", ok1 && ok2 && ok3 ? "ok: predictive / avg_delay converge" : "FAILED: pcfr knobs");
+    fails += !(ok1 && ok2 && ok3);
+  }
   // River: polar spot, 1 bet size + all-in.
   fails += !run("river", "KhQs7d4c2s", "AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s", "AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s", 100,
                 200, {{75, 200}, {0, 75, 200}, {0, 50}, {75}}, 500, 0.003);

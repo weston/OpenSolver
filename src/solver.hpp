@@ -33,6 +33,9 @@ class Solver {
   int first_player = 0;  // set_first_iteration_player
   bool parallel = true;
   bool write_best_response = false;  // BestResponse walks store the pure BR strategy (set_mes)
+  // #71 convergence experiments (set_predictive / set_avg_delay):
+  bool predictive = false;  // regret matching input is R + last instantaneous regret (PCFR+-style)
+  int avg_delay = 0;        // strategies only enter the average after this iteration (0 = from t=1)
 
   // CFR iterations restricted to the subtree at `ni` with the given (canonical) reaches.
   void iterate_subtree(uint32_t ni, int t, const float* r0, const float* r1);
@@ -68,6 +71,7 @@ class Solver {
 
   GameTree& g_;
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;
+  bool accumulate_ = true;  // t > avg_delay: whether this iteration feeds the strategy sum
 };
 
 }  // namespace pio

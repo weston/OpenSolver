@@ -484,6 +484,7 @@ void GameTree::clear_storage() {
   lazy.reset();  // everything is zero now: nothing left to read from a save file
   std::fill(regrets.begin(), regrets.end(), 0.0f);
   std::fill(strat.begin(), strat.end(), 0.0f);
+  std::fill(preds.begin(), preds.end(), 0.0f);
   std::fill(regrets_q.begin(), regrets_q.end(), int16_t(0));
   std::fill(strat_q.begin(), strat_q.end(), uint16_t(0));
   std::fill(rscale.begin(), rscale.end(), 0.0f);

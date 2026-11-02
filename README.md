@@ -207,15 +207,18 @@ show_categories, show_cats, show_cats_pp, set_display_iso, reset_display_iso, sh
 set_rake, set_icm, set_icm_point, reset_icm_tables, eliminate_path, lock_node, unlock_node,
 combo_lock_node, show_locked_combos, set_strategy, set_equal_strats, set_mes, round_up_to,
 lock_line, unlock_line, set_incentives_node, set_incentives_line, show_incentives,
-clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compress), free_tree,
+clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compress / lossless), free_tree,
 show_metadata, show_save_version, load_all_nodes, set_compression_precision,
 set_compression_level, check_tree_health, set_dcfr, set_predictive, set_avg_delay.
 
 **Saving and loading.** `dump_tree <file> [no_rivers|no_turns] [lossless]` writes a save for viewing.
 By default it keeps each node's displayed strategy, quantized to `set_compression_precision` bits (11, as
 in Pio: frequencies within 1/2047), and no regrets: saves are for browsing, not for resuming a solve.
+This quantization happens at the file layer regardless of `small_strats` — that knob selects the tree's
+in-RAM storage, not the save's, so "uncompressed" (small_strats off) is not the same as `lossless` (#100).
 `no_rivers` / `no_turns` drop the later streets, which are re-solved on demand as you browse them, as in
-Pio. `lossless` keeps everything exactly. Converged flop tree, 155 MB in RAM:
+Pio. `lossless` keeps everything exactly (a reload then displays strategies bit-identically). Converged
+flop tree, 155 MB in RAM:
 
 | save | size | PioSOLVER 3.10, same tree |
 |---|---|---|

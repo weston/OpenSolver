@@ -109,6 +109,22 @@ Reading the numbers:
 - `bench/results.md` has an empty Pio column for the maintainer to fill from a licensed PioSOLVER on
   the same trees.
 
+**Measure with wall time**, via `/usr/bin/time` or `make bench`, which does it for you. Do *not* use
+`solver_time` for per-iteration cost: it is seconds since the process started, so it includes startup
+and, on a cold cache, the one-time generation of the preflop hand-vs-hand table. Two further traps,
+both of which have already produced wrong numbers in issue comments:
+
+- A `PfTable` layout change bumps the cache *header* version, so two binaries that differ there will
+  invalidate each other's cache and regenerate the table on **every** run when you A/B them. Read
+  that as solve time and you can be off by a factor of hundreds.
+- A tree's *share* of runtime is not its *amount*. The preflop betting tree is 98% showdown, and
+  also solves in 0.4 s, so optimizing it buys nothing. Check the absolute number before optimizing.
+
+When sanity-checking `.github/workflows/ci.yml` locally, note that Ruby's `YAML.safe_load` and
+Python's `yaml.safe_load` both silently keep the **last** of two duplicate mapping keys. A workflow
+with a duplicated job key passes a naive local parse and is then rejected by GitHub as a 0-second
+"workflow file issue". Re-read the file after a pull rather than appending to it blind.
+
 ## Layout
 
 | Path | What |

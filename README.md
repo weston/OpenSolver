@@ -153,9 +153,11 @@ add preflop lines (absolute amounts incl. blinds; the SB = IP acts first), `buil
 `add_to_subset <weight> <c> <c> <c>` per flop, then for every preflop exit: `set_board <any flop>`,
 `set_pot`/`set_eff_stack`/`add_line` for its postflop tree and `add_schematic_tree <exit>`; finally
 `add_all_flops` and `go`. Each subset flop stands for its whole suit-isomorphism class (its values are
-averaged over suit permutations), preflop all-ins use a fixed sample of 3000 boards, and postflop
-subtrees report payoffs relative to their schematic pot (like Pio) while the solver internally uses
-whole-hand chips.
+averaged over suit permutations; deal probabilities are normalized per hand pair by
+inclusion-exclusion), preflop all-ins use a fixed sample of 3000 boards. As in Pio, each schematic's
+`set_pot` is taken literally: its per-player chips are investments and its dead money is free money.
+For whole-hand accounting give the preflop investments per player (e.g. `set_pot 100 100 0` after a
+3-bet to 100); `set_pot 0 0 200` makes the 200 dead money.
 
 ## Known differences from PioSOLVER
 

@@ -176,6 +176,10 @@ class GameTree {
   double terminal_payoff(const ActionNode& an, int p, int outcome, bool subtree = false) const;
   std::vector<std::unique_ptr<ActionNode>> schematic_roots;  // owned postflop trees (preflop mode)
   std::vector<uint8_t> perm_all;  // suit permutations valid for both ranges (flop-deal symmetrization)
+  std::vector<float> flop_compat[2];  // per hand: compatible share of the subset flop weight
+  std::vector<float> flop_card[2];    // [hand * 52 + card]: compatible weight of variants with that card
+  std::vector<float> flop_pair[2];    // [hand * 1326 + combo]: compatible weight of variants with both cards
+  void compute_flop_compat();
 
   const ActionNode& an(const GNode& n) const { return *anodes[n.anode]; }
 

@@ -144,5 +144,5 @@ tests/             unit tests (eval, range, categories, solver) + end-to-end UPI
 ## Contributing
 
 Work is tracked in GitHub issues and lands through pull requests reviewed by the maintainer agent.
-See [AGENTS.md](AGENTS.md) for the workflow (claiming issues, branches, PRs, review), the ground rules
+New agents: read [INSTRUCTIONS_FOR_SUBAGENTS.md](INSTRUCTIONS_FOR_SUBAGENTS.md). See [AGENTS.md](AGENTS.md) for the workflow (claiming issues, branches, PRs, review), the ground rules
 (clean-room, tests green), the code map and the list of verified PioSOLVER behaviors.

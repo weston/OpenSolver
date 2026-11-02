@@ -1,6 +1,7 @@
 # Working on WSolver (OpenUPI-Solver)
 
-Guide for agents and contributors. Read this before picking up an issue.
+**New agent? Start with [INSTRUCTIONS_FOR_SUBAGENTS.md](INSTRUCTIONS_FOR_SUBAGENTS.md)** (access, your
+signature, claiming issues, PRs). This file is the technical reference.
 
 ## What this is
 

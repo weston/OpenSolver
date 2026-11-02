@@ -395,11 +395,23 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   solver_ = std::make_unique<Solver>(*tree_);
   solver_->first_player = first_player_;
   solver_->params = dcfr_;
+  apply_pcfr_settings();
   tree_alg_ = algorithm_;
   iterations_ = 0;
   discount_restart_ = 0;
   solve_seconds_ = 0;
   return okmsg;
+}
+
+void Upi::apply_pcfr_settings() {
+  if (!solver_) return;
+  solver_->predictive = predictive_;
+  solver_->avg_delay = avg_delay_;
+  // resize() on an empty ZVec is a fresh calloc: zero pages, committed only when the
+  // solver first writes them (which during a solve is every iteration, but never at all
+  // while the feature stays off).
+  if (predictive_ && tree_ && tree_->preds.size() < tree_->storage_floats)
+    tree_->preds.resize(tree_->storage_floats);
 }
 
 std::string Upi::estimate_text() {
@@ -647,6 +659,26 @@ void Upi::register_commands() {
     dcfr_ = DcfrParams{al, be, ga};
     if (solver_) solver_->params = dcfr_;
     return std::string("set_dcfr ok!");
+  };
+  // Not Pio commands: convergence experiments (#71), off / 0 by default.
+  // set_predictive on: PCFR+-style optimistic matching — the strategy at each node is
+  // matched on R + the last instantaneous regret. Costs one extra float per regret slot
+  // (lazily allocated, transient, never saved; harmless to leave allocated after "off").
+  H["set_predictive"] = [this](const Args& a) {
+    if (a.empty() || (a[0] != "on" && a[0] != "off")) throw CmdError{"incorrect or missing argument"};
+    if (solving_) throw CmdError{"stop the solver first"};
+    predictive_ = a[0] == "on";
+    apply_pcfr_settings();
+    return std::string("set_predictive ok!");
+  };
+  // set_avg_delay <n>: iterations 1..n only move regrets; the strategy average starts
+  // accumulating at iteration n+1 (warm-started average). 0 = accumulate from t=1.
+  H["set_avg_delay"] = [this](const Args& a) {
+    long long n = arg_int(a, 0, "iterations");
+    if (n < 0 || n > 1000000) throw CmdError{"incorrect or missing argument"};
+    avg_delay_ = static_cast<int>(n);
+    if (solver_) solver_->avg_delay = avg_delay_;
+    return std::string("set_avg_delay ok!");
   };
   // Not a Pio command: Pio always tracks the union. Opt-in here because the wider vectors
   // cost time and memory, and it has to be set before build_tree to take effect.

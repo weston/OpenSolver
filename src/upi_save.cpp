@@ -809,6 +809,8 @@ std::string Upi::cmd_load_tree(const Args& a) {
   tree_ = std::move(t);
   solver_ = std::make_unique<Solver>(*tree_);
   solver_->first_player = first_player_;
+  solver_->params = dcfr_;  // settings persist over load_tree the way they do over build_tree
+  apply_pcfr_settings();
   tree_info_ = lc.info;
   solve_seconds_ = lc.secs;
   iterations_ = lc.iters;

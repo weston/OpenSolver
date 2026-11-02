@@ -130,6 +130,7 @@ class Upi {
   std::string cmd_calc_eq_preflop(const Args& a);
   std::string estimate_text();
   std::string build_from(GameConfig c, bool mem_ignore, bool pessimistic, const char* okmsg);
+  void apply_pcfr_settings();  // pushes predictive_/avg_delay_ into the solver (+preds alloc)
   void register_preflop_commands();
   void lock_node_impl(uint32_t ni, bool lock);
   void set_node_strategy(uint32_t ni, const float* local_strat);  // A*H canonical
@@ -171,6 +172,8 @@ class Upi {
   double solve_seconds_ = 0;  // accumulated solving time for the tree
   double accuracy_ = 0;       // 0 = never
   DcfrParams dcfr_;           // set_dcfr: DCFR discount exponents (defaults 1.5 / 0 / 2)
+  bool predictive_ = false;   // set_predictive: PCFR+-style prediction in regret matching (#71)
+  int avg_delay_ = 0;         // set_avg_delay: iterations before the average starts (#71)
   bool accuracy_fraction_ = false;
   double recalc_accuracy_[3] = {0, 0, 0};
   int always_recalc_street_ = 0, always_recalc_ms_ = 0;

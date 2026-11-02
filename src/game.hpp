@@ -202,6 +202,9 @@ class GameTree {
   bool compressed = false;
   ZVec<float> regrets;
   ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
+  // Predictive CFR (#71): the last instantaneous regret per slot, allocated on demand by
+  // set_predictive (never compressed, never saved — transient solver state). Empty when off.
+  ZVec<float> preds;
   ZVec<int16_t> regrets_q;
   ZVec<uint16_t> strat_q;
   std::vector<float> rscale, sscale;

@@ -185,12 +185,18 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     return;
   }
   const float* R = g_.regrets_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+  // Predictive (PCFR+-style, #71): match on R + the last instantaneous regret as an
+  // optimistic guess of the next one. Preds are transient solver state (zero until the
+  // node's first update), so this reduces to plain regret matching at t=1.
+  const float* P = (predictive && !g_.preds.empty()) ? g_.preds.data() + n.storage : nullptr;
   float* sum = sc.a.alloc_zero(H);
   for (int a = 0; a < A; ++a) {
     const float* r = R + static_cast<size_t>(a) * H;
+    const float* pr = P ? P + static_cast<size_t>(a) * H : nullptr;
     float* o = out + static_cast<size_t>(a) * H;
     for (int h = 0; h < H; ++h) {
-      float v = r[h] > 0.0f ? r[h] : 0.0f;
+      float v = r[h] + (pr ? pr[h] : 0.0f);
+      v = v > 0.0f ? v : 0.0f;
       o[h] = v;
       sum[h] += v;
     }
@@ -425,7 +431,12 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     if (M != Walk::CFR) return;
     if (n.flags & GF_LOCKED) return;
     float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+    // Average accumulation is skipped until t > avg_delay (#71): S stays untouched (zero),
+    // so the average starts from the first post-delay iteration like a warm-started run.
     float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+    // Predictive CFR stores each round's instantaneous regret for the next round's
+    // matching input; keep the array fresh whenever it is allocated.
+    float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
     const float pm = pos_mult_, nm = neg_mult_, sm = strat_mult_;
     const float* inc = nullptr;
     float* mass = nullptr;
@@ -444,9 +455,11 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     }
     float mr = 0.0f, ms = 0.0f;
     const bool fast = !lockmask && !inc;
+    const bool accum = accumulate_;
     for (int a = 0; a < A; ++a) {
       float* r = R + static_cast<size_t>(a) * Hp;
       float* s = S + static_cast<size_t>(a) * Hp;
+      float* pr = P ? P + static_cast<size_t>(a) * Hp : nullptr;
       const float* c = cfv + static_cast<size_t>(a) * Hp;
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       const float ia = inc ? inc[a] : 0.0f;
@@ -455,20 +468,26 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
         for (int h = 0; h < Hp; ++h) {
           float x = r[h];
           x *= x > 0.0f ? pm : nm;
-          r[h] = x + c[h] - out[h];
-          s[h] = s[h] * sm + rp[h] * sa[h];
+          const float inst = c[h] - out[h];
+          r[h] = x + inst;
+          if (pr) pr[h] = inst;
+          if (accum) s[h] = s[h] * sm + rp[h] * sa[h];
         }
       } else if (fast) {
         for (int h = 0; h < Hp; ++h) {
           float x = r[h];
           x *= x > 0.0f ? pm : nm;
-          x = x + c[h] - out[h];
+          const float inst = c[h] - out[h];
+          x = x + inst;
           r[h] = x;
-          float y = s[h] * sm + rp[h] * sa[h];
-          s[h] = y;
+          if (pr) pr[h] = inst;
           float ax = std::fabs(x);
           mr = ax > mr ? ax : mr;
-          ms = y > ms ? y : ms;
+          if (accum) {
+            float y = s[h] * sm + rp[h] * sa[h];
+            s[h] = y;
+            ms = y > ms ? y : ms;
+          }
         }
       } else {
         for (int h = 0; h < Hp; ++h) {
@@ -476,13 +495,15 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
           float x = r[h];
           x *= x > 0.0f ? pm : nm;
           float bonus = inc ? ia * mass[h] : 0.0f;
-          r[h] = x + c[h] + bonus - out[h];
-          s[h] = s[h] * sm + rp[h] * sa[h];
+          const float inst = c[h] + bonus - out[h];
+          r[h] = x + inst;
+          if (pr) pr[h] = inst;
+          if (accum) s[h] = s[h] * sm + rp[h] * sa[h];
         }
       }
     }
     g_.regrets_commit(n, R, fast ? mr : -1.0f);
-    g_.strat_commit(n, S, fast ? ms : -1.0f);
+    if (accum) g_.strat_commit(n, S, fast ? ms : -1.0f);
     return;
   }
 
@@ -579,25 +600,31 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
   if (!(n.flags & GF_LOCKED)) {
     float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
     float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+    // An unreached node had zero counterfactual values this round, so its instantaneous
+    // regret is zero: the prediction must not reuse a stale one from an earlier round.
+    float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
     const uint8_t* lockmask = nullptr;
     if (n.flags & GF_COMBO_LOCKED) {
       auto it = g_.combo_lock.find(ni);
       if (it != g_.combo_lock.end()) lockmask = it->second.data();
     }
     const float pm = pos_mult_, nm = neg_mult_, sm = strat_mult_;
+    const bool accum = accumulate_;
     for (int a = 0; a < A; ++a) {
       float* r = R + static_cast<size_t>(a) * Hp;
       float* s = S + static_cast<size_t>(a) * Hp;
+      float* pr = P ? P + static_cast<size_t>(a) * Hp : nullptr;
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       for (int h = 0; h < Hp; ++h) {
         if (lockmask && lockmask[h]) continue;
         float x = r[h];
         r[h] = x * (x > 0.0f ? pm : nm);
-        s[h] = s[h] * sm + rp[h] * sa[h];
+        if (pr) pr[h] = 0.0f;
+        if (accum) s[h] = s[h] * sm + rp[h] * sa[h];
       }
     }
     g_.regrets_commit(n, R);
-    g_.strat_commit(n, S);
+    if (accum) g_.strat_commit(n, S);
   }
   float* rp2 = sc.a.alloc(Hp);
   for (int a = 0; a < A; ++a) {
@@ -699,6 +726,7 @@ void Solver::iterate(int t) {
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
+  accumulate_ = t > avg_delay;  // set_avg_delay: the first t <= avg_delay only move regrets
   for (int k = 0; k < 2; ++k) {
     int p = k == 0 ? first_player : 1 - first_player;
     ArenaScope sc;
@@ -714,6 +742,7 @@ void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
   strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
+  accumulate_ = t > avg_delay;
   const float* r[2] = {r0, r1};
   for (int k = 0; k < 2; ++k) {
     int p = k == 0 ? first_player : 1 - first_player;

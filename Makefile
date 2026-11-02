@@ -44,7 +44,21 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	./build/test_solver
 	python3 tests/test_upi.py ./solver --big
 
+# Cross-compile a static Windows binary (solver.exe) from macOS/Linux with mingw-w64. ZLIB_DIR must
+# contain zlib.h and a MinGW libz.a (e.g. zlib's own: make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32-).
+WIN_CXX  ?= x86_64-w64-mingw32-g++
+WIN_ARCH ?= -march=x86-64-v3
+ZLIB_DIR ?=
+WIN_OBJ  := $(SRC:src/%.cpp=build/win/%.o) build/win/main.o
+
+build/win/%.o: src/%.cpp $(wildcard src/*.hpp)
+	@mkdir -p build/win
+	$(WIN_CXX) -std=c++20 -O3 $(WIN_ARCH) -Wall -Wextra -DNDEBUG $(if $(ZLIB_DIR),-I$(ZLIB_DIR)) -c $< -o $@
+
+windows: $(WIN_OBJ)
+	$(WIN_CXX) -std=c++20 -O3 $(WIN_ARCH) -static $^ -o build/win/solver.exe $(if $(ZLIB_DIR),-L$(ZLIB_DIR)) -lz
+
 clean:
 	rm -rf build solver
 
-.PHONY: all test test-big clean
+.PHONY: all test test-big windows clean

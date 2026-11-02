@@ -108,6 +108,9 @@ Reading the numbers:
 - Absolute times are machine-relative; only before/after on the same machine means anything.
 - `bench/results.md` has an empty Pio column for the maintainer to fill from a licensed PioSOLVER on
   the same trees.
+- `bench/where-the-time-goes.md` is the measured cost map: self time per function per tree, the
+  dominant hotspot characterised, what is left ranked by size, and what has already been measured
+  and ruled out. Read it before starting performance work.
 
 **Measure with wall time**, via `/usr/bin/time` or `make bench`, which does it for you. Do *not* use
 `solver_time` for per-iteration cost: it is seconds since the process started, so it includes startup

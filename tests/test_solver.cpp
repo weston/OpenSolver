@@ -1,6 +1,7 @@
 // Engine smoke test: exploitability must fall toward 0 on river / turn / flop trees.
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include "../src/cards.hpp"
@@ -122,6 +123,62 @@ static bool mem_accounting() {
   return ok;
 }
 
+// #89: the AVX-512 showdown kernel must reproduce the scalar one bit for bit. Every showdown board
+// of a river, a turn and a flop tree, both perspectives, with random reaches (some exact zeros, so
+// blocked and empty groups occur), random payoffs and a non-zero `out` to accumulate into.
+static bool showdown_kernels_match() {
+#if PIO_SHOWDOWN_AVX512
+  struct Spot {
+    const char *board, *r0, *r1;
+  } spots[] = {
+      {"KhQs7d4c2s", "AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s", "AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s"},
+      {"KhQs7d4c", "22+,A2+,K2+,Q2+,J2+,T2+,92+,82+,72+,62+,52+,42+,32", "22+,A2s+,K5s+,Q8s+,J8s+,T7s+,A8o+,KTo+"},
+      {"Kh9h4h", "AA,KK,QQ,JJ,TT,99,AK,AQ,AJ,KQ,KJ,QJ,JT,T9", "AA,KK,QQ,JJ,TT,99,88,AK,AQ,KQ,QJ,JT"},
+  };
+  uint64_t rng = 0x9e3779b97f4a7c15ull;
+  auto next = [&] {
+    rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+    return rng;
+  };
+  auto unit = [&] { return static_cast<float>(next() >> 40) / static_cast<float>(1 << 24); };
+  long boards = 0, bad = 0;
+  for (const Spot& sp : spots) {
+    GameConfig cfg;
+    parse_cards(sp.board, cfg.board);
+    std::string err;
+    RangeWeights w;
+    if (!parse_range(sp.r0, w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+    if (!parse_range(sp.r1, w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+    cfg.pot[2] = 100;
+    cfg.eff_stack = 200;
+    cfg.lines.add = {{0, 50}};
+    GameTree g;
+    if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+    for (const ShowdownBoard& sb : g.showdowns) {
+      for (int p = 0; p < 2; ++p) {
+        const int Hp = g.num_hands(p), Ho = g.num_hands(1 - p);
+        std::vector<float> ro(Ho), a(Hp), b;
+        for (float& x : ro) x = next() % 5 == 0 ? 0.0f : unit();
+        for (float& x : a) x = 100 * unit() - 50;
+        b = a;
+        const float W = 150 * unit(), L = -100 * unit(), T = 0.5f * (W + L);
+        showdown_board_scalar(sb, W, L, T, p, ro.data(), a.data());
+        showdown_board_avx512(sb, W, L, T, p, ro.data(), b.data());
+        bad += std::memcmp(a.data(), b.data(), sizeof(float) * Hp) != 0;
+        ++boards;
+      }
+    }
+  }
+  std::printf("[showdown] AVX-512 vs scalar kernel: %ld of %ld board/player pairs differ\n", bad, boards);
+  return bad == 0 && boards > 0;
+#else
+  std::printf("[showdown] AVX-512 kernel not built (needs AVX-512F/BW/VBMI); nothing to compare\n");
+  return true;
+#endif
+}
+
 int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
@@ -167,6 +224,7 @@ int main(int argc, char** argv) {
                 {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {0, 0, 40}, {20, 200}}, 200, 0.01, false);
   fails += !run_pruning();
   fails += !mem_accounting();
+  fails += !showdown_kernels_match();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

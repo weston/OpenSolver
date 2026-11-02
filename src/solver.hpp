@@ -21,6 +21,20 @@ struct DcfrParams {
   double gamma = 4.0;  // strategy-sum discount exponent
 };
 
+// Showdown values against one river board: out[h] += value of p's hand h given opponent reach ro,
+// with W / L / T the win / loss / tie payoffs. showdown_board_scalar is the reference. x86 builds
+// with AVX-512F, BW and VBMI (-march=native on Zen 4+ / Ice Lake+) use showdown_board_avx512, which
+// must give the same floats bit for bit (#89; tests/test_solver.cpp checks). -DPIO_NO_AVX512 opts out.
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VBMI__) && !defined(PIO_NO_AVX512)
+#define PIO_SHOWDOWN_AVX512 1
+#else
+#define PIO_SHOWDOWN_AVX512 0
+#endif
+void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+#if PIO_SHOWDOWN_AVX512
+void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+#endif
+
 struct RootStats {
   double ev[2] = {0, 0};
   double mes[2] = {0, 0};

@@ -79,7 +79,7 @@ first place to look.
 | change | win | why it was hidden |
 |---|---|---|
 | #111 | -42% preflop at 20 threads | inner `parallel_for` dispatch too fine to amortise; work is bounded by `NUM_COMBOS^2` |
-| #137 | -26% on turn trees | `iso_turn` off to match Pio's `set_isomorphism 1 0` |
+| #137 | -26% on turn trees | `iso_turn` off to match Pio's `set_isomorphism 1 0` (changes strategies by up to 0.008, so not free) |
 | #131 | -8.5% `flop_srp_4` | `prune_period` 32 activated pruning at t=64; trees reach target by t=45-100, so it never ran |
 | #134 | -9 to -14% available | `set_avg_delay 32`; #80's sweep predated the alpha/gamma retune and the pruning fix |
 | #86 | -13% `deep` | (not hidden - confirmed independently at 180 iterations) |

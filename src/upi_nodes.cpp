@@ -331,11 +331,14 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
   std::array<float, NUM_COMBOS> hero{}, all{};
   for (int c = 0; c < NUM_COMBOS; ++c) all[c] = 1.0f;
   std::vector<std::pair<float, int>> order;
+  // With union_hands the list also holds hands only in the opponent's range, which reach
+  // this node with 0: Pio lists them too, showing their regret-derived strategy.
+  const bool keep_unreached = tree_->cfg.union_hands;
   for (int h = 0; h < H; ++h)
-    if (reach[h] > 0) hero[PERM_COMBO[r.frame][tree_->hands[actor][h]]] = 1.0f;
+    if (reach[h] > 0 || keep_unreached) hero[PERM_COMBO[r.frame][tree_->hands[actor][h]]] = 1.0f;
   EquityResult eq = range_equity(r.board, hero, all);
   for (int h = 0; h < H; ++h)
-    if (reach[h] > 0) order.push_back({eq.eq[PERM_COMBO[r.frame][tree_->hands[actor][h]]], h});
+    if (reach[h] > 0 || keep_unreached) order.push_back({eq.eq[PERM_COMBO[r.frame][tree_->hands[actor][h]]], h});
   std::stable_sort(order.begin(), order.end(), [](auto& x, auto& y) { return x.first > y.first; });
   std::string s;
   for (auto& [e, h] : order) {
@@ -368,11 +371,15 @@ std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
   const float nanv = std::numeric_limits<float>::quiet_NaN(), infv = std::numeric_limits<float>::infinity();
   std::vector<float> ev1326(NUM_COMBOS, nanv), m1326(NUM_COMBOS, 0.0f);
   uint64_t bm = board_mask(r.board);
-  for (int c = 0; c < NUM_COMBOS; ++c) {
-    // hands only in the opponent's range: Pio tracks them too (EV = x / 0)
-    int orig = PERM_COMBO[PERM_INV[display_perm_]][c];
-    if (!(combo_mask(c) & bm) && tree_->cfg.range[p][orig] <= 0 && tree_->cfg.range[1 - p][orig] > 0) ev1326[c] = infv;
-  }
+  // Hands only in the opponent's range: Pio tracks them too (EV = x / 0). With union_hands
+  // they have a slot, so the loop below computes a real cfv and gets the sign right; this
+  // unsigned fallback is only for the narrow lists, where no cfv exists for them at all.
+  if (!tree_->cfg.union_hands)
+    for (int c = 0; c < NUM_COMBOS; ++c) {
+      int orig = PERM_COMBO[PERM_INV[display_perm_]][c];
+      if (!(combo_mask(c) & bm) && tree_->cfg.range[p][orig] <= 0 && tree_->cfg.range[1 - p][orig] > 0)
+        ev1326[c] = infv;
+    }
   for (int h = 0; h < Hp; ++h) {
     int c = PERM_COMBO[r.frame][tree_->hands[p][h]];
     if (combo_mask(c) & bm) continue;

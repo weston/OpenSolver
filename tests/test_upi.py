@@ -328,6 +328,69 @@ def check_calc_eq_preflop_exact(u):
     check(abs(float(r[2]) - 0.550421774) < 1e-6, f"total equity matches Pio ({r[2]})")
 
 
+def check_union_hands(u):
+    """set_union_hands: opponent-only hands get a slot, a signed inf and _pp rows (#9)."""
+    print("[set_union_hands: hands of either range]")
+    # IP holds 88, OOP does not, and the board blocks none of it: exactly 6 opponent-only
+    # combos for OOP. Nothing else differs between the two ranges in OOP's direction.
+    setup = [
+        "set_range OOP AA:0.5,KK,QQ:0.25,JJ,TT,99,AK:0.75,AQ,AJ,KQ,KJ,QJ,JT,T9",
+        "set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ:0.5,KQ,QJ,JT",
+        "set_board Kh9h4h",
+        "set_pot 0 0 60",
+        "set_eff_stack 200",
+        "clear_lines ",
+        "add_line 20 20 60 60 200",
+        "add_line 0 20 20 60 60",
+        "add_line 0 0 40",
+        "add_line 20 200",
+    ]
+
+    def solve(union):
+        u.cmd("free_tree")
+        for c in setup:
+            u.cmd(c)
+        check(u.cmd("set_union_hands " + ("on" if union else "off")) == "set_union_hands ok!",
+              f"set_union_hands {'on' if union else 'off'} accepted")
+        u.cmd("build_tree")
+        u.cmd("set_accuracy 5")
+        u.cmd("go")
+        u.cmd("wait_for_solver")
+        res = u.cmd("calc_results").split("\n")
+        combos = lambda out: [l.split(":")[0] for l in out.split("\n") if re.match(r"^[2-9TJQKA][cdhs][2-9TJQKA][cdhs]:", l)]
+        return {
+            "evs": (res[0], res[1], res[4]),
+            "ev_pp": combos(u.cmd("calc_ev_pp OOP r:0")),
+            "strat_pp": combos(u.cmd("show_strategy_pp r:0")),
+            "deep": u.cmd("calc_ev OOP r:0:b20:b200").split("\n")[0].split(),
+        }
+
+    off, on = solve(False), solve(True)
+
+    check(u.cmd("set_union_hands maybe").startswith("ERROR"), "set_union_hands rejects a bad argument")
+
+    added = sorted(set(on["ev_pp"]) - set(off["ev_pp"]))
+    check(len(off["ev_pp"]) == 142 and len(on["ev_pp"]) == 148,
+          f"calc_ev_pp lists the union ({len(off['ev_pp'])} -> {len(on['ev_pp'])}, expected 142 -> 148)")
+    check(added == ["8d8c", "8h8c", "8h8d", "8s8c", "8s8d", "8s8h"],
+          f"the added hands are exactly the six 88 combos ({added})")
+    check(len(on["strat_pp"]) == 148 and sorted(set(on["strat_pp"]) - set(off["strat_pp"])) == added,
+          "show_strategy_pp lists the same opponent-only hands")
+
+    # Equilibrium must not move: the extra hands enter with reach 0.
+    check(off["evs"] == on["evs"], f"equilibrium unchanged by union_hands ({off['evs']} vs {on['evs']})")
+
+    # Deep node where OOP has 20 in and faces an all-in: the opponent-only hands have a
+    # negative counterfactual value, so Pio's signed -inf rather than a bare inf.
+    n_off = sorted(t for t in off["deep"] if t in ("inf", "-inf"))
+    n_on = sorted(t for t in on["deep"] if t in ("inf", "-inf"))
+    check(n_off == ["inf"] * 6, f"without union_hands the six hands print unsigned inf ({n_off[:2]}...)")
+    check(n_on == ["-inf"] * 6, f"with union_hands they print -inf, the sign of their cfv ({n_on[:2]}...)")
+
+    u.cmd("set_union_hands off")
+    u.cmd("free_tree")
+
+
 def main(exe, big=False):
     u = Upi(exe)
     try:
@@ -355,6 +418,8 @@ def main(exe, big=False):
             run_small_tree(u, order)
 
         check_calc_eq_preflop_exact(u)
+
+        check_union_hands(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")

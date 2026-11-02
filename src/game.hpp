@@ -51,6 +51,11 @@ struct GameConfig {
   int32_t eff_stack = 0;
   Weights1326 range[2]{};          // OOP, IP
   bool iso_flop = true, iso_turn = false;
+  // Keep each player's hand list as the union of both ranges, like Pio, so hands only in
+  // the opponent's range still get a slot (and therefore a counterfactual value) instead
+  // of being filtered out. They enter with reach 0, so the equilibrium is unaffected; the
+  // cost is wider vectors. Off by default: see set_union_hands.
+  bool union_hands = false;
   LineSet lines;
   int32_t start_pot() const { return pot[0] + pot[1] + pot[2]; }
   bool full_preflop() const { return preflop && !schematics.empty(); }

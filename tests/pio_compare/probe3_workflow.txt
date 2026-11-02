@@ -1,0 +1,70 @@
+# Probe 3: turn tree + workflow commands (locking, rake, partial solves, scripting, misc).
+set_range OOP AA,KK,QQ,77,44,AK,AQ,KQ,QJs,JTs,T9s,98s,A5s,A4s
+set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s,99,88
+set_board KhQs7d4c
+set_pot 0 0 100
+set_eff_stack 300
+add_line 66 66 198
+add_line 66 300
+add_line 0 66 300
+add_line 0 0 66
+add_line 0 0 0 66
+build_tree
+show_children r:0:b66:b300
+show_node r:0:b66:b300:c
+show_win_evs OOP r:0:b66:b300:c
+show_win_evs IP r:0:b66:f
+show_children r:0:b66:c
+node_count
+set_first_iteration_player IP
+set_info_freq 1000
+go 300 steps
+wait_for_solver
+calc_results
+show_strategy r:0:b66
+calc_ev OOP r:0:b66:b300:c
+calc_ev IP r:0:b66:b300
+set_rake 0.05 3
+show_win_evs OOP r:0:b66:b300:c
+show_win_evs OOP r:0:c:c:2c:c:c
+calc_results
+set_rake 0 0
+eliminate_path r:0:b66:b300
+show_strategy r:0:b66
+go 100 steps
+wait_for_solver
+show_strategy r:0:b66
+calc_results
+set_incentives_node r:0 1 2
+show_incentives r:0
+clear_incentives r:0
+show_incentives r:0
+round_up_to OOP 4 turn
+show_strategy r:0
+set_mes IP
+calc_results
+set_equal_strats
+calc_results
+show_strategy r:0
+go 200 steps
+wait_for_solver
+solve_partial r:0:c:c:2c
+explo_partial r:0:c:c:2c
+rebuild_tree
+estimate_rebuild_tree
+combo_lock_node r:0:b66
+show_iters
+take_a_break 1
+echo hello there
+repeat 3 abc
+show_node r:0:c:c:?
+calc_line_freq r:0:c:c:?:b66
+lock_line r:0:c:c:?
+unlock_line r:0:c:c:?
+set_algorithm pio_cfr
+show_node r:0
+set_algorithm auto
+list_algorithms
+small_strats on
+ignore_mem_check on
+show_memory

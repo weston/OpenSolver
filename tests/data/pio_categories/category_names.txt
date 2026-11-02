@@ -1,0 +1,2 @@
+nothing king_high ace_high low_pair 3rd-pair 2nd-pair underpair top_pair top_pair_tp overpair two_pair trips set straight flush fullhouse top_fullhouse quads straight_flush 
+no_draw bdfd_1card bdfd_2card 4out_straight_draw 8out_straight_draw flush_draw combo_draw 

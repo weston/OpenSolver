@@ -1,0 +1,69 @@
+# Probe 1: output formats on a small river tree.
+is_ready
+set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s
+set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s
+set_board KhQs7d4c2s
+set_pot 0 0 100
+set_eff_stack 200
+set_isomorphism 1 0
+add_line 75 200
+add_line 0 75 200
+add_line 0 50
+add_line 75
+estimate_schematic_tree
+build_tree
+is_tree_present
+show_effective_stack
+show_node r
+show_node r:0
+show_children r
+show_children r:0
+show_children r:0:c
+show_children r:0:b75
+show_node r:0:b75:b200
+show_node r:0:c:c
+show_node r:0:b75:f
+show_node r:0:c:b50:c
+show_all_lines
+node_count
+show_iters
+calc_results
+set_accuracy 0.01
+set_info_freq 100
+go 500 steps
+wait_for_solver
+show_iters
+calc_results
+show_strategy r:0
+show_strategy r:0:c
+show_range OOP r:0
+show_range IP r:0:b75
+show_range OOP
+calc_ev OOP r:0
+calc_ev IP r:0:b75
+calc_eq OOP
+calc_eq_node IP r:0:c
+show_win_evs OOP r:0:c:c
+show_win_evs IP r:0:b75:f
+show_win_evs OOP r:0:b75:b200:c
+calc_line_freq r:0:b75
+calc_line_freq r:0:c:b50
+calc_global_freq r:0:c:b50
+calc_matchups_line r:0:c
+show_all_freqs local
+show_all_freqs global
+explo_partial r:0:c
+show_nuts OOP KhQs7d4c2s
+show_category_names
+show_categories KhQs7d4c2s
+show_node r:0:x
+show_strategy r:0:c:c
+bogus_command
+set_board Kh Qs 7d
+show_tree_info
+add_info_line hello world
+show_tree_info
+show_hand_order
+show_preflop_order
+show_step
+solver_time

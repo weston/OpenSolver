@@ -1,0 +1,51 @@
+# Probe 4: preflop tree building (formats, who acts first, exits, subsets).
+set_range OOP 22+,A2s+,K9s+,Q9s+,J9s+,T9s,ATo+,KJo+
+set_range IP 22+,A2s+,K5s+,Q8s+,J8s+,T8s+,97s+,87s,76s,A2o+,K9o+,QTo+,JTo
+set_pot 10 5 0
+set_eff_stack 1000
+add_preflop_line 25 100 220
+add_preflop_line 25 100 1000
+add_preflop_line 25 25
+add_preflop_line 25 100 100
+build_preflop_tree
+is_tree_present
+show_node r
+show_node r:0
+show_children r:0
+show_children r:0:b25
+show_node r:0:b25:c
+show_children r:0:b25:c
+show_node r:0:b25:b100:c
+show_node r:0:b25:b100:b1000:c
+show_all_lines
+node_count
+estimate_tree
+add_to_subset 1 AsKsQs
+add_to_subset 0.5 7c7d2h
+show_subset
+set_board AsKsQs
+set_eff_stack 950
+set_pot 0 0 50
+clear_lines
+add_line 0 25 25
+build_tree
+show_node r
+add_schematic_tree r:0:b25:c
+estimate_tree
+add_all_flops
+show_node r:0:b25:c
+show_children r:0:b25:c
+show_node r:0:b25:c:AsKsQs
+show_children r:0:b25:c:AsKsQs
+node_count
+calc_results
+set_info_freq 10
+go 20 steps
+wait_for_solver
+calc_results
+show_strategy r:0
+show_range IP r:0:b25:c
+show_range OOP r:0:b25:c:AsKsQs
+calc_eq_preflop OOP
+reset_subset
+show_subset

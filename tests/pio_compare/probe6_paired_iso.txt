@@ -1,0 +1,19 @@
+# Probe 6: isomorphism on paired / two-tone boards (node_count must match Pio).
+set_range OOP AA,KK,QQ,JJ,TT,99,AK,AQ,AJ,KQ,KJ,QJ,JT,T9,77,22
+set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ,KQ,QJ,JT,76s,65s
+set_board 7c7d2h
+set_pot 0 0 60
+set_eff_stack 200
+add_line 20 20 60 60 200
+add_line 0 20 20 60 60
+build_tree
+node_count
+set_board KhKd4c
+build_tree
+node_count
+set_board Ah8h3c
+build_tree
+node_count
+set_board 9s9h9d
+build_tree
+node_count

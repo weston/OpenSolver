@@ -1,0 +1,70 @@
+# Probe 2: flop tree formats, chance nodes, isomorphism, fractional weights, pp outputs, locking, saves.
+set_range OOP AA:0.5,KK,QQ:0.25,JJ,TT,99,AK:0.75,AQ,AJ,KQ,KJ,QJ,JT,T9
+set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ:0.5,KQ,QJ,JT
+set_board Kh9h4h
+set_pot 0 0 60
+set_eff_stack 200
+add_line 20 20 60 60 200
+add_line 0 20 20 60 60
+add_line 0 0 40
+add_line 20 200
+build_tree
+show_node r:0:c:c
+show_children r:0:c:c
+show_node r:0:c:c:2c
+show_node r:0:c:c:2s
+show_node r:0:c:c:Ah
+show_node r:0:b20:c:As:c:c
+show_node r:0:b20:b200:c
+show_children r:0:b20:b200:c
+node_count
+show_all_lines
+set_info_freq 50
+go 150 steps
+wait_for_solver
+calc_results
+show_strategy r:0
+show_strategy r:0:c:c:2c
+show_strategy r:0:c:c:2s
+show_strategy r:0:c:c:2d
+show_strategy_pp r:0
+show_strategy_pp r:0:b20
+calc_ev OOP r:0
+calc_ev IP r:0:b20
+calc_ev_pp OOP r:0
+calc_eq_node OOP r:0
+calc_eq_pp OOP
+show_range OOP r:0:b20
+calc_line_freq r:0:c:c:?:c
+calc_global_freq r:0:c:c:2c:c
+explo_partial r:0:c:c:2c
+show_win_evs OOP r:0:b20:b200:c
+show_settings
+lock_node r:0
+show_node r:0
+show_locked_combos r:0
+unlock_node r:0
+show_effective_stack
+show_board_no_iso
+set_display_iso hs
+show_node r:0:c:c:2c
+show_board_no_iso
+reset_display_iso
+dump_tree "C:\Users\Owner\AppData\Local\Temp\oupi_probe2.cfr"
+show_metadata "C:\Users\Owner\AppData\Local\Temp\oupi_probe2.cfr"
+show_save_version "C:\Users\Owner\AppData\Local\Temp\oupi_probe2.cfr"
+check_tree_health "C:\Users\Owner\AppData\Local\Temp\oupi_probe2.cfr"
+set_strategy r:0 1 2 3
+show_node r:0:c:c:Kh
+show_children r:0:b20:f
+calc_ev OOP r:0:zz
+add_line 999
+set_pot 0 0
+set_eff_stack x
+set_threads 0
+set_threads 8
+show_cpu_info
+free_tree
+is_tree_present
+show_node r
+calc_results

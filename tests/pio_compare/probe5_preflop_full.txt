@@ -1,0 +1,57 @@
+# Probe 5: full preflop tree (preflop lines + flop subset + schematic postflop trees).
+set_range OOP QQ+,AKs,AKo,KQs
+set_range IP QQ+,AK,AQs,KQs,JTs
+set_pot 10 5 0
+set_eff_stack 1000
+add_preflop_line 25 25
+add_preflop_line 25 100 100
+build_preflop_tree
+add_to_subset 1 As Ks Qs
+add_to_subset 0.5 7c 7d 2h
+show_subset
+clear_lines
+set_pot 0 0 50
+set_eff_stack 975
+add_line 0 25 25
+add_line 25 75 75
+add_schematic_tree r:0:b25:c
+clear_lines
+set_pot 0 0 200
+set_eff_stack 900
+add_line 0 100 100
+add_schematic_tree r:0:b25:b100:c
+clear_lines
+set_pot 0 0 20
+set_eff_stack 990
+add_line 0 10 10
+add_schematic_tree r:0:c:c
+estimate_tree
+add_all_flops
+is_tree_present
+show_node r
+show_node r:0
+show_node r:0:b25:c
+show_children r:0:b25:c
+show_node r:0:b25:c:AsKsQs
+show_node r:0:b25:c:7d7c2h
+show_children r:0:b25:c:AsKsQs
+show_node r:0:b25:c:AsKsQs:c:c:2c
+show_node r:0:b25:c:AsKsQs:b25
+show_node r:0:b25:b100:c:AsKsQs:b100:c
+show_effective_stack
+node_count
+calc_results
+set_info_freq 50
+go 100 steps
+wait_for_solver
+calc_results
+show_strategy r:0
+show_strategy r:0:b25
+show_range OOP r:0:b25:c
+show_range OOP r:0:b25:c:AsKsQs
+show_strategy r:0:b25:c:AsKsQs
+calc_ev IP r:0
+calc_ev OOP r:0:b25:c:AsKsQs
+show_all_lines
+recover_subset
+show_subset

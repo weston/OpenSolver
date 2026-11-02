@@ -1,0 +1,9 @@
+# build outputs
+/build/
+/solver
+*.o
+# local comparison runs against a real PioSOLVER (regenerate with tests/pio_compare/compare.py)
+/tests/pio_compare/*_results/
+__pycache__/
+*.cfr
+.DS_Store

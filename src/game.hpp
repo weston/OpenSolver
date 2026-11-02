@@ -91,9 +91,12 @@ struct SdEntry {
 };  // 6 bytes; one entry per hand per showdown board, so this is the dominant structural array
 
 // All-in before the river: the showdown boards of every runout and 1 / (runouts per hand pair).
+// `exact` (preflop all-ins; board empty at the terminal): no boards; the solver instead uses the
+// exact hand-vs-hand table (pfh2h.*) for a matrix-vector product over opponent reach.
 struct AllinRunouts {
   std::vector<uint32_t> boards;
   float scale;
+  bool exact = false;
 };
 
 struct ShowdownBoard {

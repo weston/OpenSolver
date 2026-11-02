@@ -25,7 +25,13 @@ namespace {
 
 constexpr uint32_t kMagic = 0x57483231;    // "WH21"
 constexpr uint32_t kVersion = 1;
-constexpr const char* kFileName = "pf_h2h_v1.bin";
+
+// Derived from kVersion rather than restated: if the two drift apart, two binaries with
+// different table layouts fight over one path, each rejecting the other's file on the
+// header check and regenerating it, so every run silently pays table generation. Keeping
+// them tied means differing versions get differing files and simply coexist. A stale
+// pf_h2h_v<N>.bin from an older version is then safe to delete by hand.
+std::string cache_file_name() { return "pf_h2h_v" + std::to_string(kVersion) + ".bin"; }
 
 // A 5-card board up to suit permutation (canonical = lexicographically smallest sorted tuple
 // among the 24 suit images).
@@ -300,7 +306,7 @@ void save_table_cache(const std::string& dir, const PfTable& t) {
     std::filesystem::remove(tmp, ec);
     return;
   }
-  std::filesystem::rename(tmp, dir + "/" + kFileName, ec);  // same directory: atomic
+  std::filesystem::rename(tmp, dir + "/" + cache_file_name(), ec);  // same directory: atomic
   if (ec) std::filesystem::remove(tmp, ec);
 }
 
@@ -308,12 +314,12 @@ PfTable load_or_generate() {
   init_cards();
   std::string dir = cache_dir();
   PfTable t;
-  if (!dir.empty() && load_table_cache(dir + "/" + kFileName, t)) return t;
+  if (!dir.empty() && load_table_cache(dir + "/" + cache_file_name(), t)) return t;
   t = generate_table();
   if (!dir.empty()) {
     save_table_cache(dir, t);
     std::fprintf(stderr, "pf_h2h: cached %s (%.1f MB); later runs load instantly\n",
-                 (dir + "/" + kFileName).c_str(),
+                 (dir + "/" + cache_file_name()).c_str(),
                  (2 * sizeof(uint32_t) * NUM_COMBOS * NUM_COMBOS) / 1048576.0);
     std::fflush(stderr);
   }

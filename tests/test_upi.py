@@ -230,7 +230,7 @@ def check_locking(u):
     check(all(abs(st2[1][i] - 1) < 1e-4 for i in in_range), "set_strategy round-trips (in-range hands)")
 
 
-def check_save_load(u, strat_path):
+def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
     print("[save / load]")
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "t.cfr")
@@ -239,13 +239,46 @@ def check_save_load(u, strat_path):
         meta = u.cmd(f'show_metadata "{path}"').split("\n")
         check(meta[1] == "ROOT" and meta[2].rstrip() == "Qh Qc 2c", f"show_metadata ({meta[2]!r})")
         s_before = u.cmd("show_strategy " + strat_path)
+        deep_before = [u.cmd("show_strategy " + d) for d in deep_paths]
+        bad = [d for d, r in zip(deep_paths, deep_before) if r.startswith("ERROR") or len(r.split()) < 10]
+        check(not bad, f"deep test nodes exist {bad}")
+        all_before = u.cmd("print_all_strats") if whole_tree else None
         u.cmd("free_tree")
         check(u.cmd("is_tree_present") == "false", "free_tree")
+        # Default (fast) load is lazy: node data is decompressed per street segment on first access.
         check(u.cmd(f'load_tree "{path}"') == "load_tree ok!", "load_tree")
+        check("FAST_LOAD" in u.cmd("show_node r"), "fast load flag")
+        deep_after = [u.cmd("show_strategy " + d) for d in reversed(deep_paths)][::-1]
+        check(deep_after == deep_before, f"lazy reads of {len(deep_paths)} deep nodes (deepest first) are exact")
         check(u.cmd("show_strategy " + strat_path) == s_before, "strategy identical after reload")
+        if whole_tree:
+            check(u.cmd("print_all_strats") == all_before, "every strategy identical after lazy load")
+            u.cmd("free_tree")
+            check(u.cmd(f'load_tree "{path}" full') == "load_tree ok!", "load_tree full")
+            check(u.cmd("print_all_strats") == all_before, "every strategy identical after full load")
         small = os.path.join(td, "small.cfr")
         u.cmd(f'dump_tree "{small}" no_rivers')
         check(os.path.getsize(small) < os.path.getsize(path), "no_rivers save is smaller")
+        if deep_paths:
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{small}"')
+            flags = u.cmd("show_node r")
+            check("INCOMPLETE_TREE" in flags and "FAST_LOAD" in flags, "no_rivers: incomplete + fast-load flags")
+            check(u.cmd("show_strategy " + strat_path) == s_before, "no_rivers: lazily loaded strategy exact")
+            check(u.cmd("rebuild_tree").startswith("ERROR"), "rebuild_tree needs load_all_nodes")
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{path}"')
+            u.cmd("set_equal_strats")  # must not be undone by later lazy reads of the file
+            eq_lazy = [u.cmd("show_strategy " + d) for d in deep_paths]
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{path}" full')
+            u.cmd("set_equal_strats")
+            eq_full = [u.cmd("show_strategy " + d) for d in deep_paths]
+            check(eq_lazy == eq_full and eq_lazy[0] != deep_before[0], "set_equal_strats on a lazily loaded tree sticks")
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{small}"')
+        # The tree must not depend on the temp file any more (it is corrupted, then deleted, below).
+        check(u.cmd("load_all_nodes") == "load_all_nodes ok!", "load_all_nodes")
         with open(path, "r+b") as f:
             f.seek(200)
             f.write(b"\xff\xfe\xfd")
@@ -310,7 +343,8 @@ def run_small_tree(u, order):
     check_strategies(u, order, evo)
     check_isomorphism(u, order)
     check_locking(u)
-    check_save_load(u, "r:0:c:b12")
+    check_save_load(u, "r:0:c:b12", deep_paths=("r:0:c:c:3d", "r:0:c:b12:c:Ad:c", "r:0:c:c:Ks:c:c:3h", "r:0:b12:c:7d:c:c:9s"),
+                    whole_tree=True)
     check_lines(u, 10)
 
 

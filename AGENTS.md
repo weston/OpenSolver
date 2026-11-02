@@ -140,6 +140,11 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `set_recalc_accuracy` (fraction of the pot; defaults 0.0025 0.001 0.0005) and flags it
   `ALREADY_RECALCED`. `set_always_recalc <street> <ms>` does the same for present streets.
   `rebuild_tree`, `estimate_rebuild_tree`, `solve_all_splits` need `load_all_nodes` first (probe10).
+- Lazy loading (ours): `load_tree` without `full` reads v4 saves per street segment on first access,
+  hooked into every `GameTree` storage accessor (`ensure_loaded`). Storage arrays are calloc'd
+  (`ZVec`), so untouched segments cost no RAM. Code that reads `regrets`/`strat` arrays directly must
+  call `GameTree::load_all` first (as `dump_tree` and `start_solver` do). Lazy loads may run on worker
+  threads; they never throw, and failures surface as an `ERROR` on the command that hit them.
 - `set_strategy` under the default v4 algorithms persists through further solving (we write it as a
   dominant regret); under `original_pio`/`pio_cfr` it is only a starting point (probe9). Best
   responses (MES, exploitability) never deviate at locked nodes or locked combos.

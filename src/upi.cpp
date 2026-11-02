@@ -248,6 +248,9 @@ bool Upi::execute_line(const std::string& raw, bool silent) {
     body = "ERROR: " + cmd + " " + e.what();
   }
   if (silent) --silent_depth_;
+  // A lazily loaded segment that could not be read: report it instead of silently using zeros.
+  std::string lerr;
+  if (tree_ && !solving_ && tree_->take_lazy_error(lerr)) body = "ERROR: " + cmd + " cannot read tree data: " + lerr;
   if (is_exit) return false;
   if (!silent && body != "\x01") respond(body);
   return true;
@@ -279,6 +282,9 @@ void Upi::start_solver(double seconds, long long steps) {
   require_tree();
   if (solving_) return;
   if (solver_thread_.joinable()) solver_thread_.join();
+  // Solving touches every node: read a lazily loaded tree completely first (in parallel).
+  std::string lerr;
+  if (!tree_->load_all(lerr)) throw CmdError{"cannot read the tree's file: " + lerr};
   stop_flag_ = false;
   solving_ = true;
   solver_thread_ = std::thread([this, seconds, steps] { solver_thread_main(seconds, steps); });
@@ -817,7 +823,12 @@ void Upi::register_commands() {
   H["load_tree"] = [this](const Args& a) { return cmd_load_tree(a); };
   H["show_metadata"] = [this](const Args& a) { return cmd_show_metadata(a); };
   H["load_all_nodes"] = [this](const Args&) {
-    if (tree_) tree_->fast_loaded = false;
+    if (tree_) {
+      stop_solver();
+      std::string err;
+      if (!tree_->load_all(err)) throw CmdError{"cannot read the tree's file: " + err};
+      tree_->fast_loaded = false;
+    }
     return std::string("load_all_nodes ok!");
   };
   H["set_compression_precision"] = [this](const Args& a) {

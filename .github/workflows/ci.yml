@@ -141,3 +141,40 @@ jobs:
           test -f build/win/solver.exe
           file build/win/solver.exe
           file build/win/solver.exe | grep -q 'PE32+ executable'
+
+  # The cross-build job above only proves the code compiles for Windows. This one runs the
+  # real test suite on Windows, which is the only way to catch behavioral differences
+  # rather than compile errors: text vs binary mode on stdin/stdout, path handling, and
+  # gzip save/load round-trips. Mirrors the native MSYS2 UCRT64 instructions in the README.
+  windows-native:
+    name: Windows (MSYS2 UCRT64, native tests)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-zlib
+            python
+
+      - name: Toolchain
+        run: |
+          c++ --version
+          c++ -dumpmachine
+          python --version
+          nproc
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Unit and end-to-end tests
+        run: make test

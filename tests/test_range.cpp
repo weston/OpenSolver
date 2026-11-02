@@ -1,4 +1,5 @@
 // Standalone tests for src/range.cpp: range text parsing, formatting, round-trips.
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -89,6 +90,23 @@ static void roundtrip_exact(const RangeWeights& x, const char* what) {
 
 int main() {
   pio::init_cards();
+
+  // --- Suit permutations ---
+  // SUIT_PERMS is built by explicit loops rather than std::next_permutation (see
+  // src/cards.cpp), so pin the properties the rest of the engine relies on: the identity
+  // must be first, and the order must stay lexicographic. Node ids and the isomorphism
+  // frames are expressed in terms of these indices, so a reordering would silently change
+  // saved trees and recorded Pio comparison output.
+  {
+    CHECK(pio::SUIT_PERMS[0] == (std::array<uint8_t, 4>{0, 1, 2, 3}));
+    for (int k = 0; k < pio::NUM_SUIT_PERMS; ++k) {
+      int seen = 0;
+      for (int s = 0; s < 4; ++s) seen |= 1 << pio::SUIT_PERMS[k][s];
+      CHECK(seen == 0b1111);  // a bijection on the four suits
+    }
+    for (int k = 1; k < pio::NUM_SUIT_PERMS; ++k)
+      CHECK(pio::SUIT_PERMS[k - 1] < pio::SUIT_PERMS[k]);  // strictly lexicographic
+  }
 
   // --- Basic class forms ---
   {

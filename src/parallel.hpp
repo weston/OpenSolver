@@ -21,7 +21,10 @@ class ThreadPool {
   int threads() const { return nthreads_; }
 
   // Runs f(i) for i in [0, n). Safe to call recursively from inside f.
-  void parallel_for(int n, const std::function<void(int)>& f);
+  // widen=false: the tasks do not count toward the exposed parallel width, so loops nested
+  // inside them still publish their own work (used for a few coarse, unbalanced tasks such
+  // as sibling actions, whose inner chance fan-outs are the real parallelism).
+  void parallel_for(int n, const std::function<void(int)>& f, bool widen = true);
 
  private:
   struct Job {

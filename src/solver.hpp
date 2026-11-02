@@ -165,6 +165,8 @@ class Solver {
  private:
   template <Walk M>
   void walk_t(uint32_t ni, int p, const float* rp, const float* ro, float* out);
+  template <typename F>
+  void run_actions(const GNode& n, int A, F& act);
   void strategy_only(uint32_t ni, int p, const float* rp);
   void flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, const float* rp, const float* ro, float* out);
   void fold_value(const GNode& n, int p, const float* ro, float* out) const;

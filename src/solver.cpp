@@ -565,23 +565,25 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       for (int a = 0; a < A; ++a) pruned[a] = all_zero(sigma + static_cast<size_t>(a) * Hp, Hp) ? 1 : 0;
     }
     float* cfv = sc.a.alloc(static_cast<size_t>(A) * Hp);
-    float* rp2 = sc.a.alloc(Hp);
-    for (int a = 0; a < A; ++a) {
-      if (pruned && pruned[a]) continue;  // cfv[a] intentionally left undefined
+    float* rpa = sc.a.alloc(static_cast<size_t>(A) * Hp);  // per-action reach: actions may run in parallel
+    auto act = [&](int a) {
+      if (pruned && pruned[a]) return;  // cfv[a] intentionally left undefined
       const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
       float* ca = cfv + static_cast<size_t>(a) * Hp;
       const GNode& child = g_.nodes[ci];
       if (child.kind == ANodeKind::Fold) {
         // Our own fold: opponent reach is unchanged, so this is just payoff * compatible mass.
         fold_value(child, p, ro, ca);
-        continue;
+        return;
       }
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
+      float* rp2 = rpa + static_cast<size_t>(a) * Hp;
       if (M == Walk::BestResponse) std::memcpy(rp2, rp, sizeof(float) * Hp);
       else
         for (int h = 0; h < Hp; ++h) rp2[h] = rp[h] * sa[h];
       walk_t<M>(ci, p, rp2, ro, ca);
-    }
+    };
+    run_actions(n, A, act);
     if (M == Walk::BestResponse) {
       std::memcpy(out, cfv, sizeof(float) * Hp);
       for (int a = 1; a < A; ++a) {
@@ -729,13 +731,17 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     return;
   }
 
-  // Opponent node.
-  float* ro2 = sc.a.alloc(Ho);
-  float* tmp = sc.a.alloc(Hp);
-  std::memset(out, 0, sizeof(float) * Hp);
-  for (int a = 0; a < A; ++a) {
+  // Opponent node. Each action's contribution goes to its own row (actions may run in parallel)
+  // and the rows are summed in action order afterwards, so the result does not depend on the
+  // thread count.
+  float* ro2s = sc.a.alloc(static_cast<size_t>(A) * Ho);
+  float* contrib = sc.a.alloc(static_cast<size_t>(A) * Hp);
+  uint8_t* used = reinterpret_cast<uint8_t*>(sc.a.alloc(static_cast<size_t>((A + 3) / 4)));
+  auto act = [&](int a) {
+    used[a] = 0;
     const float* sa = sigma + static_cast<size_t>(a) * Ho;
     const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
+    float* tmp = contrib + static_cast<size_t>(a) * Hp;
     if (g_.nodes[ci].kind == ANodeKind::Fold) {
       // Opponent folds: value = payoff * compatible mass of (ro * sigma_fold), fused into one pass
       // over the opponent's hands (no reach vector, no temporary, no extra add pass).
@@ -752,7 +758,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       }
       if (total == 0.0f) {
         if (M == Walk::CFR) strategy_only(ci, p, rp);
-        continue;
+        return;
       }
       const uint8_t* pc1 = g_.hcard[p][0].data();
       const uint8_t* pc2 = g_.hcard[p][1].data();
@@ -760,10 +766,12 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       for (int h = 0; h < Hp; ++h) {
         float m = total - cs[pc1[h]] - cs[pc2[h]];
         if (same[h] >= 0) m += ro[same[h]] * sa[same[h]];
-        out[h] += pay * m;
+        tmp[h] = pay * m;
       }
-      continue;
+      used[a] = 1;
+      return;
     }
+    float* ro2 = ro2s + static_cast<size_t>(a) * Ho;
     bool any = false;
     for (int k = 0; k < Ho; ++k) {
       float v = ro[k] * sa[k];
@@ -773,10 +781,31 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     if (!any) {
       if (M == Walk::CFR) strategy_only(n.first_child + static_cast<uint32_t>(a), p, rp);
       // set_mes writes a best response everywhere, also where the opponent never goes (like Pio).
-      if (!(M == Walk::BestResponse && write_best_response)) continue;
+      if (!(M == Walk::BestResponse && write_best_response)) return;
     }
     walk_t<M>(n.first_child + static_cast<uint32_t>(a), p, rp, ro2, tmp);
-    for (int h = 0; h < Hp; ++h) out[h] += tmp[h];
+    used[a] = 1;
+  };
+  run_actions(n, A, act);
+  std::memset(out, 0, sizeof(float) * Hp);
+  for (int a = 0; a < A; ++a) {
+    if (!used[a]) continue;
+    const float* c = contrib + static_cast<size_t>(a) * Hp;
+    for (int h = 0; h < Hp; ++h) out[h] += c[h];
+  }
+}
+
+// Sibling actions above the river walk disjoint subtrees (their own regret/strategy rows and
+// chance nodes), so they can run as parallel tasks: this exposes work between the turn/river
+// fan-outs, where threads otherwise idle at every chance-node join (#53). River decisions have
+// small subtrees, so they stay sequential (dispatch would cost more than it saves).
+template <typename F>
+void Solver::run_actions(const GNode& n, int A, F& act) {
+  if (parallel && A > 1 && n.board_len < 5 && pool().threads() > 1) {
+    std::function<void(int)> fn = act;
+    pool().parallel_for(A, fn, /*widen=*/false);
+  } else {
+    for (int a = 0; a < A; ++a) act(a);
   }
 }
 

@@ -136,19 +136,33 @@ The server binds to 127.0.0.1 only and exposes a fixed, whitelisted JSON API —
 "run any UPI command" endpoint. Tree building and solving, plus `dump_tree` to a path you
 choose, are the only state-changing operations.
 
-What it does:
+Two views, light and dark themes (follows the system; toggle in the top bar):
 
-- **Build & solve:** PioViewer-style ranges/board/pot/stack/bet sizes (expanded with
-  `tools/tree_builder.py`), `estimate_tree` memory estimate, `build_tree`, then `go` with live
-  exploitability and iteration progress, and `stop`.
-- **Browse:** breadcrumb of Pio node ids (`r:0:c:b24:...`), one button per child action with its
-  overall frequency, and a 52-card picker at chance nodes (blocked cards disabled).
-- **Strategy grid:** the 13x13 hand matrix with per-class stacked bars, aggregated over the combos
-  of each class weighted by the acting player's range at the node (`show_range`), a color legend
-  with overall action frequencies, and per-combo details on click (strategy, range weight, EV
-  from `calc_ev`).
-- **Range view** for both players and an **EV view** per player at any node.
-- **Save/load:** `dump_tree` (full / `no_rivers` / `no_turns`) and lazy `load_tree` — browsing a
+- **Build:**
+  - two 13×13 range editors side by side (OOP left, IP right). Click or drag to paint hands at the
+    weight set by the slider (0–100%); clicking a hand that already has that weight clears it.
+    The text box under each grid stays in sync both ways, in the solver's range syntax
+    (`AA,AKs:0.5,AsKs,22+,A5s-A2s`).
+  - a card-button board picker;
+  - pot, stack, bet/raise/donk sizes per street (expanded with `tools/tree_builder.py`) and all-in
+    rules. Isomorphism is always on.
+  - **Build & solve** with a target in % of the pot, and a live convergence chart
+    (exploitability on a log scale against time).
+- **Study:** a fixed layout, so nothing moves while you click through a line:
+  - the board as card graphics and the line so far as colored action chips grouped by street
+    (click one to return to that decision);
+  - an action strip with the overall frequency bar and one button per action (frequency and
+    combos). At chance nodes the strip becomes a card picker, and the matrix keeps showing the
+    last decision.
+  - the 13×13 matrix. **Bar height is the hand's weight in the acting player's range at the node**
+    (not normalized, so rarely reached hands show short bars), split by action frequency.
+    Strategy, Range and EV modes; OOP/IP for the latter two.
+  - side panel: per-combo strategy and EV for the hovered or pinned hand, node and range-EV
+    summary, both players' ranges.
+
+  Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`)
+  links to the current node and view.
+- **Open / Save:** `dump_tree` (full / no rivers / flop only) and lazy `load_tree`. Browsing a
   truncated save re-solves missing streets on demand, as in Pio.
 
 `python3 viewer/test_server.py ./solver` runs the viewer's integration tests (a small tree,

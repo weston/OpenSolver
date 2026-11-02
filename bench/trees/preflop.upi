@@ -1,0 +1,10 @@
+# Preflop tree (no flop subsets attached): SB is IP and acts first, set_pot <bb> <sb> 0.
+# Uses add_preflop_line / build_preflop_tree, which bench/run.py detects.
+set_range OOP 22+,A2s+,K9s+,Q9s+,J9s+,T9s,ATo+,KJo+
+set_range IP 22+,A2s+,K5s+,Q8s+,J8s+,T8s+,97s+,87s,76s,A2o+,K9o+,QTo+,JTo
+set_pot 10 5 0
+set_eff_stack 1000
+add_preflop_line 25 100 220
+add_preflop_line 25 100 1000
+add_preflop_line 25 25
+add_preflop_line 25 100 100

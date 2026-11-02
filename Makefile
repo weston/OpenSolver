@@ -63,7 +63,10 @@ build/win/%.o: src/%.cpp $(wildcard src/*.hpp)
 windows: $(WIN_OBJ)
 	$(WIN_CXX) -std=c++20 -O3 $(WIN_ARCH) -static $^ -o build/win/solver.exe $(if $(ZLIB_DIR),-L$(ZLIB_DIR)) -lz
 
+bench: solver
+	python3 bench/run.py --out bench/results
+
 clean:
 	rm -rf build solver
 
-.PHONY: all test test-big windows clean
+.PHONY: all test test-big windows bench clean

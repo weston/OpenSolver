@@ -1,0 +1,16 @@
+# Single-raised flop pot with four sizes on the flop: the widest branching factor here,
+# so it stresses tree traversal and storage rather than terminal evaluation.
+set_range OOP 22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o
+set_range IP 22+,A2s+,K5s+,Q8s+,J8s+,T7s+,97s+,86s+,76s,65s,A8o+,KTo+,QTo+,JTo
+set_board Qs8d7s
+set_pot 0 0 60
+set_eff_stack 940
+add_line 0 15 15 45 45 135
+add_line 0 30 30 90 90 270
+add_line 0 45 45 135 135 405
+add_line 0 60 60 180 180 540
+add_line 15 45 45 135 135 940
+add_line 30 90 90 270 270 940
+add_line 45 135 135 405
+add_line 60 180 180 540
+add_line 0 0 30 30 90

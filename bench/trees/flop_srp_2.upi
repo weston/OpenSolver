@@ -1,0 +1,12 @@
+# Single-raised flop pot, two bet sizes per street. The common shape, and the tree the
+# single-thread comparison in #6 used.
+set_range OOP 22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o
+set_range IP 22+,A2s+,K5s+,Q8s+,J8s+,T7s+,97s+,86s+,76s,65s,A8o+,KTo+,QTo+,JTo
+set_board Qs8d7s
+set_pot 0 0 60
+set_eff_stack 940
+add_line 0 20 20 60 60 160
+add_line 20 60 60 160 160 940
+add_line 0 40 40 120 120 940
+add_line 0 0 40 40 120
+add_line 20 20 20 60

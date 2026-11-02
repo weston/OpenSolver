@@ -132,6 +132,7 @@ UPI probe matches the macOS build up to floating-point rounding).
 | Node types | `ROOT`, `OOP_DEC`, `IP_DEC`, `SPLIT_NODE`, `END_NODE`. All-ins before the river are `END_NODE`s whose value averages over every runout (no chance nodes), exactly like Pio. |
 | Children order | Bets/raises largest first, then check/call, then fold; dealt cards from `As` down to `2c`. `show_all_lines` walks the reverse order with `?` card markers. |
 | EVs | Chips relative to the tree start: payoff = share of the final pot - own chips invested in the tree, so `EV OOP + EV IP = starting pot`. `calc_ev` matchups are weighted by the hand's own reach (Pio semantics); out-of-range hands print `nan`/`inf`. |
+| Hands of either range | By default each player's hand list is their own range. `set_union_hands on` (before `build_tree`) makes it the union of both, like Pio: a hand only in the opponent's range gets a slot with reach 0, so `calc_ev` reports the **sign** of its counterfactual value (`inf`/`-inf` rather than a bare `inf`) and `calc_ev_pp`/`show_strategy_pp` list it. The equilibrium is unchanged; vectors get wider (about +23% solve time on `bench_flop`), which is why it is off by default. |
 | SOLVER output | `SOLVER: started`, periodic `SOLVER:` blocks (running time, EVs, MES, `Exploitable for`) ending in END, and `SOLVER: stopped (<reason>)`. Command responses never interleave with these. |
 | Isomorphism | Querying a non-canonical card (e.g. `7s` when it mirrors `7d`) returns the suit-swapped strategy; node IDs keep the card you asked for. |
 
@@ -143,7 +144,7 @@ UPI probe matches the macOS build up to floating-point rounding).
 show_settings, bench, load_script, load_script_silent, skip_if_done, LABEL:, echo, repeat,
 show_hand_order, show_preflop_order, go, stop, wait_for_solver, take_a_break, solver_time,
 set_threads, set_info_freq, set_accuracy, set_recalc_accuracy, set_always_recalc (stored),
-set_isomorphism, change_step / show_step (stored), show_iters, set_first_iteration_player,
+set_isomorphism, set_union_hands, change_step / show_step (stored), show_iters, set_first_iteration_player,
 set_range, set_eff_stack, set_board, set_pot, add_line, remove_line, force_line, clear_lines,
 build_tree, list_algorithms, set_algorithm, ignore_mem_check, small_strats,
 estimate_schematic_tree, show_memory, is_tree_present, show_node, show_children,

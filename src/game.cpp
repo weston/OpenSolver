@@ -332,7 +332,11 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
     local[p].assign(NUM_COMBOS, -1);
     for (int ci = 0; ci < NUM_COMBOS; ++ci) {
       float w = cfg.range[p][ci];
-      if (!(w > 0.0f) || (combo_mask(ci) & bm)) continue;
+      // With union_hands, a hand only in the opponent's range is kept with reach 0: it
+      // contributes nothing to anyone's values but gains a slot, so queries can report a
+      // counterfactual value for it instead of a bare inf.
+      bool keep = w > 0.0f || (cfg.union_hands && cfg.range[1 - p][ci] > 0.0f);
+      if (!keep || (combo_mask(ci) & bm)) continue;
       local[p][ci] = static_cast<int32_t>(hands[p].size());
       hands[p].push_back(static_cast<uint16_t>(ci));
       init_reach[p].push_back(w);

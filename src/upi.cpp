@@ -626,6 +626,13 @@ void Upi::register_commands() {
     cfg_.iso_turn = a.size() > 1 ? arg_int(a, 1, "turn") != 0 : false;
     return std::string("set_isomorphism ok!");
   };
+  // Not a Pio command: Pio always tracks the union. Opt-in here because the wider vectors
+  // cost time and memory, and it has to be set before build_tree to take effect.
+  H["set_union_hands"] = [this](const Args& a) {
+    if (a.empty() || (a[0] != "on" && a[0] != "off")) throw CmdError{"incorrect or missing argument"};
+    cfg_.union_hands = a[0] == "on";
+    return std::string("set_union_hands ok!");
+  };
   H["change_step"] = [this](const Args& a) {
     step_ = arg_double(a, 0, "step");
     return std::string("change_step ok!");

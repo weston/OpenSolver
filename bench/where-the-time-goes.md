@@ -70,6 +70,33 @@ This path is close to its CPU ceiling, and the reasons are all measured rather t
    (#52, `dcfr_sweep.md`). γ=5 is faster still in total but regresses a low-SPR 3-bet pot at tight
    targets, so it is available via `set_dcfr` rather than default.
 
+## Check the defaults before optimising the code
+
+Every performance win found so far came from a feature that was **switched off, mis-defaulted, or
+measured under stale conditions** - not from making a hot loop faster. That is worth treating as the
+first place to look.
+
+| change | win | why it was hidden |
+|---|---|---|
+| #111 | -42% preflop at 20 threads | inner `parallel_for` dispatch too fine to amortise; work is bounded by `NUM_COMBOS^2` |
+| #137 | -26% on turn trees | `iso_turn` off to match Pio's `set_isomorphism 1 0` |
+| #131 | -8.5% `flop_srp_4` | `prune_period` 32 activated pruning at t=64; trees reach target by t=45-100, so it never ran |
+| #134 | -9 to -14% available | `set_avg_delay 32`; #80's sweep predated the alpha/gamma retune and the pruning fix |
+| #86 | -13% `deep` | (not hidden - confirmed independently at 180 iterations) |
+
+Two lessons that generalise:
+
+- **A feature with an activation precondition must state it where a benchmarker will trip over it.**
+  Pruning's `t > 2 * prune_period` rule is in a comment, which is the only reason I noticed my first
+  two measurements of it had run below the threshold and were measuring it switched off.
+- **Re-sweep a knob after anything else changes.** `avg_delay` was swept and rejected in #80, then
+  found worth 9-14% once alpha/gamma (#72) and pruning (#131) had moved where the time goes.
+
+Defaults checked and found correct: `small_strats auto` (picks float32 here, avoiding the 14% that
+forcing 16-bit costs), `alpha 1.3 / gamma 4` (survives a joint sweep plus a tight-target check),
+`prune_period 8` after #131. `recalc_accuracy` / `always_recalc` are stored-only Pio stubs and do
+nothing.
+
 ## Things measured and ruled out
 
 Recorded so they are not re-attempted:
@@ -82,3 +109,12 @@ Recorded so they are not re-attempted:
   A tree's *share* of runtime is not its *amount*. (#57, #82)
 - **Forcing the one cost-model-blocked loop** in `average_strategy` works and is bit-identical, and
   gives +0.31% against sd 0.33% — one sigma, indistinguishable from zero. (#54)
+- **Forcing the two `cs[]` gather loops** in `showdown_board` (post-#94 they are cost-model declined
+  rather than dependence-blocked) vectorises them at width 4 and is **1.0% slower**, sd 0.09%. The
+  cost model is right: a synthesised width-4 gather costs more than the scalar loop. (#89)
+- **Sampling the strategy average** (accumulate every k-th iteration) instead of truncating a prefix
+  is catastrophic: k=8 needs 970 iterations against 75. The sum is weighted per iteration by
+  `(t/(t+1))^gamma`, so dropping iterations from the middle destroys the weighting. **The average
+  tolerates truncation but not decimation.** (#135)
+- **An adaptive `min(avg_delay, t/4)`** is a no-op: it compares `t` against a fraction of itself, so
+  it is true for every `t >= 1` and never skips anything. (#135)

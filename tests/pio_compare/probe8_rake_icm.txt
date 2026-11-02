@@ -1,0 +1,61 @@
+# Probe 8 (issue #13): rake and ICM payoffs.
+set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s
+set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s
+set_board KhQs7d4c2s
+set_pot 0 0 100
+set_eff_stack 200
+add_line 75 200
+add_line 0 75 200
+add_line 0 50
+build_tree
+set_rake 0.05 3
+show_win_evs OOP r:0:c:c
+show_win_evs IP r:0:c:c
+show_win_evs OOP r:0:b75:c
+show_win_evs OOP r:0:b75:f
+show_win_evs IP r:0:b75:f
+show_win_evs OOP r:0:b75:b200:c
+show_win_evs IP r:0:b75:b200:f
+calc_results
+set_rake 0.1 1000
+show_win_evs OOP r:0:c:c
+show_win_evs OOP r:0:b75:c
+show_win_evs IP r:0:b75:f
+show_win_evs OOP r:0:b75:b200:c
+calc_results
+set_info_freq 1000
+go 300 steps
+wait_for_solver
+calc_results
+set_rake 0 0
+set_icm_point OOP 0 0
+set_icm_point OOP 200 40
+set_icm_point OOP 300 55
+set_icm_point OOP 400 66
+set_icm_point OOP 500 74
+set_icm_point IP 0 0
+set_icm_point IP 300 52
+set_icm_point IP 400 63
+set_icm_point IP 500 72
+set_icm_point IP 100 20
+set_icm 200 300
+show_win_evs OOP r:0:c:c
+show_win_evs IP r:0:c:c
+show_win_evs OOP r:0:b75:c
+show_win_evs IP r:0:b75:c
+show_win_evs OOP r:0:b75:f
+show_win_evs IP r:0:b75:f
+show_win_evs OOP r:0:b75:b200:c
+show_win_evs IP r:0:b75:b200:c
+calc_results
+go 300 steps
+wait_for_solver
+calc_results
+set_rake 0.05 3
+show_win_evs OOP r:0:b75:b200:c
+calc_results
+reset_icm_tables
+show_win_evs OOP r:0:b75:b200:c
+calc_results
+set_rake 0 0
+set_icm 200 300

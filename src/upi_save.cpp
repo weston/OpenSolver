@@ -475,6 +475,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   tree_info_ = lc.info;
   solve_seconds_ = lc.secs;
   iterations_ = lc.iters;
+  discount_restart_ = 0;
   cfg_ = lc.cfg;
   payoff_ = lc.pm;
   if (lc.cfg.preflop) {

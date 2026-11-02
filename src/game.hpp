@@ -57,8 +57,13 @@ struct GameConfig {
   // iso_turn is off to match Pio's `set_isomorphism 1 0`, not because it does not pay: it
   // applies when the tree's ROOT board is 4 cards (see game.cpp, `bl == 4 && cfg.iso_turn`),
   // and on bench/trees/turn.upi (Kh9h4h2c) it collapses 1603 nodes to 1174 (-27%) and the
-  // solve from 0.753 s to 0.553 s (-26.5%, sd 0.8%) with EV and exploitability bit-identical.
-  // Worth `set_isomorphism 1 1` for any turn-rooted solve where Pio parity does not matter.
+  // solve from 0.753 s to 0.553 s (-26.5%, sd 0.8%).
+  //
+  // EV (55.111) and exploitability (0.121) match, but the solved STRATEGIES do not: per-hand
+  // frequencies differ by up to 0.008, because collapsing branches aggregates the CFR updates
+  // over equivalent runouts and so follows a different trajectory to the same equilibrium.
+  // So this is not a free switch - a client diffing frequencies against Pio will see the
+  // difference. Worth `set_isomorphism 1 1` for a turn-rooted solve where that does not matter.
   bool iso_flop = true, iso_turn = false;
   // Keep each player's hand list as the union of both ranges, like Pio, so hands only in
   // the opponent's range still get a slot (and therefore a counterfactual value) instead

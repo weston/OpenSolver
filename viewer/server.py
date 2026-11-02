@@ -458,6 +458,82 @@ def no_newlines(value, name):
     return value
 
 
+def _check_sizes(tb, b, key, allow_mult=True):
+    """A comma-separated size list in tools/tree_builder.py's grammar (#114): percentages,
+    geometric Ne, raise multiples Nx (raise fields only), a. Returns the normalized list."""
+    val = no_newlines(str(b.get(key, "") if b.get(key) is not None else ""), key).strip()
+    if not val:
+        return ""
+    parts = [p.strip() for p in val.split(",") if p.strip()]
+    try:
+        specs = tb.parse_size_list(val)
+    except ValueError:
+        raise SolverError(f"bad sizes in {key} "
+                          "(want percentages, geometric Ne, raise multiples Nx, or a)")
+    if len(specs) != len(parts):
+        raise SolverError(f"bad sizes in {key}")
+    for spec in specs:
+        if spec.kind == "mult":
+            if not allow_mult or spec.value > 1000:
+                raise SolverError(f"bad sizes in {key} (Nx is for raise fields, N <= 1000)")
+        elif spec.kind == "geo":
+            if spec.value is not None and spec.value > 99:
+                raise SolverError(f"bad sizes in {key} (Ne takes N <= 99)")
+        elif spec.kind == "pct" and spec.value > 100000:
+            raise SolverError(f"bad sizes in {key}")
+    return ",".join(parts)
+
+
+def _raise_cap(b, key):
+    val = b.get(key)
+    if val is None or val == "":
+        return None
+    try:
+        cap = int(val)
+        if cap < 0 or cap > 99:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise SolverError(f"bad {key} (want a non-negative integer)")
+    return cap
+
+
+def sizing_header(b, tb):
+    """Sizing fields of a request body -> tree builder #Key#Value lines (all but pot/stack/board).
+
+    Per street: {street}_bet / _raise / _donk / _allin are OOP's sizes (donk is OOP-only), and
+    IP's too unless the body has IP's own {street}_bet_ip / _raise_ip / _allin_ip (#141; an
+    empty IP value means IP has no sizes there). {street}_raisecap caps both players.
+    """
+    try:
+        allin_threshold = float(b.get("allin_threshold", 67))
+        add_allin_limit = float(b.get("add_allin_limit", 300))
+    except (TypeError, ValueError):
+        raise SolverError("bad all-in numbers")
+    header = [f"#AllinThreshold#{allin_threshold:g}",
+              f"#AddAllinOnlyIfLessThanThisTimesThePot#{add_allin_limit:g}"]
+    for street, name in (("flop", "Flop"), ("turn", "Turn"), ("river", "River")):
+        cap = _raise_cap(b, f"{street}_raisecap")
+        for player, sfx in (("", ""), ("IP", "_ip")):
+            def key(k):
+                own = f"{street}_{k}{sfx}"
+                return own if sfx and own in b else f"{street}_{k}"
+            bet = _check_sizes(tb, b, key("bet"), allow_mult=False)
+            rais = _check_sizes(tb, b, key("raise"))
+            if bet:
+                header.append(f"#{name}Config{player}.BetSize#{bet}")
+            if rais:
+                header.append(f"#{name}Config{player}.RaiseSize#{rais}")
+            if not player:
+                donk = _check_sizes(tb, b, f"{street}_donk", allow_mult=False)
+                if donk:
+                    header.append(f"#{name}Config.DonkBetSize#{donk}")
+            if bool(b.get(key("allin"))):
+                header.append(f"#{name}Config{player}.AddAllin#True")
+            if cap is not None:
+                header.append(f"#{name}Config{player}.RaiseCap#{cap}")
+    return header
+
+
 def op_generate(solver, b):
     """PioViewer-style bet sizes -> add_lines via tools/tree_builder.py, then configure the solver."""
     range_oop = no_newlines(str(b.get("range_oop", "")).strip(), "range_oop")
@@ -476,67 +552,10 @@ def op_generate(solver, b):
         raise SolverError("bad pot/stack/all-in numbers")
 
     tb = load_tree_builder()
-
-    def sizes(key, allow_mult=True):
-        val = no_newlines(str(b.get(key, "")), key).strip()
-        if not val:
-            return ""
-        parts = [p.strip() for p in val.split(",") if p.strip()]
-        try:
-            specs = tb.parse_size_list(val)
-        except ValueError:
-            raise SolverError(f"bad sizes in {key} "
-                              "(want percentages, geometric Ne, raise multiples Nx, or a)")
-        if len(specs) != len(parts):
-            raise SolverError(f"bad sizes in {key}")
-        for spec in specs:
-            if spec.kind == "mult":
-                if not allow_mult or spec.value > 1000:
-                    raise SolverError(f"bad sizes in {key} (Nx is for raise fields, N <= 1000)")
-            elif spec.kind == "geo":
-                if spec.value is not None and spec.value > 99:
-                    raise SolverError(f"bad sizes in {key} (Ne takes N <= 99)")
-            elif spec.kind == "pct" and spec.value > 100000:
-                raise SolverError(f"bad sizes in {key}")
-        return ",".join(parts)
-
-    def raise_cap(key):
-        val = b.get(key)
-        if val is None or val == "":
-            return None
-        try:
-            cap = int(val)
-            if cap < 0 or cap > 99:
-                raise ValueError
-        except (TypeError, ValueError):
-            raise SolverError(f"bad {key} (want a non-negative integer)")
-        return cap
-
-    header = [
-        f"#Pot#{pot}",
-        f"#EffectiveStacks#{stack}",
-        f"#AllinThreshold#{allin_threshold:g}",
-        f"#AddAllinOnlyIfLessThanThisTimesThePot#{add_allin_limit:g}",
-    ]
+    header = [f"#Pot#{pot}", f"#EffectiveStacks#{stack}"]
     if board:
         header.append(f"#Board#{board}")
-    for street, name in (("flop", "Flop"), ("turn", "Turn"), ("river", "River")):
-        bet = sizes(f"{street}_bet", allow_mult=False)
-        rais = sizes(f"{street}_raise")
-        donk = sizes(f"{street}_donk", allow_mult=False)
-        allin = bool(b.get(f"{street}_allin"))
-        cap = raise_cap(f"{street}_raisecap")
-        for player in ("", "IP"):
-            if bet:
-                header.append(f"#{name}Config{player}.BetSize#{bet}")
-            if rais:
-                header.append(f"#{name}Config{player}.RaiseSize#{rais}")
-            if not player and donk:
-                header.append(f"#{name}Config.DonkBetSize#{donk}")
-            if allin:
-                header.append(f"#{name}Config{player}.AddAllin#True")
-            if cap is not None:
-                header.append(f"#{name}Config{player}.RaiseCap#{cap}")
+    header += sizing_header(b, tb)
 
     try:
         cfg = tb.parse_config("\n".join(header))

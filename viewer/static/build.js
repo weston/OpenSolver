@@ -6,6 +6,7 @@ import { parseRange, formatRange, rangeStats } from "./ranges.js";
 import { get, post, toast, fail, prefs, fmt, fmtChips } from "./api.js";
 import { drawChart } from "./chart.js";
 import { openLibrary } from "./library.js";
+import { STREETS, renderSizes, readSizes, validateSizes as validateSizeTable } from "./sizes.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -179,7 +180,7 @@ function buildDeck() {
     const b = el("button");
     b.dataset.card = card;
     b.style.background = `var(--suit-${s})`;
-    b.append(el("span", null, r === "T" ? "10" : r), el("small", null, GLYPH[s]));
+    b.append(el("span", null, r), el("small", null, GLYPH[s]));
     b.title = card;
     b.onclick = () => {
       const i = board.indexOf(card);
@@ -195,7 +196,7 @@ function boardChanged() { drawBoard(); saveForm(); }
 
 /* ------------------------------------------------------------------ form */
 
-function sizeRows() { return [...document.querySelectorAll(".sizes tbody tr")]; }
+const sizesBody = () => $("sizes-body");
 
 function readForm() {
   const f = {
@@ -203,13 +204,7 @@ function readForm() {
     pot: Number($("f-pot").value), stack: Number($("f-stack").value),
     allin_threshold: Number($("f-allin-threshold").value), add_allin_limit: Number($("f-allin-limit").value),
   };
-  for (const tr of sizeRows()) {
-    const st = tr.dataset.street;
-    for (const inp of tr.querySelectorAll("input")) {
-      f[`${st}_${inp.dataset.k}`] = inp.type === "checkbox" ? inp.checked : inp.value.replace(/\s+/g, "");
-    }
-  }
-  return f;
+  return Object.assign(f, readSizes(sizesBody()));
 }
 
 function saveForm() {
@@ -237,14 +232,8 @@ function applyForm(f) {
     const set = (id, v) => { if (v != null && Number.isFinite(v)) $(id).value = v; };
     set("f-pot", f.pot); set("f-stack", f.stack);
     set("f-allin-threshold", f.allin_threshold); set("f-allin-limit", f.add_allin_limit);
-    for (const tr of sizeRows()) {
-      for (const inp of tr.querySelectorAll("input")) {
-        const v = f[`${tr.dataset.street}_${inp.dataset.k}`];
-        if (v == null) continue;
-        if (inp.type === "checkbox") inp.checked = !!v; else inp.value = String(v).replace(/,/g, ", ");
-      }
-    }
   }
+  renderSizes(sizesBody(), STREETS, f || {});
   drawBoard();
   updateSpr();
 }
@@ -254,22 +243,7 @@ function updateSpr() {
   $("f-spr").textContent = p > 0 && s > 0 ? (s / p).toFixed(2) : "—";
 }
 
-// tools/tree_builder.py syntax (#114): % of pot, Ne (geometric over N streets, "e" = all
-// remaining), Nx (raise to N x the bet faced; raise fields only), a (all-in).
-// No zero sizes: the server rejects 0, 0e and 0x (review of #127).
-const SIZE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|a)$/i;
-const RAISE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|[1-9]\d*(\.\d+)?x|a)$/i;
-function validateSizes() {
-  let ok = true;
-  for (const inp of document.querySelectorAll(".sizes input:not([type=checkbox]):not(.cap)")) {
-    const re = inp.dataset.k === "raise" ? RAISE_RE : SIZE_RE;
-    const parts = inp.value.split(",").map((x) => x.trim()).filter(Boolean);
-    const bad = parts.some((p) => !re.test(p));
-    inp.classList.toggle("invalid", bad);
-    if (bad) ok = false;
-  }
-  return ok;
-}
+function validateSizes() { return validateSizeTable(sizesBody()); }
 
 const sig = (f) => JSON.stringify(f);
 
@@ -319,10 +293,12 @@ function markDirty() {
 /* ------------------------------------------------------------------ build & solve */
 
 let busy = false;
+let treeReady = false, rootPotNow = 0;
 function setBusy(b, label) {
   busy = b;
   $("btn-build").disabled = b;
   $("btn-solve").disabled = b;
+  $("btn-resume").disabled = b || !treeReady;
   if (label) info(label);
 }
 function info(html, err = false) { $("build-info").innerHTML = err ? `<span class="err">${html}</span>` : html; }
@@ -344,6 +320,7 @@ async function build() {
     info(`${g.lines} lines${est ? ` · about ${est}` : ""} — building…`);
     const b = await post("/api/build");
     builtSig = sig(f);
+    treeReady = true;
     const total = /TOTAL\D*(\d+)/.exec(b.node_count);
     info(`Built: ${total ? Number(total[1]).toLocaleString() + " nodes" : "ok"}${est ? ` · ${est}` : ""}`);
     markDirty();
@@ -355,9 +332,9 @@ async function build() {
   } finally { setBusy(false); }
 }
 
+/** Solve the tree that is in the solver now; a stopped solve continues where it left off. */
 async function solve() {
-  if (builtSig !== sig(readForm())) { if (!(await build())) return; }
-  const pot = Number($("f-pot").value);
+  const pot = rootPotNow || Number($("f-pot").value);
   const pct = Number($("f-accuracy").value);
   try {
     await post("/api/solve", { accuracy: (pct / 100) * pot });
@@ -365,12 +342,23 @@ async function solve() {
   } catch (e) { fail(e); }
 }
 
+/** Always rebuild from the form (a fresh tree), then solve it. */
+async function buildAndSolve() {
+  if (!(await build())) return;
+  rootPotNow = Number($("f-pot").value);
+  await solve();
+}
+
 /* ------------------------------------------------------------------ live progress */
 
 export function updateProgress(st, series, rootPot) {
   const solving = st && st.solving;
+  treeReady = !!(st && st.tree);
+  if (rootPot) rootPotNow = rootPot;
   $("btn-stop").classList.toggle("hidden", !solving);
   $("btn-solve").classList.toggle("hidden", !!solving);
+  $("btn-resume").classList.toggle("hidden", !!solving);
+  $("btn-resume").disabled = busy || !treeReady;
   const pot = rootPot || Number($("f-pot").value) || 1;
   drawChart($("chart"), series, pot, Number($("f-accuracy").value));
   const last = series && series.length ? series[series.length - 1] : null;
@@ -412,7 +400,7 @@ export function initBuild({ built }) {
     while (board.length < 3) { const c = deck[Math.floor(Math.random() * deck.length)]; if (!board.includes(c)) board.push(c); }
     boardChanged();
   };
-  document.querySelectorAll(".tree-form input").forEach((i) => i.addEventListener("input", () => { validateSizes(); saveForm(); }));
+  document.querySelector(".tree-form").addEventListener("input", () => { validateSizes(); saveForm(); });
   $("f-accuracy").addEventListener("input", () => { prefs.set("accuracy", $("f-accuracy").value); markSpot(); });
   const acc = prefs.get("accuracy", null);
   if (acc) $("f-accuracy").value = acc;
@@ -420,7 +408,8 @@ export function initBuild({ built }) {
   $("spot-open").onclick = openSpot;
   $("spot-save").onclick = saveSpot;
   $("btn-build").onclick = () => { if (!busy) build(); };
-  $("btn-solve").onclick = () => { if (!busy) solve(); };
+  $("btn-solve").onclick = () => { if (!busy) buildAndSolve(); };
+  $("btn-resume").onclick = () => { if (!busy && treeReady) solve(); };
   $("btn-stop").onclick = async () => { try { await post("/api/stop"); } catch (e) { fail(e); } };
   loadForm();
   validateSizes();

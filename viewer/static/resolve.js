@@ -5,11 +5,9 @@
 import { el, cardEl, parseCards } from "./cards.js";
 import { get, post, toast, fail, prefs, fmt, fmtChips } from "./api.js";
 import { enterSubgame } from "./study.js";
+import { STREETS, renderSizes, readSizes, validateSizes, SIZE_RE, RAISE_RE } from "./sizes.js";
 
 const $ = (id) => document.getElementById(id);
-const STREETS = ["flop", "turn", "river"];
-const SIZE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|a)$/i;
-const RAISE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|[1-9]\d*(\.\d+)?x|a)$/i;
 
 const R = { id: null, ctx: null, tab: "edit", timer: null, kind: null };
 
@@ -30,35 +28,8 @@ function drawContext(ctx) {
 
 function drawRows(ctx) {
   const saved = prefs.get("build", {}) || {};
-  const tb = $("rs-rows");
-  tb.textContent = "";
   const first = STREETS.indexOf(ctx.street);
-  for (const st of STREETS.slice(first)) {
-    const tr = el("tr");
-    tr.dataset.street = st;
-    tr.appendChild(el("th", null, st[0].toUpperCase() + st.slice(1)));
-    for (const k of ["bet", "raise", "donk", "raisecap"]) {
-      const td = el("td");
-      const inp = el("input");
-      inp.dataset.k = k;
-      if (k === "raisecap") { inp.type = "number"; inp.min = 0; inp.max = 99; inp.placeholder = "∞"; inp.className = "cap"; }
-      if (k === "donk") inp.placeholder = "none";
-      const v = saved[`${st}_${k}`];
-      inp.value = v == null ? (k === "bet" ? "33, 75" : k === "raise" ? "50" : "") : String(v).replace(/,/g, ", ");
-      inp.addEventListener("input", validate);
-      td.appendChild(inp);
-      tr.appendChild(td);
-    }
-    const td = el("td");
-    const sw = el("label", "switch");
-    const cb = el("input");
-    cb.type = "checkbox"; cb.dataset.k = "allin";
-    cb.checked = saved[`${st}_allin`] != null ? !!saved[`${st}_allin`] : st === "river";
-    sw.append(cb, el("span"));
-    td.appendChild(sw);
-    tr.appendChild(td);
-    tb.appendChild(tr);
-  }
+  renderSizes($("rs-rows"), STREETS.slice(first), saved);
   const sel = $("rs-street");
   sel.textContent = "";
   for (const st of STREETS.slice(first)) {
@@ -69,16 +40,11 @@ function drawRows(ctx) {
 }
 
 function validate() {
-  let ok = true;
-  for (const inp of document.querySelectorAll("#rs-rows input:not([type=checkbox]):not(.cap)")) {
-    const re = inp.dataset.k === "raise" ? RAISE_RE : SIZE_RE;
-    const bad = inp.value.split(",").map((x) => x.trim()).filter(Boolean).some((p) => !re.test(p));
-    inp.classList.toggle("invalid", bad);
-    if (bad) ok = false;
-  }
+  const ok = validateSizes($("rs-rows"));
   const cand = $("rs-candidates");
   const raising = candidatesAreRaises();
-  $("rs-cand-label").textContent = raising ? "Candidate raise sizes" : "Candidate bet sizes";
+  const who = R.ctx ? R.ctx.actor : "";
+  $("rs-cand-label").textContent = `Candidate ${raising ? "raise" : "bet"} sizes for ${who}`;
   const cre = raising ? RAISE_RE : SIZE_RE;
   const cbad = cand.value.split(",").map((x) => x.trim()).filter(Boolean).some((p) => !cre.test(p));
   cand.classList.toggle("invalid", cbad);
@@ -98,12 +64,7 @@ function body() {
     allin_threshold: saved.allin_threshold ?? 67,
     add_allin_limit: saved.add_allin_limit ?? 300,
   };
-  for (const tr of document.querySelectorAll("#rs-rows tr")) {
-    for (const inp of tr.querySelectorAll("input")) {
-      b[`${tr.dataset.street}_${inp.dataset.k}`] = inp.type === "checkbox" ? inp.checked : inp.value.replace(/\s+/g, "");
-    }
-  }
-  return b;
+  return Object.assign(b, readSizes($("rs-rows")));
 }
 
 /* ------------------------------------------------------------------ run + progress */
@@ -128,8 +89,14 @@ async function go() {
   } catch (e) { fail(e); }
 }
 
+/** Largest first (owner, #141). Percentages by value; geometric/multiple/all-in after them. */
+function largestFirst(sizes) {
+  const key = (s) => (/^a$/i.test(s) ? 1e9 : /x$/i.test(s) ? 1e6 + parseFloat(s) : /e$/i.test(s) ? 1e3 - (parseFloat(s) || 0) : parseFloat(s));
+  return [...sizes].sort((a, b) => key(b) - key(a));
+}
+
 function sizeChips(sizes) {
-  return sizes.map((s) => `<span class="chip">${/^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s}</span>`).join("");
+  return largestFirst(sizes).map((s) => `<span class="chip">${/^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s}</span>`).join("");
 }
 
 async function poll() {
@@ -192,7 +159,7 @@ async function poll() {
 function browse() {
   const r = R.result;
   if (!r) return;
-  const label = R.best ? R.best.sizes.map((s) => (/^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s)).join(" · ") : "edited sizes";
+  const label = R.best ? largestFirst(R.best.sizes).map((s) => (/^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s)).join(" · ") : "edited sizes";
   $("resolve-dialog").close();
   enterSubgame({ origin: R.id, root: r.subgame_root, label });
 }
@@ -236,6 +203,7 @@ export function initResolve() {
   });
   $("rs-candidates").addEventListener("input", validate);
   $("rs-street").addEventListener("change", validate);
+  $("rs-rows").addEventListener("input", validate);
   $("rs-go").onclick = go;
   $("rs-browse").onclick = browse;
   $("rs-close").onclick = () => $("resolve-dialog").close();

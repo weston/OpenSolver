@@ -162,6 +162,17 @@ class SizeFormsTest(unittest.TestCase):
         lines = _lines(_ctx("OOP", "river", 4, 4, 20, 100), {"river_bet": "2e"})
         self.assertEqual(set(map(tuple, lines)), {(29,), (4, 29)})
 
+    def test_search_override_changes_only_the_actor(self):
+        # #141: candidates replace the acting player's sizes; the opponent keeps its own,
+        # including sizes it only inherited from OOP's field
+        ctx = _ctx("OOP", "river", 4, 4, 20, 100)
+        cfg, _ = vresolve.build_config(tb, ctx, {"river_bet": "50"}, (2, "100"))
+        self.assertEqual([s.value for s in cfg.streets[2][tb.OOP].bet], [100])
+        self.assertEqual([s.value for s in cfg.streets[2][tb.IP].bet], [50])
+        ctx = _ctx("IP", "river", 4, 4, 20, 100)
+        cfg, _ = vresolve.build_config(tb, ctx, {"river_bet": "50", "river_bet_ip": "33"}, (2, "75"))
+        self.assertEqual([s.value for s in cfg.streets[2][tb.IP].bet], [75])
+
     def test_raise_cap_passthrough(self):
         # without a cap the re-raise continues to the all-in; cap 1 stops at IP's raise
         lines = _lines(_ctx("IP", "river", 10, 0, 20, 100), {"river_raise": "50"})

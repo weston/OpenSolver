@@ -452,10 +452,19 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
 
 .tree-form { display: flex; flex-direction: column; gap: 16px; }
 .money { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
-.sizes { width: 100%; border-collapse: separate; border-spacing: 0 6px; }
+.sizes { width: 100%; border-collapse: separate; border-spacing: 0 5px; }
 .sizes th { text-align: left; font-weight: 600; font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; padding: 0 8px 0 0; }
 .sizes th small { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .sizes tbody th { font-size: 13px; color: var(--text); text-transform: none; letter-spacing: 0; width: 64px; }
+.sizes tbody th.street { vertical-align: middle; border-left: 3px solid var(--border-strong); padding-left: 10px; }
+.sizes tbody tr.p-oop td, .sizes tbody tr.p-oop th { padding-top: 10px; }
+.sizes tbody tr.p-oop:first-child td, .sizes tbody tr.p-oop:first-child th { padding-top: 0; }
+.sizes td.who { width: 88px; white-space: nowrap; }
+.sizes td.who .badge { display: inline-block; min-width: 34px; text-align: center; }
+.same-btn { margin-left: 6px; height: 20px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--border); background: transparent; color: var(--text-3); font-size: 10px; font-weight: 600; }
+.same-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.sizes .na { color: var(--text-3); padding-left: 10px; }
+.sizes td.cap-cell { vertical-align: middle; }
 .sizes td { padding-right: 10px; }
 .sizes td:last-child { width: 60px; padding-right: 0; }
 .sizes td:has(.cap) { width: 74px; }

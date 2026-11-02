@@ -1,3 +1,5 @@
+// SCRATCH: POSIX-only header, breaks the mingw cross-build but not macOS/Linux.
+#include <sys/mman.h>
 #include "cards.hpp"
 
 #include <algorithm>

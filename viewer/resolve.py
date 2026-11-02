@@ -100,19 +100,6 @@ def _config_header(b):
     return vsrv.sizing_header(b, _tree_builder())
 
 
-def _raise_cap(val, key):
-    """Optional per-street raise cap (min of the two players applies), like /api/generate."""
-    if val is None or val == "":
-        return None
-    try:
-        cap = int(val)
-        if cap < 0 or cap > 99:
-            raise ValueError
-    except (TypeError, ValueError):
-        raise vsrv.SolverError(f"bad {key} (want a non-negative integer)")
-    return cap
-
-
 def read_context(main, node_id, with_ranges=False):
     """Everything the subgame setup needs about node X of the main tree.
 

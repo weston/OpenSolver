@@ -265,9 +265,11 @@ def test_geometric_raises():
           "after a 2e raise is called, one more street of the same fraction gets it in")
 
     # Rounded cascade: raise to 137 called -> pot 374, 163 behind; `e` (2 streets)
-    # bets 69 more, then the river shove is exactly the last 94.
+    # bets 69 more, then the river shove is exactly the last 94. IP made the raise, so
+    # OOP leading the next street is a donk spot: since #152 the `e` sizes must be
+    # configured as DonkBetSize (an empty donk list means OOP cannot lead at all).
     cfg_e = tb.parse_config("#Pot#100\n#EffectiveStacks#300\n#AllinThreshold#100\n"
-                            "#TurnConfig.BetSize#e\n#RiverConfig.BetSize#e\n")
+                            "#TurnConfig.DonkBetSize#e\n#RiverConfig.DonkBetSize#e\n")
     turn = tb.Node(1, (137, 137), tb.OOP, False, tb.IP)
     check(tb._aggressive_totals(cfg_e, turn) == [206],
           "after the called raise, e turn bet totals 206 (69 more)")
@@ -413,6 +415,103 @@ def test_branch_ending_on_a_plain_bet():
     check(not bad, f"synthetic lines carry no prefix duplicates ({len(bad)})")
 
 
+def test_donk_leads_need_donk_sizes():
+    """#152 (owner's rule): after OOP called the previous street, OOP can lead the next
+    street only with sizes from DonkBetSize; an empty list means check only, and AddAllin
+    adds no all-in lead either. --pio-compat restores PioViewer's BetSize fallback.
+    """
+    base = ("#Pot#100\n#EffectiveStacks#400\n#AllinThreshold#100\n"
+            "#AddAllinOnlyIfLessThanThisTimesThePot#300\n"
+            "#FlopConfig.BetSize#50\n#FlopConfigIP.BetSize#50\n"
+            "#TurnConfig.BetSize#50\n#TurnConfigIP.BetSize#50\n"
+            "#RiverConfig.BetSize#50\n#RiverConfigIP.BetSize#50\n")
+    cfg = tb.parse_config(base)
+
+    # Flop check, IP bets 50, OOP calls: the turn opens with OOP in a donk spot (pot 200).
+    turn = tb.Node(1, (50, 50), tb.OOP, False, tb.IP)
+    check(tb._aggressive_totals(cfg, turn) == [],
+          "empty TurnConfig.DonkBetSize: OOP has no lead into the flop aggressor")
+    kids = tb._children(cfg, turn)
+    check(len(kids) == 1 and kids[0][0] == 50 and not kids[0][2]
+          and kids[0][1].to_act == tb.IP and kids[0][1].street == 1,
+          "empty TurnConfig.DonkBetSize: OOP's only action is the check")
+
+    # Donk sizes configured: exactly those, not the BetSize ones.
+    with_donk = tb.parse_config(base + "#TurnConfig.DonkBetSize#30\n")
+    check(tb._aggressive_totals(with_donk, turn) == [110],
+          "TurnConfig.DonkBetSize#30: the 30% donk (50 + 0.3 x 200) is the lead")
+
+    # River behaves the same way after a turn check-down.
+    river = tb.Node(2, (50, 50), tb.OOP, False, tb.IP)
+    check(tb._aggressive_totals(cfg, river) == [],
+          "empty RiverConfig.DonkBetSize: no lead after a checked-down turn either")
+    check(tb._aggressive_totals(tb.parse_config(base + "#RiverConfig.DonkBetSize#25\n"),
+                                river) == [100],
+          "RiverConfig.DonkBetSize#25: the 25% donk (50 + 0.25 x 200) is the lead")
+
+    # AddAllin does not sneak a lead back in: the gate passes here (300% of 200 > 400),
+    # but with no donk sizes the all-in must not be offered either.
+    allin = tb.parse_config(base + "#TurnConfig.AddAllin#True\n")
+    check(tb._aggressive_totals(allin, turn) == [],
+          "TurnConfig.AddAllin with an empty DonkBetSize still offers no lead")
+    allin_donk = tb.parse_config(base + "#TurnConfig.AddAllin#True\n"
+                                 "#TurnConfig.DonkBetSize#30\n")
+    check(tb._aggressive_totals(allin_donk, turn) == [110, 400],
+          "with donk sizes set, AddAllin adds the all-in on top of the donk")
+    aggr = tb.Node(1, (25, 25), tb.OOP, False, tb.OOP)  # OOP was the aggressor: no donk
+    check(tb._aggressive_totals(allin, aggr) == [100, 400],
+          "AddAllin still works for a normal (non-donk) lead")
+
+    # PioViewer compatibility: with pio_compat an empty donk list falls back to BetSize.
+    cfg_pio = tb.parse_config(base)
+    cfg_pio.pio_compat = True
+    check(tb._aggressive_totals(cfg_pio, turn) == [150],
+          "pio_compat: empty DonkBetSize falls back to the 50% BetSize (50 + 0.5 x 200)")
+    cfg_pio_donk = tb.parse_config(base + "#TurnConfig.DonkBetSize#30\n")
+    cfg_pio_donk.pio_compat = True
+    check(tb._aggressive_totals(cfg_pio_donk, turn) == [110],
+          "pio_compat: a configured DonkBetSize still wins over BetSize")
+
+    # IP keeps the old behavior: leading into OOP after OOP checked is not a donk bet and
+    # still uses BetSize (the PioViewer fixture's check-bet lines depend on this).
+    ip_lead = tb.Node(1, (25, 25), tb.IP, True, tb.OOP)
+    check(tb._aggressive_totals(cfg, ip_lead) == [100],
+          "IP betting after OOP's turn check still uses BetSize (25 + 0.5 x 150)")
+
+    # Line level: with no donk sizes no line leads the turn after check-bet-call;
+    # with a donk size, (0, 50, 50, 110) is a line.
+    check(not any(len(l) >= 4 and l[:3] == [0, 50, 50] and l[3] > 50
+                  for l in tb.build_lines(cfg)),
+          "no built line donks the turn when DonkBetSize is empty")
+    check(any(l[:4] == [0, 50, 50, 110] for l in tb.build_lines(with_donk)),
+          "the check-bet-call-donk line (0 50 50 110) exists when the donk is configured")
+
+
+def test_donk_pio_compat_cli():
+    """The --pio-compat flag toggles the expansion for CLI diffing against PioViewer."""
+    import contextlib
+    import io
+    import tempfile
+    base = ("#Pot#100\n#EffectiveStacks#400\n#AllinThreshold#100\n"
+            "#FlopConfig.BetSize#50\n#FlopConfigIP.BetSize#50\n"
+            "#TurnConfig.BetSize#50\n#TurnConfigIP.BetSize#50\n")
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+        fh.write(base)
+        path = fh.name
+    try:
+        def run(argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                tb.main(argv)
+            return buf.getvalue()
+        check("add_line 0 50 50 150" not in run([path]).splitlines(),
+              "CLI default: no turn donk line with an empty DonkBetSize")
+        check("add_line 0 50 50 150" in run([path, "--pio-compat"]).splitlines(),
+              "CLI --pio-compat: the turn donk line falls back to the 50% BetSize")
+    finally:
+        os.unlink(path)
+
+
 def test_full_script():
     text = fixture_text()
     cfg = tb.parse_config(text)
@@ -432,7 +531,9 @@ def main():
                test_sizing_arithmetic, test_add_allin_gate, test_parse_size_forms,
                test_geometric_bets_spr3, test_geometric_raises, test_raise_multiples,
                test_raise_cap, test_rounding_is_nearest,
-               test_branch_ending_on_a_plain_bet, test_full_script):
+               test_branch_ending_on_a_plain_bet,
+               test_donk_leads_need_donk_sizes, test_donk_pio_compat_cli,
+               test_full_script):
         print(fn.__name__)
         fn()
     print()

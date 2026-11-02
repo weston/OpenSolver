@@ -286,6 +286,30 @@ class ViewerTest(unittest.TestCase):
             self.assertEqual(d["node"]["board"].replace(" ", ""), board)
             self.assertTrue(any(c["id"].startswith(first_kid) for c in d["children"]), d["children"])
 
+    def test_10e_oop_needs_donk_sizes_to_lead(self):
+        # #152 (owner's rule): after OOP calls the flop bet, OOP can lead the turn only
+        # with turn donk sizes configured; an empty Donk column means check only.
+        # a deeper stack / threshold of 100 keeps the small sizes off the all-in
+        cfg = dict(CFG, stack=200, allin_threshold=100)
+        for body, turn_children in (
+                (cfg, None),                                  # no donk: check only
+                (dict(cfg, turn_donk="30"), [":b50", ":c"])):  # 24 + 30% of the 88 pot
+            st, d = self.req("/api/generate", "POST", body)
+            self.assertEqual(st, 200, d)
+            st, d = self.req("/api/build", "POST", {})
+            self.assertEqual(st, 200, d)
+            # flop: OOP checks, IP bets 24 (60% of 40), OOP calls -> the turn
+            st, d = self.req("/api/node?id=r:0:c:b24:c")
+            self.assertEqual(st, 200, d)
+            self.assertEqual(d["node"]["type"], "SPLIT_NODE")
+            turn = d["children"][0]["id"]
+            st, d = self.req("/api/node?id=" + urllib.parse.quote(turn))
+            self.assertEqual(st, 200, d)
+            self.assertEqual(d["node"]["type"], "OOP_DEC")
+            want = [turn + ":c"] if turn_children is None \
+                else [turn + suffix for suffix in turn_children]
+            self.assertEqual([c["id"] for c in d["children"]], want)
+
     def test_11_restart_solver(self):
         st, d = self.req("/api/restart", "POST", {})
         self.assertEqual(st, 200, d)

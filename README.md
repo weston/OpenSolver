@@ -73,6 +73,7 @@ python3 tools/tree_builder.py config.txt            # print the add_line command
 python3 tools/tree_builder.py config.txt --full     # a complete UPI script, ready to pipe in
 python3 tools/tree_builder.py config.txt --compare  # diff against add_lines already in the file
 python3 tools/tree_builder.py --rules               # print the sizing rules
+python3 tools/tree_builder.py config.txt --pio-compat   # PioViewer's donk fallback (below)
 ```
 
 The input is any file with PioViewer's `#Key#Value` header; everything else in the file is
@@ -137,6 +138,14 @@ Rounding is to the nearest chip. Two all-in rules sit on top:
   the all-in. On a 40-chip river pot, 300% is 120 and the stack is 230, so no all-in is offered;
   facing a 26 bet the pot-if-called is 92, 300% of it is 276, and the all-in joins the raise.
 
+**Donk rule (#152, differs from PioViewer).** When OOP leads into the previous street's
+aggressor (IP bet or raised and OOP called), only `DonkBetSize` sizes are offered. An empty
+donk list means exactly that - OOP cannot lead at all (check only), and `AddAllin` adds no
+all-in lead either. PioViewer instead falls back to `BetSize` for an empty donk list;
+`--pio-compat` reproduces that for diffing against PioViewer saves whose donk list is
+unset. IP is never in this spot postflop - after OOP checks, IP's bet still uses `BetSize`,
+as PioViewer's recorded lines confirm (the fixture below exercises exactly that).
+
 Only maximal lines are emitted: the solver fills in check, call and fold at every node it
 creates, so a line only has to reach the deepest bet of its branch.
 
@@ -144,10 +153,11 @@ These rules were inferred from `tests/data/pio_25bbHU_2sizes.txt`, which carries
 header and the 266 lines PioViewer generated from it; `tests/test_tree_builder.py` checks that
 the builder reproduces that set exactly. (The `Ne`/`Nx`/`a` size forms and `RaiseCap` are our
 own extensions, not something PioViewer writes; plain percentage files like the fixture are
-unaffected.) Two details the fixture cannot pin down: the tie-break
-when a size lands exactly on .5 (half-up and half-even both reproduce it), and `DonkBetSize`,
-which the fixture sets equal to `BetSize` on every street - donk nodes are reached, but their
-size is indistinguishable from an ordinary bet there.
+unaffected.) One detail the fixture cannot pin down: the tie-break
+when a size lands exactly on .5 (half-up and half-even both reproduce it). It does pin down
+the donk rule above indirectly: it sets `DonkBetSize` equal to `BetSize` on every street, so
+its donk sizes are indistinguishable from the PioViewer fallback - but its IP check-bet lines
+prove that a bet after the opponent checks is an ordinary `BetSize`, not a donk.
 
 ## Viewer
 
@@ -222,9 +232,11 @@ middle (`show_node`'s pot line, passed verbatim to `set_pot`), the board, and th
 stack (`show_effective_stack`), then builds a fresh tree rooted exactly at X from edited
 sizes — the same sizing fields as the build form, expanded by `tools/tree_builder.py`
 including any size syntax it learns in the future. Sizes for streets before X's street are
-ignored; a root that starts facing a bet automatically offers raises instead of bets (the
-one approximation: a lead on the *following* street uses bet sizes, never donk sizes, since
-the previous street's aggressor is not recoverable from a node snapshot). The solver's tree
+ignored; a root that starts facing a bet automatically offers raises instead of bets. The
+previous street's aggressor is recovered from the node id's action/card token walk
+(`resolve._prev_aggressor`), so an OOP lead on X's street follows the same donk rule as a
+full build (#152); it degrades to bet sizes only when the id does not say (a root on the
+tree's first street, or an unrecognized token). The solver's tree
 roots are always OOP-to-act, so when X is IP's decision the subgame gets a one-child
 "forced check" wrapper root and X itself sits at `r:0:c`; `subgame_root` in the API output
 says which.

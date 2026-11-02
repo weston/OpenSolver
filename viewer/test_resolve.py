@@ -243,7 +243,59 @@ class StartNodeTest(unittest.TestCase):
         self.assertIn([10, 10, 30], lines)
 
 
-# ---------------------------------------------------------------- integration
+class PrevAggressorTest(unittest.TestCase):
+    """#152: the re-solve start node recovers the previous street's aggressor from the
+    node id's token walk, so root-street leads follow the donk rule."""
+
+    def ctx(self, node_id, street):
+        c = _ctx("OOP", street, 4, 4, 20, 100)
+        c["id"] = node_id
+        return c
+
+    def test_flop_root_has_none(self):
+        self.assertIsNone(vresolve._prev_aggressor(tb, self.ctx("r:0", "flop")))
+        self.assertIsNone(vresolve._prev_aggressor(tb, self.ctx("r:0:b24", "flop")))
+
+    def test_flop_bet_call_makes_ip_the_aggressor(self):
+        ctx = self.ctx("r:0:c:b24:c:7s", "turn")
+        self.assertEqual(vresolve._prev_aggressor(tb, ctx), tb.IP)
+        self.assertEqual(vresolve.start_node(tb, ctx).prev_aggressor, tb.IP)
+        # and so the subgame build applies the donk rule: no turn donk sizes, no lead
+        cfg, start = vresolve.build_config(tb, ctx, {"turn_bet": "50"})
+        self.assertEqual(tb.build_lines(cfg, start),
+                         [[4, 18]])  # OOP check, IP's 50% bet (4 + 0.5 x 28)
+        cfg, start = vresolve.build_config(tb, ctx, {"turn_bet": "50", "turn_donk": "30"})
+        self.assertEqual(tb.build_lines(cfg, start),
+                         [[12], [4, 18]])  # donk: 4 + 30% of 28 (lines come out sorted)
+
+    def test_oop_flop_bet_call_makes_oop_the_aggressor(self):
+        # OOP bet the flop and was called: OOP leads the turn with BetSize, not DonkSize
+        ctx = self.ctx("r:0:b24:c:7s", "turn")
+        self.assertEqual(vresolve._prev_aggressor(tb, ctx), tb.OOP)
+        cfg, start = vresolve.build_config(tb, ctx, {"turn_bet": "50"})
+        self.assertIn([18], tb.build_lines(cfg, start))  # OOP's 50% lead is a normal bet
+
+    def test_checked_round_has_no_aggressor(self):
+        self.assertIsNone(vresolve._prev_aggressor(tb, self.ctx("r:0:c:c:7s", "turn")))
+
+    def test_river_tracks_the_turn(self):
+        ctx = self.ctx("r:0:c:b24:c:7s:b50:c:9h", "river")
+        self.assertEqual(vresolve._prev_aggressor(tb, ctx), tb.OOP)  # OOP donked the turn
+        ctx = self.ctx("r:0:c:b24:c:7s:c:c:9h", "river")
+        self.assertEqual(vresolve._prev_aggressor(tb, ctx), None)    # turn went check-check
+        ctx = self.ctx("r:0:c:b24:c:7s:c:b50:9h", "river")
+        self.assertIsNone(vresolve._prev_aggressor(tb, ctx))         # unclosed action: bail
+
+    def test_mid_street_id_walks_partial_street(self):
+        ctx = self.ctx("r:0:c:b24:c:7s:c:b50", "turn")
+        self.assertEqual(vresolve._prev_aggressor(tb, ctx), tb.IP)   # still the flop raiser
+
+    def test_missing_or_unknown_id_gives_none(self):
+        self.assertIsNone(vresolve._prev_aggressor(tb, _ctx("OOP", "turn", 4, 4, 20, 100)))
+        self.assertIsNone(vresolve._prev_aggressor(tb, self.ctx("r:0:c:b24:c:?:c", "turn")))
+
+
+
 
 class ResolveIntegrationTest(unittest.TestCase):
     @classmethod

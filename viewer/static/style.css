@@ -458,6 +458,7 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
 .sizes tbody th { font-size: 13px; color: var(--text); text-transform: none; letter-spacing: 0; width: 64px; }
 .sizes td { padding-right: 10px; }
 .sizes td:last-child { width: 60px; padding-right: 0; }
+.sizes td:has(.cap) { width: 74px; }
 
 .solve-form { display: flex; flex-direction: column; gap: 12px; }
 .btn-row { display: flex; gap: 8px; }

@@ -385,7 +385,7 @@ def api(solver, lib, method, path, query, body):
     if path == "/api/solve":
         b = need_body(body)
         acc = b.get("accuracy", 0.05)
-        if not isinstance(acc, (int, float)) or acc < 0:
+        if isinstance(acc, bool) or not isinstance(acc, (int, float)) or not math.isfinite(acc) or acc < 0:
             raise SolverError("bad accuracy")
         # Report (and check the target) every 10 iterations: a smoother convergence chart (#115)
         # and less overshoot past the target than the default 25.

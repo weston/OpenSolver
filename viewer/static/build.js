@@ -254,12 +254,16 @@ function updateSpr() {
   $("f-spr").textContent = p > 0 && s > 0 ? (s / p).toFixed(2) : "—";
 }
 
-const SIZE_RE = /^(\d+(\.\d+)?)$/;
+// tools/tree_builder.py syntax (#114): % of pot, Ne (geometric over N streets, "e" = all
+// remaining), Nx (raise to N x the bet faced; raise fields only), a (all-in).
+const SIZE_RE = /^(\d+(\.\d+)?|\d*e|a)$/i;
+const RAISE_RE = /^(\d+(\.\d+)?|\d*e|\d+(\.\d+)?x|a)$/i;
 function validateSizes() {
   let ok = true;
-  for (const inp of document.querySelectorAll(".sizes input:not([type=checkbox])")) {
+  for (const inp of document.querySelectorAll(".sizes input:not([type=checkbox]):not(.cap)")) {
+    const re = inp.dataset.k === "raise" ? RAISE_RE : SIZE_RE;
     const parts = inp.value.split(",").map((x) => x.trim()).filter(Boolean);
-    const bad = parts.some((p) => !SIZE_RE.test(p));
+    const bad = parts.some((p) => !re.test(p));
     inp.classList.toggle("invalid", bad);
     if (bad) ok = false;
   }
@@ -326,7 +330,7 @@ function memLine(text) {
 }
 
 async function build() {
-  if (!validateSizes()) { info("Fix the highlighted sizes (numbers, % of pot).", true); return false; }
+  if (!validateSizes()) { info("Fix the highlighted sizes: 33 (% pot), 2e (geometric), 3x (raises only), a (all-in).", true); return false; }
   if (board.length < 3) { info("Pick at least a flop (3 cards).", true); return false; }
   const f = readForm();
   setBusy(true, "Generating the tree…");
@@ -337,7 +341,8 @@ async function build() {
     info(`${g.lines} lines${est ? ` · about ${est}` : ""} — building…`);
     const b = await post("/api/build");
     builtSig = sig(f);
-    info(`Built: ${b.node_count.split("\n")[0]}${est ? ` · ${est}` : ""}`);
+    const total = /TOTAL\D*(\d+)/.exec(b.node_count);
+    info(`Built: ${total ? Number(total[1]).toLocaleString() + " nodes" : "ok"}${est ? ` · ${est}` : ""}`);
     markDirty();
     onBuilt();
     return true;

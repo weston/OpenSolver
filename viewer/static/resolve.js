@@ -9,7 +9,7 @@ import { STREETS, renderSizes, readSizes, validateSizes, SIZE_RE, RAISE_RE } fro
 
 const $ = (id) => document.getElementById(id);
 
-const R = { id: null, ctx: null, tab: "edit", timer: null, kind: null };
+const R = { id: null, ctx: null, tab: "search", timer: null, kind: null };
 
 function potOf(ctx) { return ctx.pot.oop + ctx.pot.ip + ctx.pot.dead; }
 
@@ -84,7 +84,7 @@ async function go() {
       await post("/api/resolve/start", b);
     }
     R.kind = R.tab;
-    $("rs-browse").classList.add("hidden");
+    $("rs-next").classList.add("hidden");
     poll();
   } catch (e) { fail(e); }
 }
@@ -106,6 +106,7 @@ async function poll() {
   if (!$("resolve-dialog").open) return;
   $("rs-progress").classList.remove("hidden");
   $("rs-stop").classList.toggle("hidden", !st.busy);
+  $("rs-go").classList.toggle("hidden", !!st.busy);
   $("rs-go").disabled = st.busy;
   const bar = $("rs-bar-fill").parentElement;
   const status = $("rs-status");
@@ -149,7 +150,10 @@ async function poll() {
     t.appendChild(tr);
   }
   if (!st.busy && st.tree && st.result && !st.error) {
-    $("rs-browse").classList.remove("hidden");
+    $("rs-next").classList.remove("hidden");
+    $("rs-next-what").textContent = st.kind === "search" && st.best
+      ? `Best: ${largestFirst(st.best.sizes).map((x) => (/^\d/.test(x) && !/[ex]$/i.test(x) ? x + "%" : x)).join(" · ")}. Opening it closes this dialog and browses the re-solved subtree.`
+      : "Opening it closes this dialog and browses the re-solved subtree.";
     R.result = st.result;
     R.best = st.best;
   }
@@ -177,10 +181,11 @@ export async function openResolve(nodeId) {
   $("rs-accuracy").value = prefs.get("rs-accuracy", "0.5");
   $("rs-candidates").value = prefs.get("rs-candidates", "25, 33, 50, 75, 100, 150");
   $("rs-progress").classList.add("hidden");
-  $("rs-browse").classList.add("hidden");
+  $("rs-next").classList.add("hidden");
   $("rs-stop").classList.add("hidden");
   $("rs-go").disabled = false;
-  validate();
+  $("rs-go").classList.remove("hidden");
+  selectTab("search");
   $("resolve-dialog").showModal();
   // a job may already be running (dialog closed and reopened)
   try {
@@ -189,18 +194,18 @@ export async function openResolve(nodeId) {
   } catch (e) { /* status is optional here */ }
 }
 
+/** "search" (Find best sizes, the default each time the dialog opens) or "edit". */
+function selectTab(tab) {
+  R.tab = tab;
+  $("rs-tabs").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
+  $("rs-edit").classList.toggle("hidden", tab !== "edit");
+  $("rs-search").classList.toggle("hidden", tab !== "search");
+  $("rs-go").textContent = tab === "search" ? "Search" : "Re-solve";
+  validate();
+}
+
 export function initResolve() {
-  const tabs = $("rs-tabs");
-  tabs.querySelectorAll("button").forEach((b) => {
-    b.onclick = () => {
-      R.tab = b.dataset.tab;
-      tabs.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
-      $("rs-edit").classList.toggle("hidden", R.tab !== "edit");
-      $("rs-search").classList.toggle("hidden", R.tab !== "search");
-      $("rs-go").textContent = R.tab === "search" ? "Search" : "Re-solve";
-      validate();
-    };
-  });
+  $("rs-tabs").querySelectorAll("button").forEach((b) => { b.onclick = () => selectTab(b.dataset.tab); });
   $("rs-candidates").addEventListener("input", validate);
   $("rs-street").addEventListener("change", validate);
   $("rs-rows").addEventListener("input", validate);

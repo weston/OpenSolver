@@ -644,6 +644,7 @@ async function renderCatsPanel() {
   const seq = S.seq;
   const d = S.dec;
   if (!S.decId || !d || !d.freq) {
+    box.dataset.key = "";
     box.textContent = "";
     box.appendChild(el("div", "side-empty", "Categories need a flop (or later) decision — preflop nodes have no board."));
     return;
@@ -656,6 +657,9 @@ async function renderCatsPanel() {
     S.cats = { key, data };
   }
   if (seq !== S.seq || S.side !== "cats") return;
+  // renderSide runs on every matrix hover; rebuilding the list then would reset its scroll
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
   const data = S.cats.data;
   box.textContent = "";
 

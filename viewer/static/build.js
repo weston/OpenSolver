@@ -223,7 +223,7 @@ function saveForm() {
 function loadForm() {
   applyForm(prefs.get("build", null));
   const sp = prefs.get("spot", null);
-  if (sp && sp.sig === sig(readForm())) spot = sp;
+  if (sp && sp.sig === sig(spotForm())) spot = sp;
   markSpot();
 }
 
@@ -231,7 +231,7 @@ function loadForm() {
 function applyForm(f) {
   editors.OOP.setText(f && f.range_oop != null ? f.range_oop : DEFAULTS.OOP);
   editors.IP.setText(f && f.range_ip != null ? f.range_ip : DEFAULTS.IP);
-  board = f && f.board ? f.board.match(/../g) : [...DEFAULTS.board];
+  board = f && typeof f.board === "string" ? f.board.match(/../g) || [] : [...DEFAULTS.board];
   if (f && f.accuracy != null && Number.isFinite(Number(f.accuracy))) $("f-accuracy").value = f.accuracy;
   if (f) {
     const set = (id, v) => { if (v != null && Number.isFinite(v)) $(id).value = v; };
@@ -256,8 +256,9 @@ function updateSpr() {
 
 // tools/tree_builder.py syntax (#114): % of pot, Ne (geometric over N streets, "e" = all
 // remaining), Nx (raise to N x the bet faced; raise fields only), a (all-in).
-const SIZE_RE = /^(\d+(\.\d+)?|\d*e|a)$/i;
-const RAISE_RE = /^(\d+(\.\d+)?|\d*e|\d+(\.\d+)?x|a)$/i;
+// No zero sizes: the server rejects 0, 0e and 0x (review of #127).
+const SIZE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|a)$/i;
+const RAISE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|[1-9]\d*(\.\d+)?x|a)$/i;
 function validateSizes() {
   let ok = true;
   for (const inp of document.querySelectorAll(".sizes input:not([type=checkbox]):not(.cap)")) {
@@ -275,14 +276,16 @@ const sig = (f) => JSON.stringify(f);
 /* ------------------------------------------------------------------ spots (library configs, #116) */
 
 function spotContent() { return { schema: 1, ...readForm(), accuracy: Number($("f-accuracy").value) }; }
+// Spot "edited" state also tracks the target accuracy, which is not part of the tree (review of #127).
+function spotForm() { return { ...readForm(), accuracy: $("f-accuracy").value }; }
 
 function markSpot() {
   $("spot-name").textContent = spot.name || "Unsaved";
-  $("spot-dirty").classList.toggle("hidden", !spot.name || spot.sig === sig(readForm()));
+  $("spot-dirty").classList.toggle("hidden", !spot.name || spot.sig === sig(spotForm()));
 }
 
 function setSpot(name) {
-  spot = { name, sig: sig(readForm()) };
+  spot = { name, sig: sig(spotForm()) };
   prefs.set("spot", spot);
   markSpot();
 }
@@ -410,7 +413,7 @@ export function initBuild({ built }) {
     boardChanged();
   };
   document.querySelectorAll(".tree-form input").forEach((i) => i.addEventListener("input", () => { validateSizes(); saveForm(); }));
-  $("f-accuracy").addEventListener("input", () => prefs.set("accuracy", $("f-accuracy").value));
+  $("f-accuracy").addEventListener("input", () => { prefs.set("accuracy", $("f-accuracy").value); markSpot(); });
   const acc = prefs.get("accuracy", null);
   if (acc) $("f-accuracy").value = acc;
 

@@ -1,0 +1,243 @@
+// Re-solve dialog (#117): re-solve the subtree at a decision node with edited sizes, or search
+// the best N-size subset of candidate bet sizes. Backend: viewer/resolve.py (/api/resolve/*),
+// a second solver process; the main tree is untouched. Results are browsed in the Study view.
+
+import { el, cardEl, parseCards } from "./cards.js";
+import { get, post, toast, fail, prefs, fmt, fmtChips } from "./api.js";
+import { enterSubgame } from "./study.js";
+
+const $ = (id) => document.getElementById(id);
+const STREETS = ["flop", "turn", "river"];
+const SIZE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|a)$/i;
+const RAISE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|[1-9]\d*(\.\d+)?x|a)$/i;
+
+const R = { id: null, ctx: null, tab: "edit", timer: null, kind: null };
+
+function potOf(ctx) { return ctx.pot.oop + ctx.pot.ip + ctx.pot.dead; }
+
+function drawContext(ctx) {
+  const box = $("rs-context");
+  box.textContent = "";
+  box.appendChild(el("span", `badge ${ctx.actor.toLowerCase()}`, ctx.actor));
+  const b = el("span", "pv-board");
+  for (const c of parseCards(ctx.board)) b.appendChild(cardEl(c, "xs"));
+  box.appendChild(b);
+  const t = el("span");
+  t.innerHTML = `${ctx.street} · pot <b>${fmtChips(potOf(ctx))}</b> · stack <b>${fmtChips(ctx.stack)}</b> · node <b></b>`;
+  t.querySelector("b:last-child").textContent = ctx.id;
+  box.appendChild(t);
+}
+
+function drawRows(ctx) {
+  const saved = prefs.get("build", {}) || {};
+  const tb = $("rs-rows");
+  tb.textContent = "";
+  const first = STREETS.indexOf(ctx.street);
+  for (const st of STREETS.slice(first)) {
+    const tr = el("tr");
+    tr.dataset.street = st;
+    tr.appendChild(el("th", null, st[0].toUpperCase() + st.slice(1)));
+    for (const k of ["bet", "raise", "donk", "raisecap"]) {
+      const td = el("td");
+      const inp = el("input");
+      inp.dataset.k = k;
+      if (k === "raisecap") { inp.type = "number"; inp.min = 0; inp.max = 99; inp.placeholder = "∞"; inp.className = "cap"; }
+      if (k === "donk") inp.placeholder = "none";
+      const v = saved[`${st}_${k}`];
+      inp.value = v == null ? (k === "bet" ? "33, 75" : k === "raise" ? "50" : "") : String(v).replace(/,/g, ", ");
+      inp.addEventListener("input", validate);
+      td.appendChild(inp);
+      tr.appendChild(td);
+    }
+    const td = el("td");
+    const sw = el("label", "switch");
+    const cb = el("input");
+    cb.type = "checkbox"; cb.dataset.k = "allin";
+    cb.checked = saved[`${st}_allin`] != null ? !!saved[`${st}_allin`] : st === "river";
+    sw.append(cb, el("span"));
+    td.appendChild(sw);
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  }
+  const sel = $("rs-street");
+  sel.textContent = "";
+  for (const st of STREETS.slice(first)) {
+    const o = el("option", null, st[0].toUpperCase() + st.slice(1));
+    o.value = st;
+    sel.appendChild(o);
+  }
+}
+
+function validate() {
+  let ok = true;
+  for (const inp of document.querySelectorAll("#rs-rows input:not([type=checkbox]):not(.cap)")) {
+    const re = inp.dataset.k === "raise" ? RAISE_RE : SIZE_RE;
+    const bad = inp.value.split(",").map((x) => x.trim()).filter(Boolean).some((p) => !re.test(p));
+    inp.classList.toggle("invalid", bad);
+    if (bad) ok = false;
+  }
+  const cand = $("rs-candidates");
+  const raising = candidatesAreRaises();
+  $("rs-cand-label").textContent = raising ? "Candidate raise sizes" : "Candidate bet sizes";
+  const cre = raising ? RAISE_RE : SIZE_RE;
+  const cbad = cand.value.split(",").map((x) => x.trim()).filter(Boolean).some((p) => !cre.test(p));
+  cand.classList.toggle("invalid", cbad);
+  return ok && (R.tab !== "search" || !cbad);
+}
+
+/** At a node facing a bet, a search on its own street varies the raise sizes (viewer/resolve.py). */
+function candidatesAreRaises() {
+  return !!(R.ctx && R.ctx.facing && $("rs-street").value === R.ctx.street);
+}
+
+function body() {
+  const saved = prefs.get("build", {}) || {};
+  const b = {
+    id: R.id,
+    accuracy: (Number($("rs-accuracy").value) / 100) * potOf(R.ctx),
+    allin_threshold: saved.allin_threshold ?? 67,
+    add_allin_limit: saved.add_allin_limit ?? 300,
+  };
+  for (const tr of document.querySelectorAll("#rs-rows tr")) {
+    for (const inp of tr.querySelectorAll("input")) {
+      b[`${tr.dataset.street}_${inp.dataset.k}`] = inp.type === "checkbox" ? inp.checked : inp.value.replace(/\s+/g, "");
+    }
+  }
+  return b;
+}
+
+/* ------------------------------------------------------------------ run + progress */
+
+async function go() {
+  if (!validate()) { toast("Fix the highlighted sizes", "err"); return; }
+  const b = body();
+  prefs.set("rs-accuracy", $("rs-accuracy").value);
+  try {
+    if (R.tab === "search") {
+      b.street = $("rs-street").value;
+      b.candidates = $("rs-candidates").value.replace(/\s+/g, "");
+      b.n = Number($("rs-n").value);
+      prefs.set("rs-candidates", $("rs-candidates").value);
+      await post("/api/resolve/search", b);
+    } else {
+      await post("/api/resolve/start", b);
+    }
+    R.kind = R.tab;
+    $("rs-browse").classList.add("hidden");
+    poll();
+  } catch (e) { fail(e); }
+}
+
+function sizeChips(sizes) {
+  return sizes.map((s) => `<span class="chip">${/^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s}</span>`).join("");
+}
+
+async function poll() {
+  clearTimeout(R.timer);
+  let st;
+  try { st = await get("/api/resolve/status"); } catch (e) { fail(e); return; }
+  if (!$("resolve-dialog").open) return;
+  $("rs-progress").classList.remove("hidden");
+  $("rs-stop").classList.toggle("hidden", !st.busy);
+  $("rs-go").disabled = st.busy;
+  const bar = $("rs-bar-fill").parentElement;
+  const status = $("rs-status");
+  if (st.kind === "search" && st.total) {
+    bar.classList.remove("indet");
+    $("rs-bar-fill").style.width = Math.round((100 * st.done) / st.total) + "%";
+    status.innerHTML = `${st.busy ? "Searching" : "Searched"} <b>${st.done}</b> / ${st.total} solves · ${st.method === "brute" ? "every subset" : "greedy forward selection"}`;
+  } else {
+    bar.classList.toggle("indet", !!st.busy);
+    $("rs-bar-fill").style.width = st.busy ? "" : "100%";
+    const ex = (st.solve && st.solve.progress || []).find((l) => l.startsWith("Exploitable"));
+    const pot = R.ctx ? potOf(R.ctx) : 0;
+    const exv = ex ? Number(ex.split(":")[1]) : null;
+    status.innerHTML = st.busy ? `Re-solving${exv != null && pot ? ` · <b>${fmt((exv / pot) * 100, 2)}%</b> of the pot exploitable` : "…"}` : "";
+  }
+  if (st.error) {
+    status.textContent = "";
+    status.appendChild(el("span", "rerr", st.error));
+  }
+
+  // results
+  const t = $("rs-table");
+  t.textContent = "";
+  const actor = st.context ? st.context.actor : R.ctx && R.ctx.actor;
+  if (st.kind === "search" && st.rows && st.rows.length) {
+    const isBest = (r) => (st.best && JSON.stringify(st.best.sizes) === JSON.stringify(r.sizes) ? 1 : 0);
+    const rows = [...st.rows].sort((a, b) => b.ev - a.ev || isBest(b) - isBest(a));
+    const top = rows[0].ev;
+    t.innerHTML = `<tr><th>Sizes</th><th>${actor} EV</th><th>vs best</th><th>EV OOP</th><th>EV IP</th></tr>`;
+    for (const r of rows) {
+      const tr = el("tr");
+      if (st.best && JSON.stringify(st.best.sizes) === JSON.stringify(r.sizes)) tr.className = "best";
+      tr.innerHTML = `<td>${sizeChips(r.sizes)}</td><td class="num">${fmtChips(r.ev)}</td><td class="num delta">${r.ev === top ? "—" : fmt(r.ev - top, 2)}</td><td class="num">${fmtChips(r.ev_oop)}</td><td class="num">${fmtChips(r.ev_ip)}</td>`;
+      t.appendChild(tr);
+    }
+  } else if (!st.busy && st.result && st.result.ev) {
+    t.innerHTML = `<tr><th>Re-solved</th><th>EV OOP</th><th>EV IP</th><th>Nodes</th></tr>`;
+    const tr = el("tr");
+    const nodes = /TOTAL\D*(\d+)/.exec(st.result.node_count || "");
+    tr.innerHTML = `<td>${st.result.lines} lines</td><td class="num">${fmtChips(st.result.ev.OOP)}</td><td class="num">${fmtChips(st.result.ev.IP)}</td><td class="num">${nodes ? Number(nodes[1]).toLocaleString() : "—"}</td>`;
+    t.appendChild(tr);
+  }
+  if (!st.busy && st.tree && st.result && !st.error) {
+    $("rs-browse").classList.remove("hidden");
+    R.result = st.result;
+    R.best = st.best;
+  }
+  if (st.busy) R.timer = setTimeout(poll, 600);
+}
+
+function browse() {
+  const r = R.result;
+  if (!r) return;
+  const label = R.best ? R.best.sizes.map((s) => (/^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s)).join(" · ") : "edited sizes";
+  $("resolve-dialog").close();
+  enterSubgame({ origin: R.id, root: r.subgame_root, label });
+}
+
+/* ------------------------------------------------------------------ public */
+
+export async function openResolve(nodeId) {
+  try {
+    R.ctx = await get("/api/resolve/context?id=" + encodeURIComponent(nodeId));
+  } catch (e) { fail(e); return; }
+  R.id = nodeId;
+  R.result = null; R.best = null;
+  drawContext(R.ctx);
+  drawRows(R.ctx);
+  $("rs-accuracy").value = prefs.get("rs-accuracy", "0.5");
+  $("rs-candidates").value = prefs.get("rs-candidates", "25, 33, 50, 75, 100, 150");
+  $("rs-progress").classList.add("hidden");
+  $("rs-browse").classList.add("hidden");
+  $("rs-stop").classList.add("hidden");
+  $("rs-go").disabled = false;
+  validate();
+  $("resolve-dialog").showModal();
+  // a job may already be running (dialog closed and reopened)
+  try {
+    const st = await get("/api/resolve/status");
+    if (st.busy || (st.result && st.node === nodeId)) poll();
+  } catch (e) { /* status is optional here */ }
+}
+
+export function initResolve() {
+  const tabs = $("rs-tabs");
+  tabs.querySelectorAll("button").forEach((b) => {
+    b.onclick = () => {
+      R.tab = b.dataset.tab;
+      tabs.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
+      $("rs-edit").classList.toggle("hidden", R.tab !== "edit");
+      $("rs-search").classList.toggle("hidden", R.tab !== "search");
+      $("rs-go").textContent = R.tab === "search" ? "Search" : "Re-solve";
+      validate();
+    };
+  });
+  $("rs-candidates").addEventListener("input", validate);
+  $("rs-street").addEventListener("change", validate);
+  $("rs-go").onclick = go;
+  $("rs-browse").onclick = browse;
+  $("rs-close").onclick = () => $("resolve-dialog").close();
+  $("rs-stop").onclick = async () => { try { await post("/api/resolve/stop"); poll(); } catch (e) { fail(e); } };
+}

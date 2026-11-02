@@ -23,6 +23,8 @@ const S = {
   side: "hand",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
+  base: "/api",      // "/api/resolve" while browsing a re-solved subtree (#117)
+  sub: null,         // {origin, root, label} in subtree mode
 };
 
 /* ------------------------------------------------------------------ actions */
@@ -124,16 +126,16 @@ function overallFreqs(d, acts) {
 export async function gotoNode(id) {
   const seq = ++S.seq;
   try {
-    const p = await get("/api/path?id=" + q(id));
+    const p = await get(`${S.base}/path?id=` + q(id));
     const node = p.nodes[p.nodes.length - 1];
-    const cur = await get("/api/strategy?id=" + q(id));
+    const cur = await get(`${S.base}/strategy?id=` + q(id));
     // The matrix keeps showing a decision: this one, or the closest one above it.
     let dec = null, decId = null;
     if (isDec(node) && cur.freq) { dec = cur; decId = id; } else {
       for (let i = p.nodes.length - 2; i >= 0; i--) {
         if (isDec(p.nodes[i])) {
           decId = p.nodes[i].id;
-          dec = decId === S.decId && S.dec ? S.dec : await get("/api/strategy?id=" + q(decId));
+          dec = decId === S.decId && S.dec ? S.dec : await get(`${S.base}/strategy?id=` + q(decId));
           break;
         }
       }
@@ -144,17 +146,17 @@ export async function gotoNode(id) {
     if (S.mode !== "strategy") await loadModeData();
     if (seq !== S.seq) return;
     render();
-    if (!document.getElementById("view-study").classList.contains("hidden")) history.replaceState(null, "", "#study=" + id + urlState());
+    if (!S.sub && !document.getElementById("view-study").classList.contains("hidden")) history.replaceState(null, "", "#study=" + id + urlState());
   } catch (e) {
     if (seq === S.seq) fail(e);
   }
 }
 
 async function loadModeData() {
-  if (!S.range) S.range = await get("/api/range?id=" + q(S.id));
+  if (!S.range) S.range = await get(`${S.base}/range?id=` + q(S.id));
   if (S.mode === "ev") {
     const pl = viewPlayer();
-    if (!S.ev[pl]) S.ev[pl] = await get(`/api/ev?id=${q(S.id)}&player=${pl}`);
+    if (!S.ev[pl]) S.ev[pl] = await get(`${S.base}/ev?id=${q(S.id)}&player=${pl}`);
   }
 }
 
@@ -202,6 +204,13 @@ function renderPath() {
   box.textContent = "";
   const P = S.path;
   let lastLen = -1;
+  if (S.sub) {
+    const back = el("button", "step origin");
+    back.append(el("span", null, "↩ Original"), el("span", "sub", S.sub.label));
+    back.title = "Leave the re-solved subtree and return to " + S.sub.origin;
+    back.onclick = exitSubgame;
+    box.appendChild(back);
+  }
   const mark = (n) => {
     const cards = boardOf(n);
     if (cards.length === lastLen) return;
@@ -210,7 +219,10 @@ function renderPath() {
     if (cards.length >= 4) m.appendChild(cardEl(cards[cards.length - 1], "sm"));
     box.appendChild(m);
   };
-  for (let i = 0; i < P.length - 1; i++) {
+  // In a re-solved subtree, nodes above the subgame root are the backend's forced-check
+  // wrapper (IP roots), not real actions: skip them.
+  const first = S.sub ? Math.max(0, P.findIndex((p) => p.id === S.sub.root)) : 0;
+  for (let i = first; i < P.length - 1; i++) {
     const n = P[i];
     if (!isDec(n)) continue; // deals show up as street marks
     mark(n);
@@ -266,6 +278,9 @@ function renderTitle() {
   } else {
     t.append(el("span", "badge neutral", n.type));
   }
+  // re-solving is offered on decisions of the original tree
+  $("btn-resolve").classList.toggle("hidden", !(isDec(n) && !S.sub && S.cur && S.cur.freq));
+  $("subgame-tag").classList.toggle("hidden", !S.sub);
   // player toggle only matters for range / EV
   const seg = $("player-seg");
   seg.classList.toggle("hidden", S.mode === "strategy");
@@ -536,9 +551,9 @@ async function renderNodePanel() {
   }
   try {
     for (const pl of ["OOP", "IP"]) {
-      if (!S.ev[pl]) S.ev[pl] = await get(`/api/ev?id=${q(S.id)}&player=${pl}`);
+      if (!S.ev[pl]) S.ev[pl] = await get(`${S.base}/ev?id=${q(S.id)}&player=${pl}`);
     }
-    if (!S.range) S.range = await get("/api/range?id=" + q(S.id));
+    if (!S.range) S.range = await get(`${S.base}/range?id=` + q(S.id));
     if (seq !== S.seq || S.side !== "node") return;
     for (const pl of ["OOP", "IP"]) {
       const e = S.ev[pl], w = pl === "OOP" ? S.range.oop : S.range.ip;
@@ -560,7 +575,7 @@ async function renderRangesPanel() {
   const box = $("side-ranges");
   const seq = S.seq;
   try {
-    if (!S.range) S.range = await get("/api/range?id=" + q(S.id));
+    if (!S.range) S.range = await get(`${S.base}/range?id=` + q(S.id));
   } catch (e) { fail(e); return; }
   if (seq !== S.seq || S.side !== "ranges") return;
   box.textContent = "";
@@ -613,7 +628,10 @@ export function initStudy() {
   document.addEventListener("keydown", (e) => {
     if (document.getElementById("view-study").classList.contains("hidden")) return;
     if (e.target.closest("input, textarea, dialog")) return;
-    if ((e.key === "ArrowLeft" || e.key === "Backspace") && S.path.length > 1) {
+    if ((e.key === "ArrowLeft" || e.key === "Backspace") && S.sub && S.id === S.sub.root) {
+      e.preventDefault();
+      exitSubgame();
+    } else if ((e.key === "ArrowLeft" || e.key === "Backspace") && S.path.length > 1) {
       e.preventDefault();
       // step back to the previous decision (skipping chance nodes is not wanted: deals are steps too)
       gotoNode(S.path[S.path.length - 2].id);
@@ -622,7 +640,7 @@ export function initStudy() {
 }
 
 function syncUrl() {
-  if (S.loaded && !document.getElementById("view-study").classList.contains("hidden")) {
+  if (S.loaded && !S.sub && !document.getElementById("view-study").classList.contains("hidden")) {
     history.replaceState(null, "", "#study=" + S.id + urlState());
   }
 }
@@ -654,9 +672,26 @@ export function showEmpty() {
   $("side-hand").textContent = "";
 }
 
+/** Browse a re-solved subtree (#117) through the /api/resolve endpoints. */
+export function enterSubgame({ origin, root, label }) {
+  S.base = "/api/resolve";
+  S.sub = { origin, root, label };
+  S.dec = null; S.decId = null; S.pinned = null;
+  return gotoNode(root);
+}
+
+export function exitSubgame() {
+  const origin = S.sub ? S.sub.origin : "r:0";
+  S.base = "/api";
+  S.sub = null;
+  S.dec = null; S.decId = null;
+  return gotoNode(origin);
+}
+
 export const study = {
   get loaded() { return S.loaded; },
   get id() { return S.id; },
+  get inSubgame() { return !!S.sub; },
   refresh() { return gotoNode(S.loaded ? S.id : "r:0"); },
-  reset() { S.pinned = null; S.decId = null; S.dec = null; return gotoNode("r:0"); },
+  reset() { S.pinned = null; S.decId = null; S.dec = null; S.base = "/api"; S.sub = null; return gotoNode("r:0"); },
 };

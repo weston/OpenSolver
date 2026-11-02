@@ -528,6 +528,25 @@ class ResolveIntegrationTest(unittest.TestCase):
         self.assertIsNotNone(st_["result"])
         self.assertEqual(st_["result"]["ev"][actor], best["ev"])
 
+    def test_31_search_at_a_node_facing_a_bet_varies_raises(self):
+        # main tree is the river spot from test_30: r:0:b10 is IP facing OOP's 10 bet.
+        # Bets cannot happen there, so the candidates must become IP's raise sizes;
+        # with no river_raise configured, any raise child proves they were applied.
+        st, d = self.req("/api/resolve/context?id=r:0:b10")
+        self.assertEqual(st, 200, d)
+        self.assertTrue(d["facing"])
+        body = {"id": "r:0:b10", "candidates": "50,100,3x", "n": 1, "accuracy": self.ACC,
+                "allin_threshold": 100000, "add_allin_limit": 300}
+        st, d = self.req("/api/resolve/search", "POST", body)
+        self.assertEqual(st, 200, d)
+        st_ = self.wait_job()
+        self.assertIsNone(st_["error"], st_["error"])
+        self.assertEqual(len(st_["rows"]), 3)
+        st, d = self.req("/api/resolve/node?id=" + urllib.parse.quote("r:0:c"))
+        self.assertEqual(st, 200, d)
+        kids = [c["id"] for c in d["children"]]
+        self.assertTrue(any(k.startswith("r:0:c:b") for k in kids), kids)
+
 
 if __name__ == "__main__":
     unittest.main(argv=["test_resolve.py", "-v"] if sys.argv[1:] and not sys.argv[1].startswith("-")

@@ -52,7 +52,7 @@ DEFAULT_ACCURACY = 0.5     # chips; for both re-solves and each search candidate
 SOLVE_TIMEOUT = 24 * 3600  # a subgame solve can legitimately take a long time
 
 BROWSE_MAP = {"/node": "/api/node", "/strategy": "/api/strategy", "/range": "/api/range",
-              "/ev": "/api/ev", "/calc_results": "/api/calc_results"}
+              "/ev": "/api/ev", "/calc_results": "/api/calc_results", "/path": "/api/path"}
 
 _tb = None  # memoized tools/tree_builder.py module
 
@@ -160,6 +160,8 @@ def read_context(main, node_id, with_ranges=False):
            "pot": {"oop": int(node["pot"][0]), "ip": int(node["pot"][1]),
                    "dead": int(node["pot"][2])},
            "stack": int(float(main.cmd("show_effective_stack").strip()))}
+    # X faces a bet on its own street: there only raise sizes matter (size search)
+    ctx["facing"] = ctx["pot"]["oop"] != ctx["pot"]["ip"]
     if with_ranges:
         for who in ("OOP", "IP"):
             ctx[f"range_{who.lower()}"] = main.cmd(f"show_range {who} {node_id}")
@@ -193,12 +195,15 @@ def build_config(tb, ctx, body, bet_override=None):
     absolute effective stack; the per-player chips live in the start node's
     investments, which the solver expects since add_line amounts include the
     per-player part of set_pot. bet_override = (street index, "a,b,c") replaces both
-    players' bet sizes on that street (size search).
+    players' bet sizes on that street (size search) - or their raise sizes when the
+    street is X's own and X faces a bet, since bets cannot occur there.
     """
     body = dict(body)
     if bet_override is not None:
         s_idx, sizes = bet_override
-        body[f"{STREET_NAME[s_idx]}_bet"] = sizes
+        facing = ctx.get("facing", ctx["pot"]["oop"] != ctx["pot"]["ip"])
+        kind = "raise" if facing and s_idx == STREET_INDEX[ctx["street"]] else "bet"
+        body[f"{STREET_NAME[s_idx]}_{kind}"] = sizes
     header = [f"#Pot#{ctx['pot']['dead']}", f"#EffectiveStacks#{ctx['stack']}"]
     header += _config_header(body)
     cfg = tb.parse_config("\n".join(header))
@@ -433,7 +438,7 @@ class ResolveManager:
 
     def start_search(self, node_id, body):
         candidates = _field_sizes({"candidates": body.get("candidates", "")},
-                                  "candidates").split(",")
+                                  "candidates", allow_mult=True).split(",")
         candidates = sorted(set(c for c in candidates if c), key=_size_key)
         if len(candidates) < 2:
             raise vsrv.SolverError("need at least 2 candidate sizes")
@@ -449,7 +454,8 @@ class ResolveManager:
             else _street(body["street"])
         if s_idx < STREET_INDEX[ctx["street"]]:
             raise vsrv.SolverError("search street is before the subgame root street")
-        build_config(_tree_builder(), ctx, body)  # validate sizes eagerly -> 400
+        # validate sizes eagerly -> 400 (incl. Nx candidates, which only raises accept)
+        build_config(_tree_builder(), ctx, body, (s_idx, ",".join(candidates)))
 
         def job():
             brute = comb(len(candidates), n) <= BRUTE_FORCE_LIMIT

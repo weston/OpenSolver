@@ -36,6 +36,14 @@ This path is close to its CPU ceiling, and the reasons are all measured rather t
   data-dependent card index, or scatter into `cs[]`/`out[]`. AArch64 NEON has no gather or scatter
   instruction. Of 123 loops in `solver.cpp`, clang already vectorizes 48 at width 4 — the ones that
   can be. (#54)
+- **On x86, gathers do not help; AVX-512 permutes help a little.** GCC 13 vectorizes none of the
+  four loops at `-march=x86-64-v3` or `-march=native` (Zen 5). Measured by hand on a Ryzen 9 9950X,
+  1 thread: anything built on hardware gathers is slower than scalar (`cs[]` lookups by gather
+  +40%, entry fields by dword gather +8%), so AVX2, whose only tool here is the gather, has nothing
+  to offer. What does pay is AVX-512 with VBMI: masked 16-lane steps (a strength group averages ~6.5
+  hands), `cs[]` held in 4 zmm registers and read with `vpermt2ps`, entries unpacked with
+  `vpermt2b`. That kernel (`showdown_board_avx512`) is 1-4% faster single-threaded and bit-identical;
+  it is compiled only when the target has AVX-512F/BW/VBMI. (#89)
 - **Restructuring to remove the gathers makes it worse.** Precomputing `pair_cs[combo]` costs 1326
   entries per strength-group boundary against the `2 x np` gathers it saves; accumulating blocked
   mass per hero turns 2 scatter-adds per opponent entry into ~102. The gathers are the price of the

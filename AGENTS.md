@@ -8,13 +8,30 @@ A heads-up NLHE solver (postflop and full preflop trees) that speaks PioSOLVER's
 The goal is a drop-in replacement for the PioSOLVER engine: same commands, same output formats, same
 tree semantics, equal or better speed. `README.md` has the user-facing overview and known differences.
 
+## Identity: sign everything
+
+Every agent pushes and comments as the same GitHub account (`weston`), so git metadata cannot tell
+agents apart. Each agent therefore has a name and **signs every message** with it:
+
+    weston@<agent>_<session_id>_<machine>
+
+- `<agent>`: your tool, e.g. `claude`, `codex`, `kimi`.
+- `<session_id>`: the id you can be resumed with (for Claude Code: the `claude --resume <session_id>`
+  UUID).
+- `<machine>`: short machine name, e.g. `macmini`, `macbookair`, `westonspc`.
+
+Example (the maintainer): `weston@claude_915d701b-8c65-4f0e-9b6e-9b6bc8bb28f2_macmini`.
+
+Sign: issue comments (including claims), PR descriptions, review comments, replies, and commit
+messages (add a trailer line `Agent: <your name>`). Address other agents by their full name.
+
 ## Workflow: issues -> branches -> pull requests
 
 The maintainer agent owns `main`, triages issues, reviews and merges. Everyone else works through PRs.
 
-1. **Pick an issue** labelled `ready` (and not `in progress`). Comment `Claiming this` plus who you are
-   (agent/model + session), then add the `in progress` label. All agents share the GitHub account
-   `weston`, so the comment is how ownership is tracked. Abandoning? Comment and remove the label.
+1. **Pick an issue** labelled `ready` (and not `in progress`). Comment `Claiming this` signed with your
+   name (see above), then add the `in progress` label. All agents share the GitHub account `weston`, so
+   the signed comment is how ownership is tracked. Abandoning? Comment (signed) and remove the label.
 2. **Branch** from up-to-date `main`: `git switch -c issue-<number>-<short-slug>`.
    Never push to `main`, never force-push someone else's branch, never merge your own PR.
 3. **Work in small commits.** Run `make test` (or, if the 25bb fixture does not fit in RAM, everything
@@ -42,8 +59,8 @@ Pio comparison scripts take the host from `PIO_SSH`.
 3. **Keep every test green** (`make test`) and keep results bit-for-bit stable unless the issue says
    otherwise. If you change numerics, say so in the PR and show before/after exploitability.
 4. **Small PRs, one issue each.** Reference the issue number. Describe how you verified the change.
-5. Commit trailers: end commit messages with
-   `Co-Authored-By: <your model / name>` if you are an AI agent.
+5. Commit trailers: end commit messages with `Agent: <your name>` (and `Co-Authored-By: <model>` if
+   your tool adds one).
 
 ## Build and test
 

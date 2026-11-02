@@ -11,7 +11,11 @@
 ## Not done / follow-ups
 <!-- Anything left for another issue. -->
 
+## Signed
+<!-- weston@<agent>_<session_id>_<machine> -->
+
 ## Checklist
+- [ ] Signed above and in every commit (`Agent: ...` trailer)
 - [ ] Branch is up to date with `main`
 - [ ] Tests added/updated and passing
 - [ ] No Pio code/data copied (clean room), no secrets or hostnames committed

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <set>
 #include <tuple>
@@ -935,6 +936,94 @@ std::string Upi::cmd_print_all_strats() {
 
 // ---------------------------------------------------------------------------------------------
 
+// dump_train <file> — binary per-node training records for the NN warm start (#59); the exact
+// format is documented in ml/DESIGN.md. One record per decision node: average strategy, both
+// players' reaches under the average strategy, and both players' per-hand subtree EVs. All
+// values are written in the display frame (root frame), little-endian, host float32.
+std::string Upi::cmd_dump_train(const Args& a) {
+  if (a.size() != 1) throw CmdError{"incorrect or missing argument"};
+  require_tree();
+  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+
+  std::ofstream out(a[0], std::ios::binary | std::ios::trunc);
+  if (!out) throw CmdError{"cannot open " + a[0]};
+  auto put = [&](const void* p, size_t n) { out.write(reinterpret_cast<const char*>(p), n); };
+  auto pu8 = [&](uint8_t v) { put(&v, 1); };
+  auto pu16 = [&](uint16_t v) { put(&v, 2); };
+  auto pu32 = [&](uint32_t v) { put(&v, 4); };
+  auto pf32 = [&](float v) { put(&v, 4); };
+  auto pstr = [&](const std::string& s) {
+    if (s.size() > 0xffff) throw CmdError{"string too long"};
+    pu16(static_cast<uint16_t>(s.size()));
+    put(s.data(), s.size());
+  };
+
+  NodeRef root = resolve("r:0");
+  int frame = root.frame;
+
+  out.write("WSDT0001", 8);
+  pu32(static_cast<uint32_t>(root.board.size()));
+  for (int c : root.board) pu8(static_cast<uint8_t>(c));
+  pf32(static_cast<float>(tree_->cfg.start_pot()));
+  pf32(static_cast<float>(tree_->cfg.eff_stack));
+  pu32(static_cast<uint32_t>(tree_->iterations));
+  pf32(static_cast<float>(solver_->root_stats().exploitability));
+  pf32(static_cast<float>(solver_->root_matchups()));
+  for (int p = 0; p < 2; ++p) {
+    const auto& hs = tree_->hands[p];
+    pu16(static_cast<uint16_t>(hs.size()));
+    for (uint16_t c : hs) pu16(static_cast<uint16_t>(PERM_COMBO[frame][c]));
+    for (size_t h = 0; h < hs.size(); ++h) pf32(tree_->init_reach[p][h]);
+  }
+
+  std::streampos count_pos = out.tellp();
+  pu32(0);
+  uint32_t nrec = 0;
+  std::function<void(const NodeRef&)> rec = [&](const NodeRef& r) {
+    const GNode& n = tree_->nodes[r.node];
+    if (n.kind == ANodeKind::Decision) {
+      int actor = n.player, A = n.num_children, H = tree_->num_hands(actor), Ho = tree_->num_hands(1 - actor);
+      std::vector<float> sig(static_cast<size_t>(A) * H), r0, r1;
+      std::vector<float> ev0(tree_->num_hands(0)), ev1(tree_->num_hands(1));
+      solver_->average_strategy(r.node, sig.data());
+      node_reach(r, r0, r1);
+      solver_->walk(Walk::Evaluate, r.node, 0, r0.data(), r1.data(), ev0.data());
+      solver_->walk(Walk::Evaluate, r.node, 1, r1.data(), r0.data(), ev1.data());
+      const auto& rp = actor == 0 ? r0 : r1;
+      const auto& ro = actor == 0 ? r1 : r0;
+      const auto& evp = actor == 0 ? ev0 : ev1;
+      const auto& evo = actor == 0 ? ev1 : ev0;
+
+      pu8(static_cast<uint8_t>(actor));
+      pu8(static_cast<uint8_t>(A));
+      pstr(r.id);
+      const ActionNode& an = tree_->an(n);
+      for (auto& act : an.actions) pstr(action_label(an, act));
+      put(sig.data(), sizeof(float) * sig.size());
+      put(rp.data(), sizeof(float) * H);
+      put(ro.data(), sizeof(float) * Ho);
+      put(evp.data(), sizeof(float) * H);
+      put(evo.data(), sizeof(float) * Ho);
+      ++nrec;
+      for (auto& act : an.actions) rec(resolve(r.id + ":" + action_label(an, act)));
+    } else if (n.kind == ANodeKind::Chance) {
+      const ChanceInfo& ci = tree_->chances[n.aux];
+      for (uint8_t c : ci.cards) rec(resolve(r.id + ":" + card_str(PERM_CARD[r.frame][c])));
+    }
+  };
+  rec(root);
+
+  out.seekp(count_pos);
+  pu32(nrec);
+  out.seekp(0, std::ios::end);
+  uint64_t bytes = static_cast<uint64_t>(out.tellp());
+  out.close();
+  if (!out) throw CmdError{"write failed on " + a[0]};
+  return "dump_train ok! nodes=" + std::to_string(nrec) + " bytes=" + std::to_string(bytes);
+}
+
+// ---------------------------------------------------------------------------------------------
+
 void Upi::register_node_commands() {
   auto& H = handlers_;
 
@@ -1052,6 +1141,7 @@ void Upi::register_node_commands() {
     return v(1) + " " + v(-1) + " " + v(0);
   };
   H["print_all_strats"] = [this](const Args&) { return cmd_print_all_strats(); };
+  H["dump_train"] = [this](const Args& a) { return cmd_dump_train(a); };
   H["node_count"] = [this](const Args&) { return cmd_node_count(); };
   H["show_nuts"] = [this](const Args& a) { return cmd_show_nuts(a); };
 

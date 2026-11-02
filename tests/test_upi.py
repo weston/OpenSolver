@@ -369,6 +369,67 @@ def run_small_tree(u, order):
     check_save_load(u, "r:0:c:b12", deep_paths=("r:0:c:c:3d", "r:0:c:b12:c:Ad:c", "r:0:c:c:Ks:c:c:3h", "r:0:b12:c:7d:c:c:9s"),
                     whole_tree=True)
     check_lines(u, 10)
+    check_dump_train(u)
+
+
+def check_dump_train(u):
+    print("[dump_train: binary per-node training records (#59)]")
+    import struct as st_
+    check(u.cmd("dump_train").startswith("ERROR"), "dump_train needs a filename")
+    want_iters = int(u.cmd("show_iters"))
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "spot.wsdt")
+        resp = u.cmd(f"dump_train {path}")
+        check(resp.startswith("dump_train ok! nodes="), f"dump_train ({resp})")
+        buf = open(path, "rb").read()
+    pos = 0
+
+    def take(n):
+        nonlocal pos
+        b, pos = buf[pos:pos + n], pos + n
+        return b
+
+    def u8():
+        return take(1)[0]
+
+    def u16():
+        return st_.unpack("<H", take(2))[0]
+
+    def u32():
+        return st_.unpack("<I", take(4))[0]
+
+    def f32s(n):
+        return st_.unpack(f"<{n}f", take(4 * n))
+
+    def text():
+        return take(u16()).decode()
+
+    check(take(8) == b"WSDT0001", "dump magic")
+    ranks, suits = "23456789TJQKA", "cdhs"
+    board = " ".join(ranks[(c := u8()) >> 2] + suits[c & 3] for _ in range(u32()))
+    check(board == "Qh Qc 2c", f"dump board ({board})")
+    pot, stack = f32s(2)
+    check(pot == 40 and stack == 230, f"dump pot/stack ({pot}/{stack})")
+    check(u32() == want_iters, "dump iterations")
+    f32s(2)  # exploitability, root matchups
+    hands = []
+    for _ in range(2):
+        hp = u16()
+        hands.append(([u16() for _ in range(hp)], f32s(hp)))
+    nrec = u32()
+    check(nrec == int(resp.split("nodes=")[1].split(" ")[0]), "record count matches response")
+    worst = 0.0
+    for _ in range(nrec):
+        player, na = u8(), u8()
+        text()
+        for _ in range(na):
+            text()
+        hp, ho = len(hands[player][0]), len(hands[1 - player][0])
+        strat = f32s(na * hp)
+        f32s(hp); f32s(ho); f32s(hp); f32s(ho)  # reaches, EVs
+        worst = max(worst, *(abs(sum(strat[a * hp + hh] for a in range(na)) - 1.0) for hh in range(hp)))
+    check(worst < 2e-3, f"every strategy row normalised (worst deviation {worst:.2e})")
+    check(pos == len(buf), "dump fully consumed")
 
 
 def check_calc_eq_preflop_exact(u):

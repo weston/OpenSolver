@@ -621,7 +621,6 @@ async function renderRangesPanel() {
   }
 }
 
-<<<<<<< HEAD
 /* ---- categories tab (#154): made-hand and draw breakdown of the range at hand ---- */
 
 const DRAW_LABEL = {

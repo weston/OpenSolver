@@ -118,7 +118,7 @@ Reading the numbers:
 | `src/range.*` | range text parser/formatter (Pio itself only accepts 1326 floats) |
 | `src/action_tree.*` | `add_line`/`add_preflop_line` -> betting tree (implicit check/call/fold, Pio child order) |
 | `src/game.*` | full game tree: chance expansion, isomorphism, flop subsets, showdown orderings, storage (float32 or 16-bit) |
-| `src/solver.*` | vector-form DCFR (α=1.5, β=0, γ=2), best response, evaluation |
+| `src/solver.*` | vector-form DCFR (α=1.5, β=0, γ=3; `set_dcfr` overrides), best response, evaluation |
 | `src/parallel.*` | nested work-stealing thread pool + per-thread arenas |
 | `src/equity.*`, `src/categories.*` | calc_eq family, range explorer |
 | `src/pfh2h.*` | exact preflop hand-vs-hand win/tie table (suit-isomorphic generation, cached in ~/.cache/wsolver) |
@@ -167,6 +167,11 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `set_recalc_accuracy` (fraction of the pot; defaults 0.0025 0.001 0.0005) and flags it
   `ALREADY_RECALCED`. `set_always_recalc <street> <ms>` does the same for present streets.
   `rebuild_tree`, `estimate_rebuild_tree`, `solve_all_splits` need `load_all_nodes` first (probe10).
+- Save records (ours, v5): default quantized to `compression_precision_` bits, strategies only.
+  Frequencies come from `Solver::average_strategy`, exactly what `show_strategy` shows. On load, sums
+  are frequency x scale and regrets are the frequencies. Saves are for viewing and on-demand re-solving,
+  not for resuming a solve (owner decision, #49). `lossless` = v4 records (regrets too). Tests that need
+  bit-exact reloads must save with `lossless`.
 - Lazy loading (ours): `load_tree` without `full` reads v4 saves per street segment on first access,
   hooked into every `GameTree` storage accessor (`ensure_loaded`). Storage arrays are calloc'd
   (`ZVec`), so untouched segments cost no RAM. Code that reads `regrets`/`strat` arrays directly must

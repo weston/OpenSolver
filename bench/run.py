@@ -13,6 +13,7 @@ Usage:
     python3 bench/run.py --threads 1            # one mode only
     python3 bench/run.py --targets 0.01,0.002   # fractions of the starting pot
     python3 bench/run.py --max-seconds 120      # give up on a tree after this long
+    python3 bench/run.py --include-preflop      # + full preflop tree (GBs, minutes)
     python3 bench/run.py --out bench/results    # write results.json and results.md
     make bench
 
@@ -46,8 +47,14 @@ DEFAULT_TARGETS = (0.01, 0.005, 0.002)
 DEFAULT_INFO_FREQ = 5
 
 
+# Trees that are too heavy for the default suite; added only via their --include-* flag.
+# preflop_full is a real file under trees/ but needs several GB and minutes per run.
+HEAVY_TREES = {"preflop_full"}
+
+
 def tree_names() -> list[str]:
-    return sorted(f[:-4] for f in os.listdir(TREES) if f.endswith(".upi"))
+    return sorted(f[:-4] for f in os.listdir(TREES)
+                  if f.endswith(".upi") and f[:-4] not in HEAVY_TREES)
 
 
 def peak_rss_sampler(proc: subprocess.Popen, out: dict, interval: float = 0.05) -> None:
@@ -73,7 +80,7 @@ def peak_rss_sampler(proc: subprocess.Popen, out: dict, interval: float = 0.05) 
 
 
 def build_script(name: str, threads: int, target: float, info_freq: int,
-                 max_seconds: int) -> str:
+                 max_seconds: int, extra: tuple[str, ...] = ()) -> str:
     """Tree definition plus the commands that drive one measured solve."""
     if name == "fixture25bb":
         with open(FIXTURE_25BB) as fh:
@@ -88,11 +95,22 @@ def build_script(name: str, threads: int, target: float, info_freq: int,
     else:
         with open(os.path.join(TREES, f"{name}.upi")) as fh:
             setup = [l.rstrip() for l in fh if l.strip() and not l.startswith("#")]
-        preflop = any(l.startswith("add_preflop_line") for l in setup)
-        body = setup + [f"set_threads {threads}",
-                        "build_preflop_tree" if preflop else "build_tree"]
+        # A file may carry its own build command when commands must follow it (e.g.
+        # preflop_full attaches schematic trees after build_preflop_tree). set_threads
+        # still has to come first, so it is inserted ahead of that line.
+        carried = next((i for i, l in enumerate(setup)
+                        if l.startswith(("build_preflop_tree", "build_tree"))), None)
+        if carried is not None:
+            setup.insert(carried, f"set_threads {threads}")
+            body = setup
+        else:
+            preflop = any(l.startswith("add_preflop_line") for l in setup)
+            body = setup + [f"set_threads {threads}",
+                            "build_preflop_tree" if preflop else "build_tree"]
 
-    return "\n".join(body + [
+    # extra commands land after the build and before the solve, which is where settings
+    # like set_dcfr have to be set.
+    return "\n".join(body + list(extra) + [
         f"set_accuracy {target} fraction",
         f"set_info_freq {info_freq}",
         f"go {max_seconds} seconds" if max_seconds else "go",
@@ -116,8 +134,8 @@ def parse_progress(out: str) -> list[tuple[float, float]]:
 
 
 def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
-            info_freq: int, max_seconds: int) -> dict:
-    script = build_script(name, threads, min(targets), info_freq, max_seconds)
+            info_freq: int, max_seconds: int, extra: tuple[str, ...] = ()) -> dict:
+    script = build_script(name, threads, min(targets), info_freq, max_seconds, extra)
     proc = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, cwd=ROOT)
     rss: dict = {}
@@ -150,6 +168,7 @@ def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
         "final_exploitability": final,
         "peak_rss_mb": round(rss.get("peak_rss", 0) / 2**20, 1),
         "reached": reached,
+        "extra": list(extra),
         "error": next((l for l in out.splitlines() if l.startswith("ERROR")), None),
     }
 
@@ -210,7 +229,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="per-run cap; 0 means no cap (default 300)")
     ap.add_argument("--include-25bb", action="store_true",
                     help="also run the 25bb fixture (several GB, minutes per run)")
+    ap.add_argument("--include-preflop", action="store_true",
+                    help="also run the full preflop tree (several GB, minutes per run)")
     ap.add_argument("--out", default="", help="write <out>.json and <out>.md")
+    ap.add_argument("--extra", default="",
+                    help="semicolon-separated UPI commands inserted after the build and "
+                         "before the solve, e.g. --extra 'set_dcfr 1.5 0 3'")
     args = ap.parse_args(argv)
 
     if not os.path.exists(args.exe):
@@ -220,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
     names = [t for t in args.trees.split(",") if t] or tree_names()
     if args.include_25bb:
         names = names + ["fixture25bb"]
+    if args.include_preflop:
+        names = names + ["preflop_full"]
     ncpu = os.cpu_count() or 1
     modes = [int(t) for t in args.threads.split(",") if t] or sorted({1, ncpu})
     targets = tuple(float(t) for t in args.targets.split(",") if t)
@@ -231,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         "version": subprocess.run([args.exe], input="show_build_version\nexit\n",
                                   capture_output=True, text=True).stdout.strip().splitlines()[-1],
         "info_freq": args.info_freq,
+        "extra": args.extra,
     }
 
     rows = []
@@ -238,7 +265,8 @@ def main(argv: list[str] | None = None) -> int:
         for threads in modes:
             print(f"  {name} @ {threads} thread{'s' if threads > 1 else ''} ...",
                   end="", flush=True)
-            r = run_one(args.exe, name, threads, targets, args.info_freq, args.max_seconds)
+            r = run_one(args.exe, name, threads, targets, args.info_freq, args.max_seconds,
+                        tuple(c.strip() for c in args.extra.split(";") if c.strip()))
             rows.append(r)
             if r["error"]:
                 print(f" {r['error']}")

@@ -7,7 +7,7 @@ A heads-up no-limit hold'em solver (postflop trees and full preflop trees) with 
 public UPI documentation; it contains no PioSOLVER code.
 
 - C++20, single binary, no dependencies beyond zlib (ships with macOS).
-- Vector-form **Discounted CFR** (α=1.5, β=0, γ=2) with exact card removal, no abstraction.
+- Vector-form **Discounted CFR** (α=1.5, β=0, γ=3) with exact card removal, no abstraction. `set_dcfr` overrides the exponents.
 - Multi-threaded over turn/river cards with a nested work-stealing pool.
 - Suit **isomorphism** (flop trees on by default, like Pio's `set_isomorphism 1 0`).
 - Optional 16-bit compressed storage (`small_strats`), roughly halving memory.
@@ -175,9 +175,22 @@ clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compres
 show_metadata, show_save_version, load_all_nodes, set_compression_precision,
 set_compression_level, check_tree_health.
 
-**Saving and loading.** `dump_tree <file> [no_rivers|no_turns]` writes a full save, or one without the
-river (or turn and river) strategies. Those are much smaller, and the missing streets are re-solved on
-demand when you browse them. `load_tree <file>` is **lazy** (Pio's "fast" load): it reads only the
+**Saving and loading.** `dump_tree <file> [no_rivers|no_turns] [lossless]` writes a save for viewing.
+By default it keeps each node's displayed strategy, quantized to `set_compression_precision` bits (11, as
+in Pio: frequencies within 1/2047), and no regrets: saves are for browsing, not for resuming a solve.
+`no_rivers` / `no_turns` drop the later streets, which are re-solved on demand as you browse them, as in
+Pio. `lossless` keeps everything exactly. Converged flop tree, 155 MB in RAM:
+
+| save | size | PioSOLVER 3.10, same tree |
+|---|---|---|
+| `lossless` | 76 MB | - |
+| default | 4.1 MB | 7.8 MB |
+| `no_rivers` | 120 KB | 315 KB |
+| `no_turns` (flop only) | 3 KB | 21 KB |
+
+Opening any of them takes about 0.02 s. Each turn of a `no_turns` save is re-solved in about 0.01 s
+when you first browse it (to `set_recalc_accuracy`, by default 0.1% of the pot on the turn).
+`load_tree <file>` is **lazy** (Pio's "fast" load): it reads only the
 tree's settings, and each street segment (the decisions between two card deals) is decompressed the
 first time it is accessed. Big saves open instantly and use memory only for what you look at (e.g. a
 155 MB tree: 0.02 s and 13 MB to open and browse vs 0.22 s and 155 MB for `load_tree <file> full`).
@@ -204,9 +217,14 @@ For whole-hand accounting give the preflop investments per player (e.g. `set_pot
 Policy (owner decision, #10): match Pio wherever tools may depend on it (formats, codes, node ids,
 error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberate differences:
 
+- **`list_algorithms` reports `gamma 3`, not Pio's `gamma 2`.** The strings are otherwise identical.
+  Our DCFR default is γ=3 because it converges faster on every benchmark tree (see
+  `bench/dcfr_sweep.md`); the command reports the exponents actually in use rather than Pio's, since
+  silently printing a parameter we do not use would be worse than the byte difference. `set_dcfr`
+  restores 1.5/0/2 if exact parity matters.
 - **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip files with one
   member per street segment plus an index (`src/upi_save.cpp`), and `show_save_version` reports our own
-  format (4).
+  format (5).
 - **One algorithm.** `set_algorithm` accepts every Pio code but all map to DCFR; `list_algorithms`
   keeps Pio's codes with honest descriptions.
 - **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.

@@ -234,7 +234,7 @@ def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
     print("[save / load]")
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "t.cfr")
-        check(u.cmd(f'dump_tree "{path}"') == "dump_tree ok!", "dump_tree")
+        check(u.cmd(f'dump_tree "{path}" lossless') == "dump_tree ok!", "dump_tree lossless")
         check(u.cmd(f'check_tree_health "{path}"') == "File OK", "check_tree_health")
         meta = u.cmd(f'show_metadata "{path}"').split("\n")
         check(meta[1] == "ROOT" and meta[2].rstrip() == "Qh Qc 2c", f"show_metadata ({meta[2]!r})")
@@ -256,8 +256,31 @@ def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
             u.cmd("free_tree")
             check(u.cmd(f'load_tree "{path}" full') == "load_tree ok!", "load_tree full")
             check(u.cmd("print_all_strats") == all_before, "every strategy identical after full load")
+        # Default saves keep only the displayed strategies, quantised to set_compression_precision bits
+        # (11): frequencies within 1/2047 and far smaller. The flop-only workflow: save no_turns, browse,
+        # and the later streets are re-solved on demand.
+        sizes = {"lossless": os.path.getsize(path)}
+        for opt in ("", "no_turns"):
+            q = os.path.join(td, f"q{opt}.cfr")
+            check(u.cmd(f'dump_tree "{q}" {opt}'.rstrip()) == "dump_tree ok!", f"dump_tree {opt or '(default)'}")
+            sizes[opt or "default"] = os.path.getsize(q)
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{q}"')
+            got = [u.cmd("show_strategy " + d) for d in (strat_path,) + (tuple(deep_paths) if not opt else ())]
+            want = [s_before] + (deep_before if not opt else [])
+            diff = max(abs(float(x) - float(y)) for a, b in zip(want, got) for x, y in zip(a.split(), b.split()))
+            check(diff < 1.0 / 2047 + 1e-6, f"{opt or 'default'} save: strategies within 11-bit precision (max diff {diff:.2e})")
+            if opt and deep_paths:
+                turn = deep_paths[0]
+                r = u.cmd("show_strategy " + turn)
+                check(not r.startswith("ERROR") and "ALREADY_RECALCED" in u.cmd("show_node " + turn),
+                      f"no_turns save: {turn} re-solved on demand")
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{path}" full')
+        check(sizes["default"] * 2 < sizes["lossless"] and sizes["no_turns"] * 10 < sizes["default"],
+              f"save sizes: lossless {sizes['lossless'] >> 10} KB > default {sizes['default'] >> 10} KB > no_turns {sizes['no_turns'] >> 10} KB")
         small = os.path.join(td, "small.cfr")
-        u.cmd(f'dump_tree "{small}" no_rivers')
+        u.cmd(f'dump_tree "{small}" no_rivers lossless')
         check(os.path.getsize(small) < os.path.getsize(path), "no_rivers save is smaller")
         if deep_paths:
             u.cmd("free_tree")
@@ -575,7 +598,7 @@ def main(exe, big=False):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "pf.cfr")
             s_before = u.cmd("show_strategy r:0:b25:c:7c7d2h")
-            u.cmd(f'dump_tree "{path}"'); u.cmd("free_tree")
+            u.cmd(f'dump_tree "{path}" lossless'); u.cmd("free_tree")
             check(u.cmd(f'load_tree "{path}"') == "load_tree ok!", "load preflop tree")
             check(u.cmd("show_strategy r:0:b25:c:7c7d2h") == s_before, "preflop tree strategies survive save/load")
 

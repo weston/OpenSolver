@@ -3,203 +3,218 @@
     "machine": "arm64 Darwin 27.2.0, 20 cores",
     "compiler": "Apple clang version 15.0.0 (clang-1500.3.9.4)",
     "version": "0.1.0 (Nov  1 2026)",
-    "info_freq": 5
+    "info_freq": 5,
+    "extra": ""
   },
   "runs": [
     {
       "tree": "deep",
       "threads": 1,
-      "wall_seconds": 37.502,
-      "iterations": 145,
-      "final_exploitability": 0.076,
+      "wall_seconds": 36.592,
+      "iterations": 135,
+      "final_exploitability": 0.074,
       "peak_rss_mb": 232.8,
       "reached": {
-        "0.01": 16.821,
-        "0.005": 24.239,
-        "0.002": 36.454
+        "0.01": 16.46,
+        "0.005": 23.127,
+        "0.002": 35.549
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "deep",
       "threads": 20,
-      "wall_seconds": 6.342,
-      "iterations": 145,
-      "final_exploitability": 0.076,
-      "peak_rss_mb": 237.9,
+      "wall_seconds": 5.971,
+      "iterations": 135,
+      "final_exploitability": 0.074,
+      "peak_rss_mb": 237.6,
       "reached": {
-        "0.01": 2.752,
-        "0.005": 4.014,
-        "0.002": 6.144
+        "0.01": 2.598,
+        "0.005": 3.667,
+        "0.002": 5.79
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "flop_3bet",
       "threads": 1,
-      "wall_seconds": 2.552,
+      "wall_seconds": 2.61,
       "iterations": 50,
-      "final_exploitability": 0.397,
+      "final_exploitability": 0.355,
       "peak_rss_mb": 41.0,
       "reached": {
-        "0.01": 1.13,
-        "0.005": 1.629,
-        "0.002": 2.357
+        "0.01": 1.171,
+        "0.005": 1.687,
+        "0.002": 2.413
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "flop_3bet",
       "threads": 20,
-      "wall_seconds": 0.8,
+      "wall_seconds": 0.848,
       "iterations": 50,
-      "final_exploitability": 0.396,
+      "final_exploitability": 0.355,
       "peak_rss_mb": 43.7,
       "reached": {
-        "0.01": 0.356,
-        "0.005": 0.509,
-        "0.002": 0.735
+        "0.01": 0.394,
+        "0.005": 0.555,
+        "0.002": 0.784
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "flop_srp_2",
       "threads": 1,
-      "wall_seconds": 11.245,
-      "iterations": 60,
-      "final_exploitability": 0.119,
-      "peak_rss_mb": 154.6,
+      "wall_seconds": 10.659,
+      "iterations": 55,
+      "final_exploitability": 0.1,
+      "peak_rss_mb": 154.3,
       "reached": {
-        "0.01": 5.219,
-        "0.005": 6.977,
-        "0.002": 10.494
+        "0.01": 5.382,
+        "0.005": 6.286,
+        "0.002": 9.899
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "flop_srp_2",
       "threads": 20,
-      "wall_seconds": 1.386,
-      "iterations": 60,
-      "final_exploitability": 0.119,
-      "peak_rss_mb": 160.7,
+      "wall_seconds": 1.297,
+      "iterations": 55,
+      "final_exploitability": 0.1,
+      "peak_rss_mb": 160.4,
       "reached": {
-        "0.01": 0.622,
-        "0.005": 0.837,
-        "0.002": 1.264
+        "0.01": 0.651,
+        "0.005": 0.759,
+        "0.002": 1.184
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "flop_srp_4",
       "threads": 1,
-      "wall_seconds": 28.178,
-      "iterations": 75,
-      "final_exploitability": 0.104,
+      "wall_seconds": 23.126,
+      "iterations": 60,
+      "final_exploitability": 0.109,
       "peak_rss_mb": 307.2,
       "reached": {
-        "0.01": 14.501,
-        "0.005": 18.007,
-        "0.002": 26.678
+        "0.01": 12.767,
+        "0.005": 14.585,
+        "0.002": 21.65
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "flop_srp_4",
       "threads": 20,
-      "wall_seconds": 3.725,
-      "iterations": 75,
-      "final_exploitability": 0.104,
-      "peak_rss_mb": 313.7,
+      "wall_seconds": 3.054,
+      "iterations": 60,
+      "final_exploitability": 0.109,
+      "peak_rss_mb": 313.6,
       "reached": {
-        "0.01": 1.883,
-        "0.005": 2.346,
-        "0.002": 3.508
+        "0.01": 1.69,
+        "0.005": 1.928,
+        "0.002": 2.855
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "preflop",
       "threads": 1,
-      "wall_seconds": 0.089,
-      "iterations": 45,
-      "final_exploitability": 0.026,
+      "wall_seconds": 0.071,
+      "iterations": 35,
+      "final_exploitability": 0.028,
       "peak_rss_mb": 16.2,
       "reached": {
-        "0.01": 0.036,
-        "0.005": 0.054,
-        "0.002": 0.079
+        "0.01": 0.035,
+        "0.005": 0.043,
+        "0.002": 0.06
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "preflop",
       "threads": 20,
-      "wall_seconds": 0.117,
-      "iterations": 45,
-      "final_exploitability": 0.026,
+      "wall_seconds": 0.091,
+      "iterations": 35,
+      "final_exploitability": 0.028,
       "peak_rss_mb": 16.5,
       "reached": {
-        "0.01": 0.048,
-        "0.005": 0.072,
-        "0.002": 0.107
+        "0.01": 0.045,
+        "0.005": 0.057,
+        "0.002": 0.08
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "river",
       "threads": 1,
-      "wall_seconds": 0.008,
+      "wall_seconds": 0.009,
       "iterations": 75,
-      "final_exploitability": 0.193,
+      "final_exploitability": 0.195,
       "peak_rss_mb": 2.7,
       "reached": {
         "0.01": 0.002,
         "0.005": 0.003,
         "0.002": 0.006
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "river",
       "threads": 20,
-      "wall_seconds": 0.009,
+      "wall_seconds": 0.008,
       "iterations": 75,
-      "final_exploitability": 0.193,
+      "final_exploitability": 0.195,
       "peak_rss_mb": 3.0,
       "reached": {
-        "0.01": 0.003,
-        "0.005": 0.004,
-        "0.002": 0.007
+        "0.01": 0.002,
+        "0.005": 0.003,
+        "0.002": 0.006
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "turn",
       "threads": 1,
-      "wall_seconds": 0.157,
-      "iterations": 50,
-      "final_exploitability": 0.191,
-      "peak_rss_mb": 5.4,
+      "wall_seconds": 0.143,
+      "iterations": 45,
+      "final_exploitability": 0.184,
+      "peak_rss_mb": 5.5,
       "reached": {
-        "0.01": 0.071,
-        "0.005": 0.099,
-        "0.002": 0.141
+        "0.01": 0.073,
+        "0.005": 0.087,
+        "0.002": 0.129
       },
+      "extra": [],
       "error": null
     },
     {
       "tree": "turn",
       "threads": 20,
-      "wall_seconds": 0.094,
-      "iterations": 50,
-      "final_exploitability": 0.191,
-      "peak_rss_mb": 6.7,
+      "wall_seconds": 0.084,
+      "iterations": 45,
+      "final_exploitability": 0.184,
+      "peak_rss_mb": 6.8,
       "reached": {
         "0.01": 0.043,
-        "0.005": 0.06,
-        "0.002": 0.085
+        "0.005": 0.051,
+        "0.002": 0.076
       },
+      "extra": [],
       "error": null
     }
   ]

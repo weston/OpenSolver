@@ -269,7 +269,8 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
 - `show_all_freqs` prints real frequencies (Pio 3.10 prints `nan`); `estimate_schematic_tree` reports
   real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `show_nuts` breaks
   ties in its own order; `node_count` counts every node in preflop trees.
-- `_pp` listings omit hands that are only in the opponent's range (#9).
+- `_pp` listings omit hands that are only in the opponent's range by default; Pio always lists the union
+  of both ranges. `set_union_hands on` (before `build_tree`) gives Pio's exact hand list (#9, #61).
 - Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
   there; results are identical with isomorphism on or off (#12).
 - **Preflop equity** (`calc_eq_preflop`, preflop all-ins) is exact: a 1326x1326 hand-vs-hand

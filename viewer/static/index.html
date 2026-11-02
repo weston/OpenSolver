@@ -86,6 +86,11 @@
 <main id="view-build" class="view hidden">
   <div class="build">
     <div class="build-main">
+      <div class="spotbar">
+        <div class="spot-name"><span class="muted">Spot</span> <b id="spot-name">Unsaved</b> <span id="spot-dirty" class="tag hidden">edited</span></div>
+        <button class="btn small" id="spot-open">Open spot…</button>
+        <button class="btn small" id="spot-save">Save spot…</button>
+      </div>
       <section class="card">
         <div class="card-head">
           <h2>Ranges</h2>
@@ -182,6 +187,28 @@
       <button value="ok" id="file-ok" class="btn primary">Open</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="lib-dialog" class="dialog lib">
+  <div class="lib-head">
+    <h2 id="lib-title">Library</h2>
+    <input id="lib-search" placeholder="Search" spellcheck="false">
+  </div>
+  <div class="lib-body">
+    <div id="lib-list" class="lib-list"></div>
+    <div id="lib-preview" class="lib-preview"></div>
+  </div>
+  <div id="lib-save-row" class="lib-save-row">
+    <label class="field"><span>Name — use / for folders</span><input id="lib-name" placeholder="BTN vs BB/SRP/BB call" spellcheck="false"></label>
+  </div>
+  <div class="lib-foot">
+    <button id="lib-rename" class="btn ghost small">Rename</button>
+    <button id="lib-delete" class="btn ghost small">Delete</button>
+    <span class="lib-where muted">Stored on this computer</span>
+    <div class="topbar-spacer"></div>
+    <button id="lib-cancel" class="btn ghost">Cancel</button>
+    <button id="lib-ok" class="btn primary">Load</button>
+  </div>
 </dialog>
 
 <div id="toasts" class="toasts" aria-live="polite"></div>

@@ -6,6 +6,7 @@ import { get, post, toast, fail, prefs, fmt } from "./api.js";
 import { initStudy, gotoNode, showEmpty, study, applyUrlState } from "./study.js";
 import { initBuild, updateProgress, treeLoadedElsewhere } from "./build.js";
 import { drawSpark } from "./chart.js";
+import { initLibrary } from "./library.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -126,6 +127,7 @@ async function boot() {
     initHands((await get("/api/hand_order")).order);
   } catch (e) { fail("Cannot reach the viewer server: " + e.message); return; }
   initStudy();
+  initLibrary();
   initBuild({ built: async () => { app.tree = true; await refreshRootPot(); study.reset(); } });
 
   const st = await get("/api/status");
@@ -143,6 +145,16 @@ async function boot() {
   } else {
     setView(want === "build" || want === "study" ? want : app.tree ? "study" : "build");
   }
+  // Back/forward and edited URLs: follow #build / #study=<node> without a reload.
+  addEventListener("hashchange", () => {
+    const [h] = location.hash.slice(1).split("&");
+    const [v, id] = h.split("=");
+    if (v === "build" && app.view !== "build") setView("build");
+    else if (v === "study") {
+      if (app.view !== "study") setView("study");
+      if (id && app.tree && id !== study.id) gotoNode(id);
+    }
+  });
   poll();
 }
 

@@ -57,9 +57,12 @@ class ViewerTest(unittest.TestCase):
         except Exception:
             pass
 
-    def req(self, path, method="GET", body=None):
+    def req(self, path, method="GET", body=None, extra_headers=None):
         data = json.dumps(body).encode() if body is not None else None
-        headers = {"Content-Type": "application/json"} if body is not None else {}
+        headers = {"Content-Type": "application/json"} if method == "POST" else {}
+        if method == "POST" and data is None:
+            data = b"{}"
+        headers.update(extra_headers or {})
         r = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(r, timeout=120) as f:
@@ -99,6 +102,18 @@ class ViewerTest(unittest.TestCase):
         self.assertEqual(st, 400)
         st, d = self.req("/api/strategy?id=" + urllib.parse.quote("r:0 show_version"))
         self.assertEqual(st, 400)
+
+    def test_03b_cross_site_requests_refused(self):
+        # A page on another site can send text/plain POSTs without a CORS preflight; they must not
+        # reach the solver (save/load write and read files).
+        st, d = self.req("/api/save", "POST", None, {"Content-Type": "text/plain"})
+        self.assertEqual(st, 415)
+        self.assertIn("application/json", d["error"])
+        # DNS rebinding: the browser sends the attacker's hostname in Host.
+        st, d = self.req("/api/status", "GET", None, {"Host": f"evil.example:{self.http.server_port}"})
+        self.assertEqual(st, 403)
+        st, _ = self.req("/api/status", "GET", None, {"Host": f"localhost:{self.http.server_port}"})
+        self.assertEqual(st, 200)
 
     def test_04_traversal_blocked(self):
         try:

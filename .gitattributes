@@ -1,0 +1,3 @@
+# The category tests compare these captured protocol responses byte for byte.
+# Preserve LF even in Windows checkouts used to build from WSL.
+tests/data/pio_categories/*.txt text eol=lf

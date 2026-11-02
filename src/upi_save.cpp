@@ -385,6 +385,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   if (a.empty()) throw CmdError{"incorrect or missing argument"};
   for (size_t i = 1; i < a.size(); ++i)
     if (a[i] != "full" && a[i] != "fast" && a[i] != "auto") throw CmdError{"incorrect or missing argument"};
+  bool full_load = a.size() > 1 && a[1] == "full";
   stop_solver();
   GzIn in(a[0]);
   LoadedConfig lc = read_config_section(in);
@@ -469,6 +470,11 @@ std::string Upi::cmd_load_tree(const Args& a) {
   if (std::memcmp(trailer, kTrailer, 8) != 0) throw CmdError{"file format error (missing trailer)"};
   t->iterations = lc.iters;
   t->incomplete = lc.h.truncate != 0;
+  t->missing_street = lc.h.truncate ? static_cast<int>(lc.h.truncate) + 1 : 0;
+  // Pio loads in "fast" mode unless `full` is given (we always load everything, but keep the flags
+  // and the load_all_nodes requirement for compatibility).
+  t->fast_loaded = !full_load;
+  t->loaded_compressed = (lc.h.mode & 2) != 0;
   tree_ = std::move(t);
   solver_ = std::make_unique<Solver>(*tree_);
   solver_->first_player = first_player_;

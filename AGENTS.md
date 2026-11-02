@@ -71,7 +71,7 @@ Pio comparison scripts take the host from `PIO_SSH`.
 ## Build and test
 
 ```sh
-make                       # ./solver (clang++ -O3 -mcpu=native; zlib)
+make                       # ./solver (C++20 -O3, native CPU flags; zlib)
 make test                  # unit tests + tests/test_upi.py (end-to-end on a small tree, < 1 GB RAM)
 make test-big              # same, but test_upi.py solves the real 25bb tree (~3.5 GB free RAM needed)
 ./build/test_eval          # exhaustive evaluator check (all 133M 7-card hands, ~2 s)
@@ -129,6 +129,14 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
 - `eliminate_path` is a one-time edit that moves the frequency to check/call.
+- Truncated saves (`dump_tree ... no_turns|no_rivers`) load with root flags `INCOMPLETE_TREE ...
+  FAST_LOAD COMPRESSED`; browsing a missing street re-solves that street's subtree on demand to
+  `set_recalc_accuracy` (fraction of the pot; defaults 0.0025 0.001 0.0005) and flags it
+  `ALREADY_RECALCED`. `set_always_recalc <street> <ms>` does the same for present streets.
+  `rebuild_tree`, `estimate_rebuild_tree`, `solve_all_splits` need `load_all_nodes` first (probe10).
+- `set_strategy` under the default v4 algorithms persists through further solving (we write it as a
+  dominant regret); under `original_pio`/`pio_cfr` it is only a starting point (probe9). Best
+  responses (MES, exploitability) never deviate at locked nodes or locked combos.
 - Rake (`set_rake frac cap`) and ICM payoffs match Pio exactly (probe8). Rake and ICM are last-one-wins;
   `set_icm` before any `set_icm_point` prints `ERROR: set_icm ICM points not defined.` then `set_icm ok!`
   and leaves ICM off; `reset_icm_tables` leaves rake alone and counts as defined tables.
@@ -137,3 +145,6 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   absolute; subset flops are node tokens exactly as added (`r:0:b25:c:7c7d2h`); postflop subtrees show
   their schematic pot and `show_win_evs` is schematic-relative; **Pio crashes in `add_all_flops` unless
   `set_board` was called before attaching schematic trees**.
+- Schematic `set_pot` is literal (no preflop correction): `set_pot 0 0 200` = 200 dead money (probe11:
+  our EVs 95.49 / 107.67 vs Pio MES 95.42 / 107.74). Pio caches `calc_results` / `calc_ev`: after `go`
+  it reports stale numbers until `clear_cache`; we always report fresh values.

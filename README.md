@@ -13,11 +13,17 @@ public UPI documentation; it contains no PioSOLVER code.
 ## Build and run
 
 ```sh
-make            # builds ./solver (clang++, -O3 -mcpu=native)
+make            # builds ./solver (-O3, native CPU optimizations)
 make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
 make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
 ./solver        # talk UPI on stdin/stdout
 ```
+
+A C++20 compiler (GCC or Clang), make, Python 3 (for tests), and zlib headers are
+required. On Ubuntu 24.04, install them with
+`sudo apt install build-essential zlib1g-dev python3`; use `make CXX=clang++-18`
+to build with Clang after installing `clang-18`. The native CPU flag is
+`-mcpu=native` on ARM and `-march=native` on x86; `CXXFLAGS` can override it.
 
 A minimal session:
 
@@ -40,6 +46,65 @@ show_strategy r:0
 
 `tests/data/pio_25bbHU_2sizes.txt` is a real PioViewer-generated tree script (266 `add_line`s);
 it runs unmodified: `./solver < tests/data/pio_25bbHU_2sizes.txt`.
+
+## Tree builder
+
+The engine only accepts explicit lines. PioViewer instead lets you describe a tree with a few
+percentages and expands them itself; `tools/tree_builder.py` does that expansion, so you can
+write the short form and get the lines:
+
+```sh
+python3 tools/tree_builder.py config.txt            # print the add_line commands
+python3 tools/tree_builder.py config.txt --full     # a complete UPI script, ready to pipe in
+python3 tools/tree_builder.py config.txt --compare  # diff against add_lines already in the file
+python3 tools/tree_builder.py --rules               # print the sizing rules
+```
+
+The input is any file with PioViewer's `#Key#Value` header; everything else in the file is
+ignored, so a PioViewer save file works directly:
+
+```
+#Pot#40
+#EffectiveStacks#230
+#AllinThreshold#67
+#AddAllinOnlyIfLessThanThisTimesThePot#300
+#FlopConfig.BetSize#30,60
+#FlopConfig.RaiseSize#40
+#RiverConfig.BetSize#65
+#RiverConfig.AddAllin#True
+```
+
+`#<Street>Config.<Field>#` sets OOP, `#<Street>ConfigIP.<Field>#` sets IP; fields are
+`BetSize`, `DonkBetSize`, `RaiseSize` (comma-separated percentages) and `AddAllin`.
+
+Amounts in a line are absolute - the total a player has put in since the hand started - so a
+check or call repeats the amount that player is already matched to. With
+`pot = dead pot + both investments` and `pot_if_called = dead pot + 2 x the larger investment`:
+
+| Action | Total |
+|---|---|
+| bet | `invested + round(BetSize% x pot)`, or `DonkBetSize%` when OOP leads into the previous street's aggressor |
+| raise | `facing + round(RaiseSize% x pot_if_called)` |
+
+Rounding is to the nearest chip. Two all-in rules sit on top:
+
+- **`AllinThreshold%`** - a bet or raise whose total reaches that percentage of the effective
+  stack is replaced by the all-in. At 67% of a 230 stack, any size from 154 up becomes 230,
+  which is why the deepest action of every branch is an all-in.
+- **`<Street>Config[IP].AddAllin`** - offers the all-in as an extra size next to the configured
+  ones, but only while `AddAllinOnlyIfLessThanThisTimesThePot%` of `pot_if_called` still exceeds
+  the all-in. On a 40-chip river pot, 300% is 120 and the stack is 230, so no all-in is offered;
+  facing a 26 bet the pot-if-called is 92, 300% of it is 276, and the all-in joins the raise.
+
+Only maximal lines are emitted: the solver fills in check, call and fold at every node it
+creates, so a line only has to reach the deepest bet of its branch.
+
+These rules were inferred from `tests/data/pio_25bbHU_2sizes.txt`, which carries both a config
+header and the 266 lines PioViewer generated from it; `tests/test_tree_builder.py` checks that
+the builder reproduces that set exactly. Two details the fixture cannot pin down: the tie-break
+when a size lands exactly on .5 (half-up and half-even both reproduce it), and `DonkBetSize`,
+which the fixture sets equal to `BetSize` on every street - donk nodes are reached, but their
+size is indistinguishable from an ordinary bet there.
 
 ## Interface conventions (as implemented)
 
@@ -89,9 +154,11 @@ add preflop lines (absolute amounts incl. blinds; the SB = IP acts first), `buil
 `add_to_subset <weight> <c> <c> <c>` per flop, then for every preflop exit: `set_board <any flop>`,
 `set_pot`/`set_eff_stack`/`add_line` for its postflop tree and `add_schematic_tree <exit>`; finally
 `add_all_flops` and `go`. Each subset flop stands for its whole suit-isomorphism class (its values are
-averaged over suit permutations), preflop all-ins use a fixed sample of 3000 boards, and postflop
-subtrees report payoffs relative to their schematic pot (like Pio) while the solver internally uses
-whole-hand chips.
+averaged over suit permutations; deal probabilities are normalized per hand pair by
+inclusion-exclusion), preflop all-ins use a fixed sample of 3000 boards. As in Pio, each schematic's
+`set_pot` is taken literally: its per-player chips are investments and its dead money is free money.
+For whole-hand accounting give the preflop investments per player (e.g. `set_pot 100 100 0` after a
+3-bet to 100); `set_pot 0 0 200` makes the 200 dead money.
 
 ## Known differences from PioSOLVER
 
@@ -139,7 +206,8 @@ src/parallel.*     nested work-stealing thread pool, per-thread arenas
 src/equity.*       calc_eq family
 src/categories.*   range explorer
 src/upi*.cpp       command processor, node queries, save/load
-tests/             unit tests (eval, range, categories, solver) + end-to-end UPI test
+tests/             unit tests (eval, range, categories, solver, tree builder) + end-to-end UPI test
+tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands)
 ```
 
 ## Contributing

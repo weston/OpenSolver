@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "action_tree.hpp"
@@ -154,7 +155,11 @@ class GameTree {
   std::unordered_map<uint32_t, uint32_t> eliminated;              // bitmask of removed actions
 
   long long iterations = 0;  // CFR iterations run on this tree
-  bool incomplete = false;  // a truncated save was loaded (later streets unsolved)
+  bool incomplete = false;
+  int missing_street = 0;     // first street without saved strategies (4 = turn, 5 = river); 0 = none
+  bool fast_loaded = false;   // loaded without `full` (Pio: some commands need load_all_nodes)
+  bool loaded_compressed = false;
+  std::unordered_set<uint32_t> recalced;  // street roots re-solved on demand  // a truncated save was loaded (later streets unsolved)
 
   int num_hands(int p) const { return static_cast<int>(hands[p].size()); }
   int root_board_len() const { return static_cast<int>(cfg.board.size()); }
@@ -171,6 +176,10 @@ class GameTree {
   double terminal_payoff(const ActionNode& an, int p, int outcome, bool subtree = false) const;
   std::vector<std::unique_ptr<ActionNode>> schematic_roots;  // owned postflop trees (preflop mode)
   std::vector<uint8_t> perm_all;  // suit permutations valid for both ranges (flop-deal symmetrization)
+  std::vector<float> flop_compat[2];  // per hand: compatible share of the subset flop weight
+  std::vector<float> flop_card[2];    // [hand * 52 + card]: compatible weight of variants with that card
+  std::vector<float> flop_pair[2];    // [hand * 1326 + combo]: compatible weight of variants with both cards
+  void compute_flop_compat();
 
   const ActionNode& an(const GNode& n) const { return *anodes[n.anode]; }
 

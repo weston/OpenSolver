@@ -322,7 +322,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
   ArenaScope sc;
   float* sigma = sc.a.alloc(static_cast<size_t>(A) * Ha);
   if (M == Walk::CFR) current_strategy(ni, sigma);
-  else if (actor == o || M == Walk::Evaluate) average_strategy(ni, sigma);
+  else if (actor == o || M == Walk::Evaluate || (n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) average_strategy(ni, sigma);
 
   if (actor == p) {
     float* cfv = sc.a.alloc(static_cast<size_t>(A) * Hp);
@@ -347,6 +347,22 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       for (int a = 1; a < A; ++a) {
         const float* c = cfv + static_cast<size_t>(a) * Hp;
         for (int h = 0; h < Hp; ++h) out[h] = std::max(out[h], c[h]);
+      }
+      // A best response cannot deviate where the strategy is locked (whole node or locked combos);
+      // this is what makes MES / exploitability meaningful in node-locking workflows (Pio does the same).
+      if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) {
+        const uint8_t* lockmask = nullptr;
+        if (!(n.flags & GF_LOCKED)) {
+          auto it = g_.combo_lock.find(ni);
+          if (it != g_.combo_lock.end()) lockmask = it->second.data();
+        }
+        for (int h = 0; h < Hp; ++h) {
+          if (lockmask && !lockmask[h]) continue;
+          float v = 0.0f;
+          for (int a = 0; a < A; ++a) v += sigma[static_cast<size_t>(a) * Hp + h] * cfv[static_cast<size_t>(a) * Hp + h];
+          out[h] = v;
+        }
+        return;
       }
       if (write_best_response && !(n.flags & GF_LOCKED)) {
         // set_mes: store the pure best response as both strategy and regrets.
@@ -570,6 +586,39 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
       const uint16_t* ph = g_.perm_hand[p][PERM_INV[pm]].data();
       for (int h = 0; h < Hp; ++h) out[h] += w * rk[ph[h]];
     }
+  }
+  // Normalise: a pair (h, o) is dealt flop variant v with probability w_v / N(h,o). Divide our hand's
+  // value by the opponent-reach-weighted mean of N(h,o); this keeps each hand's total deal probability
+  // exact (and the value exact whenever N(h,o) does not vary across opponents).
+  const float* Wp = g_.flop_compat[p].data();
+  const float* nc = g_.flop_card[p].data();
+  const float* np2 = g_.flop_pair[p].data();
+  const uint8_t* oc1 = g_.hcard[o][0].data();
+  const uint8_t* oc2 = g_.hcard[o][1].data();
+  const uint16_t* ocombo = g_.hands[o].data();
+  const auto& phands = g_.hands[p];
+  auto norm = [&](int h0, int h1) {
+    for (int h = h0; h < h1; ++h) {
+      if (out[h] == 0.0f) continue;
+      const uint64_t hm = combo_mask(phands[h]);
+      const float* nch = nc + static_cast<size_t>(h) * NUM_CARDS;
+      const float* nph = np2 + static_cast<size_t>(h) * NUM_COMBOS;
+      double num = 0, den = 0;
+      for (int j = 0; j < Ho; ++j) {
+        const float r = ro[j];
+        if (r == 0.0f || (combo_mask(ocombo[j]) & hm)) continue;
+        num += r * (Wp[h] - nch[oc1[j]] - nch[oc2[j]] + nph[ocombo[j]]);
+        den += r;
+      }
+      out[h] = num > 0 ? static_cast<float>(out[h] * den / num) : 0.0f;
+    }
+  };
+  const int chunks = parallel ? std::min(Hp, 4 * pool().threads()) : 1;
+  if (chunks > 1) {
+    std::function<void(int)> fn = [&](int c) { norm(c * Hp / chunks, (c + 1) * Hp / chunks); };
+    pool().parallel_for(chunks, fn);
+  } else {
+    norm(0, Hp);
   }
 }
 

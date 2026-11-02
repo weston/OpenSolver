@@ -134,7 +134,10 @@ class Upi {
   void lock_node_impl(uint32_t ni, bool lock);
   void set_node_strategy(uint32_t ni, const float* local_strat);  // A*H canonical
   double explo_at(const NodeRef& r, std::vector<float>& r0, std::vector<float>& r1, RootStats* st = nullptr);
-  void solve_subtree(const NodeRef& r, double accuracy, long long max_iters);
+  void solve_subtree(const NodeRef& r, double accuracy, long long max_iters, double max_seconds = 0);
+  // Re-solve the street subtree containing r if its strategies are missing (truncated save) or
+  // set_always_recalc asks for it. Call before reading strategies of r.
+  void ensure_recalced(const NodeRef& r);
 
   // ---- state ----
   GameConfig cfg_;            // global state (set_* commands)

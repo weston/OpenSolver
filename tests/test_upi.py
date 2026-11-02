@@ -352,6 +352,15 @@ def main(exe, big=False):
         res = u.cmd("calc_results").split("\n")
         expl = float(res[4].split(": ")[1])
         check(expl < 0.05, f"river exploitability {expl:.5f}")
+        # Locked nodes: a best response may not deviate there (Pio semantics, probe9).
+        pure = " ".join(["1"] * 1326 + ["0"] * 1326)
+        u.cmd("set_strategy r:0 " + pure)
+        u.cmd("lock_node r:0")
+        u.cmd("go 100 steps"); u.cmd("wait_for_solver")
+        rl = u.cmd("calc_results").split("\n")
+        ev_l, mes_l = float(rl[0].split(": ")[1]), float(rl[2].split(": ")[1])
+        check(mes_l - ev_l < 0.3, f"locked root: OOP MES close to EV ({ev_l:.3f} vs {mes_l:.3f})")
+        u.cmd("unlock_node r:0")
         u.cmd("set_mes IP")
         res2 = u.cmd("calc_results").split("\n")
         ev_ip, mes_ip = float(res2[1].split(": ")[1]), float(res2[3].split(": ")[1])
@@ -378,7 +387,12 @@ def main(exe, big=False):
         u.cmd("set_rake 0 0")
         print("[misc]")
         check(u.cmd("show_effective_stack") == "200", "show_effective_stack")
-        check("Total Physical Memory" in u.cmd("show_memory"), "show_memory")
+        memory = u.cmd("show_memory")
+        values = re.fullmatch(r"Total Physical Memory: (\d+) MB\nAvailable Phys Memory: (\d+) MB", memory)
+        check(values is not None, "show_memory format")
+        if values:
+            total, available = map(int, values.groups())
+            check(0 < available <= total, "show_memory positive physical memory values")
         cats = u.cmd("show_category_names").split("\n")
         check(len(cats) == 2 and "top_pair" in cats[0], "show_category_names")
         check(len(u.cmd("show_categories KhQs7d").split("\n")[0].split()) == 1326, "show_categories")
@@ -388,6 +402,21 @@ def main(exe, big=False):
         check(u.cmd("show_node r:0").split("\n")[2] == "Ks Qh 7d 4c 2h ", "display iso swaps the shown board")
         check(u.cmd("show_board_no_iso") == "Kh Qs 7d 4c 2s ", "show_board_no_iso")
         u.cmd("reset_display_iso")
+
+        print("[truncated saves: on-demand recalc]")
+        for c in ["set_range OOP AA,KK,QQ,JJ,TT,99,AK,AQ,AJ,KQ,KJ,QJ,JT,T9", "set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ,KQ,QJ,JT",
+                  "set_board Kh9h4h", "set_pot 0 0 60", "set_eff_stack 200", "clear_lines", "add_line 20 20 60 60 200",
+                  "add_line 0 20 20 60 60", "add_line 0 0 40", "set_rake 0 0", "build_tree", "go 100 steps", "wait_for_solver"]:
+            u.cmd(c)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "noturns.cfr")
+            u.cmd(f'dump_tree "{path}" no_turns'); u.cmd("free_tree"); u.cmd(f'load_tree "{path}"')
+            check("INCOMPLETE_TREE" in u.cmd("show_node r") and "FAST_LOAD" in u.cmd("show_node r"), "truncated load flags")
+            check(u.cmd("rebuild_tree").endswith("please call load_all_nodes"), "rebuild_tree needs load_all_nodes")
+            st = [floats(l) for l in u.cmd("show_strategy r:0:c:c:2c").split("\n")]
+            check(any(x > 0 for l in st for x in l), "missing turn re-solved on demand")
+            check("ALREADY_RECALCED" in u.cmd("show_node r:0:c:c:2c"), "ALREADY_RECALCED flag")
+            check(float(u.cmd("explo_partial r:0:c:c:2c")) < 0.06, "recalc reaches recalc accuracy (0.1% pot)")
 
         print("[preflop tree]")
         for c in ["set_range OOP QQ+,AKs,AKo,KQs", "set_range IP QQ+,AK,AQs,KQs,JTs", "set_pot 10 5 0",
@@ -418,7 +447,10 @@ def main(exe, big=False):
         u.cmd("set_accuracy 0"); u.cmd("go 300 steps"); u.cmd("wait_for_solver")
         res = u.cmd("calc_results").split("\n")
         evo, evi, ex = (float(res[k].split(": ")[1]) for k in (0, 1, 4))
-        check(abs(evo + evi) < 0.01 and ex < 0.05, f"preflop solve: zero-sum EVs ({evo:.3f}/{evi:.3f}), explo {ex:.4f}")
+        # Schematic pots are literal (Pio semantics): their dead money is free money, so EVs are not
+        # zero-sum here. Values verified against Pio 3.10.1 (MES 95.42 / 107.74 after 2000 steps).
+        check(ex < 0.05 and abs(evo - 95.49) < 0.5 and abs(evi - 107.67) < 0.5,
+              f"preflop solve ({evo:.3f}/{evi:.3f}), explo {ex:.4f}")
         pp = u.cmd("show_strategy_pp r:0").split("\n")
         check(len(pp) == 169 and pp[0].startswith("AA : "), "preflop show_strategy_pp by class")
         with tempfile.TemporaryDirectory() as td:

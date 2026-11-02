@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <numeric>
 
 #include "eval.hpp"
@@ -87,6 +88,38 @@ int GameTree::showdown_board_id(const std::vector<int>& board) {
   showdowns.push_back(std::move(sb));
   showdown_index_[mask] = id;
   return id;
+}
+
+// Flop-deal normalization tables. Over the suit-symmetrized subset (variant weight w = weight / (W*|G|)),
+// for each hand h of player p: total compatible weight W_h, per card c the compatible weight of variants
+// containing c, and per opponent combo the compatible weight of variants containing both its cards.
+// Then the exact pair weight is N(h,o) = W_h - n(h,c1) - n(h,c2) + n(h,c1&c2) (inclusion-exclusion).
+void GameTree::compute_flop_compat() {
+  double W = 0;
+  for (auto& f : cfg.subset) W += f.weight;
+  const double gn = 1.0 / static_cast<double>(perm_all.size());
+  for (int p = 0; p < 2; ++p) {
+    const size_t H = hands[p].size();
+    flop_compat[p].assign(H, 0.0f);
+    flop_card[p].assign(H * NUM_CARDS, 0.0f);
+    flop_pair[p].assign(H * NUM_COMBOS, 0.0f);
+    for (auto& f : cfg.subset) {
+      const float w = static_cast<float>(f.weight / W * gn);
+      for (uint8_t pm : perm_all) {
+        int c[3] = {PERM_CARD[pm][f.cards[0]], PERM_CARD[pm][f.cards[1]], PERM_CARD[pm][f.cards[2]]};
+        uint64_t fm = card_bit(c[0]) | card_bit(c[1]) | card_bit(c[2]);
+        int pr[3] = {combo_index(c[0], c[1]), combo_index(c[0], c[2]), combo_index(c[1], c[2])};
+        for (size_t h = 0; h < H; ++h) {
+          if (combo_mask(hands[p][h]) & fm) continue;
+          flop_compat[p][h] += w;
+          for (int k = 0; k < 3; ++k) {
+            flop_card[p][h * NUM_CARDS + c[k]] += w;
+            flop_pair[p][h * NUM_COMBOS + pr[k]] += w;
+          }
+        }
+      }
+    }
+  }
 }
 
 int GameTree::allin_runouts_id(const std::vector<int>& board) {
@@ -181,11 +214,13 @@ struct Filler {
           double W = 0;
           for (auto& f : g.cfg.subset) W += f.weight;
           const double frac = 17296.0 / 22100.0;  // C(48,3) / C(52,3): flops compatible with two hands
+          (void)frac;
           for (auto& f : g.cfg.subset) {
             ci.flops.push_back({static_cast<uint8_t>(f.cards[0]), static_cast<uint8_t>(f.cards[1]),
                                 static_cast<uint8_t>(f.cards[2])});
-            ci.fweight.push_back(static_cast<float>(f.weight / (W * frac)));
+            ci.fweight.push_back(static_cast<float>(f.weight / W));
           }
+          if (g.flop_compat[0].empty()) g.compute_flop_compat();
           size_t k = ci.flops.size();
           n.aux = static_cast<uint32_t>(g.chances.size());
           n.num_children = static_cast<uint16_t>(k);
@@ -280,6 +315,11 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   showdown_index_.clear();
   allins.clear();
   allin_index_.clear();
+  for (int p = 0; p < 2; ++p) {
+    flop_compat[p].clear();
+    flop_card[p].clear();
+    flop_pair[p].clear();
+  }
   regrets.clear();
   regrets.shrink_to_fit();
   strat.clear();
@@ -392,8 +432,9 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
       sp.dead = sch->pot[2];
       // The schematic's pot stands for the preflop chips; subtract this player's preflop investment
       // (relative to its schematic share) so preflop decisions see whole-hand payoffs.
-      sp.offset[0] = sch->pot[0] - x->inv[0];
-      sp.offset[1] = sch->pot[1] - x->inv[1];
+      // Like Pio, the schematic's set_pot is taken literally: its per-player chips are investments that
+      // payoffs subtract, its dead money is free money. (For whole-hand chips, give each player's
+      // preflop investment in set_pot, e.g. `set_pot 100 100 0` after a 3-bet to 100.)
       auto sroot = build_action_tree(sp, sch->lines, err);
       if (!sroot) return false;
       x->children.push_back(std::move(sroot));

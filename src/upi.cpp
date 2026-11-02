@@ -288,7 +288,8 @@ void Upi::solver_thread_main(double seconds, long long steps) {
       std::lock_guard<std::mutex> lk(tree_mu_);
       ++tree_->iterations;
       ++iterations_;
-      solver_->iterate(static_cast<int>(tree_->iterations));
+      // DCFR discount clock; restarted when the payoff model changes (warm start, fast adaptation).
+      solver_->iterate(static_cast<int>(tree_->iterations - discount_restart_));
       ++done;
       double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       solve_seconds_ = base + el;
@@ -369,6 +370,7 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   solver_->first_player = first_player_;
   tree_alg_ = algorithm_;
   iterations_ = 0;
+  discount_restart_ = 0;
   solve_seconds_ = 0;
   return okmsg;
 }
@@ -725,21 +727,27 @@ void Upi::register_commands() {
   H["set_rake"] = [this](const Args& a) {
     payoff_.rake_frac = arg_double(a, 0, "fraction");
     payoff_.rake_cap = arg_double(a, 1, "cap");
-    if (payoff_.rake_frac > 0 && payoff_.icm.enabled) throw CmdError{"rake and ICM cannot be used together"};
+    // Rake and ICM are exclusive; like Pio, the last one set wins (setting rake turns ICM off).
+    if (payoff_.rake_frac > 0) payoff_.icm.enabled = false;
     if (tree_) {
       TreePause tp(pause_requests_, tree_mu_, pause_cv_);
       tree_->payoff = payoff_;
+      discount_restart_ = tree_->iterations;
     }
     return std::string("set_rake ok!");
   };
   H["set_icm"] = [this](const Args& a) {
     payoff_.icm.stacks[0] = static_cast<int32_t>(arg_int(a, 0, "oop stack"));
     payoff_.icm.stacks[1] = static_cast<int32_t>(arg_int(a, 1, "ip stack"));
-    if (payoff_.rake_frac > 0) throw CmdError{"rake and ICM cannot be used together"};
+    // Pio: without ICM points it reports an error line, still answers ok, and leaves ICM off.
+    if (!icm_tables_defined_) return std::string("ERROR: set_icm ICM points not defined.\nset_icm ok!");
     payoff_.icm.enabled = true;
+    payoff_.rake_frac = 0;  // the last of rake / ICM wins
+    payoff_.rake_cap = 0;
     if (tree_) {
       TreePause tp(pause_requests_, tree_mu_, pause_cv_);
       tree_->payoff = payoff_;
+      discount_restart_ = tree_->iterations;
     }
     return std::string("set_icm ok!");
   };
@@ -751,17 +759,21 @@ void Upi::register_commands() {
     pts.erase(std::remove_if(pts.begin(), pts.end(), [&](auto& x) { return x.first == st; }), pts.end());
     pts.push_back({st, v});
     std::sort(pts.begin(), pts.end());
+    icm_tables_defined_ = true;
     if (tree_) {
       TreePause tp(pause_requests_, tree_mu_, pause_cv_);
       tree_->payoff = payoff_;
+      discount_restart_ = tree_->iterations;
     }
     return std::string("set_icm_point ok!");
   };
   H["reset_icm_tables"] = [this](const Args&) {
-    payoff_.icm = IcmModel{};
+    payoff_.icm = IcmModel{};  // rake (if any) is left as it is
+    icm_tables_defined_ = true;  // Pio: reset tables are "defined" (empty table = chip values)
     if (tree_) {
       TreePause tp(pause_requests_, tree_mu_, pause_cv_);
       tree_->payoff = payoff_;
+      discount_restart_ = tree_->iterations;
     }
     return std::string("reset_icm_tables ok!");
   };

@@ -277,6 +277,19 @@ def main(exe):
         res3 = u.cmd("calc_results").split("\n")
         s3 = float(res3[0].split(": ")[1]) + float(res3[1].split(": ")[1])
         check(97 - 0.01 < s3 < 100, f"with rake, EV sum below pot ({s3:.3f})")
+        # Pio semantics (probe8): set_icm needs ICM points; rake and ICM are last-one-wins.
+        check(u.cmd("set_icm 200 300") == "ERROR: set_icm ICM points not defined.\nset_icm ok!", "set_icm without points")
+        for c in ["set_icm_point OOP 0 0", "set_icm_point OOP 200 40", "set_icm_point OOP 400 66",
+                  "set_icm_point IP 0 0", "set_icm_point IP 300 52", "set_icm_point IP 500 72", "set_icm 200 300"]:
+            u.cmd(c)
+        icm = u.cmd("show_win_evs OOP r:0:b75:b200:c")
+        check(icm != "300 -200 50" and icm.split()[1] == "-40", f"ICM payoffs ({icm})")
+        u.cmd("set_rake 0.05 3")
+        check(u.cmd("show_win_evs OOP r:0:b75:b200:c") == "297 -200 48.5", "set_rake turns ICM off (chips + rake)")
+        u.cmd("reset_icm_tables")
+        check(u.cmd("show_win_evs OOP r:0:b75:b200:c") == "297 -200 48.5", "reset_icm_tables keeps rake")
+        check(u.cmd("set_icm 200 300") == "set_icm ok!", "reset tables count as defined")
+        u.cmd("set_rake 0 0")
         print("[misc]")
         check(u.cmd("show_effective_stack") == "200", "show_effective_stack")
         check("Total Physical Memory" in u.cmd("show_memory"), "show_memory")

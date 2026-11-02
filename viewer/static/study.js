@@ -209,6 +209,12 @@ function renderPath() {
   box.textContent = "";
   const P = S.path;
   let lastLen = -1;
+  // Back: up one node (same as the left-arrow key), disabled at the root.
+  const back = el("button", "path-back", "‹");
+  back.title = "Up one node (←)";
+  back.disabled = P.length <= 1 && !S.sub;
+  back.onclick = goUp;
+  box.appendChild(back);
   if (S.sub) {
     const back = el("button", "step origin");
     back.append(el("span", null, "↩ Original"), el("span", "sub", S.sub.label));
@@ -607,6 +613,12 @@ async function renderRangesPanel() {
   }
 }
 
+/** Up one node: the parent (deals are steps too); at a re-solved subtree's root, back to the original. */
+function goUp() {
+  if (S.sub && S.id === S.sub.root) { exitSubgame(); return; }
+  if (S.path.length > 1) gotoNode(S.path[S.path.length - 2].id);
+}
+
 /* ------------------------------------------------------------------ wiring */
 
 export function initStudy() {
@@ -633,13 +645,9 @@ export function initStudy() {
   document.addEventListener("keydown", (e) => {
     if (document.getElementById("view-study").classList.contains("hidden")) return;
     if (e.target.closest("input, textarea, dialog")) return;
-    if ((e.key === "ArrowLeft" || e.key === "Backspace") && S.sub && S.id === S.sub.root) {
+    if (e.key === "ArrowLeft" || e.key === "Backspace") {
       e.preventDefault();
-      exitSubgame();
-    } else if ((e.key === "ArrowLeft" || e.key === "Backspace") && S.path.length > 1) {
-      e.preventDefault();
-      // step back to the previous decision (skipping chance nodes is not wanted: deals are steps too)
-      gotoNode(S.path[S.path.length - 2].id);
+      goUp();
     } else if (e.key === "Escape") { S.pinned = null; markSel(); renderSide(); }
   });
 }

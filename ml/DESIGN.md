@@ -89,6 +89,46 @@ against `show_strategy` / `calc_ev` to <= 5e-7 relative.
 
 The files are stored gzipped on disk (`*.wsdt.gz`); `loader.load_spot` accepts both.
 
+## Feature encoding (stage 2)
+
+`ml/features.py` turns `loader.Spot` records into fixed-size float vectors. The
+layout is **normative**: the C++ inference side (stage 3) must reproduce it
+bit-for-bit, so the encoder is pure stdlib with explicit constants and no RNG.
+Model input for scoring one action of one hand at a node is the concatenation
+`global_f + hand_f + action_f`.
+
+| vector | dim | contents |
+|---|---|---|
+| `global_f(node)` | 93 | 52 board one-hot (canonical frame) + 3 log-money + 4 street one-hot + 4 investment + 30 history |
+| `hand_f(node, h)` | 36 | 2x (13 rank + 4 suit) canonical one-hots + own reach + opponent compat mass (both mean-normalised) |
+| `action_f(action)` | 4 | 3 type one-hot (bet/raise, check/call, fold) + size/pot |
+
+Details (all in the code, kept short here because the code is the spec):
+
+- **Money**: `POT_SCALE = 40` chips; `log1p(x / POT_SCALE)` for pot/stack, and
+  `log1p(stack / pot)`. Investments as fractions of the effective stack; amount
+  faced over the start pot.
+- **History**: up to 6 past actions this street, each (3 type one-hot, size/pot,
+  player-relative-to-decider), replayed from the dump path. Pad with zeros.
+- **Canonicalisation**: all cards are remapped by the suit permutation that
+  minimises the sorted tuple of permuted board cards. Board features are
+  invariant under every suit permutation (the minimised multiset is unique);
+  hole-card features are invariant whenever the minimiser is unique — boards that
+  ignore a suit (e.g. 4 clubs + a heart) leave that suit pair interchangeable,
+  an arbitrary-but-deterministic labeling both sides compute identically. Hole
+  cards are sorted after canonicalisation, since a permutation can flip the
+  (hi, lo) order of a pocket pair.
+- **Reaches**: per-hand raw reach / mean reach over the player's tracked hands;
+  opponent compatibility mass per hand (`total_opp - card_sum[c1] - card_sum[c2]`,
+  the exact `calc_ev` denominator) / mean mass.
+- Training targets pass through unchanged: per-hand action frequencies
+  (`strat`) and counterfactual values (`ev`).
+
+`python3 -I ml/tests/test_features.py` runs in CI: replay semantics, shapes and
+ranges on the fixture, and suit-permutation invariance (24 perms). The encoder
+also runs clean over a 100-spot sample of the real corpus (630 nodes, ~30k
+hands, ~2 ms/spot).
+
 ## Layout
 
 | path | what |
@@ -96,7 +136,9 @@ The files are stored gzipped on disk (`*.wsdt.gz`); `loader.load_spot` accepts b
 | `ml/DESIGN.md` | this document |
 | `ml/gen_river.py` | sampler + batch solver + manifest (`--fixture` regenerates the test fixture) |
 | `ml/loader.py` | stdlib parser for `WSDT0001` (`python3 -I ml/loader.py` self-tests against the fixture) |
+| `ml/features.py` | normative feature encoder `WSDT0001` -> model inputs (stage 2; pure stdlib) |
 | `ml/tests/fixture.wsdt` | one small solved spot (committed; used by the loader self-test) |
+| `ml/tests/test_features.py` | encoder tests: replay, shapes, canonicalisation invariance |
 
 Data directories live OUTSIDE the repo (default `~/wsolver-data/river_v1`) — the
 10k-spot corpus is GBs and regenerable from the manifest + generator.

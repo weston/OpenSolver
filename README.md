@@ -126,7 +126,7 @@ size is indistinguishable from an ordinary bet there.
 `solver.exe` runs natively on Windows (verified on Windows 11 / Zen 5: all unit tests pass and every
 UPI probe matches the macOS build up to floating-point rounding).
 
-- **Native (MSYS2 UCRT64):** `pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-zlib make`,
+- **Native (MSYS2 UCRT64):** `pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-python make`,
   then `make` (produces `solver.exe`) and `make test`.
 - **Cross-compile from macOS/Linux:** install mingw-w64 (`brew install mingw-w64`), build zlib for it
   (`make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32- libz.a` in zlib's source), then

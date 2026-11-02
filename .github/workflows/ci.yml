@@ -67,9 +67,46 @@ jobs:
       - name: Unit and end-to-end tests
         run: make test
 
-  # Guards the Windows target from #3: a change that does not compile for Windows at all is
-  # the common breakage, and cross-compiling catches it without a Windows runner. This only
-  # builds - running the tests on Windows needs a native job, see the follow-up issue.
+  # Native Python is essential here: its subprocess/path behavior must match
+  # Windows clients, rather than running the tests under MSYS POSIX emulation.
+  windows-native:
+    name: Windows (native UCRT64)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CXX: g++
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-python
+
+      - name: Toolchain
+        run: |
+          "$CXX" --version
+          "$CXX" -dumpmachine
+          python3 --version
+          python3 -c 'import sys; assert sys.platform == "win32", sys.platform'
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      # Same suite as macOS/Linux, including native subprocess and save/load
+      # behavior. Only the opt-in 25bb fixture stays out, as on every CI runner.
+      - name: Unit and end-to-end tests
+        run: make test
+
+  # Keep the quick cross-build guard in addition to the native behavior tests.
   windows-cross:
     name: Windows (mingw-w64 cross-build)
     runs-on: ubuntu-latest

@@ -622,6 +622,13 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
 .rs-table .chip { display: inline-block; padding: 1px 7px; margin-right: 4px; border-radius: 10px; background: var(--surface-3); font-weight: 600; }
 .rs-table .delta { color: var(--text-3); font-weight: 500; }
 
+/* re-solve dialog: run button under the settings, results below it, next step last */
+.rs-run { display: flex; gap: 8px; }
+.rs-run .btn { flex: 1; height: 38px; font-size: 14px; }
+.rs-next { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 4px;
+  padding: 12px 14px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--accent); }
+.rs-next-text { color: var(--text-2); font-size: 12.5px; }
+.rs-next-text b { color: var(--text); }
 /* back button at the start of the action line */
 .path-back {
   flex: none; width: 28px; height: 34px; margin-right: 4px; border-radius: 8px;

@@ -176,22 +176,27 @@ For whole-hand accounting give the preflop investments per player (e.g. `set_pot
 
 ## Known differences from PioSOLVER
 
-- **Save files are not Pio `.cfr` files.** Pio's format is undocumented; ours is a gzip stream
-  (see `src/upi_save.cpp`). `load_tree` cannot read Pio saves.
-- **One algorithm.** `set_algorithm` accepts every Pio code but all map to DCFR;
-  `list_algorithms` says so.
-- **Verified against PioSOLVER-edge 3.10.1** with `tests/pio_compare/` (black-box: same UPI
-  scripts on both, response-by-response diff). Formats, tree shapes (`node_count` totals match),
-  hand order, ranges, equities (exact) and equilibrium EVs (to ~0.01 chips) agree. Remaining
-  known differences: `list_algorithms` text, `show_all_freqs` (Pio prints `nan`), tie order in
-  `show_nuts`, and `_pp` listings omit hands that are only in the opponent's range.
-- **Range explorer** (`show_category_names`, `show_categories`, `show_cats`, `show_cats_pp`) is
-  byte-identical to Pio 3.10 on 88 boards (48 fitting + 40 held-out); fixtures in
-  `tests/data/pio_categories/`.
-- **Preflop equity** (`calc_eq_preflop`, preflop all-ins) uses board sampling (about 0.3% from Pio's
-  exact tables); matchups match exactly.
-- `set_always_recalc`, `change_step`, `set_recalc_accuracy` are accepted and stored but only
-  `solve_all_splits` uses recalc accuracy.
+Policy (owner decision, #10): match Pio wherever tools may depend on it (formats, codes, node ids,
+error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberate differences:
+
+- **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip streams
+  (`src/upi_save.cpp`), and `show_save_version` reports our own format.
+- **One algorithm.** `set_algorithm` accepts every Pio code but all map to DCFR; `list_algorithms`
+  keeps Pio's codes with honest descriptions.
+- **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.
+- `show_all_freqs` prints real frequencies (Pio 3.10 prints `nan`); `estimate_schematic_tree` reports
+  real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `show_nuts` breaks
+  ties in its own order; `node_count` counts every node in preflop trees.
+- `_pp` listings omit hands that are only in the opponent's range (#9).
+- Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
+  there; results are identical with isomorphism on or off (#12).
+- **Preflop equity** (`calc_eq_preflop`, preflop all-ins) currently uses board sampling (about 0.3%
+  from Pio's exact values; matchups match exactly); exact tables are in progress (#5).
+
+Verified against PioSOLVER-edge 3.10.1 with `tests/pio_compare/` (black-box: same UPI scripts on both,
+response-by-response diff): formats, tree shapes (`node_count` matches on postflop trees), hand order,
+ranges, equities, rake and ICM payoffs, node locking, truncated saves, and equilibrium EVs. The range
+explorer (`show_categories`, `show_cats`, ...) is byte-identical on 88 boards (`tests/data/pio_categories/`).
 
 ## Performance (Apple M4, 10 threads)
 

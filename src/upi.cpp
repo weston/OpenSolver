@@ -719,10 +719,10 @@ void Upi::register_commands() {
   H["build_tree"] = [this](const Args& a) { return cmd_build_tree(a); };
   H["list_algorithms"] = [](const Args&) {
     return std::string(
-        "v4_small,DCFR,Discounted CFR (alpha 1.5, beta 0, gamma 3); this solver uses one algorithm for every code\n"
-        "v4_large,DCFR,Discounted CFR (alpha 1.5, beta 0, gamma 3)\n"
-        "pio_cfr,DCFR,Discounted CFR (alpha 1.5, beta 0, gamma 3)\n"
-        "original_pio,DCFR,Discounted CFR (alpha 1.5, beta 0, gamma 3)");
+        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4); this solver uses one algorithm for every code\n"
+        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
+        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
+        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)");
   };
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};

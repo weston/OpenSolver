@@ -11,12 +11,14 @@ namespace pio {
 enum class Walk { CFR, BestResponse, Evaluate };
 
 struct DcfrParams {
-  double alpha = 1.5;  // positive regret discount exponent
+  // Tuned on the benchmark suite (#52; bench/dcfr_sweep.md), not DCFR's published 1.5 / 0 / 2:
+  // alpha 1.3, gamma 4 reaches every target (1% .. 0.05% of the pot) in no more iterations than
+  // 1.5 / 0 / 3 on every bench tree, and far fewer on deep and wide trees (0.05%: deep 260 -> 180,
+  // flop_srp_4 105 -> 80, preflop 85 -> 60). alpha <= 1.2 is faster early but stalls at tight targets
+  // on rivers. set_dcfr overrides.
+  double alpha = 1.3;  // positive regret discount exponent
   double beta = 0.0;   // negative regret discount exponent
-  // 3, not DCFR's published 2: a sweep over the benchmark suite (#52) found gamma 3 reaches
-  // every target in fewer iterations than 2 on every tree, by up to 19% of wall time. See
-  // set_dcfr to override, and bench/dcfr_sweep.md for the numbers.
-  double gamma = 3.0;  // strategy-sum discount exponent
+  double gamma = 4.0;  // strategy-sum discount exponent
 };
 
 struct RootStats {

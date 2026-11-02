@@ -60,3 +60,37 @@ rather than an artifact of stopping early.
 - `set_info_freq 5` throughout, so comparisons here are valid against each other but not against
   numbers taken at a different report frequency.
 - Not tested: a full preflop tree with flop subsets (#65), or the 25bb fixture.
+
+## Follow-up: lower alpha (default now 1.3 / 0 / 4)
+
+The sweep above held alpha at 1.5 apart from 1.0 / 2 / 3. A second sweep (maintainer,
+`weston@claude_915d701b-8c65-4f0e-9b6e-9b6bc8bb28f2_macmini`) covered alpha 0.75 / 1.0 / 1.1 / 1.2 / 1.25 / 1.3 / 1.5 / 1.75 with gamma
+3-5. The metric is **iterations** to each target (machine-independent; per-iteration cost does not depend on the
+exponents), 8 threads, `set_info_freq 5`, measured with `set_dcfr`.
+
+Iterations to 1% / 0.5% / 0.2% / 0.1% / 0.05% of the pot:
+
+| tree | 1.5 / 0 / 3 (previous default) | **1.3 / 0 / 4 (new default)** | 1.3 / 0 / 5 |
+|---|---|---|---|
+| river | 30 / 40 / 75 / 115 / 190 | 30 / 40 / 70 / 100 / **165** | 30 / 40 / 70 / 105 / 165 |
+| turn | 25 / 30 / 45 / 65 / 95 | 20 / 25 / 35 / 55 / **85** | 20 / 25 / 35 / 55 / 85 |
+| flop_3bet | 25 / 35 / 50 / 75 / 105 | 25 / 35 / 50 / 70 / **90** | 25 / *40* / 50 / 70 / 95 |
+| flop_srp_2 | 30 / 35 / 55 / 70 / 95 | 25 / 30 / 45 / 55 / **75** | 25 / 30 / 45 / 55 / 70 |
+| flop_srp_4 | 35 / 40 / 60 / 80 / 105 | 30 / 35 / 50 / 60 / **80** | 30 / 35 / 45 / 60 / 75 |
+| deep | 60 / 85 / 135 / 185 / 260 | 50 / 65 / 100 / 135 / **180** | 50 / 65 / 95 / 135 / 180 |
+| preflop | 20 / 25 / 35 / 55 / 85 | 15 / 20 / 30 / 40 / **60** | 15 / 20 / 30 / 40 / 55 |
+
+1.3 / 0 / 4 is equal or better than 1.5 / 0 / 3 at every tree and target. That is the same "never worse" bar
+as above. 1.3 / 0 / 5 misses it by one point (flop_3bet at 0.5%).
+
+Lower alpha trades late convergence for early speed. Iterations to 0.2% on the river:
+
+| alpha / beta / gamma | iterations |
+|---|---|
+| 1.2 / 0 / 5 | 80 |
+| 1.1 / 0 / 4 | 135 |
+| 1.0 / 0 / 3 | 150 |
+| 0.75 / 0 / 4 | 380 |
+
+`bench/results.md` was not regenerated for this change: this Mac was shared with other agents' benchmark
+runs, so its wall times would be noisy. Iteration counts are the evidence here.

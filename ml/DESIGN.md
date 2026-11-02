@@ -150,6 +150,15 @@ vs the uniform baseline (target ratio << 1) and value MSE. Checkpoints
 (`.pt`) carry the feature-layout constants; the C++ inference PR will add the
 portable weight export.
 
+## Weight export (stage 3 input)
+
+`ml/export.py <ckpt.pt> <out.wsnb>` writes `WSNW0001`: magic, G/H/A dims,
+pot_scale, hidden width, then value_net and strat_net layer weights as f32
+row-major (three Linear layers each, in train order; ReLU after layers 1-2,
+linear output). Stdlib-only `--selftest` parses it back; `export.load_net` +
+`export.forward` are the **reference forward** the C++ port must match
+(verified `max |torch - stdlib| = 3e-6` over random inputs on this machine).
+
 ## Layout
 
 | path | what |
@@ -159,6 +168,7 @@ portable weight export.
 | `ml/loader.py` | stdlib parser for `WSDT0001` (`python3 -I ml/loader.py` self-tests against the fixture) |
 | `ml/features.py` | normative feature encoder `WSDT0001` -> model inputs (stage 2; pure stdlib) |
 | `ml/train.py` | training harness (stage 2; the only torch-dependent tool) |
+| `ml/export.py` | `.pt` -> `WSNW0001` export + stdlib reference forward (stage 3 input) |
 | `ml/tests/fixture.wsdt` | one small solved spot (committed; used by the loader self-test) |
 | `ml/tests/test_features.py` | encoder tests: replay, shapes, canonicalisation invariance |
 

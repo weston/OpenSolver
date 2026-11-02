@@ -1027,10 +1027,22 @@ std::string Upi::cmd_dump_train(const Args& a) {
 // Writes the net's predicted average strategy into the tree's strategy sums
 // and pretends `pseudo_iterations` of CFR history. River roots only (v1).
 std::string Upi::cmd_warm_start(const Args& a) {
-  if (a.size() < 1 || a.size() > 2) throw CmdError{"incorrect or missing argument"};
+  // warm_start <file.wsnb> [pseudo_iterations=300] [regret_beta=0] — see
+  // src/nn_warm.hpp. regret_beta > 0 additionally seeds the regret rows with
+  // beta * predicted policy, starting CFR's current strategy at the net.
+  if (a.size() < 1 || a.size() > 3) throw CmdError{"incorrect or missing argument"};
   require_tree();
   int pseudo = 300;
-  if (a.size() == 2) pseudo = std::stoi(a[1]);
+  if (a.size() >= 2) pseudo = std::stoi(a[1]);
+  float beta = 0.0f;
+  if (a.size() >= 3) {
+    try {
+      beta = std::stof(a[2]);
+    } catch (const std::exception&) {
+      throw CmdError{"invalid regret_beta"};
+    }
+    if (beta < 0.0f || !std::isfinite(beta)) throw CmdError{"regret_beta must be >= 0"};
+  }
   NnModel model;
   try {
     model = NnModel::load(a[0]);
@@ -1041,12 +1053,14 @@ std::string Upi::cmd_warm_start(const Args& a) {
   NodeRef root = resolve("r:0");
   uint64_t n;
   try {
-    n = nn_warm_start(*tree_, model, root.frame, root.board, pseudo);
+    n = nn_warm_start(*tree_, model, root.frame, root.board, pseudo, beta);
   } catch (const std::runtime_error& e) {
     throw CmdError{e.what()};
   }
-  return "warm_start ok! nodes=" + std::to_string(n) +
-         " pseudo_iterations=" + std::to_string(pseudo);
+  std::string r = "warm_start ok! nodes=" + std::to_string(n) +
+                  " pseudo_iterations=" + std::to_string(pseudo);
+  if (beta > 0.0f) r += " regret_beta=" + std::to_string(beta);
+  return r;
 }
 
 // ---------------------------------------------------------------------------------------------

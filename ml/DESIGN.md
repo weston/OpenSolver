@@ -161,10 +161,11 @@ linear output). Stdlib-only `--selftest` parses it back; `export.load_net` +
 
 ## Solver-side warm start (stage 3)
 
-`warm_start <wsnb> [pseudo_iterations]` (default 300) loads a `WSNW0001` net
-and walks a freshly built river tree (`build_tree` with exactly 5 board cards,
-no chance nodes below the root, no locked/eliminated flags), recomputing the
-normative features of `ml/features.py` node by node in C++ (`src/nn_warm.cpp`).
+`warm_start <wsnb> [pseudo_iterations] [regret_beta]` (defaults 300, 0)
+loads a `WSNW0001` net and walks a freshly built river tree (`build_tree`
+with exactly 5 board cards, no chance nodes below the root, no
+locked/eliminated flags), recomputing the normative features of
+`ml/features.py` node by node in C++ (`src/nn_warm.cpp`).
 
 At each decision node it evaluates the strat net on every
 (hand, action), softmaxes, and writes `reach_p(hand) * sigma(action|hand)`
@@ -178,12 +179,28 @@ construction of Brown & Sandholm (AAAI 2016), minus the regret half. K is a
 trust knob for later A/B sweeps: DCFR's forgetting factor decays the preload
 at `(t/(t+1))^gamma`, so larger K keeps net strategies around longer.
 
-Strategy rows are the only state written; regrets stay zero. The command
-refuses non-fresh trees (`iterations != 0`), so warm start never blends with
-partially solved state. `tests/test_upi.py` pins the port against a tiny
-seeded `ml/tests/fixture.wsnb` (hidden=8): C++ per-node strategies match the
-stdlib reference forward to ~5e-8, on the root and a deeper node, independent
-of K.
+With `regret_beta > 0` the walk additionally writes
+`regret_beta * sigma(action|hand)` into the regret rows (regret-matching
+then reproduces the net policy as CFR's *current* strategy). beta has the
+solver's regret units: it bounds how much counterfactual evidence accrues
+before the current strategy moves off the prediction. All rows are positive,
+so the DCFR sign-split discounting applies uniformly from t = K+1.
+
+The command refuses non-fresh trees (`iterations != 0`), so warm start never
+blends with partially solved state. `tests/test_upi.py` pins the port against
+a tiny seeded `ml/tests/fixture.wsnb` (hidden=8): C++ per-node strategies
+match the stdlib reference forward to ~5e-8, on the root and a deeper node,
+independent of K; with a huge beta the strategy stays pinned to the
+prediction across real iterations; quantized (small_strats) regret rows
+round-trip through a short solve with rows still normalising.
+
+Results so far (river, held-out spots): the river_v1 net's strategy measures
+~5-23% of pot exploitability, while cold DCFR certifies 0.3% of pot within
+33-100 iterations everywhere measured (river spots AND turn roots) — the
+preload(s) then anchor or wash out around a strategy that is worse than what
+a few real iterations already provide, so warm starts lose on this family.
+See the #59 A/B comments; the gate is net quality + inference speed, not the
+construction.
 
 ## Layout
 

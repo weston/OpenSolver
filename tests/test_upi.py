@@ -459,6 +459,38 @@ def check_warm_start(u):
     check(u.cmd("show_strategy r:0") == st_a, "strategies independent of pseudo_iterations")
     check(u.cmd("show_iters") == "7", "show_iters reflects K=7")
 
+    # regret preloading: warm_start <wsnb> <K> <beta>. With beta huge relative
+    # to counterfactual increments, CFR's current strategy is pinned to the net,
+    # so the average after a few real iterations is still the prediction.
+    check(u.cmd("warm_start " + wsnb + " 300 -5").startswith("ERROR"),
+          "warm_start negative regret_beta refused")
+    check(u.cmd("build_tree") == "build_tree ok!", "rebuild for regret warm start")
+    resp = u.cmd("warm_start " + wsnb + " 1 1000000")
+    check(re.fullmatch(
+        r"warm_start ok! nodes=\d+ pseudo_iterations=1 regret_beta=1000000\.\d+\n?", resp),
+        f"warm_start with regret_beta response ({resp.strip()})")
+    u.cmd("set_accuracy 0")
+    u.send_raw("go 3 steps")
+    check(u.read_response() == "go ok!", "go after regret warm start")
+    u.cmd("wait_for_solver")
+    compare("r:0", 0, r0, r1, tol=1e-2)
+
+    # compressed storage: quantized regret rows must round-trip sanely
+    u.cmd("small_strats on")
+    check(u.cmd("build_tree") == "build_tree ok!", "rebuild compressed")
+    check(u.cmd("warm_start " + wsnb + " 5 100").startswith("warm_start ok!"),
+          "warm_start with regrets on compressed tree")
+    u.send_raw("go 2 steps")
+    check(u.read_response() == "go ok!", "go on compressed warm tree")
+    u.cmd("wait_for_solver")
+    rows = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+    colsums = [sum(col) for col in zip(*rows)]
+    nz = [s for s in colsums if s > 1e-9]  # unreached hands legitimately stay zero
+    check(nz and max(abs(s - 1.0) for s in nz) < 1e-3,
+          f"compressed regret warm tree stays valid ({len(nz)} nonzero rows, "
+          f"worst dev {max((abs(s - 1.0) for s in nz), default=9):.2e})")
+    u.cmd("small_strats off")
+
 
 def check_dump_train(u):
     print("[dump_train: binary per-node training records (#59)]")

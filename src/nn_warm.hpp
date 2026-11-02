@@ -38,12 +38,18 @@ struct NnModel {
 // node's strategy-sum rows, tracking predicted reaches as it descends.
 // Sets tree.iterations = pseudo_iters (the DCFR strategy-sum discount then
 // treats the prediction as established history).
+// If regret_beta > 0 it ALSO writes regret_beta * softmax(logits) into the
+// regret rows: regret-matching reproduces the net policy as CFR's *current*
+// strategy, and regret_beta (in the solver's regret units) sets how much
+// counterfactual evidence is needed to move off it (all entries positive,
+// so sign-based DCFR discounting applies uniformly from t = pseudo_iters+1).
 // `frame`/`display_board` are the tree root's display frame and board (from
 // NodeRef). Returns the number of decision nodes written.
 // Throws std::runtime_error on anything unsupported (non-river root, locked
 // strategies, chance nodes below the root, prior iterations). Requires a
 // fully allocated (non-lazy) tree.
 uint64_t nn_warm_start(GameTree& tree, const NnModel& model, int frame,
-                       const std::vector<int>& display_board, int pseudo_iters);
+                       const std::vector<int>& display_board, int pseudo_iters,
+                       float regret_beta = 0.0f);
 
 }  // namespace pio

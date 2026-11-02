@@ -99,10 +99,12 @@ struct Walker {
   std::array<uint8_t, 4> cp;  // canonicalisation perm (display -> canonical)
   float start_pot;
   float eff_stack;
+  float beta;  // >0: also preload regret rows with beta * predicted policy
   uint64_t written = 0;
 
   std::vector<float> zg, zh, z1, z2;  // strat-net trunk scratch [hidden]
   std::vector<float> sigma;           // [A*H]: reach-weighted predicted strategy
+  std::vector<float> reg;             // [A*H]: beta-weighted predicted policy (beta>0)
 
   // nn/feature offsets inside strat layer 1: [g=0..92 | h=93..128 | a=129..132]
   static constexpr int H_OFF = 93;
@@ -211,6 +213,7 @@ struct Walker {
 
     // ---- per hand: features, per-action logits, softmax ----
     sigma.assign(static_cast<size_t>(A) * H, 0.0f);
+    if (beta > 0.0f) reg.assign(static_cast<size_t>(A) * H, 0.0f);
     float hf[NN_H];
     float act_f[NN_A];
     for (int h = 0; h < H; ++h) {
@@ -251,9 +254,12 @@ struct Walker {
       }
       double den = 0.0;
       for (int a = 0; a < A; ++a) den += (logits[a] = std::exp(logits[a] - maxlogit));
-      for (int a = 0; a < A; ++a)
+      for (int a = 0; a < A; ++a) {
+        const double p = logits[a] / den;
         sigma[static_cast<size_t>(a) * H + h] =
-            static_cast<float>(logits[a] / den) * rp[h];  // reach-weighted for the sum rows
+            static_cast<float>(p) * rp[h];  // reach-weighted for the sum rows
+        if (beta > 0.0f) reg[static_cast<size_t>(a) * H + h] = beta * static_cast<float>(p);
+      }
     }
 
     // ---- write strategy sums (fresh tree: rows were zero) ----
@@ -262,6 +268,15 @@ struct Walker {
       float* S = t.strat_rw(n, t.compressed ? scratch.data() : nullptr);
       std::memcpy(S, sigma.data(), sigma.size() * sizeof(float));
       t.strat_commit(n, S);
+    }
+    if (beta > 0.0f) {
+      // Regret init: regret-matching of beta * p reproduces the net policy as
+      // the current strategy (all rows positive, so the max(R,0) clipping is
+      // inert until real counterfactual updates push some actions negative).
+      std::vector<float> rscratch(t.compressed ? reg.size() : 0);
+      float* R = t.regrets_rw(n, t.compressed ? rscratch.data() : nullptr);
+      std::memcpy(R, reg.data(), reg.size() * sizeof(float));
+      t.regrets_commit(n, R);
     }
     ++written;
 
@@ -329,8 +344,11 @@ NnModel NnModel::load(const std::string& path) {
 }
 
 uint64_t nn_warm_start(GameTree& tree, const NnModel& model, int frame,
-                       const std::vector<int>& display_board, int pseudo_iters) {
+                       const std::vector<int>& display_board, int pseudo_iters,
+                       float regret_beta) {
   if (pseudo_iters <= 0) throw std::runtime_error("warm_start: pseudo iterations must be > 0");
+  if (regret_beta < 0.0f || !std::isfinite(regret_beta))
+    throw std::runtime_error("warm_start: regret beta must be a finite number >= 0");
   if (tree.iterations != 0)
     throw std::runtime_error("warm_start: tree already has iterations; build a fresh tree");
   if (tree.lazy) throw std::runtime_error("warm_start: lazily loaded trees are unsupported (v1)");
@@ -348,7 +366,9 @@ uint64_t nn_warm_start(GameTree& tree, const NnModel& model, int frame,
            canonical_perm(display_board),
            static_cast<float>(tree.cfg.start_pot()),
            static_cast<float>(tree.cfg.eff_stack),
+           regret_beta,
            0,
+           {},
            {},
            {},
            {},

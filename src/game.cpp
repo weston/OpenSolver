@@ -1,4 +1,5 @@
 #include "game.hpp"
+#include "parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -473,18 +474,20 @@ void GameTree::allocate_storage() {
   regrets_q.shrink_to_fit();
   strat_q.clear();
   strat_q.shrink_to_fit();
+  // resize() on an empty ZVec is a fresh calloc: zero pages, committed only when touched.
   if (compressed) {
-    regrets_q.assign(storage_floats, 0);
-    strat_q.assign(storage_floats, 0);
+    regrets_q.resize(storage_floats);
+    strat_q.resize(storage_floats);
     rscale.assign(num_decisions, 0.0f);
     sscale.assign(num_decisions, 0.0f);
   } else {
-    regrets.assign(storage_floats, 0.0f);
-    strat.assign(storage_floats, 0.0f);
+    regrets.resize(storage_floats);
+    strat.resize(storage_floats);
   }
 }
 
 void GameTree::clear_storage() {
+  lazy.reset();  // everything is zero now: nothing left to read from a save file
   std::fill(regrets.begin(), regrets.end(), 0.0f);
   std::fill(strat.begin(), strat.end(), 0.0f);
   std::fill(regrets_q.begin(), regrets_q.end(), int16_t(0));
@@ -494,6 +497,7 @@ void GameTree::clear_storage() {
 }
 
 const float* GameTree::regrets_ro(const GNode& n, float* scratch) const {
+  ensure_loaded(n);
   if (!compressed) return regrets.data() + n.storage;
   const size_t len = node_size(n);
   const int16_t* q = regrets_q.data() + n.storage;
@@ -503,6 +507,7 @@ const float* GameTree::regrets_ro(const GNode& n, float* scratch) const {
 }
 
 const float* GameTree::strat_ro(const GNode& n, float* scratch) const {
+  ensure_loaded(n);
   if (!compressed) return strat.data() + n.storage;
   const size_t len = node_size(n);
   const uint16_t* q = strat_q.data() + n.storage;
@@ -512,12 +517,14 @@ const float* GameTree::strat_ro(const GNode& n, float* scratch) const {
 }
 
 float* GameTree::regrets_rw(const GNode& n, float* scratch) {
+  ensure_loaded(n);
   if (!compressed) return regrets.data() + n.storage;
   regrets_ro(n, scratch);
   return scratch;
 }
 
 float* GameTree::strat_rw(const GNode& n, float* scratch) {
+  ensure_loaded(n);
   if (!compressed) return strat.data() + n.storage;
   strat_ro(n, scratch);
   return scratch;
@@ -525,6 +532,11 @@ float* GameTree::strat_rw(const GNode& n, float* scratch) {
 
 void GameTree::regrets_commit(const GNode& n, const float* data, float maxabs) {
   if (!compressed) return;
+  ensure_loaded(n);
+  regrets_store(n, data, maxabs);
+}
+
+void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
   const size_t len = node_size(n);
   float m = maxabs;
   if (m < 0) {
@@ -550,6 +562,11 @@ void GameTree::regrets_commit(const GNode& n, const float* data, float maxabs) {
 
 void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   if (!compressed) return;
+  ensure_loaded(n);
+  strat_store(n, data, maxval);
+}
+
+void GameTree::strat_store(const GNode& n, const float* data, float maxval) {
   const size_t len = node_size(n);
   float m = maxval;
   if (m < 0) {
@@ -565,6 +582,71 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   sscale[n.aux] = m / 65535.0f;
   const float inv = 65535.0f / m;
   for (size_t i = 0; i < len; ++i) q[i] = static_cast<uint16_t>(std::max(0.0f, data[i]) * inv + 0.5f);
+}
+
+StreetSegments GameTree::street_segments() const {
+  StreetSegments r;
+  r.node_seg.assign(nodes.size(), UINT32_MAX);
+  if (nodes.empty()) return r;
+  // Depth-first from the root; a decision node reached from a chance node starts a new segment.
+  std::vector<std::pair<uint32_t, uint32_t>> st{{0u, UINT32_MAX}};  // (node, segment of its parent decision)
+  while (!st.empty()) {
+    auto [ni, ps] = st.back();
+    st.pop_back();
+    const GNode& n = nodes[ni];
+    uint32_t seg = UINT32_MAX;
+    if (n.kind == ANodeKind::Decision) {
+      seg = ps;
+      if (seg == UINT32_MAX) {
+        seg = static_cast<uint32_t>(r.segs.size());
+        r.segs.emplace_back();
+      }
+      r.node_seg[ni] = seg;
+      r.segs[seg].push_back(ni);
+    } else if (n.kind != ANodeKind::Chance) {
+      continue;
+    }
+    for (int k = n.num_children - 1; k >= 0; --k) st.push_back({n.first_child + static_cast<uint32_t>(k), seg});
+  }
+  return r;
+}
+
+void GameTree::lazy_touch(uint32_t node) const {
+  LazyStore& L = *lazy;
+  uint32_t s = L.seg.node_seg[node];
+  if (s == UINT32_MAX || L.loaded[s].load(std::memory_order_acquire)) return;
+  std::lock_guard<std::mutex> g(L.mu[s % 64]);
+  if (L.loaded[s].load(std::memory_order_relaxed)) return;
+  try {
+    L.load_fn(*this, L, s);
+  } catch (const std::exception& e) {
+    // Leave the segment unloaded (zeros for now, retried on next access) and report via take_lazy_error.
+    std::lock_guard<std::mutex> eg(L.err_mu);
+    if (!L.failed.exchange(true)) L.error = e.what();
+    return;
+  }
+  L.loaded[s].store(1, std::memory_order_release);
+  L.remaining.fetch_sub(1);
+}
+
+bool GameTree::take_lazy_error(std::string& err) {
+  if (!lazy || !lazy->failed.load()) return false;
+  std::lock_guard<std::mutex> eg(lazy->err_mu);
+  err = lazy->error;
+  lazy->failed = false;
+  return true;
+}
+
+bool GameTree::load_all(std::string& err) {
+  if (!lazy) return true;
+  LazyStore& L = *lazy;
+  const int n = static_cast<int>(L.seg.segs.size());
+  pool().parallel_for(n, [&](int s) {
+    if (!L.loaded[s].load(std::memory_order_acquire)) lazy_touch(L.seg.segs[s][0]);
+  });
+  if (take_lazy_error(err)) return false;
+  lazy.reset();
+  return true;
 }
 
 }  // namespace pio

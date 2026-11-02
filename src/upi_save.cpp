@@ -1,12 +1,18 @@
 // dump_tree / load_tree / show_metadata / show_save_version / check_tree_health.
 //
-// A save is a gzip stream (written incrementally, so multi-GB trees never need a second copy in RAM):
-//   "OUPISAV2" | u32 version | u32 truncate (0 full, 4 no_rivers, 3 no_turns) | u8 storage mode (0 f32, 1 q16)
-//   | u32 config length | config | u64 meta length | node metadata | per-decision-node data | "OUPIEND!"
+// A save is a sequence of gzip members; decompressed back to back (gunzip, gzread) they form one stream:
+//   "OUPISAV2" | u32 version | u32 truncate (0 full, 4 no_rivers, 3 no_turns) | u8 storage mode (bit 0:
+//   16-bit records, bit 1: compressed file) | u32 config length | config | u64 meta length | node metadata
+//   | node records | [v4: u64 segment count | u64 member offset per segment | u64 index offset] | "OUPIEND!"
+// v4 (current) writes node records grouped by street segment (GameTree::street_segments), one gzip
+// member per segment, followed by an index member with each segment's byte offset and a fixed-size
+// 39-byte final member holding the index offset and the trailer. That lets `load_tree` (fast) read only
+// the segments that are actually accessed. v2/v3 files (records in node order, one member) load fully.
 // gzip's CRC32 plus the trailer marker let check_tree_health detect corruption and truncation.
 #include <zlib.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <sstream>
 
@@ -19,7 +25,7 @@ namespace {
 
 constexpr char kMagic[8] = {'O', 'U', 'P', 'I', 'S', 'A', 'V', '2'};
 constexpr char kTrailer[8] = {'O', 'U', 'P', 'I', 'E', 'N', 'D', '!'};
-constexpr uint32_t kVersion = 3;  // 3 adds preflop trees; 2 is still readable
+constexpr uint32_t kVersion = 4;  // 4: segmented (lazy-loadable); 3 adds preflop trees; 2, 3 readable
 
 struct Writer {
   std::string buf;
@@ -59,39 +65,143 @@ struct Reader {
   }
 };
 
+int fseek64(FILE* f, uint64_t off) {
+#ifdef _WIN32
+  return _fseeki64(f, static_cast<long long>(off), SEEK_SET);
+#else
+  return fseeko(f, static_cast<off_t>(off), SEEK_SET);
+#endif
+}
+
+uint64_t file_size(FILE* f) {
+#ifdef _WIN32
+  if (_fseeki64(f, 0, SEEK_END) != 0) return 0;
+  return static_cast<uint64_t>(_ftelli64(f));
+#else
+  if (fseeko(f, 0, SEEK_END) != 0) return 0;
+  return static_cast<uint64_t>(ftello(f));
+#endif
+}
+
+struct File {
+  FILE* f = nullptr;
+  File(const std::string& path, const char* mode) : f(std::fopen(path.c_str(), mode)) {}
+  ~File() {
+    if (f) std::fclose(f);
+  }
+  File(const File&) = delete;
+  File& operator=(const File&) = delete;
+};
+
+// gzip writer that can end the current member (so the next one starts a fresh, independently decodable
+// stream) and knows the exact byte offset of the file it has written.
 class GzOut {
  public:
-  GzOut(const std::string& path, int level) {
-    std::string mode = "wb" + std::to_string(std::clamp(level, 0, 9));
-    f_ = gzopen(path.c_str(), mode.c_str());
-    if (!f_) throw CmdError{"cannot open " + path + " for writing"};
-    gzbuffer(f_, 1 << 20);
+  GzOut(const std::string& path, int level) : file_(path, "wb"), path_(path) {
+    if (!file_.f) throw CmdError{"cannot open " + path + " for writing"};
+    zs_ = {};
+    if (deflateInit2(&zs_, std::clamp(level, 0, 9), Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+      throw CmdError{"out of memory"};
+    buf_.resize(1 << 20);
   }
-  ~GzOut() {
-    if (f_) gzclose(f_);
-  }
+  ~GzOut() { deflateEnd(&zs_); }
   void write(const void* p, size_t n) {
-    const char* c = static_cast<const char*>(p);
+    const Bytef* c = static_cast<const Bytef*>(p);
     while (n) {
-      unsigned chunk = static_cast<unsigned>(std::min<size_t>(n, 1u << 30));
-      if (gzwrite(f_, c, chunk) != static_cast<int>(chunk)) throw CmdError{"write error"};
+      uInt chunk = static_cast<uInt>(std::min<size_t>(n, 1u << 30));
+      zs_.next_in = const_cast<Bytef*>(c);
+      zs_.avail_in = chunk;
+      while (zs_.avail_in) pump(Z_NO_FLUSH);
       c += chunk;
       n -= chunk;
+      dirty_ = true;
     }
   }
   template <class T>
   void put(const T& v) {
     write(&v, sizeof(T));
   }
+  // Completes the current gzip member (no-op if nothing was written since the last one).
+  void finish_member() {
+    if (!dirty_) return;
+    zs_.next_in = nullptr;
+    zs_.avail_in = 0;
+    while (pump(Z_FINISH) != Z_STREAM_END) {}
+    deflateReset(&zs_);
+    dirty_ = false;
+  }
+  uint64_t offset() const { return offset_; }  // bytes in the file so far (call after finish_member)
+  void write_raw(const void* p, size_t n) {
+    if (std::fwrite(p, 1, n, file_.f) != n) throw CmdError{"write error"};
+    offset_ += n;
+  }
   void close() {
-    gzFile f = f_;
-    f_ = nullptr;
-    if (f && gzclose(f) != Z_OK) throw CmdError{"write error"};
+    finish_member();
+    FILE* f = file_.f;
+    file_.f = nullptr;
+    if (std::fclose(f) != 0) throw CmdError{"write error"};
   }
 
  private:
-  gzFile f_ = nullptr;
+  int pump(int flush) {
+    zs_.next_out = buf_.data();
+    zs_.avail_out = static_cast<uInt>(buf_.size());
+    int r = deflate(&zs_, flush);
+    if (r == Z_STREAM_ERROR) throw CmdError{"write error"};
+    write_raw(buf_.data(), buf_.size() - zs_.avail_out);
+    return r;
+  }
+  File file_;
+  std::string path_;
+  z_stream zs_;
+  std::vector<Bytef> buf_;
+  uint64_t offset_ = 0;
+  bool dirty_ = false;
 };
+
+// Decodes the single gzip member starting at `off`; it must decompress to exactly `expect` bytes.
+std::vector<char> inflate_member(FILE* f, uint64_t off, size_t expect) {
+  if (fseek64(f, off) != 0) throw CmdError{"file format error (seek)"};
+  z_stream zs{};
+  if (inflateInit2(&zs, 15 + 16) != Z_OK) throw CmdError{"out of memory"};
+  std::vector<char> out(expect + 1);
+  std::vector<Bytef> in(1 << 18);
+  zs.next_out = reinterpret_cast<Bytef*>(out.data());
+  zs.avail_out = static_cast<uInt>(out.size());
+  int r = Z_OK;
+  while (r != Z_STREAM_END) {
+    if (zs.avail_in == 0) {
+      size_t got = std::fread(in.data(), 1, in.size(), f);
+      if (got == 0) break;
+      zs.next_in = in.data();
+      zs.avail_in = static_cast<uInt>(got);
+    }
+    r = inflate(&zs, Z_NO_FLUSH);
+    if (r != Z_OK && r != Z_STREAM_END) break;
+    if (zs.avail_out == 0) break;  // more data than expected
+  }
+  size_t produced = out.size() - zs.avail_out;
+  inflateEnd(&zs);
+  if (r != Z_STREAM_END || produced != expect) throw CmdError{"file format error (corrupted segment)"};
+  out.resize(expect);
+  return out;
+}
+
+// The final member: a stored deflate block with [u64 index offset][trailer], always 39 bytes.
+constexpr size_t kTailSize = 39;
+void tail_member(uint64_t index_off, unsigned char* m) {
+  unsigned char payload[16];
+  std::memcpy(payload, &index_off, 8);
+  std::memcpy(payload + 8, kTrailer, 8);
+  const unsigned char head[15] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0x01, 16, 0, 0xef, 0xff};
+  std::memcpy(m, head, 15);
+  std::memcpy(m + 15, payload, 16);
+  uint32_t crc = static_cast<uint32_t>(crc32(0L, payload, 16)), isize = 16;
+  for (int i = 0; i < 4; ++i) {
+    m[31 + i] = static_cast<unsigned char>(crc >> (8 * i));
+    m[35 + i] = static_cast<unsigned char>(isize >> (8 * i));
+  }
+}
 
 class GzIn {
  public:
@@ -158,7 +268,7 @@ Header read_header(GzIn& in) {
   if (std::memcmp(magic, kMagic, 8) != 0) throw CmdError{"not a save file of this solver"};
   Header h;
   h.version = in.get<uint32_t>();
-  if (h.version != kVersion && h.version != 2) throw CmdError{"unsupported save version " + std::to_string(h.version)};
+  if (h.version < 2 || h.version > kVersion) throw CmdError{"unsupported save version " + std::to_string(h.version)};
   h.truncate = in.get<uint32_t>();
   h.mode = in.get<uint8_t>();
   return h;
@@ -314,6 +424,146 @@ LoadedConfig read_config_section(GzIn& in) {
   return lc;
 }
 
+// Node records: 16-bit storage writes [f32 regret scale][f32 strategy scale][A*H i16][A*H u16],
+// float32 storage writes [A*H f32 regrets][A*H f32 strategy sums].
+size_t record_bytes(const GameTree& t, const GNode& n, uint8_t file_mode) {
+  size_t len = t.node_size(n);
+  return (file_mode & 1) ? 8 + len * 4 : len * 8;
+}
+
+void write_record(GzOut& out, const GameTree& g, const GNode& n) {
+  size_t len = g.node_size(n);
+  if (g.compressed) {
+    out.put(g.rscale[n.aux]);
+    out.put(g.sscale[n.aux]);
+    out.write(g.regrets_q.data() + n.storage, len * sizeof(int16_t));
+    out.write(g.strat_q.data() + n.storage, len * sizeof(uint16_t));
+  } else {
+    out.write(g.regrets.data() + n.storage, len * sizeof(float));
+    out.write(g.strat.data() + n.storage, len * sizeof(float));
+  }
+}
+
+struct MemIn {
+  const char* p;
+  const char* end;
+  void read(void* dst, size_t n) {
+    if (static_cast<size_t>(end - p) < n) throw CmdError{"file format error (truncated)"};
+    std::memcpy(dst, p, n);
+    p += n;
+  }
+  template <class T>
+  T get() {
+    T v;
+    read(&v, sizeof(T));
+    return v;
+  }
+};
+
+// Reads one record into the tree's storage directly (no accessors: used by the lazy loader too),
+// converting between the file's and the tree's storage modes.
+template <class In>
+void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, std::vector<float>& fr,
+                 std::vector<float>& fs) {
+  size_t len = t.node_size(n);
+  if ((file_mode & 1) && t.compressed) {
+    t.rscale[n.aux] = in.template get<float>();
+    t.sscale[n.aux] = in.template get<float>();
+    in.read(t.regrets_q.data() + n.storage, len * sizeof(int16_t));
+    in.read(t.strat_q.data() + n.storage, len * sizeof(uint16_t));
+    return;
+  }
+  if (!(file_mode & 1) && !t.compressed) {
+    in.read(t.regrets.data() + n.storage, len * sizeof(float));
+    in.read(t.strat.data() + n.storage, len * sizeof(float));
+    return;
+  }
+  fr.resize(len);
+  fs.resize(len);
+  if (file_mode & 1) {
+    float rs = in.template get<float>(), ss = in.template get<float>();
+    std::vector<int16_t> qr(len);
+    std::vector<uint16_t> qs(len);
+    in.read(qr.data(), len * sizeof(int16_t));
+    in.read(qs.data(), len * sizeof(uint16_t));
+    for (size_t i = 0; i < len; ++i) {
+      fr[i] = qr[i] * rs;
+      fs[i] = qs[i] * ss;
+    }
+    std::memcpy(t.regrets.data() + n.storage, fr.data(), len * sizeof(float));
+    std::memcpy(t.strat.data() + n.storage, fs.data(), len * sizeof(float));
+  } else {
+    in.read(fr.data(), len * sizeof(float));
+    in.read(fs.data(), len * sizeof(float));
+    t.regrets_store(n, fr.data());
+    t.strat_store(n, fs.data());
+  }
+}
+
+// Segments present in a save truncated at board length `max_len` (all nodes of a segment share it).
+bool segment_saved(const GameTree& t, const StreetSegments& sg, size_t s, uint32_t max_len) {
+  return t.nodes[sg.segs[s][0]].board_len <= max_len;
+}
+
+void lazy_load_segment(const GameTree& ct, const LazyStore& L, uint32_t s) {
+  GameTree& t = const_cast<GameTree&>(ct);  // storage is logically present already; this fills it in
+  size_t bytes = 0;
+  for (uint32_t ni : L.seg.segs[s]) bytes += record_bytes(t, t.nodes[ni], L.file_mode);
+  File f(L.path, "rb");
+  if (!f.f) throw CmdError{"cannot open " + L.path};
+  std::vector<char> data = inflate_member(f.f, L.offset[s], bytes);
+  MemIn in{data.data(), data.data() + data.size()};
+  std::vector<float> fr, fs;
+  for (uint32_t ni : L.seg.segs[s]) read_record(in, t, t.nodes[ni], L.file_mode, fr, fs);
+}
+
+// Sets up lazy loading from a v4 file. False (nothing changed) if the index is missing or invalid.
+bool open_lazy(GameTree& t, const std::string& path, uint8_t file_mode, uint32_t max_len, StreetSegments& sg) {
+  File f(path, "rb");
+  if (!f.f) return false;
+  uint64_t size = file_size(f.f);
+  if (size < kTailSize || fseek64(f.f, size - kTailSize) != 0) return false;
+  unsigned char tail[kTailSize];
+  if (std::fread(tail, 1, kTailSize, f.f) != kTailSize) return false;
+  uint64_t index_off;
+  std::memcpy(&index_off, tail + 15, 8);
+  unsigned char expect[kTailSize];
+  tail_member(index_off, expect);
+  if (std::memcmp(tail, expect, kTailSize) != 0 || index_off >= size) return false;
+  std::vector<size_t> present;
+  for (size_t s = 0; s < sg.segs.size(); ++s)
+    if (segment_saved(t, sg, s, max_len)) present.push_back(s);
+  std::vector<char> idx;
+  try {
+    idx = inflate_member(f.f, index_off, 8 + 8 * present.size());
+  } catch (const CmdError&) {
+    return false;
+  }
+  uint64_t count;
+  std::memcpy(&count, idx.data(), 8);
+  if (count != present.size()) return false;
+  auto L = std::make_unique<LazyStore>();
+  L->path = path;
+  L->file_mode = file_mode;
+  L->offset.assign(sg.segs.size(), 0);
+  for (size_t i = 0; i < present.size(); ++i) {
+    std::memcpy(&L->offset[present[i]], idx.data() + 8 + 8 * i, 8);
+    if (L->offset[present[i]] >= index_off) return false;
+  }
+  L->loaded = std::make_unique<std::atomic<uint8_t>[]>(sg.segs.size());
+  size_t remaining = 0;
+  for (size_t s = 0; s < sg.segs.size(); ++s) {
+    bool in_file = segment_saved(t, sg, s, max_len);
+    L->loaded[s].store(in_file ? 0 : 1);  // truncated streets: nothing to load (re-solved on demand)
+    remaining += in_file;
+  }
+  L->remaining = remaining;
+  L->load_fn = lazy_load_segment;
+  L->seg = std::move(sg);
+  t.lazy = std::move(L);
+  return true;
+}
+
 }  // namespace
 
 std::string Upi::cmd_dump_tree(const Args& a) {
@@ -329,6 +579,8 @@ std::string Upi::cmd_dump_tree(const Args& a) {
     else throw CmdError{"incorrect or missing argument"};
   }
   TreePause tp(pause_requests_, tree_mu_, pause_cv_);
+  std::string lerr;
+  if (!tree_->load_all(lerr)) throw CmdError{"cannot read the loaded tree's file: " + lerr};
   const auto& g = *tree_;
   GzOut out(a[0], compress ? std::clamp(compression_level_ * 9 / 21, 1, 9) : 0);
   out.write(kMagic, 8);
@@ -362,21 +614,23 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   }
   out.put(static_cast<uint64_t>(m.buf.size()));
   out.write(m.buf.data(), m.buf.size());
+  out.finish_member();
   uint32_t max_len = truncate ? truncate : 5;
-  for (auto& n : g.nodes) {
-    if (n.kind != ANodeKind::Decision || n.board_len > max_len) continue;
-    size_t len = g.node_size(n);
-    if (g.compressed) {
-      out.put(g.rscale[n.aux]);
-      out.put(g.sscale[n.aux]);
-      out.write(g.regrets_q.data() + n.storage, len * sizeof(int16_t));
-      out.write(g.strat_q.data() + n.storage, len * sizeof(uint16_t));
-    } else {
-      out.write(g.regrets.data() + n.storage, len * sizeof(float));
-      out.write(g.strat.data() + n.storage, len * sizeof(float));
-    }
+  StreetSegments sg = g.street_segments();
+  std::vector<uint64_t> offsets;
+  for (size_t s = 0; s < sg.segs.size(); ++s) {
+    if (!segment_saved(g, sg, s, max_len)) continue;
+    offsets.push_back(out.offset());
+    for (uint32_t ni : sg.segs[s]) write_record(out, g, g.nodes[ni]);
+    out.finish_member();
   }
-  out.write(kTrailer, 8);
+  uint64_t index_off = out.offset();
+  out.put(static_cast<uint64_t>(offsets.size()));
+  out.write(offsets.data(), offsets.size() * sizeof(uint64_t));
+  out.finish_member();
+  unsigned char tail[kTailSize];
+  tail_member(index_off, tail);
+  out.write_raw(tail, kTailSize);
   out.close();
   return "dump_tree ok!";
 }
@@ -431,50 +685,37 @@ std::string Upi::cmd_load_tree(const Args& a) {
   }
   uint32_t max_len = lc.h.truncate ? lc.h.truncate : 5;
   std::vector<float> fr, fs;
-  std::vector<int16_t> qr;
-  std::vector<uint16_t> qs;
-  for (auto& n : t->nodes) {
-    if (n.kind != ANodeKind::Decision || n.board_len > max_len) continue;
-    size_t len = t->node_size(n);
-    if ((lc.h.mode & 1) && t->compressed) {
-      t->rscale[n.aux] = in.get<float>();
-      t->sscale[n.aux] = in.get<float>();
-      in.read(t->regrets_q.data() + n.storage, len * sizeof(int16_t));
-      in.read(t->strat_q.data() + n.storage, len * sizeof(uint16_t));
-      continue;
-    }
-    fr.resize(len);
-    fs.resize(len);
-    if (lc.h.mode & 1) {
-      float rs = in.get<float>(), ss = in.get<float>();
-      qr.resize(len);
-      qs.resize(len);
-      in.read(qr.data(), len * sizeof(int16_t));
-      in.read(qs.data(), len * sizeof(uint16_t));
-      for (size_t i = 0; i < len; ++i) {
-        fr[i] = qr[i] * rs;
-        fs[i] = qs[i] * ss;
+  if (lc.h.version >= 4) {
+    StreetSegments sg = t->street_segments();
+    // Fast (default): read segments on first access. Falls back to a full read if the index is unusable.
+    if (full_load || !open_lazy(*t, a[0], lc.h.mode, max_len, sg)) {
+      if (sg.segs.empty()) sg = t->street_segments();
+      size_t present = 0;
+      for (size_t s = 0; s < sg.segs.size(); ++s) {
+        if (!segment_saved(*t, sg, s, max_len)) continue;
+        ++present;
+        for (uint32_t ni : sg.segs[s]) read_record(in, *t, t->nodes[ni], lc.h.mode, fr, fs);
       }
-    } else {
-      in.read(fr.data(), len * sizeof(float));
-      in.read(fs.data(), len * sizeof(float));
+      if (in.get<uint64_t>() != present) throw CmdError{"file format error (segment index)"};
+      for (size_t i = 0; i <= present; ++i) in.get<uint64_t>();  // offsets + index offset
+      char trailer[8];
+      in.read(trailer, 8);
+      if (std::memcmp(trailer, kTrailer, 8) != 0) throw CmdError{"file format error (missing trailer)"};
     }
-    if (t->compressed) {
-      t->regrets_commit(n, fr.data());
-      t->strat_commit(n, fs.data());
-    } else {
-      std::memcpy(t->regrets.data() + n.storage, fr.data(), len * sizeof(float));
-      std::memcpy(t->strat.data() + n.storage, fs.data(), len * sizeof(float));
+  } else {
+    for (auto& n : t->nodes) {
+      if (n.kind != ANodeKind::Decision || n.board_len > max_len) continue;
+      read_record(in, *t, n, lc.h.mode, fr, fs);
     }
+    char trailer[8];
+    in.read(trailer, 8);
+    if (std::memcmp(trailer, kTrailer, 8) != 0) throw CmdError{"file format error (missing trailer)"};
   }
-  char trailer[8];
-  in.read(trailer, 8);
-  if (std::memcmp(trailer, kTrailer, 8) != 0) throw CmdError{"file format error (missing trailer)"};
   t->iterations = lc.iters;
   t->incomplete = lc.h.truncate != 0;
   t->missing_street = lc.h.truncate ? static_cast<int>(lc.h.truncate) + 1 : 0;
-  // Pio loads in "fast" mode unless `full` is given (we always load everything, but keep the flags
-  // and the load_all_nodes requirement for compatibility).
+  // Like Pio, loads are "fast" unless `full` is given: node data is read on first access (v4 saves),
+  // and rebuild_tree / solve_all_splits need load_all_nodes first.
   t->fast_loaded = !full_load;
   t->loaded_compressed = (lc.h.mode & 2) != 0;
   tree_ = std::move(t);

@@ -362,7 +362,7 @@ def _children(cfg: Config, node: Node) -> list[tuple[int, Node | None, bool]]:
     return out
 
 
-def build_lines(cfg: Config) -> list[list[int]]:
+def build_lines(cfg: Config, start: Node | None = None) -> list[list[int]]:
     """Every maximal line of the tree described by `cfg`.
 
     A line only has to reach the deepest bet of its branch: the solver fills in check, call
@@ -370,6 +370,12 @@ def build_lines(cfg: Config) -> list[list[int]]:
     candidate, and the ones that are prefixes of a longer candidate get dropped. (With an
     all-in threshold in play the deepest action of a branch is always the all-in, but a
     config without one can bottom out on an ordinary raise, and that line is still needed.)
+
+    `start` overrides the root node, for trees whose root sits mid-hand (the viewer's
+    subgame re-solve, viewer/resolve.py): it carries the street index, the chips each
+    player has already invested (so a root that starts facing a bet has unequal
+    investments), the player to act, and whether that player is closing the action
+    (`acted`). The default is the usual fresh flop root.
     """
     candidates: list[tuple[int, ...]] = []
 
@@ -382,7 +388,7 @@ def build_lines(cfg: Config) -> list[list[int]]:
                 walk(nxt, history)
             history.pop()
 
-    walk(Node(0, (0, 0), OOP, False, None), [])
+    walk(start if start is not None else Node(0, (0, 0), OOP, False, None), [])
 
     # Drop any candidate that is a prefix of another: the longer line implies it.
     seen = set(candidates)

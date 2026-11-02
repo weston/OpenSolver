@@ -91,12 +91,13 @@ function describe(parent, tok, pi, path) {
   return { kind: "other", label: tok, sub: "", color: "#8892a6", frac: 99 };
 }
 
-/** Actions at a decision node, in display order: fold, check/call, bets small -> large, all-in. */
+/** Actions at a decision node in display order (owner, #141): most aggressive on the left,
+ *  most passive on the right: all-in, bets/raises large -> small, check/call, fold. */
 function actionsOf(data, pi) {
   const node = data.node;
   const acts = data.children.map((c, k) => ({ k, id: c.id, ...describe(node, lastTok(c.id), pi, S.path) }));
   const rank = (x) => (x.kind === "fold" ? -2 : x.kind === "check" || x.kind === "call" ? -1 : x.kind === "allin" ? 1e9 : x.frac);
-  return acts.sort((x, y) => rank(x) - rank(y));
+  return acts.sort((x, y) => rank(y) - rank(x));
 }
 
 /* ------------------------------------------------------------------ data */

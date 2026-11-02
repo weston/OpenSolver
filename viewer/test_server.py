@@ -253,6 +253,27 @@ class ViewerTest(unittest.TestCase):
         st, d = self.req("/api/node?id=r:0")
         self.assertEqual(st, 200, d)
 
+    def test_10c_per_player_sizes(self):
+        # #141: IP's own sizes; an empty IP list means IP has no bets on that street
+        cfg = dict(CFG, flop_bet="50", flop_bet_ip="75", flop_raise="", flop_raise_ip="",
+                   river_allin=False, river_allin_ip=False, allin_threshold=100)  # no promotion
+        st, d = self.req("/api/generate", "POST", cfg)
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/build", "POST", {})
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/node?id=r:0")
+        self.assertIn("r:0:b20", [c["id"] for c in d["children"]])      # OOP 50% of 40
+        st, d = self.req("/api/node?id=r:0:c")
+        self.assertIn("r:0:c:b30", [c["id"] for c in d["children"]])    # IP 75% of 40
+        st, d = self.req("/api/generate", "POST", dict(cfg, flop_bet_ip=""))
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/build", "POST", {})
+        st, d = self.req("/api/node?id=r:0:c")
+        self.assertEqual([c["id"] for c in d["children"]], ["r:0:c:c"])   # IP can only check
+        # bad IP sizes are rejected like OOP's
+        st, d = self.req("/api/generate", "POST", dict(cfg, flop_bet_ip="3x"))
+        self.assertEqual(st, 400)
+
     def test_11_restart_solver(self):
         st, d = self.req("/api/restart", "POST", {})
         self.assertEqual(st, 200, d)

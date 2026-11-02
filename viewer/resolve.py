@@ -95,32 +95,9 @@ def _field_sizes(b, key, allow_mult=False):
 
 
 def _config_header(b):
-    """The PioViewer-style sizing #Key#Value lines (pot/stack are added by the caller)."""
-    try:
-        allin_threshold = float(b.get("allin_threshold", 67))
-        add_allin_limit = float(b.get("add_allin_limit", 300))
-    except (TypeError, ValueError):
-        raise vsrv.SolverError("bad all-in numbers")
-    header = [f"#AllinThreshold#{allin_threshold:g}",
-              f"#AddAllinOnlyIfLessThanThisTimesThePot#{add_allin_limit:g}"]
-    for street, name in (("flop", "Flop"), ("turn", "Turn"), ("river", "River")):
-        bet = _field_sizes(b, f"{street}_bet")
-        rais = _field_sizes(b, f"{street}_raise", allow_mult=True)
-        donk = _field_sizes(b, f"{street}_donk")
-        allin = bool(b.get(f"{street}_allin"))
-        cap = _raise_cap(b.get(f"{street}_raisecap"), f"{street}_raisecap")
-        for player in ("", "IP"):
-            if bet:
-                header.append(f"#{name}Config{player}.BetSize#{bet}")
-            if rais:
-                header.append(f"#{name}Config{player}.RaiseSize#{rais}")
-            if not player and donk:
-                header.append(f"#{name}Config.DonkBetSize#{donk}")
-            if allin:
-                header.append(f"#{name}Config{player}.AddAllin#True")
-            if cap is not None:
-                header.append(f"#{name}Config{player}.RaiseCap#{cap}")
-    return header
+    """The sizing #Key#Value lines (pot/stack are added by the caller): the same per-player
+    rules as /api/generate (viewer/server.py sizing_header, #141)."""
+    return vsrv.sizing_header(b, _tree_builder())
 
 
 def _raise_cap(val, key):
@@ -194,8 +171,8 @@ def build_config(tb, ctx, body, bet_override=None):
     The builder's cfg.pot is only the DEAD part of the pot line and cfg.stack the
     absolute effective stack; the per-player chips live in the start node's
     investments, which the solver expects since add_line amounts include the
-    per-player part of set_pot. bet_override = (street index, "a,b,c") replaces both
-    players' bet sizes on that street (size search) - or their raise sizes when the
+    per-player part of set_pot. bet_override = (street index, "a,b,c") replaces the
+    acting player's bet sizes on that street (size search) - or its raise sizes when the
     street is X's own and X faces a bet, since bets cannot occur there.
     """
     body = dict(body)
@@ -203,7 +180,14 @@ def build_config(tb, ctx, body, bet_override=None):
         s_idx, sizes = bet_override
         facing = ctx.get("facing", ctx["pot"]["oop"] != ctx["pot"]["ip"])
         kind = "raise" if facing and s_idx == STREET_INDEX[ctx["street"]] else "bet"
-        body[f"{STREET_NAME[s_idx]}_{kind}"] = sizes
+        key = f"{STREET_NAME[s_idx]}_{kind}"
+        # The candidates are the acting player's sizes; the opponent keeps theirs (#141).
+        # IP inherits OOP's field when it has none of its own, so pin it before overriding.
+        if ctx["actor"] == "OOP":
+            body.setdefault(key + "_ip", body.get(key, ""))
+            body[key] = sizes
+        else:
+            body[key + "_ip"] = sizes
     header = [f"#Pot#{ctx['pot']['dead']}", f"#EffectiveStacks#{ctx['stack']}"]
     header += _config_header(body)
     cfg = tb.parse_config("\n".join(header))

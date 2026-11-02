@@ -172,14 +172,16 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     The text box under each grid stays in sync both ways, in the solver's range syntax
     (`AA,AKs:0.5,AsKs,22+,A5s-A2s`).
   - a card-button board picker;
-  - pot, stack, bet/raise/donk sizes per street (expanded with `tools/tree_builder.py`: `33` % pot,
-    `2e` geometric over 2 streets, `3x` raise to 3×, `a` all-in), a per-street raise cap, and all-in
-    rules. Isomorphism is always on.
+  - pot, stack, and bet/raise sizes per street **for OOP and IP separately**, plus OOP donk sizes
+    (expanded with `tools/tree_builder.py`: `33` % pot, `2e` geometric over 2 streets, `3x` raise
+    to 3×, `a` all-in), a per-street raise cap and all-in rules. API fields: `{street}_bet`,
+    `_raise`, `_donk` and `_allin` are OOP's, and IP's too unless `{street}_bet_ip`, `_raise_ip` or
+    `_allin_ip` are given (#141). Isomorphism is always on.
   - a library (`~/.wsolver/library`, or `--library DIR`): save and load single ranges from each
     editor, or whole spots (ranges, board, sizes, target) from the spot bar, in `/`-separated
     folders, with search, preview, rename and delete.
   - **Build & solve** with a target in % of the pot, and a live convergence chart
-    (exploitability on a log scale against time).
+    (exploitability in % of the pot against time, linear).
 - **Study:** a fixed layout, so nothing moves while you click through a line:
   - the board as card graphics and the line so far as colored action chips grouped by street
     (click one to return to that decision);

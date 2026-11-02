@@ -276,6 +276,84 @@ class ViewerTest(unittest.TestCase):
         self.assertTrue(all(pts[i]["t"] <= pts[i + 1]["t"] for i in range(len(pts) - 1)))
         self.assertAlmostEqual(pts[-1]["explo"], expl, places=3)
 
+    def test_09b_solve_further_subtree(self):
+        """#153: solve further at a decision node mutates only that subtree."""
+        st, d = self.req("/api/strategy?id=" + urllib.parse.quote("r:0:c"))
+        self.assertEqual(st, 200, d)
+        child_before = d["freq"]
+        st, d = self.req("/api/strategy?id=r:0")
+        root_before = d["freq"]
+        st, conv_before = self.req("/api/convergence")
+        # input validation first
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 0})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": "junk"})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c show_version", "accuracy": 0.1})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c:c", "accuracy": 0.1})
+        self.assertEqual(st, 400)  # a chance node, not a decision
+        # the real run: subtree solve on the main tree to 0.3 chips (0.75% of the 40-chip pot)
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 0.3})
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["node"], "r:0:c")
+        self.assertEqual(d["pot"], 40)
+        partial = None
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            st, d = self.req("/api/progress")
+            self.assertEqual(st, 200)
+            if d["partial"] and d["partial"]["done"]:
+                partial = d["partial"]
+                break
+            time.sleep(0.25)
+        self.assertIsNotNone(partial, "subtree solve never reported done")
+        self.assertEqual(partial["node"], "r:0:c")
+        self.assertEqual(partial["pot"], 40)
+        self.assertIsNotNone(partial["point"], partial)
+        self.assertLessEqual(partial["point"]["explo"], 0.31, partial["point"])
+        self.assertTrue(any(l.startswith("Exploitable for:") for l in partial["progress"]), partial["progress"])
+        # strategies changed at the node but are bit-identical above it
+        st, d = self.req("/api/strategy?id=" + urllib.parse.quote("r:0:c"))
+        self.assertNotEqual(d["freq"], child_before, "subtree strategy should change")
+        st, d = self.req("/api/strategy?id=r:0")
+        self.assertEqual(d["freq"], root_before, "root strategy must be untouched")
+        # partial blocks never pollute the whole-tree convergence series
+        st, conv_after = self.req("/api/convergence")
+        self.assertEqual(conv_after["points"], conv_before["points"])
+
+    def test_09c_solve_further_root_and_busy(self):
+        """#153: at the root it is the whole-tree solve; a busy solver refuses a new one."""
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0", "accuracy": 0.0001})
+        self.assertEqual(st, 200, d)
+        self.assertTrue(d.get("root"))
+        seen_solving = False
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            st, d = self.req("/api/progress")
+            if d["solving"]:
+                seen_solving = True
+                break
+            if d["solver_status"].startswith("stopped"):
+                break
+            time.sleep(0.1)
+        if seen_solving:
+            st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 0.05})
+            self.assertEqual(st, 400)
+            self.assertIn("already running", d["error"])
+            st, d = self.req("/api/stop", "POST", {})
+            self.assertEqual(st, 200, d)
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                st, d = self.req("/api/progress")
+                if not d["solving"]:
+                    break
+                time.sleep(0.1)
+            self.assertFalse(d["solving"])
+        # a root run goes through /api/solve's path, so no partial state survives
+        st, d = self.req("/api/status")
+        self.assertIsNone(d["partial"])
+
     def test_10_save_and_load(self):
         path = os.path.join(tempfile.mkdtemp(), "tiny.cfr")
         st, d = self.req("/api/save", "POST", {"path": path, "no_rivers": True})
@@ -290,6 +368,15 @@ class ViewerTest(unittest.TestCase):
         st, d = self.req("/api/strategy?id=r:0")
         self.assertEqual(st, 200, d)
         self.assertIn("freq", d)
+
+    def test_10a_solve_further_refused_on_loaded_tree(self):
+        # #153: view-only saves carry no solver state — solve further is refused (UI disables it)
+        st, d = self.req("/api/status")
+        self.assertEqual(st, 200)
+        self.assertTrue(d["loaded_file"])
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 0.2})
+        self.assertEqual(st, 400)
+        self.assertIn("file", d["error"])
 
     def test_10b_new_tree_resets_series_and_ignores_iso(self):
         # isomorphism is always on (#113): an old client's iso=False must not turn it off

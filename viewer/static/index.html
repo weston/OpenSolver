@@ -44,6 +44,7 @@
         <div id="node-title" class="node-title"></div>
         <span id="subgame-tag" class="tag busy hidden" title="Browsing a re-solved subtree (opponent range fixed at the re-solve node)">Re-solved</span>
         <button id="btn-resolve" class="btn small hidden" title="Re-solve this subtree with other sizes">Re-solve…</button>
+        <button id="btn-further" class="btn small hidden" title="Continue solving the tree from this node down (changes its strategies in memory)">Solve further…</button>
         <div class="seg" id="view-seg">
           <button data-mode="strategy" class="active">Strategy</button>
           <button data-mode="range">Range</button>
@@ -254,6 +255,24 @@
     <button id="rs-close" class="btn ghost">Close</button>
     <button id="rs-browse" class="btn hidden">Browse result →</button>
     <button id="rs-go" class="btn primary">Re-solve</button>
+  </div>
+</dialog>
+
+<dialog id="sf-dialog" class="dialog">
+  <h2>Solve further from here</h2>
+  <div id="sf-context" class="rs-context"></div>
+  <label class="field"><span>Target exploitability</span><div class="suffix"><input id="sf-accuracy" type="number" step="0.05" min="0.01" value="0.5"><i>% of this pot</i></div></label>
+  <p class="hint">Runs more iterations on the loaded tree, from this node down. Strategies at and
+    below this node change in memory; the rest of the tree and any saved file are untouched.
+    At the tree root this just continues the whole solve.</p>
+  <div id="sf-progress" class="rs-progress hidden">
+    <div class="rs-bar indet" id="sf-bar"><span id="sf-bar-fill"></span></div>
+    <div id="sf-status" class="rs-status">Starting…</div>
+  </div>
+  <div class="btn-row end">
+    <button id="sf-stop" class="btn danger hidden">Stop</button>
+    <button id="sf-close" class="btn ghost">Close</button>
+    <button id="sf-go" class="btn primary">Solve</button>
   </div>
 </dialog>
 

@@ -4,6 +4,7 @@
 
 import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy } from "./cards.js";
 import { get, q, fail, showTip, hideTip, fmt, fmtChips } from "./api.js";
+import { syncFurther } from "./further.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -297,6 +298,7 @@ function renderTitle() {
   }
   // re-solving is offered on decisions of the original tree
   $("btn-resolve").classList.toggle("hidden", !(isDec(n) && !S.sub && S.cur && S.cur.freq));
+  syncFurther(isDec(n) && !S.sub && S.cur && S.cur.freq);
   $("subgame-tag").classList.toggle("hidden", !S.sub);
   // player toggle only matters for range / EV
   const seg = $("player-seg");
@@ -833,6 +835,7 @@ export function exitSubgame() {
 export const study = {
   get loaded() { return S.loaded; },
   get id() { return S.id; },
+  get pot() { return S.path.length ? potOf(S.path[S.path.length - 1]) : 0; },
   get inSubgame() { return !!S.sub; },
   refresh() { return gotoNode(S.loaded ? S.id : "r:0"); },
   reset() { S.pinned = null; S.decId = null; S.dec = null; S.base = "/api"; S.sub = null; return gotoNode("r:0"); },

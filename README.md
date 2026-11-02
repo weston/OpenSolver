@@ -212,6 +212,16 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
   raise sizes (`3x` allowed). Results are ranked by the acting player's EV, and you can browse them
   like the original tree; **↩ Original** in the action line, or ← at the subtree root, goes back.
   This is unsafe re-solving: the opponent's range stays fixed at the node.
+- **Solve further (#153):** at a solved decision, **Solve further…** continues solving from that
+  node down on the *main* tree (the `solve_partial` path), to a target accuracy in % of the
+  node's pot, with live progress and a Stop button. Strategies at and below the node change in
+  memory; everything above is untouched. At the tree root it simply continues the whole solve.
+  Trees loaded from a file have no regrets to continue from, so the button is disabled there.
+  API: `POST /api/solve_node` `{id, accuracy}` (accuracy in chips, % of the node pot × pot);
+  progress comes back in `/api/status`'s `partial` (`{id, node, pot, point, progress, done,
+  stopped}`) alongside the existing whole-solve convergence series; `loaded_file` is also in
+  `/api/status`. Uses the UPI extension `go_partial <node> [N steps|seconds]` (see
+  `docs/commands.md`).
 - **Open / Save:** `dump_tree` (full / no rivers / flop only) and lazy `load_tree`. Browsing a
   truncated save re-solves missing streets on demand, as in Pio.
 - **Library (API):** named ranges and full build-form configs saved in folders under

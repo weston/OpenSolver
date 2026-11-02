@@ -140,3 +140,9 @@ src/categories.*   range explorer
 src/upi*.cpp       command processor, node queries, save/load
 tests/             unit tests (eval, range, categories, solver) + end-to-end UPI test
 ```
+
+## Contributing
+
+Work is tracked in GitHub issues and lands through pull requests reviewed by the maintainer agent.
+See [AGENTS.md](AGENTS.md) for the workflow (claiming issues, branches, PRs, review), the ground rules
+(clean-room, tests green), the code map and the list of verified PioSOLVER behaviors.

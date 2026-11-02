@@ -427,8 +427,9 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
       sp.start_inv[0] = sch->pot[0];
       sp.start_inv[1] = sch->pot[1];
       sp.dead = sch->pot[2];
-      // The schematic's pot stands for the preflop chips; subtract this player's preflop investment
-      // (relative to its schematic share) so preflop decisions see whole-hand payoffs.
+      // The schematic's pot stands for the preflop chips. Note `sp.offset` is deliberately
+      // left at zero: the whole-hand vs schematic-relative split is carried by the `subtree`
+      // flag in terminal_payoff, not by an offset (see #107).
       // Like Pio, the schematic's set_pot is taken literally: its per-player chips are investments that
       // payoffs subtract, its dead money is free money. (For whole-hand chips, give each player's
       // preflop investment in set_pot, e.g. `set_pot 100 100 0` after a 3-bet to 100.)

@@ -150,7 +150,8 @@ Key invariants:
 - Isomorphic chance children are computed once; queries resolve real cards through a suit-permutation
   "frame" (`NodeRef::frame`).
 - Investments in the betting tree are absolute (they include `set_pot`'s per-player chips); payoffs are
-  share of the final pot minus own investment, plus a per-subtree `offset` inside preflop trees.
+  share of the final pot minus own investment. (`ActionNode::offset` exists for a per-subtree payoff
+  shift inside preflop trees but is currently always zero - see src/action_tree.hpp.)
 
 ## Comparing against PioSOLVER
 

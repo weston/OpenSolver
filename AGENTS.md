@@ -143,3 +143,6 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   absolute; subset flops are node tokens exactly as added (`r:0:b25:c:7c7d2h`); postflop subtrees show
   their schematic pot and `show_win_evs` is schematic-relative; **Pio crashes in `add_all_flops` unless
   `set_board` was called before attaching schematic trees**.
+- Schematic `set_pot` is literal (no preflop correction): `set_pot 0 0 200` = 200 dead money (probe11:
+  our EVs 95.49 / 107.67 vs Pio MES 95.42 / 107.74). Pio caches `calc_results` / `calc_ev`: after `go`
+  it reports stale numbers until `clear_cache`; we always report fresh values.

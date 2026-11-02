@@ -587,6 +587,39 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
       for (int h = 0; h < Hp; ++h) out[h] += w * rk[ph[h]];
     }
   }
+  // Normalise: a pair (h, o) is dealt flop variant v with probability w_v / N(h,o). Divide our hand's
+  // value by the opponent-reach-weighted mean of N(h,o); this keeps each hand's total deal probability
+  // exact (and the value exact whenever N(h,o) does not vary across opponents).
+  const float* Wp = g_.flop_compat[p].data();
+  const float* nc = g_.flop_card[p].data();
+  const float* np2 = g_.flop_pair[p].data();
+  const uint8_t* oc1 = g_.hcard[o][0].data();
+  const uint8_t* oc2 = g_.hcard[o][1].data();
+  const uint16_t* ocombo = g_.hands[o].data();
+  const auto& phands = g_.hands[p];
+  auto norm = [&](int h0, int h1) {
+    for (int h = h0; h < h1; ++h) {
+      if (out[h] == 0.0f) continue;
+      const uint64_t hm = combo_mask(phands[h]);
+      const float* nch = nc + static_cast<size_t>(h) * NUM_CARDS;
+      const float* nph = np2 + static_cast<size_t>(h) * NUM_COMBOS;
+      double num = 0, den = 0;
+      for (int j = 0; j < Ho; ++j) {
+        const float r = ro[j];
+        if (r == 0.0f || (combo_mask(ocombo[j]) & hm)) continue;
+        num += r * (Wp[h] - nch[oc1[j]] - nch[oc2[j]] + nph[ocombo[j]]);
+        den += r;
+      }
+      out[h] = num > 0 ? static_cast<float>(out[h] * den / num) : 0.0f;
+    }
+  };
+  const int chunks = parallel ? std::min(Hp, 4 * pool().threads()) : 1;
+  if (chunks > 1) {
+    std::function<void(int)> fn = [&](int c) { norm(c * Hp / chunks, (c + 1) * Hp / chunks); };
+    pool().parallel_for(chunks, fn);
+  } else {
+    norm(0, Hp);
+  }
 }
 
 void Solver::iterate(int t) {

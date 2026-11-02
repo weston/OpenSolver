@@ -356,7 +356,10 @@ def main(exe):
         u.cmd("set_accuracy 0"); u.cmd("go 300 steps"); u.cmd("wait_for_solver")
         res = u.cmd("calc_results").split("\n")
         evo, evi, ex = (float(res[k].split(": ")[1]) for k in (0, 1, 4))
-        check(abs(evo + evi) < 0.01 and ex < 0.05, f"preflop solve: zero-sum EVs ({evo:.3f}/{evi:.3f}), explo {ex:.4f}")
+        # Schematic pots are literal (Pio semantics): their dead money is free money, so EVs are not
+        # zero-sum here. Values verified against Pio 3.10.1 (MES 95.42 / 107.74 after 2000 steps).
+        check(ex < 0.05 and abs(evo - 95.49) < 0.5 and abs(evi - 107.67) < 0.5,
+              f"preflop solve ({evo:.3f}/{evi:.3f}), explo {ex:.4f}")
         pp = u.cmd("show_strategy_pp r:0").split("\n")
         check(len(pp) == 169 and pp[0].startswith("AA : "), "preflop show_strategy_pp by class")
         with tempfile.TemporaryDirectory() as td:

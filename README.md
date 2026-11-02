@@ -1,5 +1,7 @@
 # OpenUPI-Solver
 
+[![CI](https://github.com/weston/WSolver/actions/workflows/ci.yml/badge.svg)](https://github.com/weston/WSolver/actions/workflows/ci.yml)
+
 A heads-up no-limit hold'em solver (postflop trees and full preflop trees) with a PioSOLVER-compatible text interface
 (UPI, the Universal Poker Interface). It is an independent implementation written from the
 public UPI documentation; it contains no PioSOLVER code.

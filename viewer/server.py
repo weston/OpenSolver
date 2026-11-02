@@ -559,7 +559,11 @@ def op_generate(solver, b):
 
     try:
         cfg = tb.parse_config("\n".join(header))
-        lines = tb.format_lines(tb.build_lines(cfg))
+        # A 4- or 5-card board starts the tree on the turn or river: the builder must start
+        # there too, or its lines run past the end of the hand.
+        n_cards = len(board) // 2
+        start = tb.Node(n_cards - 3, (0, 0), tb.OOP, False, None) if n_cards in (4, 5) else None
+        lines = tb.format_lines(tb.build_lines(cfg, start))
     except (ValueError, ArithmeticError) as e:
         raise SolverError(f"bad sizes: {e}")
     if not lines:

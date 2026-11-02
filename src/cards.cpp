@@ -118,12 +118,14 @@ void init_cards() {
       COMBO_INDEX[hi][lo] = COMBO_INDEX[lo][hi] = static_cast<int16_t>(idx);
       ++idx;
     }
-  // Suit permutations, identity first.
-  std::array<uint8_t, 4> p = {0, 1, 2, 3};
+  // Suit permutations in lexicographic order (identity first). Explicit loops instead of
+  // std::next_permutation, which trips a GCC 16 -Wstringop-overflow false positive.
   int n = 0;
-  do {
-    SUIT_PERMS[n++] = p;
-  } while (std::next_permutation(p.begin(), p.end()));
+  for (uint8_t a = 0; a < 4; ++a)
+    for (uint8_t b = 0; b < 4; ++b)
+      for (uint8_t c = 0; c < 4; ++c)
+        for (uint8_t d = 0; d < 4; ++d)
+          if (a != b && a != c && a != d && b != c && b != d && c != d) SUIT_PERMS[n++] = {a, b, c, d};
   for (int k = 0; k < NUM_SUIT_PERMS; ++k) {
     for (int c = 0; c < NUM_CARDS; ++c)
       PERM_CARD[k][c] = static_cast<uint8_t>(make_card(card_rank(c), SUIT_PERMS[k][card_suit(c)]));

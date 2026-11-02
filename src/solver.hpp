@@ -84,7 +84,24 @@ class Solver {
   // Best-response, evaluate and strategy_only walks are never pruned.
   bool pruning = true;  // on by default (#51): inactive before t > 2*prune_period, then never
                         // slower and up to ~8% faster on long solves (bench data in the comment)
-  int prune_period = 32;  // <= 1: never force a full iteration
+  // 8, not 32. The period trades activation delay (pruning is inactive until t > 2*period)
+  // against how often a full measurement iteration is forced, and those pull opposite ways.
+  // At the targets the suite actually reports (0.2% of pot, reached in 35-100 iterations) the
+  // activation delay dominates: period 32 does not engage until t=64, so on flop_srp_2 - which
+  // reaches target at t=45 - pruning never ran at all. Measured to 0.2% of pot, 1 thread:
+  //
+  //   tree          iters   period 8   period 32
+  //   flop_srp_4      50     17.24 s    18.72 s   (+7.9%)
+  //   flop_srp_2      45      7.78 s     8.25 s   (+5.7%)
+  //   deep           100     24.92 s    25.49 s   (+2.2%)
+  //   flop_3bet       50      2.41 s     2.43 s   (+0.8%)
+  //   turn            35      0.10 s     0.10 s   (=)
+  //
+  // Better or equal on every tree, results bit-identical. The crossover is past ~100
+  // iterations: at 180 on deep, period 32 wins back 1.3% (26.23 s vs 26.58 s), because by
+  // then the activation delay is amortised and the forced full iterations dominate. Raise it
+  // via `set_pruning on <period>` for very long runs.
+  int prune_period = 8;  // <= 1: never force a full iteration
 
   // CFR iterations restricted to the subtree at `ni` with the given (canonical) reaches.
   void iterate_subtree(uint32_t ni, int t, const float* r0, const float* r1);

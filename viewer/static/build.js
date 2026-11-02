@@ -5,6 +5,7 @@ import { H, RANKS, SUITS, GLYPH, el, cardEl } from "./cards.js";
 import { parseRange, formatRange, rangeStats } from "./ranges.js";
 import { get, post, toast, fail, prefs, fmt, fmtChips } from "./api.js";
 import { drawChart } from "./chart.js";
+import { openLibrary } from "./library.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -19,6 +20,7 @@ const editors = {};
 let board = [];
 let builtSig = null;     // config signature of the tree currently in the solver
 let onBuilt = () => {};
+let spot = { name: null, sig: null };  // the library spot the form came from (#116)
 
 /* ------------------------------------------------------------------ range editor */
 
@@ -40,7 +42,13 @@ class RangeEditor {
     tb("Copy", "Copy the range text", () => {
       navigator.clipboard && navigator.clipboard.writeText(this.text.value).then(() => toast("Range copied"), () => {});
     });
-    head.appendChild(tools);
+    tb("Load…", "Load a saved range", () => openLibrary({
+      kind: "range", mode: "load", onLoad: (text, name) => { this.setText(text.trim()); this.source = name; toast(`Loaded “${name}” into ${player}`); },
+    }));
+    tb("Save…", "Save this range to the library", () => openLibrary({
+      kind: "range", mode: "save", content: this.value(), suggest: this.source || "",
+      onLoad: (_, name) => { this.source = name; },
+    }));
     root.appendChild(head);
 
     this.grid = el("div", "rgrid");
@@ -88,7 +96,9 @@ class RangeEditor {
       clearTimeout(t);
       t = setTimeout(() => this.setText(this.text.value, false), 250);
     });
-    root.append(this.text, this.err);
+    const foot = el("div", "editor-foot");
+    foot.append(tools, this.err);
+    root.append(this.text, foot);
   }
 
   classAvg(cls) {
@@ -207,13 +217,22 @@ function saveForm() {
   prefs.set("build", f);
   updateSpr();
   markDirty();
+  markSpot();
 }
 
 function loadForm() {
-  const f = prefs.get("build", null);
-  editors.OOP.setText(f ? f.range_oop : DEFAULTS.OOP);
-  editors.IP.setText(f ? f.range_ip : DEFAULTS.IP);
+  applyForm(prefs.get("build", null));
+  const sp = prefs.get("spot", null);
+  if (sp && sp.sig === sig(readForm())) spot = sp;
+  markSpot();
+}
+
+/** Put a saved config (or null for the defaults) into the form. */
+function applyForm(f) {
+  editors.OOP.setText(f && f.range_oop != null ? f.range_oop : DEFAULTS.OOP);
+  editors.IP.setText(f && f.range_ip != null ? f.range_ip : DEFAULTS.IP);
   board = f && f.board ? f.board.match(/../g) : [...DEFAULTS.board];
+  if (f && f.accuracy != null && Number.isFinite(Number(f.accuracy))) $("f-accuracy").value = f.accuracy;
   if (f) {
     const set = (id, v) => { if (v != null && Number.isFinite(v)) $(id).value = v; };
     set("f-pot", f.pot); set("f-stack", f.stack);
@@ -235,12 +254,16 @@ function updateSpr() {
   $("f-spr").textContent = p > 0 && s > 0 ? (s / p).toFixed(2) : "—";
 }
 
-const SIZE_RE = /^(\d+(\.\d+)?)$/;
+// tools/tree_builder.py syntax (#114): % of pot, Ne (geometric over N streets, "e" = all
+// remaining), Nx (raise to N x the bet faced; raise fields only), a (all-in).
+const SIZE_RE = /^(\d+(\.\d+)?|\d*e|a)$/i;
+const RAISE_RE = /^(\d+(\.\d+)?|\d*e|\d+(\.\d+)?x|a)$/i;
 function validateSizes() {
   let ok = true;
-  for (const inp of document.querySelectorAll(".sizes input:not([type=checkbox])")) {
+  for (const inp of document.querySelectorAll(".sizes input:not([type=checkbox]):not(.cap)")) {
+    const re = inp.dataset.k === "raise" ? RAISE_RE : SIZE_RE;
     const parts = inp.value.split(",").map((x) => x.trim()).filter(Boolean);
-    const bad = parts.some((p) => !SIZE_RE.test(p));
+    const bad = parts.some((p) => !re.test(p));
     inp.classList.toggle("invalid", bad);
     if (bad) ok = false;
   }
@@ -248,6 +271,40 @@ function validateSizes() {
 }
 
 const sig = (f) => JSON.stringify(f);
+
+/* ------------------------------------------------------------------ spots (library configs, #116) */
+
+function spotContent() { return { schema: 1, ...readForm(), accuracy: Number($("f-accuracy").value) }; }
+
+function markSpot() {
+  $("spot-name").textContent = spot.name || "Unsaved";
+  $("spot-dirty").classList.toggle("hidden", !spot.name || spot.sig === sig(readForm()));
+}
+
+function setSpot(name) {
+  spot = { name, sig: sig(readForm()) };
+  prefs.set("spot", spot);
+  markSpot();
+}
+
+function openSpot() {
+  openLibrary({
+    kind: "config", mode: "load",
+    onLoad: (c, name) => {
+      applyForm(c);
+      validateSizes();
+      prefs.set("build", readForm());
+      setSpot(name);
+      markDirty();
+      toast(`Opened spot “${name}”`);
+    },
+  });
+}
+
+function saveSpot() {
+  const suggest = spot.name || (board.length ? `Spots/${board.join("")}` : "");
+  openLibrary({ kind: "config", mode: "save", content: spotContent(), suggest, onLoad: (_, name) => setSpot(name) });
+}
 function markDirty() {
   const tag = $("build-state");
   if (!builtSig) { tag.textContent = "not built"; tag.className = "tag"; return; }
@@ -273,7 +330,7 @@ function memLine(text) {
 }
 
 async function build() {
-  if (!validateSizes()) { info("Fix the highlighted sizes (numbers, % of pot).", true); return false; }
+  if (!validateSizes()) { info("Fix the highlighted sizes: 33 (% pot), 2e (geometric), 3x (raises only), a (all-in).", true); return false; }
   if (board.length < 3) { info("Pick at least a flop (3 cards).", true); return false; }
   const f = readForm();
   setBusy(true, "Generating the tree…");
@@ -284,7 +341,8 @@ async function build() {
     info(`${g.lines} lines${est ? ` · about ${est}` : ""} — building…`);
     const b = await post("/api/build");
     builtSig = sig(f);
-    info(`Built: ${b.node_count.split("\n")[0]}${est ? ` · ${est}` : ""}`);
+    const total = /TOTAL\D*(\d+)/.exec(b.node_count);
+    info(`Built: ${total ? Number(total[1]).toLocaleString() + " nodes" : "ok"}${est ? ` · ${est}` : ""}`);
     markDirty();
     onBuilt();
     return true;
@@ -356,6 +414,8 @@ export function initBuild({ built }) {
   const acc = prefs.get("accuracy", null);
   if (acc) $("f-accuracy").value = acc;
 
+  $("spot-open").onclick = openSpot;
+  $("spot-save").onclick = saveSpot;
   $("btn-build").onclick = () => { if (!busy) build(); };
   $("btn-solve").onclick = () => { if (!busy) solve(); };
   $("btn-stop").onclick = async () => { try { await post("/api/stop"); } catch (e) { fail(e); } };

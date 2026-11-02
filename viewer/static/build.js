@@ -180,7 +180,7 @@ function buildDeck() {
     const b = el("button");
     b.dataset.card = card;
     b.style.background = `var(--suit-${s})`;
-    b.append(el("span", null, r === "T" ? "10" : r), el("small", null, GLYPH[s]));
+    b.append(el("span", null, r), el("small", null, GLYPH[s]));
     b.title = card;
     b.onclick = () => {
       const i = board.indexOf(card);

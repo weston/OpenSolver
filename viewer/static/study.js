@@ -46,6 +46,7 @@ function betColor(f) {
 }
 const rgb = (c) => `rgb(${c.map((v) => Math.round(v)).join(",")})`;
 
+const pctLabel = (f) => `${Math.round(f * 100)}%`;
 const isDec = (n) => n && (n.type === "OOP_DEC" || n.type === "IP_DEC");
 const actorOf = (n) => (n.type === "OOP_DEC" ? "OOP" : "IP");
 const lastTok = (id) => id.slice(id.lastIndexOf(":") + 1);
@@ -77,15 +78,18 @@ function describe(parent, tok, pi, path) {
       const potAfterCall = pot + (facing - own);
       const frac = (amt - facing) / potAfterCall;
       const mult = facing - base > 0 ? (amt - base) / (facing - base) : 0;
+      // Headline size is always % of the pot (owner): a raise's size is its increment over
+      // the call, as a fraction of the pot after calling; chips and the multiple go below.
       return {
-        kind: allin ? "allin" : "raise", label: allin ? "All-in" : `Raise ${fmtChips(amt - base)}`,
-        sub: allin ? fmtChips(amt - base) : `${mult.toFixed(1)}x`, color: allin ? COL.allin : betColor(frac), frac: 10 + frac,
+        kind: allin ? "allin" : "raise", label: allin ? "All-in" : `Raise ${pctLabel(frac)}`,
+        sub: allin ? fmtChips(amt - base) : `to ${fmtChips(amt - base)} · ${mult.toFixed(1)}x`,
+        color: allin ? COL.allin : betColor(frac), frac: 10 + frac,
       };
     }
     const frac = (amt - own) / pot;
     return {
-      kind: allin ? "allin" : "bet", label: allin ? "All-in" : `Bet ${fmtChips(amt - own)}`,
-      sub: `${Math.round(frac * 100)}%`, color: allin ? COL.allin : betColor(frac), frac,
+      kind: allin ? "allin" : "bet", label: allin ? "All-in" : `Bet ${pctLabel(frac)}`,
+      sub: fmtChips(amt - own), color: allin ? COL.allin : betColor(frac), frac,
     };
   }
   return { kind: "other", label: tok, sub: "", color: "#8892a6", frac: 99 };
@@ -330,7 +334,7 @@ function renderStrip() {
       const card = r + s;
       const b = el("button");
       b.style.background = `var(--suit-${s})`;
-      b.append(el("span", null, r === "T" ? "10" : r), el("span", null, GLYPH[s]));
+      b.append(el("span", null, r), el("span", null, GLYPH[s]));
       b.title = card;
       if (kids.has(card)) b.onclick = () => gotoNode(kids.get(card));
       else b.disabled = true;

@@ -274,6 +274,18 @@ class ViewerTest(unittest.TestCase):
         st, d = self.req("/api/generate", "POST", dict(cfg, flop_bet_ip="3x"))
         self.assertEqual(st, 400)
 
+    def test_10d_turn_and_river_boards(self):
+        # a 4- or 5-card board starts the tree on that street (builder lines must not run past it)
+        for board, first_kid in (("QhQc2c5d", "r:0:b"), ("QhQc2c5d9s", "r:0:b")):
+            st, d = self.req("/api/generate", "POST", dict(CFG, board=board))
+            self.assertEqual(st, 200, d)
+            st, d = self.req("/api/build", "POST", {})
+            self.assertEqual(st, 200, d)
+            st, d = self.req("/api/node?id=r:0")
+            self.assertEqual(st, 200, d)
+            self.assertEqual(d["node"]["board"].replace(" ", ""), board)
+            self.assertTrue(any(c["id"].startswith(first_kid) for c in d["children"]), d["children"])
+
     def test_11_restart_solver(self):
         st, d = self.req("/api/restart", "POST", {})
         self.assertEqual(st, 200, d)

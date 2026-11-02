@@ -1,96 +1,192 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>WSolver Viewer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WSolver</title>
 <link rel="stylesheet" href="/style.css">
+<script>
+  // Theme before first paint: saved choice, else the system preference.
+  try { const t = localStorage.getItem("ws-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 </head>
 <body>
-<header>
-  <span class="logo">WSolver Viewer</span>
-  <span id="hdr-status" class="badge">connecting…</span>
-  <span id="hdr-tree" class="badge hidden">tree</span>
-  <span id="hdr-solving" class="badge badge-solving hidden">solving</span>
-  <span id="hdr-exploit" class="badge badge-muted"></span>
-  <nav>
-    <button class="tab active" data-tab="browse">Browse</button>
-    <button class="tab" data-tab="build">Build &amp; solve</button>
-    <button class="tab" data-tab="io">Save / load</button>
+
+<header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>WSolver</div>
+  <nav class="views" role="tablist">
+    <button class="view-tab" data-view="study" role="tab">Study</button>
+    <button class="view-tab" data-view="build" role="tab">Build</button>
   </nav>
+  <div class="topbar-spacer"></div>
+  <button id="solve-pill" class="solve-pill" title="Solver status">
+    <span class="dot"></span><span id="pill-text">Idle</span>
+    <svg id="pill-spark" class="spark" viewBox="0 0 60 18" preserveAspectRatio="none"></svg>
+  </button>
+  <button id="btn-open" class="btn ghost">Open</button>
+  <button id="btn-save" class="btn ghost">Save</button>
+  <button id="btn-theme" class="icon-btn" title="Toggle light / dark" aria-label="Toggle theme">
+    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.4 5.4 0 0 1-4.4 2.26 5.4 5.4 0 0 1-3.14-9.8A9 9 0 0 0 12 3z"/></svg>
+  </button>
 </header>
 
-<div id="err" class="hidden"></div>
+<!-- ============================== STUDY ============================== -->
+<main id="view-study" class="view">
+  <section class="linebar">
+    <div id="board" class="board"></div>
+    <div id="path" class="path"></div>
+    <div id="potinfo" class="potinfo"></div>
+  </section>
 
-<!-- ==================== BROWSE ==================== -->
-<section id="tab-browse" class="tabpage">
-  <div id="breadcrumb"></div>
-  <div id="node-info"></div>
-  <div id="node-body"></div>
-  <div id="details"></div>
-</section>
+  <section class="study">
+    <div class="study-main">
+      <div class="node-head">
+        <div id="node-title" class="node-title"></div>
+        <div class="seg" id="view-seg">
+          <button data-mode="strategy" class="active">Strategy</button>
+          <button data-mode="range">Range</button>
+          <button data-mode="ev">EV</button>
+        </div>
+        <div class="seg small" id="player-seg">
+          <button data-player="OOP">OOP</button>
+          <button data-player="IP">IP</button>
+        </div>
+      </div>
+      <div id="strip" class="strip"></div>
+      <div class="matrix-wrap">
+        <div id="matrix" class="matrix"></div>
+        <div id="matrix-note" class="matrix-note"></div>
+        <div id="empty-state" class="empty-state hidden">
+          <div class="empty-card">
+            <div class="empty-title">No tree loaded</div>
+            <p>Build and solve a spot, or open a saved tree.</p>
+            <div class="empty-actions">
+              <button class="btn primary" data-goto="build">Build a tree</button>
+              <button class="btn" id="empty-open">Open a save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
-<!-- ==================== BUILD & SOLVE ==================== -->
-<section id="tab-build" class="tabpage hidden">
-  <div class="panels">
-    <div class="panel">
-      <h3>Setup</h3>
-      <label>OOP range <input id="f-range-oop" size="40" value="AA,KK,QQ,JJ,TT,AK,AQ,AJs,KQ,QJs,JTs"></label>
-      <label>IP range <input id="f-range-ip" size="40" value="AA,KK,QQ,JJ,TT,99,AK,AQ,AJs,KQs"></label>
-      <div class="row">
-        <label>Board <input id="f-board" size="10" value="QhQc2c"></label>
-        <label>Pot <input id="f-pot" type="number" value="40" min="0"></label>
-        <label>Stack <input id="f-stack" type="number" value="230" min="0"></label>
-        <label class="chk"><input id="f-iso" type="checkbox" checked> isomorphism</label>
+    <aside class="side">
+      <div class="side-tabs seg">
+        <button data-side="hand" class="active">Hand</button>
+        <button data-side="node">Node</button>
+        <button data-side="ranges">Ranges</button>
       </div>
-      <h3>Sizes (% pot, comma-separated)</h3>
-      <table class="sizes">
-        <tr><th></th><th>Bet</th><th>Raise</th><th>Donk (OOP)</th><th>+ all-in</th></tr>
-        <tr><td>Flop</td><td><input id="f-flop-bet" value="30,60" size="8"></td><td><input id="f-flop-raise" value="50" size="6"></td><td><input id="f-flop-donk" value="" size="6" placeholder=""></td><td><input id="f-flop-allin" type="checkbox"></td></tr>
-        <tr><td>Turn</td><td><input id="f-turn-bet" value="60" size="8"></td><td><input id="f-turn-raise" value="50" size="6"></td><td><input id="f-turn-donk" value="" size="6"></td><td><input id="f-turn-allin" type="checkbox"></td></tr>
-        <tr><td>River</td><td><input id="f-river-bet" value="65" size="8"></td><td><input id="f-river-raise" value="50" size="6"></td><td><input id="f-river-donk" value="" size="6"></td><td><input id="f-river-allin" type="checkbox" checked></td></tr>
-      </table>
-      <div class="row">
-        <label>All-in threshold % <input id="f-allin-threshold" type="number" value="67"></label>
-        <label>Add all-in if &lt; % pot <input id="f-allin-limit" type="number" value="300"></label>
-      </div>
-      <div class="row">
-        <button id="btn-generate">Generate lines</button>
-        <button id="btn-estimate" disabled>Estimate</button>
-        <button id="btn-build" disabled>Build tree</button>
-      </div>
-      <div id="build-out"></div>
+      <div id="side-hand" class="side-page"></div>
+      <div id="side-node" class="side-page hidden"></div>
+      <div id="side-ranges" class="side-page hidden"></div>
+    </aside>
+  </section>
+</main>
+
+<!-- ============================== BUILD ============================== -->
+<main id="view-build" class="view hidden">
+  <div class="build">
+    <div class="build-main">
+      <section class="card">
+        <div class="card-head">
+          <h2>Ranges</h2>
+          <div class="weight-tool">
+            <label for="weight">Click weight</label>
+            <input id="weight" type="range" min="0" max="100" step="1" value="100">
+            <output id="weight-out">100%</output>
+            <div class="presets">
+              <button data-w="100">100</button><button data-w="75">75</button><button data-w="50">50</button><button data-w="25">25</button><button data-w="0" title="Erase">0</button>
+            </div>
+          </div>
+        </div>
+        <div class="editors">
+          <div class="editor" data-player="OOP"></div>
+          <div class="editor" data-player="IP"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Board</h2>
+          <div class="card-tools">
+            <button class="btn small" id="board-random">Random flop</button>
+            <button class="btn small ghost" id="board-clear">Clear</button>
+          </div>
+        </div>
+        <div class="board-pick">
+          <div id="board-slots" class="board-slots"></div>
+          <div id="deck" class="deck"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Tree</h2>
+          <div class="hint">Sizes are % of the pot, comma-separated: <code>33, 75, 150</code></div>
+        </div>
+        <div class="tree-form">
+          <div class="money">
+            <label class="field"><span>Pot</span><input id="f-pot" type="number" min="1" value="40"></label>
+            <label class="field"><span>Effective stack</span><input id="f-stack" type="number" min="1" value="230"></label>
+            <div class="field readonly"><span>SPR</span><output id="f-spr">5.75</output></div>
+            <label class="field"><span>All-in threshold</span><div class="suffix"><input id="f-allin-threshold" type="number" value="67"><i>% stack</i></div></label>
+            <label class="field"><span>Add all-in below</span><div class="suffix"><input id="f-allin-limit" type="number" value="300"><i>% pot</i></div></label>
+          </div>
+          <table class="sizes">
+            <thead><tr><th></th><th>Bet</th><th>Raise</th><th>Donk <small>(OOP lead)</small></th><th>All-in</th></tr></thead>
+            <tbody>
+              <tr data-street="flop"><th>Flop</th><td><input data-k="bet" value="30, 60"></td><td><input data-k="raise" value="50"></td><td><input data-k="donk" placeholder="none"></td><td><label class="switch"><input type="checkbox" data-k="allin"><span></span></label></td></tr>
+              <tr data-street="turn"><th>Turn</th><td><input data-k="bet" value="60"></td><td><input data-k="raise" value="50"></td><td><input data-k="donk" placeholder="none"></td><td><label class="switch"><input type="checkbox" data-k="allin"><span></span></label></td></tr>
+              <tr data-street="river"><th>River</th><td><input data-k="bet" value="65"></td><td><input data-k="raise" value="50"></td><td><input data-k="donk" placeholder="none"></td><td><label class="switch"><input type="checkbox" data-k="allin" checked><span></span></label></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
-    <div class="panel">
-      <h3>Solve</h3>
-      <div class="row">
-        <label>Accuracy (chips of pot share) <input id="f-accuracy" type="number" step="0.001" value="0.1"></label>
-        <button id="btn-solve" disabled>Solve</button>
-        <button id="btn-stop">Stop</button>
-      </div>
-      <pre id="solve-progress">not solving</pre>
-    </div>
+
+    <aside class="build-side">
+      <section class="card sticky">
+        <div class="card-head"><h2>Solve</h2><span id="build-state" class="tag">not built</span></div>
+        <div class="solve-form">
+          <label class="field"><span>Target exploitability</span><div class="suffix"><input id="f-accuracy" type="number" step="0.05" min="0.01" value="0.3"><i>% pot</i></div></label>
+          <div class="btn-row">
+            <button id="btn-build" class="btn">Build tree</button>
+            <button id="btn-solve" class="btn primary">Build &amp; solve</button>
+            <button id="btn-stop" class="btn danger hidden">Stop</button>
+          </div>
+          <div id="build-info" class="build-info"></div>
+        </div>
+        <div class="chart-box">
+          <div class="chart-head"><span>Convergence</span><span id="chart-legend" class="muted"></span></div>
+          <svg id="chart" class="chart" viewBox="0 0 360 200"></svg>
+        </div>
+        <div id="solve-stats" class="stats"></div>
+        <button class="btn wide" data-goto="study" id="btn-to-study">Study this tree →</button>
+      </section>
+    </aside>
   </div>
-</section>
+</main>
 
-<!-- ==================== SAVE / LOAD ==================== -->
-<section id="tab-io" class="tabpage hidden">
-  <div class="panel">
-    <h3>Save / load</h3>
-    <p class="hint">Paths are resolved by the solver process (relative to the directory the server was started in).</p>
-    <label>Path <input id="f-path" value="tree.cfr" size="50"></label>
-    <div class="row">
-      <button id="btn-load">Load tree</button>
-      <button id="btn-save">Save tree</button>
-      <label class="chk"><input id="f-norivers" type="checkbox"> no_rivers</label>
-      <label class="chk"><input id="f-noturns" type="checkbox"> no_turns</label>
+<dialog id="file-dialog" class="dialog">
+  <form method="dialog" id="file-form">
+    <h2 id="file-title">Open</h2>
+    <label class="field"><span>Path</span><input id="file-path" value="tree.cfr" spellcheck="false"></label>
+    <p class="hint">Resolved by the solver process, relative to the folder the viewer was started in.</p>
+    <div id="save-opts" class="radio-row">
+      <label><input type="radio" name="savemode" value="full" checked> Full tree</label>
+      <label><input type="radio" name="savemode" value="no_rivers"> No rivers</label>
+      <label><input type="radio" name="savemode" value="no_turns"> Flop only</label>
     </div>
-    <div id="io-out"></div>
-    <h3>Solver</h3>
-    <div class="row"><button id="btn-restart">Restart solver process</button><span id="solver-ver"></span></div>
-  </div>
-</section>
+    <p class="hint" id="save-hint">Smaller saves re-solve later streets on demand while you browse.</p>
+    <div class="btn-row end">
+      <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+      <button value="ok" id="file-ok" class="btn primary">Open</button>
+    </div>
+  </form>
+</dialog>
 
-<script src="/app.js"></script>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<div id="tip" class="tip hidden"></div>
+
+<script type="module" src="/app.js"></script>
 </body>
 </html>

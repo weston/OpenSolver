@@ -76,9 +76,13 @@ class ViewerTest(unittest.TestCase):
         with urllib.request.urlopen(self.base + "/", timeout=10) as f:
             html = f.read().decode()
             self.assertEqual(f.status, 200)
-        self.assertIn("WSolver Viewer", html)
-        with urllib.request.urlopen(self.base + "/app.js", timeout=10) as f:
-            self.assertIn("function", f.read().decode())
+        self.assertIn("<title>WSolver</title>", html)
+        # every module the page imports is served, with a JavaScript content type
+        for name in ("app.js", "cards.js", "ranges.js", "api.js", "chart.js", "study.js", "build.js", "style.css"):
+            with urllib.request.urlopen(self.base + "/" + name, timeout=10) as f:
+                self.assertEqual(f.status, 200, name)
+                if name.endswith(".js"):
+                    self.assertIn("javascript", f.headers["Content-Type"])
         st, d = self.req("/api/status")
         self.assertEqual(st, 200)
         self.assertFalse(d["solving"])
@@ -124,6 +128,13 @@ class ViewerTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             code = e.code
         self.assertEqual(code, 404)
+        # only flat html/js/css/svg names under viewer/static: no Python sources, no subpaths
+        for path in ("/server.py", "/test_server.py", "/static/app.js", "/%2e%2e/server.py", "/.hidden.js"):
+            try:
+                code = urllib.request.urlopen(self.base + path, timeout=10).status
+            except urllib.error.HTTPError as e:
+                code = e.code
+            self.assertEqual(code, 404, path)
 
     def test_05_generate_estimate_build(self):
         st, d = self.req("/api/generate", "POST", CFG)
@@ -144,6 +155,19 @@ class ViewerTest(unittest.TestCase):
         # descend one action, then the chance node must offer runout cards
         st, d = self.req("/api/node?id=" + urllib.parse.quote(d["children"][0]["id"]))
         self.assertEqual(st, 200, d)
+
+    def test_06b_path(self):
+        # the whole line from the root in one call (#112): one node block per id prefix
+        st, d = self.req("/api/node?id=r:0")
+        child = d["children"][0]["id"]
+        st, d = self.req("/api/node?id=" + urllib.parse.quote(child))
+        deeper = d["children"][0]["id"]
+        st, d = self.req("/api/path?id=" + urllib.parse.quote(deeper))
+        self.assertEqual(st, 200, d)
+        self.assertEqual([n["id"] for n in d["nodes"]], ["r:0", child, deeper])
+        self.assertEqual(d["eff_stack"], CFG["stack"])
+        st, d = self.req("/api/path?id=" + urllib.parse.quote("r:0\nshow_version"))
+        self.assertEqual(st, 400)
 
     def test_07_strategy_grid_data(self):
         st, d = self.req("/api/strategy?id=r:0")
@@ -195,6 +219,13 @@ class ViewerTest(unittest.TestCase):
         self.assertLess(expl, 1.5)  # accuracy target was 1.0 chips
         st, d = self.req("/api/calc_results")
         self.assertIn("EV OOP:", d["text"])
+        # convergence series (#115): one point per progress block, time increasing
+        st, d = self.req("/api/convergence")
+        self.assertEqual(st, 200, d)
+        pts = d["points"]
+        self.assertGreaterEqual(len(pts), 1)
+        self.assertTrue(all(pts[i]["t"] <= pts[i + 1]["t"] for i in range(len(pts) - 1)))
+        self.assertAlmostEqual(pts[-1]["explo"], expl, places=3)
 
     def test_10_save_and_load(self):
         path = os.path.join(tempfile.mkdtemp(), "tiny.cfr")
@@ -210,6 +241,17 @@ class ViewerTest(unittest.TestCase):
         st, d = self.req("/api/strategy?id=r:0")
         self.assertEqual(st, 200, d)
         self.assertIn("freq", d)
+
+    def test_10b_new_tree_resets_series_and_ignores_iso(self):
+        # isomorphism is always on (#113): an old client's iso=False must not turn it off
+        st, d = self.req("/api/generate", "POST", dict(CFG, iso=False))
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/convergence")
+        self.assertEqual(d["points"], [])
+        st, d = self.req("/api/build", "POST", {})
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/node?id=r:0")
+        self.assertEqual(st, 200, d)
 
     def test_11_restart_solver(self):
         st, d = self.req("/api/restart", "POST", {})

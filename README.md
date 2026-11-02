@@ -164,9 +164,14 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
   links to the current node and view.
 - **Open / Save:** `dump_tree` (full / no rivers / flop only) and lazy `load_tree`. Browsing a
   truncated save re-solves missing streets on demand, as in Pio.
+- **Library (API):** named ranges and full build-form configs saved in folders under
+  `~/.wsolver/library` (override with `--library DIR`): ranges as range-syntax `.txt` files,
+  configs as JSON with `"schema": 1`. Plain files you can also manage with Finder or git; every
+  name is confined to the library root (`..`, absolute paths and symlink escapes are refused).
 
 `python3 viewer/test_server.py ./solver` runs the viewer's integration tests (a small tree,
-~1 s; also part of `make test`).
+~1 s; also part of `make test`). `python3 viewer/test_library.py` tests the library storage and
+its HTTP API without a solver.
 
 ## Windows
 

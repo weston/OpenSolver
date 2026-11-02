@@ -24,6 +24,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 import server as vsrv  # noqa: E402
+import library as vlib  # noqa: E402
 
 SOLVER = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(REPO, "solver")
 
@@ -44,6 +45,7 @@ class ViewerTest(unittest.TestCase):
         cls.solver = vsrv.Solver(SOLVER)
         cls.http = ThreadingHTTPServer(("127.0.0.1", 0), vsrv.Handler)
         cls.http.solver = cls.solver
+        cls.http.library = vlib.Library(tempfile.mkdtemp(prefix="wsolver-test-library-"))
         cls.http.daemon_threads = True
         threading.Thread(target=cls.http.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.http.server_port}"
@@ -259,6 +261,22 @@ class ViewerTest(unittest.TestCase):
         self.assertFalse(d["solving"])
         self.assertFalse(d["dead"])
         self.assertTrue(d["version"])
+
+    def test_12_library_config_round_trip_generate(self):
+        """Issue #116 acceptance: a saved config, loaded back, generates the same lines."""
+        cfg = dict(CFG, schema=1)
+        st, d = self.req("/api/library/save", "POST",
+                         {"kind": "config", "name": "round-trip/SRP", "content": cfg})
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/library/get?kind=config&name=" + urllib.parse.quote("round-trip/SRP"))
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["content"], cfg)
+        loaded = {k: v for k, v in d["content"].items() if k != "schema"}
+        st, via_lib = self.req("/api/generate", "POST", loaded)
+        self.assertEqual(st, 200, via_lib)
+        st, direct = self.req("/api/generate", "POST", CFG)
+        self.assertEqual(st, 200, direct)
+        self.assertEqual(via_lib, direct)  # same line count and same first lines
 
 
 if __name__ == "__main__":

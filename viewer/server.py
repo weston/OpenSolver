@@ -8,7 +8,10 @@ blocks are demultiplexed for progress display. The HTTP API is a fixed set of en
 nothing here can write arbitrary files (except `dump_tree` to a user-given path) or run
 destructive commands (no stdoutredi).
 
-    python3 viewer/server.py [--solver PATH] [--port 8765]
+    python3 viewer/server.py [--solver PATH] [--port 8765] [--library DIR]
+
+`--library` sets the root for saved ranges and tree configs (viewer/library.py,
+issue #116); it defaults to ~/.wsolver/library.
 
 Then open http://127.0.0.1:8765 in a browser.
 """
@@ -25,6 +28,9 @@ import sys
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from library import Library, LibraryError  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -268,12 +274,24 @@ def node_id_arg(query, name="id", default="r:0"):
 # ---------------------------------------------------------------- the API
 
 
-def api(solver, method, path, query, body):
+def lib_query(query, name="name"):
+    """Query-arg wrapper for library endpoints; LibraryError -> 400 via the handler."""
+    return query.get(name, [""])[0]
+
+
+def api(solver, lib, method, path, query, body):
     """Dispatch one API call; returns (status, data)."""
     if path == "/api/status":
         return 200, solver.state()
     if path == "/api/hand_order":
         return 200, {"order": solver.cmd("show_hand_order").split()}
+
+    # ---- saved ranges and tree configs (#116); state-free, no solver needed ----
+    if path == "/api/library/list":
+        return 200, {"entries": lib.list(lib_query(query, "kind"))}
+    if path == "/api/library/get":
+        return 200, {"kind": lib_query(query, "kind"), "name": lib_query(query),
+                     "content": lib.get(lib_query(query, "kind"), lib_query(query))}
 
     if path == "/api/node":
         node_id = node_id_arg(query)
@@ -340,6 +358,19 @@ def api(solver, method, path, query, body):
 
     # ---- state-changing endpoints (POST only) ----
     require_post(method)
+
+    if path == "/api/library/save":
+        b = need_body(body)
+        name = lib.save(b.get("kind"), b.get("name"), b.get("content"))
+        return 200, {"name": name}
+    if path == "/api/library/rename":
+        b = need_body(body)
+        lib.rename(b.get("kind"), b.get("from"), b.get("to"))
+        return 200, {"name": b.get("to")}
+    if path == "/api/library/delete":
+        b = need_body(body)
+        lib.delete(b.get("kind"), b.get("name"))
+        return 200, {"ok": True}
 
     if path == "/api/generate":
         b = need_body(body)
@@ -564,8 +595,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"ok": False, "error": "bad JSON"})
                     return
         try:
-            status, data = api(self.server.solver, method, parsed.path, query, body)
-        except SolverError as e:
+            status, data = api(self.server.solver, self.server.library, method, parsed.path, query, body)
+        except (SolverError, LibraryError) as e:
             status, data = 400, {"ok": False, "error": str(e)}
         except Exception as e:  # keep the server alive; show the broken command's error
             status, data = 500, {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -594,13 +625,17 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--solver", default=os.path.join(REPO, "solver"), help="path to the solver binary")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--library", default=os.path.join("~", ".wsolver", "library"),
+                    help="root for saved ranges and tree configs (#116)")
     args = ap.parse_args(argv)
 
     solver = Solver(os.path.abspath(args.solver))
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     srv.solver = solver
-    print(f"WSolver viewer: solver {solver.exe!r}, UI on http://127.0.0.1:{srv.server_port}", flush=True)
+    srv.library = Library(args.library)
+    print(f"WSolver viewer: solver {solver.exe!r}, library {srv.library.root!r}, "
+          f"UI on http://127.0.0.1:{srv.server_port}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

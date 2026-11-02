@@ -19,7 +19,9 @@ before `build_tree`; the 25bb fixture's built-in `small_strats on` is overridden
 Single thread, `set_info_freq 5`, targets down to 0.05% of pot, two interleaved
 repetitions per mode (f32, 16b, f32, 16b) to cancel machine drift. The machine is a
 shared Apple M4 (16 GB), so seconds are indicative; iteration counts are deterministic
-per mode.
+per mode. Solver builds measured: flop_srp_4 on main @ ebc914e (DCFR 1.3/0/4, pruning
+on); the 25bb fixture on main @ 7fe4372 (DCFR 1.3/0/4, pre-pruning — its absolute
+throughput changed with #86; the policy conclusion did not).
 
 ### Traffic estimate
 
@@ -39,25 +41,30 @@ uses the slot-pass model only, so it is a lower bound on achieved bandwidth.
 
 ## flop_srp_4 (307 MB float32, 38.4M slots), 1 thread
 
+Solver: main @ ebc914e (DCFR 1.3/0/4, pruning on). The same A/B on main @ 7fe4372
+(DCFR 1.3/0/4, pruning off) gives the same iteration counts (80 / 145) with 16-bit
+~10% slower per iteration — the conclusions below are not version-sensitive.
+
 | mode | iters | wall s | iters/s | model GB/s | to 0.5% | to 0.2% | to 0.05% | peak RSS |
 |---|---|---|---|---|---|---|---|---|
-| float32 #1 | 80 | 20.80 | 3.85 | 2.95 | 9.35 | 12.85 | 19.88 | 306.9 MB |
-| float32 #2 | 80 | 20.63 | 3.88 | 2.98 | 8.69 | 12.35 | 19.66 | 306.9 MB |
-| 16-bit #1 | 145 | 41.38 | 3.50 | 1.35 | 9.93 | 14.42 | 39.03 | 162.1 MB |
-| 16-bit #2 | 145 | 41.14 | 3.53 | 1.35 | 9.83 | 13.99 | 38.77 | 162.1 MB |
+| float32 #1 | 80 | 20.84 | 3.84 | 2.95 | 9.10 | 12.93 | 19.88 | 306.9 MB |
+| float32 #2 | 80 | 20.48 | 3.91 | 3.00 | 8.98 | 12.74 | 19.53 | 306.9 MB |
+| 16-bit #1 | 145 | 36.95 | 3.92 | 1.51 | 9.73 | 13.89 | 34.87 | 162.1 MB |
+| 16-bit #2 | 145 | 36.81 | 3.94 | 1.51 | 9.75 | 13.89 | 34.74 | 162.1 MB |
 
-Two separate effects, both against 16-bit on a tree that fits in float32:
+Two separate effects, both arguing for float32 on a tree that fits:
 
-- **Per iteration, halving the bytes buys ~nothing**: 285 ms vs 259 ms per iteration
-  (16-bit is ~10% *slower* per iteration — the quantize/dequantize arithmetic costs more
-  than the saved traffic brings back). The traffic model says a bandwidth-bound loop
-  would have sped up ~2×; instead the run moves ~3 GB/s on a machine that can stream
-  ~120 GB/s. **The solver is compute-bound**, and stays compute-bound until per-slot
-  work drops by an order of magnitude.
-- **Worse, quantization degrades convergence**: identical settings reach 0.05% of pot in
-  80 iterations in float32 but 145 in 16-bit (1.81×). Small instantaneous regrets round
-  to zero under the per-node int16 scale, so information is lost every iteration. Net:
-  to 0.05% of pot 16-bit is 1.96× (~2×) slower end-to-end; to 0.2% it is ~12% slower.
+- **Per iteration, halving the bytes buys nothing**: 254 ms vs 258 ms per iteration —
+  statistically identical. The traffic model says a bandwidth-bound loop would speed
+  up ~2×; instead the run moves ~1.5–3 GB/s on a machine that can stream ~120 GB/s.
+  **The solver is compute-bound**, with or without pruning (before #86, 16-bit was
+  ~10% *slower* per iteration from the quantize arithmetic; pruning trims compute
+  roughly in proportion for both modes, leaving a wash).
+- **Worse, quantization degrades convergence**: identical settings reach 0.05% of pot
+  in 80 iterations in float32 but 145 in 16-bit (1.81×). Small instantaneous regrets
+  round to zero under the per-node int16 scale, so information is lost every
+  iteration. Net: to 0.05% of pot 16-bit is 1.77× slower end-to-end; to 0.2% it is
+  ~9% slower.
 
 ## 25bb fixture, 1 thread
 
@@ -83,9 +90,10 @@ because its regrets are unquantized. Model bandwidth stays at ~1–2.4 GB/s, so 
 
 **The solver is compute-bound, at every tree size measured.** Achieved node-storage
 bandwidth is ~1–3 GB/s against an Apple M4 that streams ~120 GB/s — two orders of
-magnitude of headroom. Halving the storage format's bytes changes nothing per
-iteration (16-bit is ~10% *slower* per iteration once its quantize/dequantize
-arithmetic is paid), exactly as a compute-bound loop should behave.
+magnitude of headroom. Halving the storage format's bytes buys nothing per iteration
+(254 vs 258 ms on current main; before #86's pruning it was a small *loss* — 16-bit
+ran ~10% slower per iteration once its quantize/dequantize arithmetic was paid),
+exactly as a compute-bound loop should behave.
 
 **16-bit quantization also slows convergence.** Small instantaneous regrets round to
 zero under the per-node int16 scale, so information is lost every iteration:
@@ -107,4 +115,5 @@ Acceptance numbers (issue #55): 25bb fixture, 1 thread, 900 s cap — 0.132 iter
 1.07 GB/s model bandwidth and 3325 MB peak RSS in 16-bit (the mode this machine must
 use), vs 0.146 iters/s at 2.35 GB/s and 6516 MB in float32; exploitability unchanged
 in kind (both far above the 1% target at the cap, 0.47 vs 0.45 chips of a 40-chip
-pot). flop_srp_4 at equal accuracy (0.2% of pot): 12.6 s float32 vs 14.2 s 16-bit.
+pot). flop_srp_4 at equal accuracy: 0.2% of pot in 12.8 s float32 vs 13.9 s 16-bit;
+0.05% in 19.7 s vs 34.8 s.

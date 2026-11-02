@@ -90,7 +90,33 @@ ignored, so a PioViewer save file works directly:
 ```
 
 `#<Street>Config.<Field>#` sets OOP, `#<Street>ConfigIP.<Field>#` sets IP; fields are
-`BetSize`, `DonkBetSize`, `RaiseSize` (comma-separated percentages) and `AddAllin`.
+`BetSize`, `DonkBetSize`, `RaiseSize` (comma-separated size lists), `AddAllin` and
+`RaiseCap`. Entries of a size list are not just percentages:
+
+| Form | Meaning |
+|---|---|
+| `75` | a percentage of the pot (bets) or of `pot_if_called` (raises), as before |
+| `2e`, `3e` | geometric over N streets (see below) |
+| `e` | geometric over the streets remaining (3 on the flop, 2 on the turn, 1 on the river) |
+| `3x`, `2.5x` | raise to N times the bet faced, `round(N x facing)` - only in `RaiseSize` |
+| `a` | the all-in |
+
+and they mix freely: `33, 75, 2e, 3x, a`.
+
+**Geometric sizes.** `Ne` is the pot fraction f that, bet and called on each of the next
+N streets counting this one, puts the remaining effective stack S in exactly. With P the
+current pot: `f = ((1 + 2·S/P)^(1/N) − 1) / 2`. Example: pot 100, stack 300 (SPR 3) gives
+`2e` = (√7−1)/2 = 82.3% -> a bet of 82. For a raise, the same formula runs on the
+pot-if-called with S the stack left after calling, and the raise increment is the
+geometric bet on that pot: `raise to facing + round(f x pot_if_called)` (so `1e` as a
+raise is the all-in). After a called geometric bet or raise, the same fraction continued
+on the remaining streets puts the stack in exactly, up to rounding to whole chips.
+
+**Raise cap.** `#<Street>Config[IP].RaiseCap#N` limits the street to N bets and raises in
+total, counting both players (if the two players' values differ, the smaller applies). At
+the cap only check, call and fold remain - except that a configured all-in (an `a` entry,
+or `AddAllin` whose pot gate below passes) is still offered. An all-in produced by the
+`AllinThreshold` rule is an ordinary computed size and does **not** bypass the cap.
 
 Amounts in a line are absolute - the total a player has put in since the hand started - so a
 check or call repeats the amount that player is already matched to. With
@@ -98,8 +124,8 @@ check or call repeats the amount that player is already matched to. With
 
 | Action | Total |
 |---|---|
-| bet | `invested + round(BetSize% x pot)`, or `DonkBetSize%` when OOP leads into the previous street's aggressor |
-| raise | `facing + round(RaiseSize% x pot_if_called)` |
+| bet | `invested + round(BetSize x pot)`, for BetSize a percentage or geometric fraction, or `DonkBetSize` when OOP leads into the previous street's aggressor |
+| raise | `facing + round(RaiseSize x pot_if_called)`, or `round(N x facing)` for an `Nx` entry |
 
 Rounding is to the nearest chip. Two all-in rules sit on top:
 
@@ -116,7 +142,9 @@ creates, so a line only has to reach the deepest bet of its branch.
 
 These rules were inferred from `tests/data/pio_25bbHU_2sizes.txt`, which carries both a config
 header and the 266 lines PioViewer generated from it; `tests/test_tree_builder.py` checks that
-the builder reproduces that set exactly. Two details the fixture cannot pin down: the tie-break
+the builder reproduces that set exactly. (The `Ne`/`Nx`/`a` size forms and `RaiseCap` are our
+own extensions, not something PioViewer writes; plain percentage files like the fixture are
+unaffected.) Two details the fixture cannot pin down: the tie-break
 when a size lands exactly on .5 (half-up and half-even both reproduce it), and `DonkBetSize`,
 which the fixture sets equal to `BetSize` on every street - donk nodes are reached, but their
 size is indistinguishable from an ordinary bet there.

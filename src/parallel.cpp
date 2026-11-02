@@ -5,6 +5,13 @@
 
 namespace pio {
 
+namespace {
+// Workers inherit the job's exposed parallelism, including when helping another
+// caller. Once ancestors provide enough work, keep inner loops local instead of
+// publishing thousands of tiny jobs through the shared scheduler mutex.
+thread_local int parallel_width = 1;
+}
+
 ThreadPool::ThreadPool(int threads) { set_threads(threads); }
 
 ThreadPool::~ThreadPool() { stop_all(); }
@@ -45,6 +52,8 @@ ThreadPool::Job* ThreadPool::pick_job(size_t min_index) {
 }
 
 bool ThreadPool::run_some(Job* j) {
+  const int saved_width = parallel_width;
+  parallel_width = j->width;
   bool did = false;
   for (;;) {
     int i = j->next.fetch_add(1, std::memory_order_acq_rel);
@@ -54,6 +63,7 @@ bool ThreadPool::run_some(Job* j) {
     did = true;
   }
   j->active.fetch_sub(1, std::memory_order_acq_rel);
+  parallel_width = saved_width;
   return did;
 }
 
@@ -75,13 +85,14 @@ void ThreadPool::worker_loop() {
 
 void ThreadPool::parallel_for(int n, const std::function<void(int)>& f) {
   if (n <= 0) return;
-  if (n == 1 || nthreads_ <= 1) {
+  if (n == 1 || parallel_width > nthreads_ / 2) {
     for (int i = 0; i < n; ++i) f(i);
     return;
   }
   Job job;
   job.fn = &f;
   job.n = n;
+  job.width = static_cast<int>(std::min<int64_t>(nthreads_, static_cast<int64_t>(parallel_width) * n));
   size_t my_index;
   {
     std::lock_guard<std::mutex> lk(m_);

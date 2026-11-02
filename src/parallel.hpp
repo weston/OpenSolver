@@ -27,6 +27,7 @@ class ThreadPool {
   struct Job {
     const std::function<void(int)>* fn;
     int n;
+    int width;  // parallel work already exposed by this job and its ancestors
     std::atomic<int> next{0};
     std::atomic<int> done{0};
     std::atomic<int> active{0};

@@ -31,21 +31,23 @@ LIBOBJ := $(filter-out build/upi.o build/upi_nodes.o build/upi_save.o,$(OBJ))
 build/test_%: tests/test_%.cpp $(LIBOBJ)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
 
-test: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h
+test: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel
 	./build/test_eval
 	./build/test_range
 	./build/test_categories
 	./build/test_solver
 	./build/test_pfh2h
+	./build/test_parallel
 	python3 tests/test_tree_builder.py
 	python3 tests/test_upi.py ./solver
 
-test-big: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h
+test-big: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel
 	./build/test_eval
 	./build/test_range
 	./build/test_categories
 	./build/test_solver
 	./build/test_pfh2h
+	./build/test_parallel
 	python3 tests/test_tree_builder.py
 	python3 tests/test_upi.py ./solver --big
 

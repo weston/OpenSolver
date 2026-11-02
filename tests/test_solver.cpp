@@ -1,6 +1,7 @@
 // Engine smoke test: exploitability must fall toward 0 on river / turn / flop trees.
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include "../src/cards.hpp"
@@ -10,6 +11,62 @@
 #include "../src/solver.hpp"
 
 using namespace pio;
+
+template <class V>
+static bool same_bytes(const V& a, const V& b) {
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0);
+}
+
+static bool parallel_equivalence() {
+  const int saved_threads = pool().threads();
+  for (bool compressed : {false, true}) {
+    for (bool iso : {false, true}) {
+      GameConfig cfg;
+      parse_cards("Kh9h4h", cfg.board);
+      std::string err;
+      RangeWeights weights;
+      if (!parse_range("AA,KK,QQ,AKs,AQo", weights, err)) return false;
+      cfg.range[0] = weights;
+      if (!parse_range("AA,KK,JJ,AQs,KQo", weights, err)) return false;
+      cfg.range[1] = weights;
+      cfg.pot[2] = 60;
+      cfg.eff_stack = 200;
+      cfg.iso_flop = iso;
+      cfg.lines.add = {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {20, 200}};
+      GameTree g;
+      g.compressed = compressed;
+      if (!g.build(cfg, err)) return false;
+      Solver s(g);
+      pool().set_threads(1);
+      for (int t = 1; t <= 10; ++t) s.iterate(t);
+      const auto regrets = g.regrets, strat = g.strat;
+      const auto regrets_q = g.regrets_q;
+      const auto strat_q = g.strat_q;
+      const auto rscale = g.rscale, sscale = g.sscale;
+      const RootStats expected = s.root_stats();
+      for (int threads : {2, 8}) {
+        g.clear_storage();
+        pool().set_threads(threads);
+        for (int t = 1; t <= 10; ++t) s.iterate(t);
+        const RootStats actual = s.root_stats();
+        if (!same_bytes(regrets, g.regrets) || !same_bytes(strat, g.strat) ||
+            !same_bytes(regrets_q, g.regrets_q) || !same_bytes(strat_q, g.strat_q) ||
+            !same_bytes(rscale, g.rscale) || !same_bytes(sscale, g.sscale) ||
+            actual.ev[0] != expected.ev[0] || actual.ev[1] != expected.ev[1] ||
+            actual.mes[0] != expected.mes[0] || actual.mes[1] != expected.mes[1] ||
+            actual.exploitability != expected.exploitability) {
+          std::printf("Parallel result differs: threads=%d compressed=%d iso=%d\n", threads, compressed, iso);
+          pool().set_threads(saved_threads);
+          return false;
+        }
+      }
+    }
+  }
+  pool().set_threads(saved_threads);
+  std::printf("[parallel equivalence] strategies, regrets, scales and stats byte-identical\n");
+  return true;
+}
 
 static bool run(const char* name, const char* board, const char* r0, const char* r1, int pot, int stack,
                 std::vector<std::vector<int32_t>> lines, int iters, double target_frac, bool iso = true) {
@@ -53,6 +110,7 @@ int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
   int fails = 0;
+  fails += !parallel_equivalence();
   // River: polar spot, 1 bet size + all-in.
   fails += !run("river", "KhQs7d4c2s", "AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s", "AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s", 100,
                 200, {{75, 200}, {0, 75, 200}, {0, 50}, {75}}, 500, 0.003);

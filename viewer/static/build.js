@@ -293,10 +293,12 @@ function markDirty() {
 /* ------------------------------------------------------------------ build & solve */
 
 let busy = false;
+let treeReady = false, rootPotNow = 0;
 function setBusy(b, label) {
   busy = b;
   $("btn-build").disabled = b;
   $("btn-solve").disabled = b;
+  $("btn-resume").disabled = b || !treeReady;
   if (label) info(label);
 }
 function info(html, err = false) { $("build-info").innerHTML = err ? `<span class="err">${html}</span>` : html; }
@@ -318,6 +320,7 @@ async function build() {
     info(`${g.lines} lines${est ? ` · about ${est}` : ""} — building…`);
     const b = await post("/api/build");
     builtSig = sig(f);
+    treeReady = true;
     const total = /TOTAL\D*(\d+)/.exec(b.node_count);
     info(`Built: ${total ? Number(total[1]).toLocaleString() + " nodes" : "ok"}${est ? ` · ${est}` : ""}`);
     markDirty();
@@ -329,9 +332,9 @@ async function build() {
   } finally { setBusy(false); }
 }
 
+/** Solve the tree that is in the solver now; a stopped solve continues where it left off. */
 async function solve() {
-  if (builtSig !== sig(readForm())) { if (!(await build())) return; }
-  const pot = Number($("f-pot").value);
+  const pot = rootPotNow || Number($("f-pot").value);
   const pct = Number($("f-accuracy").value);
   try {
     await post("/api/solve", { accuracy: (pct / 100) * pot });
@@ -339,12 +342,23 @@ async function solve() {
   } catch (e) { fail(e); }
 }
 
+/** Always rebuild from the form (a fresh tree), then solve it. */
+async function buildAndSolve() {
+  if (!(await build())) return;
+  rootPotNow = Number($("f-pot").value);
+  await solve();
+}
+
 /* ------------------------------------------------------------------ live progress */
 
 export function updateProgress(st, series, rootPot) {
   const solving = st && st.solving;
+  treeReady = !!(st && st.tree);
+  if (rootPot) rootPotNow = rootPot;
   $("btn-stop").classList.toggle("hidden", !solving);
   $("btn-solve").classList.toggle("hidden", !!solving);
+  $("btn-resume").classList.toggle("hidden", !!solving);
+  $("btn-resume").disabled = busy || !treeReady;
   const pot = rootPot || Number($("f-pot").value) || 1;
   drawChart($("chart"), series, pot, Number($("f-accuracy").value));
   const last = series && series.length ? series[series.length - 1] : null;
@@ -394,7 +408,8 @@ export function initBuild({ built }) {
   $("spot-open").onclick = openSpot;
   $("spot-save").onclick = saveSpot;
   $("btn-build").onclick = () => { if (!busy) build(); };
-  $("btn-solve").onclick = () => { if (!busy) solve(); };
+  $("btn-solve").onclick = () => { if (!busy) buildAndSolve(); };
+  $("btn-resume").onclick = () => { if (!busy && treeReady) solve(); };
   $("btn-stop").onclick = async () => { try { await post("/api/stop"); } catch (e) { fail(e); } };
   loadForm();
   validateSizes();

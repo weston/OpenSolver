@@ -152,8 +152,9 @@
         <div class="solve-form">
           <label class="field"><span>Target exploitability</span><div class="suffix"><input id="f-accuracy" type="number" step="0.05" min="0.01" value="0.3"><i>% pot</i></div></label>
           <div class="btn-row">
-            <button id="btn-build" class="btn">Build tree</button>
-            <button id="btn-solve" class="btn primary">Build &amp; solve</button>
+            <button id="btn-build" class="btn" title="Build the tree from the form, without solving">Build</button>
+            <button id="btn-resume" class="btn" title="Solve the current tree, continuing from where it stopped" disabled>Solve</button>
+            <button id="btn-solve" class="btn primary" title="Rebuild the tree from the form, then solve it">Build &amp; solve</button>
             <button id="btn-stop" class="btn danger hidden">Stop</button>
           </div>
           <div id="build-info" class="build-info"></div>

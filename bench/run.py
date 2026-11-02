@@ -13,6 +13,7 @@ Usage:
     python3 bench/run.py --threads 1            # one mode only
     python3 bench/run.py --targets 0.01,0.002   # fractions of the starting pot
     python3 bench/run.py --max-seconds 120      # give up on a tree after this long
+    python3 bench/run.py --include-preflop      # + full preflop tree (GBs, minutes)
     python3 bench/run.py --out bench/results    # write results.json and results.md
     make bench
 
@@ -46,8 +47,14 @@ DEFAULT_TARGETS = (0.01, 0.005, 0.002)
 DEFAULT_INFO_FREQ = 5
 
 
+# Trees that are too heavy for the default suite; added only via their --include-* flag.
+# preflop_full is a real file under trees/ but needs several GB and minutes per run.
+HEAVY_TREES = {"preflop_full"}
+
+
 def tree_names() -> list[str]:
-    return sorted(f[:-4] for f in os.listdir(TREES) if f.endswith(".upi"))
+    return sorted(f[:-4] for f in os.listdir(TREES)
+                  if f.endswith(".upi") and f[:-4] not in HEAVY_TREES)
 
 
 def peak_rss_sampler(proc: subprocess.Popen, out: dict, interval: float = 0.05) -> None:
@@ -88,9 +95,18 @@ def build_script(name: str, threads: int, target: float, info_freq: int,
     else:
         with open(os.path.join(TREES, f"{name}.upi")) as fh:
             setup = [l.rstrip() for l in fh if l.strip() and not l.startswith("#")]
-        preflop = any(l.startswith("add_preflop_line") for l in setup)
-        body = setup + [f"set_threads {threads}",
-                        "build_preflop_tree" if preflop else "build_tree"]
+        # A file may carry its own build command when commands must follow it (e.g.
+        # preflop_full attaches schematic trees after build_preflop_tree). set_threads
+        # still has to come first, so it is inserted ahead of that line.
+        carried = next((i for i, l in enumerate(setup)
+                        if l.startswith(("build_preflop_tree", "build_tree"))), None)
+        if carried is not None:
+            setup.insert(carried, f"set_threads {threads}")
+            body = setup
+        else:
+            preflop = any(l.startswith("add_preflop_line") for l in setup)
+            body = setup + [f"set_threads {threads}",
+                            "build_preflop_tree" if preflop else "build_tree"]
 
     return "\n".join(body + [
         f"set_accuracy {target} fraction",
@@ -210,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="per-run cap; 0 means no cap (default 300)")
     ap.add_argument("--include-25bb", action="store_true",
                     help="also run the 25bb fixture (several GB, minutes per run)")
+    ap.add_argument("--include-preflop", action="store_true",
+                    help="also run the full preflop tree (several GB, minutes per run)")
     ap.add_argument("--out", default="", help="write <out>.json and <out>.md")
     args = ap.parse_args(argv)
 
@@ -220,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
     names = [t for t in args.trees.split(",") if t] or tree_names()
     if args.include_25bb:
         names = names + ["fixture25bb"]
+    if args.include_preflop:
+        names = names + ["preflop_full"]
     ncpu = os.cpu_count() or 1
     modes = [int(t) for t in args.threads.split(",") if t] or sorted({1, ncpu})
     targets = tuple(float(t) for t in args.targets.split(",") if t)

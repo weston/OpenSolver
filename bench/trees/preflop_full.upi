@@ -1,0 +1,60 @@
+# Full preflop solve: preflop lines + a 25-flop subset + schematic postflop trees
+# attached to every preflop exit, then expanded with add_all_flops. This is the
+# memory class that matters for preflop solving: 25 flops x 3 exits = 75 postflop
+# subtrees over wide 25bb-HU ranges. Several GB and minutes per run, so bench/run.py
+# only includes it with --include-preflop (like --include-25bb).
+# 16-bit storage keeps the build in reach of a desktop machine.
+set_range OOP 22+,A2s+,K2s+,Q2s+,J6s+,T7s+,97s+,87s,76s,65s,A2o+,K8o+,Q9o+,J9o+,T9o,98o
+set_range IP 22+,A2s+,K2s+,Q2s+,J2s+,T6s+,96s+,86s+,76s,65s,54s,A2o+,K2o+,Q8o+,J8o+,T8o+,98o
+set_pot 10 5 0
+set_eff_stack 1000
+add_preflop_line 25 25
+add_preflop_line 25 100 100
+small_strats on
+build_preflop_tree
+# A board must be set before attaching schematic trees (Pio's rule; harmless here).
+set_board 7c7d2h
+# Subset: 25 flops across ranks/textures, uniform weight 1.
+add_to_subset 1 As Ks Qs
+add_to_subset 1 As Kd 9h
+add_to_subset 1 As 9d 5h
+add_to_subset 1 As 7d 2h
+add_to_subset 1 Kh Qd 9h
+add_to_subset 1 Ks 9d 5h
+add_to_subset 1 Ks 8d 3h
+add_to_subset 1 Kh 7d 2h
+add_to_subset 1 Qs 8d 5h
+add_to_subset 1 Qh 9d 4h
+add_to_subset 1 Qs 7d 3h
+add_to_subset 1 Js 7d 4h
+add_to_subset 1 Jd 9h 5s
+add_to_subset 1 Tc 8d 4h
+add_to_subset 1 Th 9d 6s
+add_to_subset 1 9h 6d 3s
+add_to_subset 1 8h 5d 2s
+add_to_subset 1 7h 5d 3s
+add_to_subset 1 6h 4d 2s
+add_to_subset 1 5h 3d 2s
+add_to_subset 1 Ah Ad 5s
+add_to_subset 1 Th Td 4s
+add_to_subset 1 8h 8d 5s
+add_to_subset 1 9d 6d 2d
+add_to_subset 1 Kd Qd 2d
+# Schematic postflop trees for the three preflop exits.
+clear_lines
+set_pot 0 0 50
+set_eff_stack 975
+add_line 0 25 25
+add_line 25 75 75
+add_schematic_tree r:0:b25:c
+clear_lines
+set_pot 0 0 200
+set_eff_stack 900
+add_line 0 100 100
+add_schematic_tree r:0:b25:b100:c
+clear_lines
+set_pot 0 0 20
+set_eff_stack 990
+add_line 0 10 10
+add_schematic_tree r:0:c:c
+add_all_flops

@@ -26,6 +26,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	./build/test_range
 	./build/test_categories
 	./build/test_solver
+	python3 tests/test_tree_builder.py
 	python3 tests/test_upi.py ./solver
 
 clean:

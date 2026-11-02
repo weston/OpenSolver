@@ -13,10 +13,16 @@ public UPI documentation; it contains no PioSOLVER code.
 ## Build and run
 
 ```sh
-make            # builds ./solver (clang++, -O3 -mcpu=native)
+make            # builds ./solver (-O3, native CPU optimizations)
 make test       # unit tests + end-to-end UPI tests (~5-10 min, solves a real 25bb tree)
 ./solver        # talk UPI on stdin/stdout
 ```
+
+A C++20 compiler (GCC or Clang), make, Python 3 (for tests), and zlib headers are
+required. On Ubuntu 24.04, install them with
+`sudo apt install build-essential zlib1g-dev python3`; use `make CXX=clang++-18`
+to build with Clang after installing `clang-18`. The native CPU flag is
+`-mcpu=native` on ARM and `-march=native` on x86; `CXXFLAGS` can override it.
 
 A minimal session:
 

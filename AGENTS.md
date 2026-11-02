@@ -70,7 +70,7 @@ Pio comparison scripts take the host from `PIO_SSH`.
 ## Build and test
 
 ```sh
-make                       # ./solver (clang++ -O3 -mcpu=native; zlib)
+make                       # ./solver (C++20 -O3, native CPU flags; zlib)
 make test                  # unit tests + tests/test_upi.py (end-to-end; solves a real 25bb tree, ~3.3 GB RAM)
 ./build/test_eval          # exhaustive evaluator check (all 133M 7-card hands, ~2 s)
 ./build/test_solver big    # convergence + timing on river / turn / flop trees

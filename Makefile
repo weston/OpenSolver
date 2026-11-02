@@ -1,6 +1,14 @@
 # OpenUPI-Solver build. `make` builds ./solver; `make test` runs the unit and integration tests.
 CXX      ?= clang++
-CXXFLAGS ?= -std=c++20 -O3 -mcpu=native -Wall -Wextra -DNDEBUG
+# ARM compilers use -mcpu; x86 compilers use -march. Inspect the compiler's
+# target so this also works when building for a target other than the host.
+TARGET_ARCH := $(firstword $(subst -, ,$(shell $(CXX) -dumpmachine)))
+ifneq ($(filter aarch64 arm64 arm%,$(TARGET_ARCH)),)
+NATIVE_ARCH := -mcpu=native
+else
+NATIVE_ARCH := -march=native
+endif
+CXXFLAGS ?= -std=c++20 -O3 $(NATIVE_ARCH) -Wall -Wextra -DNDEBUG
 LDLIBS   := -lz -lpthread
 SRC      := src/cards.cpp src/eval.cpp src/range.cpp src/action_tree.cpp src/game.cpp src/solver.cpp \
             src/parallel.cpp src/equity.cpp src/categories.cpp src/upi.cpp src/upi_nodes.cpp src/upi_save.cpp

@@ -1,7 +1,6 @@
 // UPI core: input loop, output/END handling, settings, tree building, solving thread.
 #include "upi.hpp"
 
-#include <sys/sysctl.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -18,6 +17,7 @@
 
 #if defined(__APPLE__)
 #include <mach/mach.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace pio {
@@ -84,10 +84,15 @@ std::string join(const std::vector<std::string>& a, size_t from, const char* sep
 }  // namespace
 
 uint64_t total_memory_bytes() {
+#if defined(__APPLE__)
   uint64_t mem = 0;
   size_t len = sizeof(mem);
   sysctlbyname("hw.memsize", &mem, &len, nullptr, 0);
   return mem;
+#else
+  long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+  return pages > 0 && page > 0 ? static_cast<uint64_t>(pages) * page : 0;
+#endif
 }
 
 uint64_t available_memory_bytes() {
@@ -101,7 +106,7 @@ uint64_t available_memory_bytes() {
   return total_memory_bytes() / 2;
 #else
   long pages = sysconf(_SC_AVPHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
-  return static_cast<uint64_t>(pages) * page;
+  return pages > 0 && page > 0 ? static_cast<uint64_t>(pages) * page : total_memory_bytes() / 2;
 #endif
 }
 

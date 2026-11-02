@@ -32,6 +32,7 @@ build/test_%: tests/test_%.cpp $(LIBOBJ)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
 
 test: solver build/test_eval build/test_range build/test_categories build/test_solver
+	./build/test_eval
 	./build/test_range
 	./build/test_categories
 	./build/test_solver
@@ -39,9 +40,11 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 tests/test_upi.py ./solver
 
 test-big: solver build/test_eval build/test_range build/test_categories build/test_solver
+	./build/test_eval
 	./build/test_range
 	./build/test_categories
 	./build/test_solver
+	python3 tests/test_tree_builder.py
 	python3 tests/test_upi.py ./solver --big
 
 clean:

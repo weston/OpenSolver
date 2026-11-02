@@ -39,6 +39,29 @@ class Solver {
   bool predictive = false;  // regret matching input is R + last instantaneous regret (PCFR+-style)
   int avg_delay = 0;        // strategies only enter the average after this iteration (0 = from t=1)
 
+  // Regret-based pruning (set_pruning, #51; Brown & Sandholm, "Regret-Based Pruning in
+  // Extensive-Form Games", NIPS 2015). During a CFR walk only, an action of the traverser whose
+  // CURRENT strategy is exactly zero for every one of the traverser's hands is pruned: its subtree
+  // is not re-measured this iteration and its regret row is left completely untouched (frozen, not
+  // discounted). This changes nothing about this iteration's strategy, cfv aggregate or
+  // strategy-sum rows (the zero-strategy condition already guarantees "this action contributes 0
+  // everywhere"); the skipped instantaneous regret measurement is the bounded approximation RBP
+  // theory covers. Every prune_period-th iteration (default 32) is measured in full (the RBP
+  // revisiting schedule), which is when a frozen row can re-enter.
+  //
+  // Pruning activates only after two full periods (t > 2*prune_period). Bench: pruning from t=1
+  // is ruinous - early on about half of all rows are all-nonpositive at any moment and re-enter
+  // constantly, and frozen rows cannot re-enter until the next full iteration (flop_3bet to
+  // 0.2% pot: 50 -> 230 iterations at period 32, 90 at period 8; the damage scales with the
+  // period, and absolute chip margins do not fix it because early regret magnitudes are large).
+  // After the strategy settles, exact-zero rows are stable and rarer, so gating reproduces the
+  // unpruned iteration counts exactly on every bench tree while keeping the per-iteration savings
+  // of the long tail (deep to 0.05% pot: 33.1s -> 30.5s).
+  // Best-response, evaluate and strategy_only walks are never pruned.
+  bool pruning = true;  // on by default (#51): inactive before t > 2*prune_period, then never
+                        // slower and up to ~8% faster on long solves (bench data in the comment)
+  int prune_period = 32;  // <= 1: never force a full iteration
+
   // CFR iterations restricted to the subtree at `ni` with the given (canonical) reaches.
   void iterate_subtree(uint32_t ni, int t, const float* r0, const float* r1);
 
@@ -74,6 +97,7 @@ class Solver {
   GameTree& g_;
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;
   bool accumulate_ = true;  // t > avg_delay: whether this iteration feeds the strategy sum
+  bool prune_this_iter_ = false;  // set by iterate/iterate_subtree; read-only during walks
 };
 
 }  // namespace pio

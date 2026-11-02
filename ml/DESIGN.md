@@ -195,12 +195,16 @@ prediction across real iterations; quantized (small_strats) regret rows
 round-trip through a short solve with rows still normalising.
 
 Results so far (river, held-out spots): the river_v1 net's strategy measures
-~5-23% of pot exploitability, while cold DCFR certifies 0.3% of pot within
-33-100 iterations everywhere measured (river spots AND turn roots) — the
+~5-26% of pot exploitability, while cold DCFR certifies 0.3% of pot within
+25-100 iterations everywhere measured (river spots AND turn roots) — the
 preload(s) then anchor or wash out around a strategy that is worse than what
 a few real iterations already provide, so warm starts lose on this family.
-See the #59 A/B comments; the gate is net quality + inference speed, not the
-construction.
+river_v2 (hidden 384, 25 epochs on the 12k corpus, holdout KL ratio 0.507 vs
+v1's 0.510) changed nothing at the strategy level: 8-spot paired measurement
+v1 ≈ v2 ≈ 13% of pot (4-26% range), and its 24-spot A/B matrix reproduces v1
+exactly (cold median 25 iters / 3 ms; best warm arms 2x iterations and ~27x
+wall, the constant being the NN walk itself). See the #59 A/B comments; the
+gate is net quality + inference speed, not the construction.
 
 ## Layout
 

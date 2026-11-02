@@ -249,6 +249,10 @@ void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, i
     for (int j = j0; j + 1 < j1; ++j) {
       const uint64_t w = sd_word(oe + j);
       const float r = ro[sd_w_idx(w)];
+      // About 55-60% of opponent reach is exactly zero at showdowns (measured on the bench
+      // trees). Adding zero changes nothing, so skipping is exact (bit-identical) and breaks
+      // the store-to-load chain through cs[] for those entries.
+      if (r == 0.0f) continue;
       cum += r;
       cs[sd_w_c1(w)] += r;
       cs[sd_w_c2(w)] += r;

@@ -112,6 +112,9 @@ Key invariants:
 over SSH and diffs every response (numeric tolerance for floats). It needs `PIO_SSH=user@host` (a Windows
 machine with a licensed PioSOLVER, reachable over SSH) and optionally `PIO_KEY`, `PIO_EXE`.
 `pio_session.py` is an interactive variant. `analyze.py` compares 1326-value outputs hand by hand.
+Piping a whole script over SSH to Windows can stall when it contains very long lines (e.g.
+`set_strategy` with 2x1326 numbers); use `pio_session.PioSession` (one command at a time) for those.
+`PIO_EXE` can point at our own `solver.exe` to compare the Windows build with the local one.
 
 **Most agents will not have Pio access.** In that case work from the recorded outputs: the probe
 scripts (`probe*.txt`), `tests/data/`, the facts below, and issue descriptions (which quote Pio output

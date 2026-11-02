@@ -1,5 +1,7 @@
 # OpenUPI-Solver
 
+[![CI](https://github.com/weston/WSolver/actions/workflows/ci.yml/badge.svg)](https://github.com/weston/WSolver/actions/workflows/ci.yml)
+
 A heads-up no-limit hold'em solver (postflop trees and full preflop trees) with a PioSOLVER-compatible text interface
 (UPI, the Universal Poker Interface). It is an independent implementation written from the
 public UPI documentation; it contains no PioSOLVER code.
@@ -106,6 +108,18 @@ when a size lands exactly on .5 (half-up and half-even both reproduce it), and `
 which the fixture sets equal to `BetSize` on every street - donk nodes are reached, but their
 size is indistinguishable from an ordinary bet there.
 
+## Windows
+
+`solver.exe` runs natively on Windows (verified on Windows 11 / Zen 5: all unit tests pass and every
+UPI probe matches the macOS build up to floating-point rounding).
+
+- **Native (MSYS2 UCRT64):** `pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-zlib make`,
+  then `make` (produces `solver.exe`) and `make test`.
+- **Cross-compile from macOS/Linux:** install mingw-w64 (`brew install mingw-w64`), build zlib for it
+  (`make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32- libz.a` in zlib's source), then
+  `make windows ZLIB_DIR=/path/to/zlib` -> `build/win/solver.exe` (static, no DLLs; AVX2 by default,
+  `WIN_ARCH=-march=x86-64` for older CPUs).
+
 ## Interface conventions (as implemented)
 
 | Topic | Behavior |
@@ -163,36 +177,41 @@ For whole-hand accounting give the preflop investments per player (e.g. `set_pot
 
 ## Known differences from PioSOLVER
 
-- **Save files are not Pio `.cfr` files.** Pio's format is undocumented; ours is a gzip stream
-  (see `src/upi_save.cpp`). `load_tree` cannot read Pio saves.
-- **One algorithm.** `set_algorithm` accepts every Pio code but all map to DCFR;
-  `list_algorithms` says so.
-- **Verified against PioSOLVER-edge 3.10.1** with `tests/pio_compare/` (black-box: same UPI
-  scripts on both, response-by-response diff). Formats, tree shapes (`node_count` totals match),
-  hand order, ranges, equities (exact) and equilibrium EVs (to ~0.01 chips) agree. Remaining
-  known differences: `list_algorithms` text, `show_all_freqs` (Pio prints `nan`), tie order in
-  `show_nuts`, and `_pp` listings omit hands that are only in the opponent's range.
-- **Range explorer** (`show_category_names`, `show_categories`, `show_cats`, `show_cats_pp`) is
-  byte-identical to Pio 3.10 on 88 boards (48 fitting + 40 held-out); fixtures in
-  `tests/data/pio_categories/`.
+Policy (owner decision, #10): match Pio wherever tools may depend on it (formats, codes, node ids,
+error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberate differences:
+
+- **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip streams
+  (`src/upi_save.cpp`), and `show_save_version` reports our own format.
+- **One algorithm.** `set_algorithm` accepts every Pio code but all map to DCFR; `list_algorithms`
+  keeps Pio's codes with honest descriptions.
+- **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.
+- `show_all_freqs` prints real frequencies (Pio 3.10 prints `nan`); `estimate_schematic_tree` reports
+  real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `show_nuts` breaks
+  ties in its own order; `node_count` counts every node in preflop trees.
+- `_pp` listings omit hands that are only in the opponent's range (#9).
+- Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
+  there; results are identical with isomorphism on or off (#12).
 - **Preflop equity** (`calc_eq_preflop`, preflop all-ins) is exact: a 1326x1326 hand-vs-hand
   win/tie table is generated once per machine with our own evaluator (suit-isomorphic reduction,
   multithreaded; ~13 s on an Apple M4, 13.4 MB) and cached under `~/.cache/wsolver/pf_h2h_v1.bin`
   (override with `WSOLVER_CACHE_DIR`; `XDG_CACHE_HOME` is honored). Values match Pio's exact
   tables to its output precision.
-- `set_always_recalc`, `change_step`, `set_recalc_accuracy` are accepted and stored but only
-  `solve_all_splits` uses recalc accuracy.
+
+Verified against PioSOLVER-edge 3.10.1 with `tests/pio_compare/` (black-box: same UPI scripts on both,
+response-by-response diff): formats, tree shapes (`node_count` matches on postflop trees), hand order,
+ranges, equities, rake and ICM payoffs, node locking, truncated saves, and equilibrium EVs. The range
+explorer (`show_categories`, `show_cats`, ...) is byte-identical on 88 boards (`tests/data/pio_categories/`).
 
 ## Performance (Apple M4, 10 threads)
 
 | Tree | Memory | Time |
 |---|---|---|
-| Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 2.3 s -> 0.06% pot |
+| Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 1.6 s -> 0.06% pot |
 | Real Pio 25bb HU script, 2 sizes everywhere | 6.4 GB (3.3 GB with `small_strats`) | ~1 s / iteration |
 
 Single-threaded on the same tree (`tests/pio_compare/bench_flop.txt`), PioSOLVER-edge 3.10.1 on a Zen 5
-runs 60 iterations in 4.6 s vs 6.9 s here, but this solver's DCFR reaches lower exploitability per
-iteration (0.119 vs 0.182 chips after 60), so time-to-accuracy is within ~10%.
+runs 60 iterations in 4.63 s vs 4.73 s here (Apple M4), and this solver's DCFR reaches lower
+exploitability per iteration (0.119 vs 0.182 chips after 60), so it reaches a given accuracy sooner.
 
 `build_tree` checks free memory and switches to compressed storage automatically when float32
 storage would not fit (`small_strats auto`; force with `on` / `off`).

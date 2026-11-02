@@ -73,15 +73,17 @@ int GameTree::showdown_board_id(const std::vector<int>& board) {
     }
   }
   for (int p = 0; p < 2; ++p) {
+    const auto& sp = str[p];
     const auto& so = str[1 - p];
-    sb.lt_end[p].resize(str[p].size());
-    sb.le_end[p].resize(str[p].size());
-    size_t jl = 0, je = 0;
-    for (size_t i = 0; i < str[p].size(); ++i) {
-      while (jl < so.size() && so[jl] < str[p][i]) ++jl;
-      while (je < so.size() && so[je] <= str[p][i]) ++je;
-      sb.lt_end[p][i] = static_cast<uint16_t>(jl);
-      sb.le_end[p][i] = static_cast<uint16_t>(je);
+    auto& gr = sb.groups[p];
+    gr.clear();
+    size_t i = 0, j = 0;
+    while (i < sp.size() || j < so.size()) {
+      uint32_t s = i < sp.size() ? sp[i] : UINT32_MAX;
+      if (j < so.size() && so[j] < s) s = so[j];
+      while (i < sp.size() && sp[i] == s) ++i;
+      while (j < so.size() && so[j] == s) ++j;
+      gr.push_back({static_cast<uint16_t>(i), static_cast<uint16_t>(j)});
     }
   }
   int id = static_cast<int>(showdowns.size());
@@ -441,7 +443,9 @@ uint64_t GameTree::memory_bytes_for(bool compress) const {
   uint64_t b = compress ? storage_floats * 4 + num_decisions * 8 : storage_floats * sizeof(float) * 2;
   b += nodes.size() * sizeof(GNode);
   b += chances.size() * (sizeof(ChanceInfo) + 64);
-  for (auto& s : showdowns) b += (s.ent[0].size() + s.ent[1].size()) * (sizeof(SdEntry) + 4) + sizeof(ShowdownBoard);
+  for (auto& s : showdowns)
+    b += (s.ent[0].size() + s.ent[1].size()) * sizeof(SdEntry) + (s.groups[0].size() + s.groups[1].size()) * 4 +
+         sizeof(ShowdownBoard);
   return b;
 }
 

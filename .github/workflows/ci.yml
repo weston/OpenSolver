@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to a pull request supersedes the previous run. Pushes to main are not
+# cancelled: each commit there is something we may later want to point at, and two merges
+# landing seconds apart would otherwise leave the first one with no completed run.
+# PR runs and main runs are already in separate groups (refs/pull/N/merge vs
+# refs/heads/main), so they never cancel each other.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # One compiler failing should not hide the state of the others.
+      fail-fast: false
+      matrix:
+        # An explicit list rather than a cross product: g++ on macOS is a clang shim, so
+        # a full os x compiler matrix would add a job that tests nothing new. macOS covers
+        # the -mcpu=native path, Linux x86 covers -march=native.
+        include:
+          - name: macOS (Apple clang)
+            os: macos-latest
+            cxx: clang++
+          - name: Linux (g++)
+            os: ubuntu-latest
+            cxx: g++
+            apt: g++ zlib1g-dev
+          - name: Linux (clang++)
+            os: ubuntu-latest
+            cxx: clang++
+            apt: clang zlib1g-dev
+    env:
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # zlib is the only dependency; macOS ships it.
+      - name: Install packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
+
+      - name: Toolchain
+        run: |
+          "$CXX" --version
+          "$CXX" -dumpmachine
+          python3 --version
+          getconf _NPROCESSORS_ONLN
+
+      - name: Build
+        run: make -j"$(getconf _NPROCESSORS_ONLN)"
+
+      # Runs test_eval (all 133M 7-card hands), test_range, test_categories, test_solver,
+      # test_tree_builder.py and tests/test_upi.py. The 25bb fixture section of test_upi.py
+      # is behind --big (make test-big) and stays out of CI: it needs several GB of RAM and
+      # minutes of solving, which a hosted runner does not have.
+      - name: Unit and end-to-end tests
+        run: make test

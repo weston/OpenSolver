@@ -62,53 +62,44 @@ void Solver::fold_value(const GNode& n, int p, const float* ro, float* out) cons
 
 void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) const {
   const int o = 1 - p;
-
   const SdEntry* pe = sb.ent[p].data();
   const SdEntry* oe = sb.ent[o].data();
-  const uint16_t* lte = sb.lt_end[p].data();
-  const uint16_t* lee = sb.le_end[p].data();
   const int np = static_cast<int>(sb.ent[p].size());
-  const int no = static_cast<int>(sb.ent[o].size());
+  const auto* gr = sb.groups[p].data();
+  const int ng = static_cast<int>(sb.groups[p].size());
 
-  // Total opponent mass and per-card mass (compatible mass via inclusion-exclusion).
-  float csall[NUM_CARDS] = {0};
-  float total = 0;
-  for (int j = 0; j < no; ++j) {
-    const SdEntry e = oe[j];
-    float r = ro[e.idx];
-    total += r;
-    csall[e.c1] += r;
-    csall[e.c2] += r;
+  // One pass in strength order (see ShowdownBoard::groups): cumulative opponent mass and per-card mass
+  // give, for each of p's hands, the mass of strictly weaker (lt) and weaker-or-equal (le) opponents.
+  ArenaScope sc;
+  float* ltv = sc.a.alloc(static_cast<size_t>(np) * 2);
+  float* lev = ltv + np;
+  float cs[NUM_CARDS] = {0};
+  float cum = 0;
+  int i0 = 0, j0 = 0;
+  for (int g = 0; g < ng; ++g) {
+    const int i1 = gr[g].first, j1 = gr[g].second;
+    for (int i = i0; i < i1; ++i) ltv[i] = cum - cs[pe[i].c1] - cs[pe[i].c2];
+    for (int j = j0; j < j1; ++j) {
+      const SdEntry q = oe[j];
+      const float r = ro[q.idx];
+      cum += r;
+      cs[q.c1] += r;
+      cs[q.c2] += r;
+    }
+    for (int i = i0; i < i1; ++i) lev[i] = cum - cs[pe[i].c1] - cs[pe[i].c2];
+    i0 = i1;
+    j0 = j1;
   }
-  if (total == 0.0f) return;
-  // One ascending sweep: mass of strictly weaker (lt) and weaker-or-equal (le) opponent hands.
-  // With tie = le - lt and lose = compat - le:
-  //   value = W*lt + L*(compat - le) + T*(le - lt) = (W - T)*lt + (T - L)*le + L*compat
-  float cs_lt[NUM_CARDS] = {0}, cs_le[NUM_CARDS] = {0};
-  float cum_lt = 0, cum_le = 0;
-  int jl = 0, je = 0;
+  if (cum == 0.0f) return;
+  // value = W*lt + L*(compat - le) + T*(le - lt) = (W - T)*lt + (T - L)*le + L*compat; the identical combo
+  // (equal strength, inside "le") is subtracted twice by inclusion-exclusion and added back once.
   const float a = W - T, b = T - L;
   for (int i = 0; i < np; ++i) {
-    for (const int end = lte[i]; jl < end; ++jl) {
-      const SdEntry e = oe[jl];
-      float r = ro[e.idx];
-      cum_lt += r;
-      cs_lt[e.c1] += r;
-      cs_lt[e.c2] += r;
-    }
-    for (const int end = lee[i]; je < end; ++je) {
-      const SdEntry e = oe[je];
-      float r = ro[e.idx];
-      cum_le += r;
-      cs_le[e.c1] += r;
-      cs_le[e.c2] += r;
-    }
-    const SdEntry e = pe[i];
-    const float sr = e.same >= 0 ? ro[e.same] : 0.0f;  // identical combo: equal strength, inside "le"
-    const float lt = cum_lt - cs_lt[e.c1] - cs_lt[e.c2];
-    const float le = cum_le - cs_le[e.c1] - cs_le[e.c2] + sr;
-    const float compat = total - csall[e.c1] - csall[e.c2] + sr;
-    out[e.idx] += a * lt + b * le + L * compat;
+    const SdEntry q = pe[i];
+    const float sr = q.same >= 0 ? ro[q.same] : 0.0f;
+    const float le = lev[i] + sr;
+    const float compat = cum - cs[q.c1] - cs[q.c2] + sr;
+    out[q.idx] += a * ltv[i] + b * le + L * compat;
   }
 }
 
@@ -205,10 +196,16 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     }
   }
   const float uni = 1.0f / static_cast<float>(A);
-  for (int h = 0; h < H; ++h) sum[h] = sum[h] > 0.0f ? 1.0f / sum[h] : 0.0f;
+  // inv = 1/sum, or 0 when all regrets are non-positive (then the strategy is uniform: add `uni`).
+  float* add = sc.a.alloc(H);
+  for (int h = 0; h < H; ++h) {
+    const bool pos = sum[h] > 0.0f;
+    add[h] = pos ? 0.0f : uni;
+    sum[h] = pos ? 1.0f / sum[h] : 0.0f;
+  }
   for (int a = 0; a < A; ++a) {
     float* o = out + static_cast<size_t>(a) * H;
-    for (int h = 0; h < H; ++h) o[h] = sum[h] > 0.0f ? o[h] * sum[h] : uni;
+    for (int h = 0; h < H; ++h) o[h] = o[h] * sum[h] + add[h];
   }
   if (n.flags & GF_COMBO_LOCKED) {
     auto it = g_.combo_lock.find(ni);
@@ -453,7 +450,15 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       const float* c = cfv + static_cast<size_t>(a) * Hp;
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       const float ia = inc ? inc[a] : 0.0f;
-      if (fast) {
+      if (fast && !g_.compressed) {
+        // float32 storage: plain update (vectorizes; no max tracking needed)
+        for (int h = 0; h < Hp; ++h) {
+          float x = r[h];
+          x *= x > 0.0f ? pm : nm;
+          r[h] = x + c[h] - out[h];
+          s[h] = s[h] * sm + rp[h] * sa[h];
+        }
+      } else if (fast) {
         for (int h = 0; h < Hp; ++h) {
           float x = r[h];
           x *= x > 0.0f ? pm : nm;
@@ -487,6 +492,35 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
   std::memset(out, 0, sizeof(float) * Hp);
   for (int a = 0; a < A; ++a) {
     const float* sa = sigma + static_cast<size_t>(a) * Ho;
+    const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
+    if (g_.nodes[ci].kind == ANodeKind::Fold) {
+      // Opponent folds: value = payoff * compatible mass of (ro * sigma_fold), fused into one pass
+      // over the opponent's hands (no reach vector, no temporary, no extra add pass).
+      const float pay = static_cast<float>(g_.terminal_payoff(g_.an(g_.nodes[ci]), p, 1));
+      const uint8_t* oc1 = g_.hcard[o][0].data();
+      const uint8_t* oc2 = g_.hcard[o][1].data();
+      float cs[NUM_CARDS] = {0};
+      float total = 0;
+      for (int k = 0; k < Ho; ++k) {
+        const float v = ro[k] * sa[k];
+        total += v;
+        cs[oc1[k]] += v;
+        cs[oc2[k]] += v;
+      }
+      if (total == 0.0f) {
+        if (M == Walk::CFR) strategy_only(ci, p, rp);
+        continue;
+      }
+      const uint8_t* pc1 = g_.hcard[p][0].data();
+      const uint8_t* pc2 = g_.hcard[p][1].data();
+      const int32_t* same = g_.same_hand[p].data();
+      for (int h = 0; h < Hp; ++h) {
+        float m = total - cs[pc1[h]] - cs[pc2[h]];
+        if (same[h] >= 0) m += ro[same[h]] * sa[same[h]];
+        out[h] += pay * m;
+      }
+      continue;
+    }
     bool any = false;
     for (int k = 0; k < Ho; ++k) {
       float v = ro[k] * sa[k];

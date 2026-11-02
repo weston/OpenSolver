@@ -883,7 +883,9 @@ std::string Upi::cmd_node_count() {
   // Pio layout: H_DEC (OOP), V_DEC (IP), SPLIT, END, ROOT, each with per-street counts, then TOTAL.
   const char* names[] = {"H_DEC", "V_DEC", "SPLIT", "END", "ROOT"};
   long long counts[5][3] = {};
-  counts[4][tree_->root_board_len() - 3] = 1;
+  // Preflop nodes use the first column too, just like the loop below. A
+  // preflop root has board_len == 0 and must not index the row at -3.
+  counts[4][std::clamp(tree_->root_board_len() - 3, 0, 2)] = 1;
   for (auto& n : tree_->nodes) {
     int s = n.board_len - 3;
     // GNode::board_len of a chance node is the board before its deal, so it already names the street.

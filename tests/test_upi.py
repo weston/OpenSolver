@@ -566,6 +566,9 @@ def main(exe, big=False):
                   "set_rake 0 0"]:
             u.cmd(c)
         check(u.cmd("build_preflop_tree") == "build_preflop_tree ok!", "build_preflop_tree")
+        counts = u.cmd("node_count")
+        check("ROOT: 1\n  FLOP  1\n  TURN  0\n  RIVER 0" in counts,
+              "preflop node_count classifies wrapper root correctly")
         n0 = u.cmd("show_node r:0").split("\n")
         check(n0[1] == "IP_DEC" and n0[2] == "---" and n0[3] == "10 5 0 ", "SB (IP) acts first preflop, board ---")
         check(u.cmd("show_node r:0:b25:c").split("\n")[1] == "END_NODE", "pure preflop exit is END_NODE")

@@ -635,8 +635,9 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     if (M != Walk::CFR) return;
     if (n.flags & GF_LOCKED) return;
     float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
-    // Average accumulation is skipped until t > avg_delay (#71): S stays untouched (zero),
-    // so the average starts from the first post-delay iteration like a warm-started run.
+    // Strategy-sum accumulation (accumulate_). With avg_reset (default) it runs from t = 1 and
+    // Solver::iterate zeroes the sums at t = avg_delay + 1 (#135); without it, it is skipped until
+    // t > avg_delay and S stays untouched (zero) until then.
     float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
     // Predictive CFR stores each round's instantaneous regret for the next round's
     // matching input; keep the array fresh whenever it is allocated.

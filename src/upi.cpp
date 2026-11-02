@@ -673,8 +673,9 @@ void Upi::register_commands() {
     apply_pcfr_settings();
     return std::string("set_predictive ok!");
   };
-  // set_avg_delay <n>: iterations 1..n only move regrets; the strategy average starts
-  // accumulating at iteration n+1 (warm-started average). 0 = accumulate from t=1.
+  // set_avg_delay <n>: the strategy average drops iterations 1..n. It accumulates from t=1 and is
+  // reset at iteration n+1 (#135), so a solve stopped earlier still has its full average. Default
+  // 32; 0 = keep every iteration. Partial (subtree) re-solves ignore it.
   H["set_avg_delay"] = [this](const Args& a) {
     long long n = arg_int(a, 0, "iterations");
     if (n < 0 || n > 1000000) throw CmdError{"incorrect or missing argument"};

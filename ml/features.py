@@ -140,21 +140,27 @@ def global_f(spot: Spot, rec: NodeRecord) -> list[float]:
     return out
 
 
+def compat_masses(spot: Spot, rec: NodeRecord) -> list[float]:
+    """Opponent compatibility mass per hand of the deciding player — the exact
+    denominator `calc_ev` divides cfv by (distinct combos share <= 1 card)."""
+    opp_combos = spot.combos[1 - rec.player]
+    card_sum = [0.0] * 52
+    for ci, r in zip(opp_combos, rec.reach_opp):
+        hi, lo = COMBOS[ci]
+        card_sum[hi] += r
+        card_sum[lo] += r
+    total_o = sum(rec.reach_opp)
+    return [total_o - card_sum[COMBOS[ci][0]] - card_sum[COMBOS[ci][1]]
+            for ci in spot.combos[rec.player]]
+
+
 def hand_fs(spot: Spot, rec: NodeRecord) -> list[list[float]]:
     """One H_DIM vector per tracked hand of the deciding player."""
     perm = canonical_perm(spot.board)
     combos = spot.combos[rec.player]
     reach = rec.reach_player
-    opp_combos = spot.combos[1 - rec.player]
-    opp_reach = rec.reach_opp
-    card_sum = [0.0] * 52
-    for ci, r in zip(opp_combos, opp_reach):
-        hi, lo = COMBOS[ci]
-        card_sum[hi] += r
-        card_sum[lo] += r
+    masses = compat_masses(spot, rec)
     mean_r = sum(reach) / max(len(reach), 1)
-    total_o = sum(opp_reach)
-    masses = [total_o - card_sum[COMBOS[ci][0]] - card_sum[COMBOS[ci][1]] for ci in combos]
     mean_m = sum(masses) / max(len(masses), 1)
     out = []
     for ci, r, mass in zip(combos, reach, masses):

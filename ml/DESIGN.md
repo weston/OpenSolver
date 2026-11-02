@@ -129,6 +129,27 @@ ranges on the fixture, and suit-permutation invariance (24 perms). The encoder
 also runs clean over a 100-spot sample of the real corpus (630 nodes, ~30k
 hands, ~2 ms/spot).
 
+## Training harness (stage 2)
+
+`ml/train.py` is the ONLY torch-dependent piece (CPU torch, user-site install;
+every other ml/ tool stays stdlib-only so CI and stage-3 need nothing). Two
+small MLPs per decision node:
+
+- `value_net(g, hand_f) -> predicted chip EV / start pot`. Target is the
+  dump's cfv **divided by the per-hand compat mass** (`calc_ev` semantics —
+  the raw dump value is unnormalised and can read ~100x the chip EV) and by
+  the start pot. Auxiliary loss weight 0.1.
+- `strat_net(g, hand_f, action_f) -> per-(hand, action) logit`; softmax over
+  the record's actions (all legal by construction). Loss is reach-weighted KL
+  against the average strategy.
+
+Encoding runs on the fly (~2 ms/spot), so epochs stream the corpus straight
+from disk with no materialisation. Train/holdout split = spot-key hash mod
+100, stable as the corpus grows. Metric printed during training: holdout KL
+vs the uniform baseline (target ratio << 1) and value MSE. Checkpoints
+(`.pt`) carry the feature-layout constants; the C++ inference PR will add the
+portable weight export.
+
 ## Layout
 
 | path | what |
@@ -137,6 +158,7 @@ hands, ~2 ms/spot).
 | `ml/gen_river.py` | sampler + batch solver + manifest (`--fixture` regenerates the test fixture) |
 | `ml/loader.py` | stdlib parser for `WSDT0001` (`python3 -I ml/loader.py` self-tests against the fixture) |
 | `ml/features.py` | normative feature encoder `WSDT0001` -> model inputs (stage 2; pure stdlib) |
+| `ml/train.py` | training harness (stage 2; the only torch-dependent tool) |
 | `ml/tests/fixture.wsdt` | one small solved spot (committed; used by the loader self-test) |
 | `ml/tests/test_features.py` | encoder tests: replay, shapes, canonicalisation invariance |
 

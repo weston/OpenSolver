@@ -539,11 +539,9 @@ void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
   const size_t len = node_size(n);
   float m = maxabs;
   if (m < 0) {
-    m = 0;
-    for (size_t i = 0; i < len; ++i) {
-      float x = std::fabs(data[i]);
-      m = x > m ? x : m;
-    }
+    uint32_t mb = 0;
+    for (size_t i = 0; i < len; ++i) mb = std::max(mb, abs_bits(data[i]));
+    m = std::bit_cast<float>(mb);
   }
   int16_t* q = regrets_q.data() + n.storage;
   if (!(m > 0) || !std::isfinite(m)) {
@@ -569,8 +567,9 @@ void GameTree::strat_store(const GNode& n, const float* data, float maxval) {
   const size_t len = node_size(n);
   float m = maxval;
   if (m < 0) {
-    m = 0;
-    for (size_t i = 0; i < len; ++i) m = data[i] > m ? data[i] : m;
+    uint32_t mb = 0;
+    for (size_t i = 0; i < len; ++i) mb = std::max(mb, nonneg_bits(data[i]));
+    m = std::bit_cast<float>(mb);
   }
   uint16_t* q = strat_q.data() + n.storage;
   if (!(m > 0) || !std::isfinite(m)) {

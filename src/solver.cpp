@@ -662,7 +662,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       auto it = g_.combo_lock.find(ni);
       if (it != g_.combo_lock.end()) lockmask = it->second.data();
     }
-    float mr = 0.0f, ms = 0.0f;
+    uint32_t mr = 0, ms = 0;  // max |regret| and max strategy sum as float bits (abs_bits, game.hpp)
     const bool fast = !lockmask && !inc;
     const bool accum = accumulate_;
     for (int a = 0; a < A; ++a) {
@@ -680,15 +680,13 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
         // instead stays below the unpruned value until genuinely re-measured, so pruning only ever
         // DELAYS a re-entry, never invents one. The strategy sum gets its usual discount: with
         // sigma == 0 on the whole row that is exactly the unpruned update. (Skip it during the
-        // avg_delay phase, exactly like the unpruned rows do.)
-        for (int h = 0; h < Hp; ++h) {
-          if (accum) {
-            float y = s[h] * sm;
-            s[h] = y;
-            ms = y > ms ? y : ms;
-          }
-          float ax = std::fabs(r[h]);
-          mr = ax > mr ? ax : mr;
+        // avg_delay phase, exactly like the unpruned rows do.) The maxima only matter for 16-bit storage.
+        if (accum)
+          for (int h = 0; h < Hp; ++h) s[h] *= sm;
+        if (g_.compressed) {
+          if (accum)
+            for (int h = 0; h < Hp; ++h) ms = std::max(ms, nonneg_bits(s[h]));
+          for (int h = 0; h < Hp; ++h) mr = std::max(mr, abs_bits(r[h]));
         }
         continue;
       }
@@ -710,12 +708,11 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
           x = x + inst;
           r[h] = x;
           if (pr) pr[h] = inst;
-          float ax = std::fabs(x);
-          mr = ax > mr ? ax : mr;
+          mr = std::max(mr, abs_bits(x));
           if (accum) {
             float y = s[h] * sm + rp[h] * sa[h];
             s[h] = y;
-            ms = y > ms ? y : ms;
+            ms = std::max(ms, nonneg_bits(y));
           }
         }
       } else {
@@ -731,8 +728,8 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
         }
       }
     }
-    g_.regrets_commit(n, R, fast ? mr : -1.0f);
-    if (accum) g_.strat_commit(n, S, fast ? ms : -1.0f);
+    g_.regrets_commit(n, R, fast ? std::bit_cast<float>(mr) : -1.0f);
+    if (accum) g_.strat_commit(n, S, fast ? std::bit_cast<float>(ms) : -1.0f);
     return;
   }
 

@@ -155,9 +155,13 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
   AVX-512 registers do win (#175), but only with a software prefetch per row; without it, interleaved
   row reads cost +8-10% on DRAM-streaming trees at 32 threads.
 - **Fusing the 16-bit decode into `current_strategy`'s first pass** (no scratch copy): within noise.
-- **Memory traffic is not the limit at 16-bit.** Turning strategy-sum accumulation off entirely (no S
-  traffic, about 40% of the bytes) did not make srp_big iterations faster. float32 is bandwidth-bound
-  above 8 threads (16 threads: 23% slower than 16-bit), 16-bit is not.
+- **Memory traffic was not the limit at 16-bit, and now partly is.** Before #185/#189, turning strategy-sum
+  accumulation off entirely (no S traffic, about 40% of the bytes) did not make srp_big iterations
+  faster. Re-measured after #189 (2026-11-03, srp_big, iterations 11-30): no S updates make an
+  iteration 16% faster at 32 threads (0.333 -> 0.281 s) but only 7% at 8 threads (0.554 -> 0.517 s),
+  and scaling is 1.87x from 4 to 8 threads, 1.45x from 8 to 16 and 1.16x from 16 to 32 (1.013 / 0.543 /
+  0.374 / 0.323 s). With the compute cheaper, the 13 GB tree now leans on DRAM bandwidth at high thread
+  counts. float32 is bandwidth-bound above 8 threads (16 threads: 23% slower than 16-bit).
 - **Software-prefetching the strategy-sum rows** at node entry, and **flush-to-zero / DAZ**: no change.
   The regret update's slowness before #164 was its scalar max reductions, not cache misses or
   denormals.
@@ -172,6 +176,25 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
 - **Thread idle time is small at 32 threads**: about 1 s per worker in cv_wait (including the build) and 2 s
   of yields in total, against ~760 s of thread work. The gap to linear scaling (16 threads: 75% efficiency)
   is per-thread slowdown (SMT, bandwidth for float32), not scheduling.
+- **Updating the strategy sums every k-th iteration** (2026-11-03), folding the skipped iterations'
+  discounts into the next update so the weights stay right, to cut the S traffic above. After the
+  avg_delay reset (k = 2): about the same curves on flop_srp_2 and flop_3bet, worse on turn and
+  river, and srp_big needed 158 iterations instead of 123 (53.2 s vs 43.1 s); threebet_mono unchanged
+  (170 vs 168 iterations). Before the reset (k = 4, iterations 1-32 only, so every later iteration
+  stays bit-identical): the early exploitability reports get 2-3x worse (flop_3bet at iteration 30:
+  3.89 vs 1.35), because with gamma 4 the average is dominated by the last few iterates. Same
+  lesson as the sampled average in #135.
+- **Deferring the decay of unreached rows** (nodes the opponent does not reach: regrets only decay,
+  the strategy sum still takes the traverser's reach): `strategy_only` is 9-17% of the
+  regret-update elements (threebet_mono 9%, flop_srp_4 17%) and still has to read the regrets and
+  update S, so only the regret write could be deferred. Not pursued.
+- **Transparent huge pages** (Linux build in WSL2 on the same PC, THP `always` vs `PR_SET_THP_DISABLE`):
+  srp_big 20 iterations at 32 threads take 6.89 / 7.15 s with THP and 7.02 / 6.84 s without, so TLB
+  misses are not a factor. (That GCC 13 build is ~7% slower than the mingw `-march=znver5` exe.)
+- **Profile after #189** (threebet_mono, 1 thread, 30 iterations): the two-phase river walk is 93% of
+  an iteration; inside it the batched showdown kernel is 47%, regret updates 17%, `current_strategy`
+  12%, and the rest of the river walk (reach products, fold rows, job setup, the value sums on the
+  way up) about 18%.
 - **Pio's per-iteration convergence matches ours** on threebet_mono (see bench/vs_pio.md), so no
   algorithmic gap was found there; the lead is per-iteration speed.
 

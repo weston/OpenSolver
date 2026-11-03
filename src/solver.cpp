@@ -22,6 +22,48 @@ inline bool all_zero(const float* v, int n) {
   return true;
 }
 
+// Regret-update rows, one straight loop per (predictive, accumulate) combination. GCC unswitches
+// these loop-invariant conditions by itself, but clang (macOS) does not, and its cost model then
+// rejects vectorizing the predicated stores: on the Mac the update ran scalar (20% of an iteration
+// on threebet_mono). Same expressions as before, so the floats are identical.
+template <bool PR, bool ACC>
+inline void regret_row(float* __restrict r, float* __restrict s, float* __restrict pr, const float* __restrict c,
+                       const float* __restrict out, const float* __restrict rp, const float* __restrict sa, int Hp,
+                       float pm, float nm, float sm) {
+  for (int h = 0; h < Hp; ++h) {
+    float x = r[h];
+    x *= x > 0.0f ? pm : nm;
+    const float inst = c[h] - out[h];
+    r[h] = x + inst;
+    if constexpr (PR) pr[h] = inst;
+    if constexpr (ACC) s[h] = s[h] * sm + rp[h] * sa[h];
+  }
+}
+
+// The 16-bit storage form: also the maxima for the quantisation scales (abs_bits / nonneg_bits).
+template <bool PR, bool ACC>
+inline void regret_row_max(float* __restrict r, float* __restrict s, float* __restrict pr, const float* __restrict c,
+                           const float* __restrict out, const float* __restrict rp, const float* __restrict sa, int Hp,
+                           float pm, float nm, float sm, uint32_t& mr_out, uint32_t& ms_out) {
+  uint32_t mr = mr_out, ms = ms_out;
+  for (int h = 0; h < Hp; ++h) {
+    float x = r[h];
+    x *= x > 0.0f ? pm : nm;
+    const float inst = c[h] - out[h];
+    x = x + inst;
+    r[h] = x;
+    if constexpr (PR) pr[h] = inst;
+    mr = std::max(mr, abs_bits(x));
+    if constexpr (ACC) {
+      float y = s[h] * sm + rp[h] * sa[h];
+      s[h] = y;
+      ms = std::max(ms, nonneg_bits(y));
+    }
+  }
+  mr_out = mr;
+  ms_out = ms;
+}
+
 }  // namespace
 
 void Solver::compat_mass(int p, const float* ro, float* out) const {
@@ -838,29 +880,21 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
         continue;
       }
       if (fast && !g_.compressed) {
-        // float32 storage: plain update (vectorizes; no max tracking needed)
-        for (int h = 0; h < Hp; ++h) {
-          float x = r[h];
-          x *= x > 0.0f ? pm : nm;
-          const float inst = c[h] - out[h];
-          r[h] = x + inst;
-          if (pr) pr[h] = inst;
-          if (accum) s[h] = s[h] * sm + rp[h] * sa[h];
+        // float32 storage: plain update (no max tracking needed)
+        if (pr) {
+          if (accum) regret_row<true, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
+          else regret_row<true, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
+        } else {
+          if (accum) regret_row<false, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
+          else regret_row<false, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
         }
       } else if (fast) {
-        for (int h = 0; h < Hp; ++h) {
-          float x = r[h];
-          x *= x > 0.0f ? pm : nm;
-          const float inst = c[h] - out[h];
-          x = x + inst;
-          r[h] = x;
-          if (pr) pr[h] = inst;
-          mr = std::max(mr, abs_bits(x));
-          if (accum) {
-            float y = s[h] * sm + rp[h] * sa[h];
-            s[h] = y;
-            ms = std::max(ms, nonneg_bits(y));
-          }
+        if (pr) {
+          if (accum) regret_row_max<true, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+          else regret_row_max<true, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+        } else {
+          if (accum) regret_row_max<false, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+          else regret_row_max<false, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
         }
       } else {
         for (int h = 0; h < Hp; ++h) {
@@ -1033,6 +1067,12 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
       float* s = S + static_cast<size_t>(a) * Hp;
       float* pr = P ? P + static_cast<size_t>(a) * Hp : nullptr;
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
+      if (!lockmask && !pr) {  // the common case as straight loops (clang does not unswitch; see regret_row)
+        for (int h = 0; h < Hp; ++h) r[h] *= r[h] > 0.0f ? pm : nm;
+        if (accum)
+          for (int h = 0; h < Hp; ++h) s[h] = s[h] * sm + rp[h] * sa[h];
+        continue;
+      }
       for (int h = 0; h < Hp; ++h) {
         if (lockmask && lockmask[h]) continue;
         float x = r[h];

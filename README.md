@@ -11,24 +11,38 @@ public UPI documentation; it contains no PioSOLVER code.
 - Multi-threaded over turn/river cards with a nested work-stealing pool.
 - Suit **isomorphism** (flop trees on by default, like Pio's `set_isomorphism 1 0`).
 - Optional 16-bit compressed storage (`small_strats`), roughly halving memory.
+- **Regret-based pruning** on by default (`set_pruning off|on [period]`): a traverser action whose current strategy is exactly zero for every hand is skipped — exactly, so results are bit-identical — and revisited every `period`-th iteration (default 8). Worth about 13% on a deep tree.
 
 ## Build and run
 
 ```sh
 make            # builds ./solver (-O3, native CPU optimizations)
-make release    # builds ./solver-release: LTO + PGO (profile trained on the bench trees)
+make release    # builds ./solver-release: LTO, native arch (add PGO=1 to also train a profile)
 make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
 make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
 ./solver        # talk UPI on stdin/stdout
 ```
 
 `make release` leaves the default build untouched and produces a second binary,
-`./solver-release`, with link-time optimization and profile-guided optimization
-(the profile is trained on `tests/pio_compare/bench_flop.txt` and the bench
-river/turn trees, single- and multi-threaded, by `bench/train_pgo.sh`). Results
-are identical to the default build; solve time is a few percent lower (see the
-benchmark table in the pull request history for #56). Clang needs
-`llvm-profdata` (shipped with the toolchain; on macOS it is found via `xcrun`).
+`./solver-release`, with link-time optimization. Results are identical to the
+default build.
+
+Profile-guided optimization is available but **off by default**, because on
+arm64 it currently makes the binary slower rather than faster. Measured on an
+M1 Ultra (`flop_srp_2`, 60 steps, 1 thread, interleaved runs, sd ~1%), relative
+to the default `make` build: LTO alone is -0.5% (free), PGO alone is +11.6%
+(slower), and the two together are +12.1%. See #199. Build with `PGO=1` to
+re-test it on your own hardware:
+
+```sh
+make release PGO=1
+```
+
+That trains a profile on `tests/pio_compare/bench_flop.txt` and the bench
+river/turn trees, single- and multi-threaded, via `bench/train_pgo.sh`, and
+needs `llvm-profdata` under Clang (shipped with the toolchain; on macOS it is
+found via `xcrun`). Measure before shipping a PGO build.
+
 The native CPU flag (`-mcpu=native` on ARM, `-march=native` on x86) also applies
 to the release build; override `RELEASE_ARCH` for portable binaries, e.g.
 `make release RELEASE_ARCH=-march=x86-64-v3` on Linux or
@@ -330,7 +344,8 @@ combo_lock_node, show_locked_combos, set_strategy, set_equal_strats, set_mes, ro
 lock_line, unlock_line, set_incentives_node, set_incentives_line, show_incentives,
 clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compress / lossless), free_tree,
 show_metadata, show_save_version, load_all_nodes, set_compression_precision,
-set_compression_level, check_tree_health, set_dcfr, set_predictive, set_avg_delay.
+set_compression_level, check_tree_health, set_dcfr, set_predictive, set_avg_delay, set_pruning,
+deactivate.
 
 **Saving and loading.** `dump_tree <file> [no_rivers|no_turns] [lossless]` writes a save for viewing.
 By default it keeps each node's displayed strategy, quantized to `set_compression_precision` bits (11, as
@@ -410,6 +425,7 @@ explorer (`show_categories`, `show_cats`, ...) is byte-identical on 88 boards (`
 
 ## Performance
 
+<<<<<<< HEAD
 Against PioSOLVER 3.10 on the same PC (AMD Zen 5, 16 cores / 32 threads), both driven over UPI and run
 back to back, to the same target (0.6 chips, `set_info_freq auto`), 32 threads:
 
@@ -423,6 +439,22 @@ each iteration runs. On the smaller bench trees (40-307 MB, measured at #147) WS
 on one thread; at 32 threads it was about even on `deep` and 1.8x faster on `flop_srp_4` (Pio's sub-second times
 there are only upper bounds). Method, history and per-tree numbers: [bench/vs_pio.md](bench/vs_pio.md);
 where the time goes: [bench/where-the-time-goes.md](bench/where-the-time-goes.md).
+=======
+| Tree | Memory | Time |
+|---|---|---|
+| Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 0.9 s -> 0.025% pot |
+| Real Pio 25bb HU script, 2 sizes everywhere | 6.4 GB (3.3 GB with `small_strats`) | ~1 s / iteration |
+
+Single-threaded on the same tree (`tests/pio_compare/bench_flop.txt`), PioSOLVER-edge 3.10.1 on a Zen 5
+runs 60 iterations in 4.63 s vs 4.73 s here (Apple M4), and this solver's DCFR reaches **0.042 chips of
+exploitability after 60 iterations against Pio's 0.182** — about 4x closer to equilibrium for the same
+iteration count, so it reaches a given accuracy considerably sooner. (That figure is a convergence
+property, so it does not depend on the machine; it has improved from 0.119 as the DCFR schedule was
+retuned — see `bench/dcfr_sweep.md` and `src/solver.hpp`.)
+
+`bench/results.md` carries the current per-tree timings and is regenerated by `make bench`; prefer it
+over the table above, which is a snapshot.
+>>>>>>> origin/main
 
 `build_tree` checks free memory and switches to compressed storage automatically when float32
 storage would not fit (`small_strats auto`; force with `on` / `off`).

@@ -91,3 +91,29 @@ Spec for the measurement #58 asks for, so it does not have to be re-derived:
   a source string via `newLibraryWithSource:options:error:`, which needs no extra tooling.
 - **Honesty check:** compare against the CPU at the same precision and verify the GPU result matches
   the CPU within float tolerance on a fixed input before timing anything.
+
+## 2026-11-03: the 2026 GPU-CFR papers
+
+The owner asked whether two recent papers change this: Kim & Sandholm, "Parallelizing Counterfactual
+Regret Minimization" (arXiv:2605.14277), and Li & Huang, "GPU-CFR" (arXiv:2609.11923). Neither
+changes the update rule. Both run ordinary CFR / CFR+ / DCFR level by level over a generic game tree
+(sparse matrix-vector products; GPU-CFR also compiles the tree to static index arrays and replays
+one iteration as a CUDA graph). Their speedups (up to ~10^4x, 30-80x) are against OpenSpiel and
+LiteEFG, which enumerate every hand pair at a showdown. Range-vectorised poker solvers (this one,
+Pio) evaluate a showdown in time linear in the hands per player, which the generic formulation
+cannot do.
+
+Their poker instances are small: 100 and 12 hands per player for the river and turn subgames, and a
+full-range Libratus endgame (96,159 infosets, 36.1M states) at 13.9 ms per iteration on an A100. For
+scale, a full-range river spot here (58 nodes, ~1,080 hands per player, KhQs7d4c2s) runs at 0.19 ms
+per iteration on one M4 core. That spot is several times smaller than the endgame, so this is not
+like for like, but the gap is far larger than the size difference.
+
+What carries over is the schedule, not the code: a GPU port of this solver would walk the public
+tree one depth level at a time with every node's range vectors batched (strategies and reaches
+top-down, all terminals of all runouts in one dispatch, values and regret updates bottom-up), with
+regrets and strategy sums resident on the device. The hardware available to the project at that
+point: an AMD RX 9060 XT (16 GB GDDR6, ~320 GB/s, no CUDA; OpenCL and Vulkan drivers present, no
+ROCm) next to a 9950X on dual-channel DDR5-4800, and the M4's integrated GPU on the CPU's own
+120 GB/s. Not pursued further (owner, 2026-11-03).
+

@@ -92,7 +92,7 @@ void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool wid
   // sibling actions): publishing them unconditionally made every turn decision inside a parallel
   // turn fan-out a job of its own, thousands per iteration on big trees, and the scheduler mutex
   // then serialised everything (13 GB tree: 32 threads 2.6x slower than 16).
-  // ...unless a thread has nothing to run (#PRN): then publish anyway, so it can help. Without this a
+  // ...unless a thread has nothing to run (#236): then publish anyway, so it can help. Without this a
   // slow core holding one of the last tasks of a wide fan-out finishes it alone while the others wait
   // at the join (M4 efficiency cores: threebet_mono to 0.6 chips 5.57 -> 5.50 s). Only an idle
   // thread triggers it, so it cannot flood the scheduler the way publishing everything did.

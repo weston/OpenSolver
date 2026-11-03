@@ -44,6 +44,20 @@ release build instead of the default one, point `INSTALL_BIN` at it:
 make release && make install INSTALL_BIN=solver-release
 ```
 
+### Source distribution
+
+`make dist` writes `dist/wsolver-<version>-src.tar.gz` and a matching `.sha256`
+so a recipient can verify what they downloaded:
+
+```sh
+make dist
+shasum -a 256 -c dist/wsolver-0.1.0-src.tar.gz.sha256
+```
+
+It builds the tarball with `git archive`, so the contents are exactly what is
+committed — no build output and no stray local files — and it warns when
+uncommitted or untracked files are being left out.
+
 `make release` leaves the default build untouched and produces a second binary,
 `./solver-release`, with link-time optimization. Results are identical to the
 default build.

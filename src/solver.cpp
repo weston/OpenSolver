@@ -4,12 +4,16 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 
 #if PIO_SHOWDOWN_AVX512
 #include <immintrin.h>
 #endif
 
 #include "parallel.hpp"
+#if PIO_SHOWDOWN_NEON
+#include <arm_neon.h>
+#endif
 #include "pfh2h.hpp"
 
 namespace pio {
@@ -534,6 +538,120 @@ static void showdown_lanes_avx512(const ShowdownBoard& sb, int p, int n, const S
 
 #endif
 
+#if PIO_SHOWDOWN_NEON
+// The AVX-512 lanes kernel (showdown_lanes_avx512) for AArch64: 8 lanes as two 128-bit halves, one
+// lane per job plus one per fused fold. Same operations per lane as showdown_board_scalar, in the
+// same order (clang and GCC contract its value line to fma(L, compat, fma(a, lt, b*le)); the fold is
+// its explicit fma), so the outputs are bit-identical; test_solver's [river batch] check covers it.
+static void showdown_lanes_neon(const ShowdownBoard& sb, int p, int n, const SdJob* job, int ho) {
+  const int o = 1 - p;
+  const SdEntry* pe = sb.ent[p].data();
+  const SdEntry* oe = sb.ent[o].data();
+  const int np = static_cast<int>(sb.ent[p].size());
+  const auto* gr = sb.groups[p].data();
+  const int ng = static_cast<int>(sb.groups[p].size());
+  const float* src[8];
+  alignas(16) float va[8] = {}, vb[8] = {}, vl[8] = {};
+  int fl[8];  // fold lane of job t, or -1
+  int lanes = n;
+  for (int t = 0; t < 8; ++t) src[t] = job[0].ro;  // unused lanes: any readable row of length ho
+  for (int t = 0; t < n; ++t) {
+    src[t] = job[t].ro;
+    va[t] = job[t].W - job[t].T;
+    vb[t] = job[t].T - job[t].L;
+    vl[t] = job[t].L;
+    fl[t] = -1;
+    if (job[t].xf) {
+      src[lanes] = job[t].xf;
+      fl[t] = lanes++;
+    }
+  }
+  ArenaScope sc;
+  float* buf = sc.a.alloc(static_cast<size_t>(2 * np + ho + 1) * 8 + 4);
+  float* ltT = reinterpret_cast<float*>((reinterpret_cast<uintptr_t>(buf) + 15) & ~uintptr_t(15));
+  float* leT = ltT + static_cast<size_t>(np) * 8;
+  float* roH = leT + static_cast<size_t>(np) * 8;  // (ho + 1) x 8: each lane's reach by opponent hand; row ho = 0
+  int h0 = 0;
+  for (; h0 + 4 <= ho; h0 += 4) {
+    for (int half = 0; half < 2; ++half) {
+      const float* const* s4 = src + 4 * half;
+      const float32x4_t r0 = vld1q_f32(s4[0] + h0), r1 = vld1q_f32(s4[1] + h0);
+      const float32x4_t r2 = vld1q_f32(s4[2] + h0), r3 = vld1q_f32(s4[3] + h0);
+      const float64x2_t t0 = vreinterpretq_f64_f32(vtrn1q_f32(r0, r1)), t1 = vreinterpretq_f64_f32(vtrn2q_f32(r0, r1));
+      const float64x2_t t2 = vreinterpretq_f64_f32(vtrn1q_f32(r2, r3)), t3 = vreinterpretq_f64_f32(vtrn2q_f32(r2, r3));
+      float* d = roH + static_cast<size_t>(8) * h0 + 4 * half;
+      vst1q_f32(d, vreinterpretq_f32_f64(vtrn1q_f64(t0, t2)));
+      vst1q_f32(d + 8, vreinterpretq_f32_f64(vtrn1q_f64(t1, t3)));
+      vst1q_f32(d + 16, vreinterpretq_f32_f64(vtrn2q_f64(t0, t2)));
+      vst1q_f32(d + 24, vreinterpretq_f32_f64(vtrn2q_f64(t1, t3)));
+    }
+  }
+  for (; h0 < ho; ++h0)
+    for (int t = 0; t < 8; ++t) roH[8 * h0 + t] = src[t][h0];
+  for (int t = 0; t < 8; ++t) roH[8 * ho + t] = 0.0f;
+
+  alignas(16) float cs[NUM_CARDS][8];
+  std::memset(cs, 0, sizeof(cs));
+  float32x4_t cum0 = vdupq_n_f32(0.0f), cum1 = cum0;
+  auto q0 = [&](const SdEntry& q) { return vsubq_f32(vsubq_f32(cum0, vld1q_f32(cs[q.c1])), vld1q_f32(cs[q.c2])); };
+  auto q1 = [&](const SdEntry& q) {
+    return vsubq_f32(vsubq_f32(cum1, vld1q_f32(cs[q.c1] + 4)), vld1q_f32(cs[q.c2] + 4));
+  };
+  int i0 = 0, j0 = 0;
+  for (int g = 0; g < ng; ++g) {
+    const int i1 = gr[g].first, j1 = gr[g].second;
+    for (int i = i0; i < i1; ++i) {
+      vst1q_f32(ltT + 8 * i, q0(pe[i]));
+      vst1q_f32(ltT + 8 * i + 4, q1(pe[i]));
+    }
+    for (int j = j0; j < j1; ++j) {
+      const SdEntry q = oe[j];
+      const float32x4_t v0 = vld1q_f32(roH + 8 * q.idx), v1 = vld1q_f32(roH + 8 * q.idx + 4);
+      cum0 = vaddq_f32(cum0, v0);
+      cum1 = vaddq_f32(cum1, v1);
+      vst1q_f32(cs[q.c1], vaddq_f32(vld1q_f32(cs[q.c1]), v0));
+      vst1q_f32(cs[q.c1] + 4, vaddq_f32(vld1q_f32(cs[q.c1] + 4), v1));
+      vst1q_f32(cs[q.c2], vaddq_f32(vld1q_f32(cs[q.c2]), v0));
+      vst1q_f32(cs[q.c2] + 4, vaddq_f32(vld1q_f32(cs[q.c2] + 4), v1));
+    }
+    for (int i = i0; i < i1; ++i) {
+      vst1q_f32(leT + 8 * i, q0(pe[i]));
+      vst1q_f32(leT + 8 * i + 4, q1(pe[i]));
+    }
+    i0 = i1;
+    j0 = j1;
+  }
+  const float32x4_t A0 = vld1q_f32(va), A1 = vld1q_f32(va + 4), B0 = vld1q_f32(vb), B1 = vld1q_f32(vb + 4);
+  const float32x4_t L0 = vld1q_f32(vl), L1 = vld1q_f32(vl + 4), Z = vdupq_n_f32(0.0f);
+  for (int i = 0; i < np; ++i) {
+    const SdEntry q = pe[i];
+    const float* sr = roH + 8 * (q.same >= 0 ? q.same : ho);
+    const float32x4_t sr0 = vld1q_f32(sr), sr1 = vld1q_f32(sr + 4);
+    const float32x4_t le0 = vaddq_f32(vld1q_f32(leT + 8 * i), sr0), le1 = vaddq_f32(vld1q_f32(leT + 8 * i + 4), sr1);
+    const float32x4_t c0 = vaddq_f32(q0(q), sr0), c1 = vaddq_f32(q1(q), sr1);
+    // fma(L, compat, fma(a, lt, b*le)), then 0 + v (the scalar kernel adds into a zeroed row)
+    const float32x4_t v0 = vfmaq_f32(vfmaq_f32(vmulq_f32(B0, le0), A0, vld1q_f32(ltT + 8 * i)), L0, c0);
+    const float32x4_t v1 = vfmaq_f32(vfmaq_f32(vmulq_f32(B1, le1), A1, vld1q_f32(ltT + 8 * i + 4)), L1, c1);
+    vst1q_f32(ltT + 8 * i, vaddq_f32(Z, v0));
+    vst1q_f32(ltT + 8 * i + 4, vaddq_f32(Z, v1));
+    vst1q_f32(leT + 8 * i, c0);
+    vst1q_f32(leT + 8 * i + 4, c1);
+  }
+  for (int t = 0; t < n; ++t) {
+    float* out = job[t].out;
+    if (fl[t] >= 0) {
+      const float pay = job[t].pay;
+      const int f = fl[t];
+      for (int i = 0; i < np; ++i) out[pe[i].idx] = std::fma(pay, leT[8 * i + f], ltT[8 * i + t]);
+    } else {
+      for (int i = 0; i < np; ++i) out[pe[i].idx] = ltT[8 * i + t];
+    }
+    if (float* cmp = job[t].compat)
+      for (int i = 0; i < np; ++i) cmp[pe[i].idx] = leT[8 * i + t];
+  }
+}
+#endif
+
 void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int ho) {
 #if PIO_SHOWDOWN_AVX512
   // Packs of up to 8 lanes (a job, plus one more for a fused fold) go to showdown_lanes_avx512. Packs of
@@ -552,6 +670,27 @@ void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int
       case 2: showdown_batch_avx512<2>(sb, p, job + k, fi); break;
       case 3: showdown_batch_avx512<3>(sb, p, job + k, fi); break;
       default: showdown_lanes_avx512(sb, p, m, job + k, ho); break;
+    }
+    k += m;
+  }
+#elif PIO_SHOWDOWN_NEON
+  // Packs of up to 8 lanes; a lone job without a fold stays on the scalar kernel (the lanes kernel's
+  // fixed cost is larger than one job's work).
+  int k = 0;
+  while (k < n) {
+    int lanes = 0, m = 0;
+    while (k + m < n && lanes + 1 + (job[k + m].xf ? 1 : 0) <= 8) {
+      lanes += 1 + (job[k + m].xf ? 1 : 0);
+      ++m;
+    }
+    if (lanes >= 2) {
+      showdown_lanes_neon(sb, p, m, job + k, ho);
+    } else {
+      for (int i = k; i < k + m; ++i) {
+        const SdFold f{job[i].xf, job[i].pay};
+        showdown_board_scalar(sb, job[i].W, job[i].L, job[i].T, p, job[i].ro, job[i].out, job[i].compat,
+                              job[i].xf ? &f : nullptr);
+      }
     }
     k += m;
   }

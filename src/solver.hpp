@@ -53,6 +53,13 @@ struct DcfrParams {
 #else
 #define PIO_SHOWDOWN_AVX512 0
 #endif
+// AArch64 (Apple silicon, Linux ARM): showdown_batch runs its jobs as NEON lanes (#219), the same
+// design as the AVX-512 lanes kernel. -DPIO_NO_NEON_LANES opts out.
+#if !PIO_SHOWDOWN_AVX512 && defined(__aarch64__) && defined(__ARM_NEON) && !defined(PIO_NO_NEON_LANES)
+#define PIO_SHOWDOWN_NEON 1
+#else
+#define PIO_SHOWDOWN_NEON 0
+#endif
 // compat (optional, hand-indexed, zeroed by the caller): also store each of p's hands' card-removal
 // compatible opponent mass, sum of ro over opponent hands disjoint from h. It is a by-product of the
 // kernel, and exactly what a fold child with the same opponent reach needs (Solver::call_and_fold).
@@ -173,9 +180,26 @@ class Solver {
   void river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   template <class E>
   void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
-  // #186: Solver::river_cfr for river subtrees in the CFR walk. Only AVX-512 builds batch the kernels;
-  // elsewhere the two-phase walk is overhead (M4: +2-3.5%), so it is off by default there.
-  bool river_batch = PIO_SHOWDOWN_AVX512 != 0;
+  // #186: Solver::river_cfr for river subtrees in the CFR walk. AVX-512 and NEON builds batch the
+  // kernels; elsewhere the two-phase walk is overhead (M4 before the NEON kernel: +2-3.5%), so it is
+  // off by default there.
+  bool river_batch = PIO_SHOWDOWN_AVX512 != 0 || PIO_SHOWDOWN_NEON != 0;
+  // The default for a tree (Upi sets it when it creates the solver). AVX-512: always. NEON: when the
+  // action tree has at least 2.5 showdown terminals per river subtree (GameTree::river_showdowns_per_root),
+  // since below that the batches are 1-2 jobs, the lanes kernel does not run, and only the two-phase
+  // walk's overhead is left (M4, 10 threads: threebet_mono, 5.16 per river, -21%; flop_srp_2 1.40,
+  // flop_srp_4 1.32, deep 1.17, flop_3bet 1.00, turn 1.83: +1.5-2.5% with it on).
+  static bool river_batch_for(const GameTree& g) {
+#if PIO_SHOWDOWN_AVX512
+    (void)g;
+    return true;
+#elif PIO_SHOWDOWN_NEON
+    return g.river_showdowns_per_root() >= 2.5;
+#else
+    (void)g;
+    return false;
+#endif
+  }
   bool pruning = true;  // on by default (#51): inactive before t > 2*prune_period, then never
                         // slower and up to ~8% faster on long solves (bench data in the comment)
   // 8, not 32. The period trades activation delay (pruning is inactive until t > 2*period)

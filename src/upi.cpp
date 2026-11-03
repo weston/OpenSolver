@@ -11,12 +11,12 @@
 #endif
 
 #include <algorithm>
-#include <limits>
 #include <charconv>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 #include "parallel.hpp"
@@ -404,7 +404,9 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
             best_e = st.exploitability;
             stalled = 0;
           } else if (++stalled == 3) {
-            const uint64_t need = tree_->memory_bytes_for(false, predictive_) - tree_->memory_bytes_for(true, predictive_);
+            // decompress() allocates the float32 arrays while the 16-bit ones are still live: the peak
+            // extra is the whole float32 storage, twice the net difference (8 vs 4 bytes per entry).
+            const uint64_t need = 2 * (tree_->memory_bytes_for(false, predictive_) - tree_->memory_bytes_for(true, predictive_));
             if (need <= available_memory_bytes() * 9 / 10) {
               tree_->decompress();
               out_raw("SOLVER: 16-bit storage stopped improving; switched to 32-bit storage\n");

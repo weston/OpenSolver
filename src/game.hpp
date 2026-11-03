@@ -2,6 +2,7 @@
 // per-player hand lists, showdown orderings and strategy storage.
 #pragma once
 #include <array>
+#include <bit>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -17,6 +18,19 @@
 #include "cards.hpp"
 
 namespace pio {
+
+// Max reductions for the 16-bit storage scales. Non-negative floats order exactly like their IEEE-754
+// bit patterns read as unsigned integers, so max(|x|) (or the max of values that should be >= 0) can be
+// accumulated as an integer max. Compilers vectorize integer max reductions without -ffast-math; the
+// float form `m = x > m ? x : m` stays a scalar compare/select chain (it was ~2/3 of the regret-update
+// time on 16-bit trees and in RBP-pruned rows). The result is the same float, so quantisation is
+// bit-identical. NaN inputs differ: they now win the max (a NaN scale zeroes the row in
+// regrets_store/strat_store) instead of being skipped.
+inline uint32_t abs_bits(float x) { return std::bit_cast<uint32_t>(x) & 0x7fffffffu; }
+inline uint32_t nonneg_bits(float x) {  // negative values (and -0.0) count as 0
+  const uint32_t u = std::bit_cast<uint32_t>(x);
+  return static_cast<int32_t>(u) < 0 ? 0u : u;
+}
 
 using Weights1326 = std::array<float, NUM_COMBOS>;
 

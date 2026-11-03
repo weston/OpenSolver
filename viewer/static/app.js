@@ -9,6 +9,7 @@ import { drawSpark } from "./chart.js";
 import { initLibrary } from "./library.js";
 import { initResolve, openResolve } from "./resolve.js";
 import { initFurther, pollFurther } from "./further.js";
+import { initJobs, showJobs } from "./jobs.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -18,7 +19,8 @@ const app = { view: "study", tree: false, solving: false, rootPot: 0, series: []
 
 function setView(v) {
   app.view = v;
-  for (const name of ["study", "build"]) $("view-" + name).classList.toggle("hidden", name !== v);
+  for (const name of ["study", "build", "jobs"]) $("view-" + name).classList.toggle("hidden", name !== v);
+  showJobs(v === "jobs");
   document.querySelectorAll(".view-tab").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   if (!location.hash.startsWith("#" + v)) history.replaceState(null, "", "#" + v);
   if (v === "study") {
@@ -141,6 +143,13 @@ async function boot() {
   initFurther();
   $("btn-resolve").onclick = () => openResolve(study.id);
   initBuild({ built: async () => { app.tree = true; await refreshRootPot(); study.reset(); } });
+  initJobs({ opened: async () => {
+    app.tree = true;
+    treeLoadedElsewhere();
+    await refreshRootPot();
+    setView("study");
+    study.reset();
+  } });
 
   const st = await get("/api/status");
   app.tree = st.tree;
@@ -150,18 +159,18 @@ async function boot() {
   const [want, node] = head.split("=");
   applyUrlState(Object.fromEntries(rest.map((kv) => kv.split("="))));
   if (want === "study" && node && app.tree) {
-    for (const name of ["study", "build"]) $("view-" + name).classList.toggle("hidden", name !== "study");
+    for (const name of ["study", "build", "jobs"]) $("view-" + name).classList.toggle("hidden", name !== "study");
     document.querySelectorAll(".view-tab").forEach((b) => b.classList.toggle("active", b.dataset.view === "study"));
     app.view = "study";
     gotoNode(node);
   } else {
-    setView(want === "build" || want === "study" ? want : app.tree ? "study" : "build");
+    setView(want === "build" || want === "study" || want === "jobs" ? want : app.tree ? "study" : "build");
   }
   // Back/forward and edited URLs: follow #build / #study=<node> without a reload.
   addEventListener("hashchange", () => {
     const [h] = location.hash.slice(1).split("&");
     const [v, id] = h.split("=");
-    if (v === "build" && app.view !== "build") setView("build");
+    if ((v === "build" || v === "jobs") && app.view !== v) setView(v);
     else if (v === "study") {
       if (app.view !== "study") setView("study");
       if (id && app.tree && id !== study.id) gotoNode(id);

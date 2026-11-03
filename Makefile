@@ -44,6 +44,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py
 	python3 viewer/test_resolve.py ./solver
+	python3 viewer/test_jobs_api.py ./solver
 
 test-big: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel
 	./build/test_eval
@@ -58,6 +59,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py
 	python3 viewer/test_resolve.py ./solver
+	python3 viewer/test_jobs_api.py ./solver
 
 # Cross-compile a static Windows binary (solver.exe) from macOS/Linux with mingw-w64. ZLIB_DIR must
 # contain zlib.h and a MinGW libz.a (e.g. zlib's own: make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32-).

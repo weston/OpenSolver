@@ -53,7 +53,7 @@ struct DcfrParams {
 #else
 #define PIO_SHOWDOWN_AVX512 0
 #endif
-// AArch64 (Apple silicon, Linux ARM): showdown_batch runs its jobs as NEON lanes (#216), the same
+// AArch64 (Apple silicon, Linux ARM): showdown_batch runs its jobs as NEON lanes (#219), the same
 // design as the AVX-512 lanes kernel. -DPIO_NO_NEON_LANES opts out.
 #if !PIO_SHOWDOWN_AVX512 && defined(__aarch64__) && defined(__ARM_NEON) && !defined(PIO_NO_NEON_LANES)
 #define PIO_SHOWDOWN_NEON 1

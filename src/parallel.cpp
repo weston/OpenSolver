@@ -73,11 +73,13 @@ void ThreadPool::worker_loop() {
     Job* j = nullptr;
     {
       std::unique_lock<std::mutex> lk(m_);
+      idle_.fetch_add(1, std::memory_order_relaxed);
       cv_.wait(lk, [&] {
         if (quit_) return true;
         j = pick_job(0);
         return j != nullptr;
       });
+      idle_.fetch_sub(1, std::memory_order_relaxed);
       if (quit_ && !j) return;
     }
     run_some(j);
@@ -90,7 +92,11 @@ void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool wid
   // sibling actions): publishing them unconditionally made every turn decision inside a parallel
   // turn fan-out a job of its own, thousands per iteration on big trees, and the scheduler mutex
   // then serialised everything (13 GB tree: 32 threads 2.6x slower than 16).
-  if (n == 1 || parallel_width > nthreads_ / 2) {
+  // ...unless a thread has nothing to run (#PRN): then publish anyway, so it can help. Without this a
+  // slow core holding one of the last tasks of a wide fan-out finishes it alone while the others wait
+  // at the join (M4 efficiency cores: threebet_mono to 0.6 chips 5.57 -> 5.50 s). Only an idle
+  // thread triggers it, so it cannot flood the scheduler the way publishing everything did.
+  if (n == 1 || (parallel_width > nthreads_ / 2 && idle_.load(std::memory_order_relaxed) == 0)) {
     for (int i = 0; i < n; ++i) f(i);
     return;
   }
@@ -109,6 +115,7 @@ void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool wid
   cv_.notify_all();
   run_some(&job);
   // Wait for stragglers; help with jobs nested above ours meanwhile.
+  bool waiting = false;
   while (job.done.load(std::memory_order_acquire) < n) {
     Job* other = nullptr;
     {
@@ -118,9 +125,15 @@ void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool wid
       other = pick_job(my_index + 1);
       if (!other) other = pick_job(0);
     }
-    if (other) run_some(other);
-    else std::this_thread::yield();
+    if (other) {
+      if (waiting) idle_.fetch_sub(1, std::memory_order_relaxed), waiting = false;
+      run_some(other);
+    } else {
+      if (!waiting) idle_.fetch_add(1, std::memory_order_relaxed), waiting = true;
+      std::this_thread::yield();
+    }
   }
+  if (waiting) idle_.fetch_sub(1, std::memory_order_relaxed);
   {
     std::lock_guard<std::mutex> lk(m_);
     auto it = std::find(jobs_.begin(), jobs_.end(), &job);

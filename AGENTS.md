@@ -230,6 +230,10 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - A line that runs past the end of the hand (fold, all-in call, river close) answers `ERROR: add_line
   Specified line is too long. Some actions were not included in the tree.`, but its valid prefix is kept
   and `build_tree` succeeds.
+  `add_line` checks against the *current* board, pot and stack (set them first). An amount below the bet
+  faced or below one's own investment (other than a fold) answers `ERROR: add_line Incorrect bet size.`; the
+  line is kept and `build_tree` then names the amount (Pio crashes there). With no stack set, Pio has no
+  all-in root at add time, and neither do we; a stack-0 *tree* still differs (Pio bets, ours is all-in).
 - Pio edits a live line tree command by command; ours collects add/remove/force sets and applies them at
   `build_tree`. They agree when a script removes or forces after its adds (the usual shape). They differ
   when a line is re-added after `remove_line` (Pio re-adds it, ours keeps it removed), when `add_line`

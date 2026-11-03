@@ -233,6 +233,28 @@ static bool showdown_kernels_match() {
         (void)b;
         (void)cb;
 #endif
+        // fused opponent fold (call_with_opp_fold): out_fold = plain showdown + pay * compat(fro * fsig)
+        {
+          std::vector<float> xf(Ho), fa(Hp, 0.0f), fb(Hp, 0.0f), plain(Hp, 0.0f);
+          for (float& x : xf) x = next() % 4 == 0 ? 0.0f : unit();
+          const SdFold fd{xf.data(), 80 * unit() - 20};
+          showdown_board_scalar(sb, W, L, T, p, ro.data(), fa.data(), nullptr, &fd);
+#if PIO_SHOWDOWN_AVX512
+          showdown_board_avx512(sb, W, L, T, p, ro.data(), fb.data(), nullptr, &fd);
+          bad += std::memcmp(fa.data(), fb.data(), sizeof(float) * Hp) != 0;
+#endif
+          showdown_board_scalar(sb, W, L, T, p, ro.data(), plain.data());
+          for (const SdEntry& e : sb.ent[p]) {
+            double m = 0;
+            for (const SdEntry& q : sb.ent[1 - p])
+              if (q.c1 != e.c1 && q.c1 != e.c2 && q.c2 != e.c1 && q.c2 != e.c2) m += xf[q.idx];
+            const double want = plain[e.idx] + fd.pay * m;
+            // float rounding of the two terms (they can cancel): relative to their magnitudes
+            if (std::fabs(fa[e.idx] - want) > 1e-5 * (1 + std::fabs(plain[e.idx]) + std::fabs(fd.pay * m))) {
+              ++bad_compat;
+            }
+          }
+        }
         // compat must be the card-removal compatible mass (call_and_fold's fold row)
         for (const SdEntry& e : sb.ent[p]) {
           double want = 0;

@@ -247,6 +247,22 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
 ~1 s; also part of `make test`). `python3 viewer/test_library.py` tests the library storage and
 its HTTP API without a solver.
 
+### Viewer: node locking
+
+**Lock…** (Study, at any decision of the main tree) sets the acting player's strategy by hand and locks it:
+- **Editing:**
+  - Click or drag hand classes to select them, and give them a mix in the *Selected* column.
+  - Or scale one action to an exact share of the whole range with *Overall*. It changes the selected hands, or every hand if none are selected; scaling down multiplies, scaling up moves each hand the same fraction of the way to 100%.
+  - Solved and locked range-weighted frequencies are shown side by side.
+  - Edits are per hand class, because suit-isomorphic combos share one strategy in the solver.
+- **Lock:** *Every hand* locks the whole node; *Only edited hands* locks just those (`combo_lock_node`) while the rest keeps solving. *Lock as solved* freezes the solved strategy. The tree is never changed until you lock.
+- **Display:** locked nodes show a *Locked* tag, and the action line marks a locked step.
+- **Re-solve:**
+  - *Whole tree* keeps solving everything, so earlier decisions adapt to the lock. In the test spot, locking IP to over-fold to the flop bet takes OOP's betting from 52% to 98%.
+  - *From this node…* solves only below the node (Solve further), with the ranges reaching it fixed.
+- **Undo:** by default the first lock keeps a lossless copy of the unlocked solve. *Revert to unlocked solve* loads it back, and it can be solved further. *Unlock* / *Unlock all* remove locks but keep the current strategies as the starting point.
+- **Saving:** locks are saved with the tree. `dump_tree` / `load_tree` keep the lock flags and the locked strategies (exact with `lossless`, within 1/2047 by default).
+
 ### Viewer: subgame re-solve and size search
 
 The server runs a **second solver process** (`viewer/resolve.py`) so a subtree can be

@@ -9,6 +9,7 @@ import { drawSpark } from "./chart.js";
 import { initLibrary } from "./library.js";
 import { initResolve, openResolve } from "./resolve.js";
 import { initFurther, pollFurther } from "./further.js";
+import { initLock } from "./lock.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -139,6 +140,7 @@ async function boot() {
   initLibrary();
   initResolve();
   initFurther();
+  initLock({ changed: () => study.refresh() });
   $("btn-resolve").onclick = () => openResolve(study.id);
   initBuild({ built: async () => { app.tree = true; await refreshRootPot(); study.reset(); } });
 

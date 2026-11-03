@@ -45,6 +45,8 @@
         <span id="subgame-tag" class="tag busy hidden" title="Browsing a re-solved subtree (opponent range fixed at the re-solve node)">Re-solved</span>
         <button id="btn-resolve" class="btn small hidden" title="Re-solve this subtree with other sizes">Re-solve…</button>
         <button id="btn-further" class="btn small hidden" title="Continue solving the tree from this node down (changes its strategies in memory)">Solve further…</button>
+        <span id="lock-tag" class="tag lock hidden" title="This strategy is a lock you set, not a solver output">Locked</span>
+        <button id="btn-lock" class="btn small hidden" title="Set this player's strategy here by hand and lock it">Lock…</button>
         <div class="seg" id="view-seg">
           <button data-mode="strategy" class="active">Strategy</button>
           <button data-mode="range">Range</button>
@@ -172,6 +174,62 @@
     </aside>
   </div>
 </main>
+
+<!-- Node locking (#200) -->
+<dialog id="lock-dialog" class="dialog wide lock-dialog">
+  <div class="card-head">
+    <h2 id="lk-title">Lock</h2>
+    <span id="lk-state" class="tag"></span>
+    <div class="topbar-spacer"></div>
+    <button class="btn ghost small" id="lk-close">Close</button>
+  </div>
+  <div class="lock-body">
+    <div class="lock-left">
+      <div id="lk-grid" class="lock-grid"></div>
+      <div class="lock-selbar">
+        <span id="lk-sel" class="muted">Click or drag hands to select them.</span>
+        <button class="btn tiny ghost" id="lk-all">Select all</button>
+        <button class="btn tiny ghost" id="lk-none">Clear</button>
+      </div>
+    </div>
+    <div class="lock-right">
+      <table class="lock-acts">
+        <thead><tr><th>Action</th><th class="num" title="Range-weighted, as solved">Solved</th><th class="num" title="Range-weighted, with your edits">Locked</th>
+          <th class="num" title="Mix to give the selected hands">Selected</th><th title="Scale this action to a share of the whole range">Overall</th></tr></thead>
+        <tbody id="lk-acts"></tbody>
+      </table>
+      <div class="btn-row">
+        <button class="btn small" id="lk-apply" title="Give the selected hands the mix in the Selected column">Set selected hands</button>
+        <button class="btn small ghost" id="lk-reset" title="Back to the solved strategy">Reset edits</button>
+      </div>
+      <div class="field"><span>Lock</span>
+        <div class="radio-row">
+          <label title="Every hand keeps the strategy shown"><input type="radio" name="lk-scope" value="node" checked> Every hand</label>
+          <label title="Only hands you edited are locked; the rest keep solving"><input type="radio" name="lk-scope" value="combos"> Only edited hands</label>
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="lk-snap" checked> Keep a copy of the unlocked solve to revert to</label>
+      <div class="btn-row">
+        <button class="btn" id="lk-current" title="Freeze the strategy exactly as solved">Lock as solved</button>
+        <button class="btn primary" id="lk-lock">Lock</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn small ghost hidden" id="lk-unlock">Unlock this node</button>
+        <button class="btn small ghost hidden" id="lk-unlock-all">Unlock all</button>
+        <button class="btn small ghost hidden" id="lk-revert" title="Load the copy kept before the first lock">Revert to unlocked solve</button>
+      </div>
+      <div id="lk-after" class="lock-after hidden">
+        <div class="hint">Re-solve with the lock in place:</div>
+        <label class="field"><span>Target exploitability</span><div class="suffix"><input id="lk-acc" type="number" step="0.05" min="0.01" value="0.3"><i>% pot</i></div></label>
+        <div class="btn-row">
+          <button class="btn primary" id="lk-tree" title="Keep solving the whole tree: earlier decisions adapt to the lock">Whole tree</button>
+          <button class="btn" id="lk-node" title="Solve only below this node; the ranges reaching it stay as they are">From this node…</button>
+        </div>
+      </div>
+      <div id="lk-info" class="build-info"></div>
+    </div>
+  </div>
+</dialog>
 
 <dialog id="file-dialog" class="dialog">
   <form method="dialog" id="file-form">

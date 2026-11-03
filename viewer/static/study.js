@@ -56,6 +56,10 @@ const isDec = (n) => n && (n.type === "OOP_DEC" || n.type === "IP_DEC");
 const actorOf = (n) => (n.type === "OOP_DEC" ? "OOP" : "IP");
 const lastTok = (id) => id.slice(id.lastIndexOf(":") + 1);
 const potOf = (n) => (n.pot || []).reduce((a, b) => a + (b || 0), 0);
+const lockOf = (n) => {
+  const f = (n && n.flags || "").split(/\s+/);
+  return f.includes("LOCKED") ? "node" : f.includes("COMBO_LOCKED") ? "combos" : null;
+};
 
 /** Street-start investment at node index i of the path (both players matched there). */
 function streetBase(path, i) {
@@ -250,6 +254,7 @@ function renderPath() {
     b.append(bar, el("span", "who", actorOf(n)), el("span", null, d.label));
     if (d.sub) b.appendChild(el("span", "sub", d.sub));
     b.title = "Go to this decision";
+    if (lockOf(n)) { b.classList.add("locked"); b.title += ` (${actorOf(n)}'s strategy here is locked)`; }
     b.onclick = () => gotoNode(n.id);
     box.appendChild(b);
   }
@@ -299,6 +304,10 @@ function renderTitle() {
   // re-solving is offered on decisions of the original tree
   $("btn-resolve").classList.toggle("hidden", !(isDec(n) && !S.sub && S.cur && S.cur.freq));
   syncFurther(isDec(n) && !S.sub && S.cur && S.cur.freq);
+  $("btn-lock").classList.toggle("hidden", !(isDec(n) && !S.sub && S.cur && S.cur.freq));
+  const lk = isDec(n) ? lockOf(n) : null;
+  $("lock-tag").classList.toggle("hidden", !lk);
+  $("lock-tag").textContent = lk === "combos" ? "Some hands locked" : "Locked";
   $("subgame-tag").classList.toggle("hidden", !S.sub);
   // player toggle only matters for range / EV
   const seg = $("player-seg");
@@ -830,6 +839,17 @@ export function exitSubgame() {
   S.sub = null;
   S.dec = null; S.decId = null;
   return gotoNode(origin);
+}
+
+/** The current decision for the lock editor (#200): ids, actions in display order (label, colour,
+ *  row index k into freq), the strategy and the actor's reach, all in 1326 order. */
+export function lockContext() {
+  const n = S.path[S.path.length - 1];
+  if (!S.loaded || S.sub || !isDec(n) || !S.cur || !S.cur.freq) return null;
+  return {
+    id: S.id, actor: actorOf(n), lock: lockOf(n), acts: actionsOf(S.cur, S.path.length - 1),
+    freq: S.cur.freq, reach: S.cur.reach, board: boardOf(n), rootPot: potOf(S.path[0]), pot: potOf(n),
+  };
 }
 
 export const study = {

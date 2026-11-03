@@ -73,6 +73,8 @@ class Solver:
         self.series = []         # convergence points of the current tree: {t, explo, ev_oop, ev_ip}
         self.partial = None      # live/last subtree solve (#153): {node, pot, accuracy, done, ...}
         self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
+        self.locks = {}          # node id -> "node" | "combos": locks set from the viewer (#200)
+        self.undo = None         # {"path", "time"}: lossless save of the tree before its first lock
         self.start()
 
     def start(self):
@@ -212,6 +214,17 @@ class Solver:
                 self.solver_status = ""
                 self.partial = None
                 self.loaded_file = False
+            self.forget_locks()
+
+    def forget_locks(self):
+        """A new tree (generate / build / load / restart): drop the lock list and the undo copy."""
+        self.locks = {}
+        if self.undo:
+            try:
+                os.remove(self.undo["path"])
+            except OSError:
+                pass
+        self.undo = None
 
 
 # ---------------------------------------------------------------- parsing UPI outputs
@@ -373,6 +386,9 @@ def api(solver, lib, method, path, query, body):
                      "reach": parse_floats(solver.cmd(f"show_range {actor} " + node_id), NUM_COMBOS),
                      "ev": ev_pair(solver, actor, node_id)}
 
+    if path == "/api/lock_state":
+        return 200, lock_state(solver, node_id_arg(query))
+
     if path == "/api/path":
         # Every node from the root to `id`, in one call, so the UI can draw the action line (#112).
         node_id = node_id_arg(query)
@@ -443,6 +459,7 @@ def api(solver, lib, method, path, query, body):
 
     if path == "/api/build":
         solver.cmd("build_tree")
+        solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = False
         solver.reset_series()
@@ -477,11 +494,19 @@ def api(solver, lib, method, path, query, body):
         b = need_body(body)
         path_arg = safe_path(b.get("path", ""))
         solver.cmds(["stop", "wait_for_solver", f'load_tree "{path_arg}"'])
+        solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = True
         solver.reset_series()
         solver.clear_partial()
         return 200, {"ok": True}
+
+    if path == "/api/lock":
+        return 200, op_lock(solver, need_body(body))
+    if path == "/api/unlock":
+        return 200, op_unlock(solver, need_body(body))
+    if path == "/api/lock/revert":
+        return 200, op_lock_revert(solver)
 
     if path == "/api/restart":
         solver.restart()
@@ -743,6 +768,122 @@ def op_solve_node(solver, b):
     return {"ok": True, "node": node_id, "pot": pot}
 
 
+def _decision(solver, node_id):
+    node = parse_node_block(solver.cmd("show_node " + node_id))
+    if node["type"] not in ("OOP_DEC", "IP_DEC"):
+        raise SolverError(f"{node['type']} is not a decision node")
+    return node, parse_children(solver.cmd("show_children " + node_id))
+
+
+def lock_state(solver, node_id):
+    """GET /api/lock_state?id= (#200): is the node locked, which combos, and the session's lock list."""
+    node, _ = _decision(solver, node_id)
+    flags = node["flags"].split()
+    combos = parse_floats(solver.cmd("show_locked_combos " + node_id), NUM_COMBOS)
+    return {"id": node_id, "locked": "LOCKED" in flags, "combo_locked": "COMBO_LOCKED" in flags,
+            "combos": [1 if (c or 0) > 0 else 0 for c in combos], "locks": dict(solver.locks),
+            "undo": bool(solver.undo), "can_solve": not solver.loaded_file}
+
+
+def op_lock(solver, b):
+    """POST /api/lock (#200): set and lock a decision node's strategy.
+
+    mode "current": lock the strategy as solved. mode "node": `freq` (actions x 1326, the
+    show_strategy layout) becomes the node's strategy and the whole node is locked. mode "combos":
+    the same, but only the combos in `combos` (1326 0/1) are locked; the others keep solving from
+    the given values (send their current strategy). Before the tree's first lock, `snapshot` keeps
+    a lossless save of it so /api/lock/revert can bring the unlocked solve back.
+    """
+    node_id = node_id_arg({"id": [str(b.get("id", ""))]})
+    if solver.state()["solving"]:
+        raise SolverError("the solver is running (stop it first)")
+    mode = b.get("mode")
+    if mode not in ("current", "node", "combos"):
+        raise SolverError("mode must be current, node or combos")
+    _, kids = _decision(solver, node_id)
+    cmds = []
+    if mode != "current":
+        freq = b.get("freq")
+        if not isinstance(freq, list) or len(freq) != len(kids) or any(
+                not isinstance(r, list) or len(r) != NUM_COMBOS for r in freq):
+            raise SolverError(f"freq must be {len(kids)} rows of {NUM_COMBOS} numbers")
+        cols = []
+        for i in range(NUM_COMBOS):
+            try:
+                v = [float(r[i]) if r[i] is not None else 0.0 for r in freq]
+            except (TypeError, ValueError):
+                raise SolverError("freq: numbers only")
+            if any(not math.isfinite(x) or x < 0 for x in v):
+                raise SolverError("freq: finite, non-negative numbers only")
+            s = sum(v)
+            cols.append([x / s for x in v] if s > 0 else [1.0 / len(v)] * len(v))
+        rows = [" ".join(f"{cols[i][k]:.6g}" for i in range(NUM_COMBOS)) for k in range(len(kids))]
+        cmds.append(f"set_strategy {node_id} " + " ".join(rows))
+        cmds.append(f"unlock_node {node_id}")  # lock_node freezes the strategy just set
+        if mode == "combos":
+            mask = b.get("combos")
+            if not isinstance(mask, list) or len(mask) != NUM_COMBOS:
+                raise SolverError(f"combos must be {NUM_COMBOS} 0/1 values")
+            if not any(mask):
+                raise SolverError("no combos selected to lock")
+            cmds.append(f"combo_lock_node {node_id} " + " ".join("1" if m else "0" for m in mask))
+        else:
+            cmds.append(f"lock_node {node_id}")
+    else:
+        cmds.append(f"lock_node {node_id}")
+    with solver.cmd_lock:
+        if b.get("snapshot") and solver.undo is None and not solver.loaded_file:
+            import tempfile
+            fd, snap = tempfile.mkstemp(prefix="wsolver-unlocked-", suffix=".cfr")
+            os.close(fd)
+            solver.cmd(f'dump_tree "{snap}" lossless', timeout=3600)
+            solver.undo = {"path": snap}
+        solver.cmds(cmds)
+        solver.locks[node_id] = "combos" if mode == "combos" else "node"
+    return lock_state(solver, node_id)
+
+
+def op_unlock(solver, b):
+    """POST /api/unlock {id} | {all: true} (#200). The node keeps its (locked) strategy as a start."""
+    if solver.state()["solving"]:
+        raise SolverError("the solver is running (stop it first)")
+    zeros = " ".join(["0"] * NUM_COMBOS)
+    with solver.cmd_lock:
+        if b.get("all"):
+            # Every lock set from this session, then Pio's unlock_all (node locks only, #169) for
+            # locks that came with a loaded save, where the solver has it.
+            for i in list(solver.locks):
+                solver.cmds([f"unlock_node {i}", f"combo_lock_node {i} {zeros}"])
+            try:
+                solver.cmd("unlock_all")
+            except SolverError:
+                pass
+            solver.locks = {}
+            return {"locks": {}}
+        node_id = node_id_arg({"id": [str(b.get("id", ""))]})
+        _decision(solver, node_id)
+        solver.cmds([f"unlock_node {node_id}", f"combo_lock_node {node_id} {zeros}"])
+        solver.locks.pop(node_id, None)
+        return lock_state(solver, node_id)
+
+
+def op_lock_revert(solver):
+    """POST /api/lock/revert (#200): back to the tree as it was before its first lock."""
+    if not solver.undo:
+        raise SolverError("no unlocked copy of this tree was kept")
+    if solver.state()["solving"]:
+        raise SolverError("the solver is running (stop it first)")
+    with solver.cmd_lock:
+        solver.cmds([f'load_tree "{solver.undo["path"]}" full'])
+        # a lossless save keeps the regrets: the reverted tree can be solved further
+        solver.locks = {}
+        solver.tree_present = True
+        solver.loaded_file = False
+        solver.reset_series()
+        solver.clear_partial()
+    return {"ok": True}
+
+
 def op_generate(solver, b):
     """PioViewer-style bet sizes -> add_lines via tools/tree_builder.py, then configure the solver."""
     range_oop = no_newlines(str(b.get("range_oop", "")).strip(), "range_oop")
@@ -792,6 +933,7 @@ def op_generate(solver, b):
              "set_isomorphism 1 1", "clear_lines"]
     cmds += lines
     solver.cmds(cmds)
+    solver.forget_locks()
     solver.tree_present = False
     solver.loaded_file = False
     solver.reset_series()

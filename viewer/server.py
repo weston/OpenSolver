@@ -456,7 +456,7 @@ def api(solver, lib, method, path, query, body):
             raise SolverError("bad accuracy")
         # Report (and check the target) every 10 iterations: a smoother convergence chart (#115)
         # and less overshoot past the target than the default 25.
-        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq 10", "go"])
+        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go"])
         solver.clear_partial()
         return 200, {"ok": True}
 
@@ -722,7 +722,7 @@ def op_solve_node(solver, b):
         raise SolverError("the solver is already running (stop it first)")
     if node_id in ("r", "r:0"):
         # continuing at the root IS the whole-tree solve (issue's suggested design)
-        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq 10", "go"])
+        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go"])
         solver.clear_partial()
         return {"ok": True, "root": True}
     if solver.loaded_file:
@@ -736,7 +736,7 @@ def op_solve_node(solver, b):
         # mark in flight BEFORE go_partial returns, so the pump routes the first block right
         solver.start_partial(node_id, acc, pot)
         try:
-            solver.cmds([f"set_accuracy {acc:g}", "set_info_freq 10", "go_partial " + node_id])
+            solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go_partial " + node_id])
         except SolverError:
             solver.clear_partial()
             raise

@@ -61,7 +61,17 @@ SIZING = {k: v for k, v in CFG.items() if k not in ("range_oop", "range_ip", "bo
 # per-action frequencies aggregated over the acting player's range (measured max diff
 # 0.006 at accuracy 0.05) and the range-weighted node EV (measured 0.011 chips).
 STRAT_TOL = 0.05   # per-combo action frequency, root re-solve (measured 0.0000)
-AGG_TOL = 0.01     # range-aggregated action frequency, mid-hand re-solve (measured 0.006)
+# Range-aggregated action frequency, mid-hand re-solve. The two solves lay the tree out
+# differently, so genuinely indifferent combos mix differently however long you solve, and
+# this bounds that spread rather than any solver promise. It is a MOVING TARGET: every
+# convergence change shifts which member of the equilibrium set you land on, so the spread
+# has grown as those landed (test_22, bisected on #173):
+#   before #147 (avg_delay 32)      0.0034
+#   after  #147, before #162        0.0085
+#   after  #162 (beta 0 -> 0.5)     0.0107   <- went red against the old 0.01
+# Widened to 0.02 for headroom. If this goes red again, re-measure rather than nudging it:
+# the EV assertion below (EV_TOL) is the invariant one and has held throughout.
+AGG_TOL = 0.02
 EV_TOL = 0.15      # chips; both solves target <= 0.05 chips of exploitability, 40 pot
 ACC = "0.05"
 

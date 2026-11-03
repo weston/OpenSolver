@@ -19,16 +19,34 @@ Measure with wall time or `make bench`. Not `solver_time` — see the warning in
 
 `fold_value` is 0.0% everywhere. It is not a target, despite being a natural-sounding one.
 
+**The table above predates the lanes kernels (#209, #219) and the fused fold (#168).** Re-sampled
+`flop_srp_2` at 1 thread (10 s of `sample`, 7,446 working samples, frames under 5 samples truncated):
+
+| | showdown | walk_t/river | strategy | traverser_update | compat_mass | fold_value |
+|---|---|---|---|---|---|---|
+| then | 58.9% | 21.0% | 10.9% | — | 7.7% | 0.0% |
+| **now** | **63.3%** | **9.9%** | **16.7%** | 5.1% | **0.3%** | 0.0% |
+
+Two real shifts, not noise: `compat_mass` has essentially vanished (7.7% -> 0.3%) because #168 folds
+the opponent's fold mass into the same showdown kernel call, and `walk_t` has halved. `strategy`
+rising to 16.7% is relative — it is the same work against a smaller total. `fold_value` is still
+exactly 0.0%. The other trees' rows have not been re-sampled and should be read as pre-#209.
+
 ## The dominant cost, characterised
 
-`showdown_board`, on `flop_srp_2` at 0.126 s/iteration single-threaded:
+`showdown_board`, on `flop_srp_2` single-threaded. Re-measured with a two-point slope (0 vs 40
+iterations, best of 3) at **0.0915 s/iteration**, down from 0.126 s when this was first written:
 
 ```
 54,730 calls/iteration        754 entries per call
 41,265,447 entry-visits/iteration
-1.36 us per call              1.80 ns per entry-visit  (~5.8 cycles at 3.2 GHz)
-556M entry-visits/s
+                              1.40 ns per entry-visit  (~4.5 cycles at 3.2 GHz)
+713M entry-visits/s
 ```
+
+(Entry-visits counts every structural entry, so it is unchanged by #151's zero-reach skipping; the
+throughput figure is per structural entry, the same basis as the 556M it replaces. The per-entry cost
+is 22% better than the 1.80 ns recorded before the lanes kernels.)
 
 This path is close to its CPU ceiling, and the reasons are all measured rather than assumed:
 
@@ -52,21 +70,28 @@ This path is close to its CPU ceiling, and the reasons are all measured rather t
   a route to wide execution. (#92)
 - **The strength orderings are already shared** — 799 `ShowdownBoard`s serve 25,906 terminal nodes
   on a flop tree, 48 serve 773 on a turn. Nothing left to amortise there. (#57)
-- **5.8 cycles per entry-visit** for a gather, two adds and a store is already tight.
+- **4.5 cycles per entry-visit** for a gather, two adds and a store is already tight (5.8 before the lanes kernels).
 
 ## What is actually left, in order of size
 
 1. **Thread scaling (#53) — now ~1.4x left on postflop trees, no longer the largest win.** The
    "6-8x on 20 cores, 2-3x available" figure this list used to carry is **stale**; the work since
-   (#144-#146, #161, #111) has largely spent it. Re-measured with a two-point slope (0 vs 20
+   (#144-#146, #161, #111) has largely spent it. Re-measured with a two-point slope (0 vs **40**
    iterations, best of 3, so startup and tree build cancel):
 
    | tree | 1 thread s/iter | 20 threads s/iter | speedup |
    |---|---|---|---|
-   | `deep` | 0.16349 | 0.01143 | **14.30x** |
-   | `flop_srp_2` | 0.11009 | 0.00781 | **14.10x** |
-   | `flop_3bet` | 0.03012 | 0.00245 | **12.32x** |
-   | `turn` | 0.00159 | 0.00079 | 2.01x |
+   | `deep` | 0.15006 | 0.01044 | **14.38x** |
+   | `flop_srp_2` | 0.09168 | 0.00655 | **13.99x** |
+   | `flop_3bet` | 0.02865 | 0.00233 | **12.30x** |
+   | `turn` | 0.00149 | 0.00072 | 2.05x |
+
+   **State the iteration window when you quote a per-iteration cost.** It is not a constant: pruning
+   is inactive until `t > 2 * prune_period` = 16, so a 20-iteration slope is mostly unpruned and a
+   40-iteration slope is half pruned. `flop_srp_2` measures 0.110 s/iter over 20 iterations and
+   0.0917 over 40 — a 20% spread from the window alone, with nothing else changed. The *speedups*
+   are stable (14.1x vs 14.0x) because both sides shift together, which is why ratios survive this
+   and absolute numbers do not.
 
    So on the trees that cost real time, 20 cores already return 12.3-14.3x and the remaining
    headroom is about **1.4x**, not 2-3x. Small trees still scale badly (`turn` at 2.01x), but they

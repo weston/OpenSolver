@@ -161,6 +161,31 @@ def integration(solver):
         rc, out = cli("export", "srp")
         rows = out.strip().splitlines()
         check(len(rows) == 4 and rows[0].startswith("id,board,weight") and "Kh9h4h" in out, "export CSV")
+        check(rows[0].endswith("freq_b50,freq_c"), f"export has the root action columns ({rows[0]})")
+
+        print("[report]")
+        rep = jobs.report(q, "srp", solver)
+        check(rep["actions"] == ["b50", "c"] and rep["labels"] == ["bet 50 (50%)", "check"] and rep["player"] == "OOP",
+              f"root actions {rep['labels']}")
+        check(len(rep["rows"]) == 3 and all(abs(sum(x["freqs"]) - 1) < 1e-4 for x in rep["rows"]),
+              "each flop's root frequencies sum to 1")
+        w = [x["weight"] for x in rep["rows"]]
+        want = sum(x["weight"] * x["freqs"][0] for x in rep["rows"]) / sum(w)
+        check(abs(rep["total"]["freqs"][0] - want) < 1e-9 and rep["total"]["flops"] == 3, "weighted average")
+        # a job finished before root summaries existed: the report reads it from the save
+        j = q.job("00001")
+        before = j["result"].pop("root")
+        q.save(j)
+        rep2 = jobs.report(q, "srp", solver)
+        got = q.job("00001")["result"].get("root")
+        check(got and got["actions"] == before["actions"] and
+              max(abs(a - b) for a, b in zip(got["freqs"], before["freqs"])) < 1e-3,
+              f"root summary recomputed from the save ({before['freqs']} vs {got and got['freqs']})")
+        rc, out = cli("report", "srp", "--solver", solver, "--csv", os.path.join(td, "r.csv"))
+        check(rc == 0 and "weighted" in out and "bet 50 (50%)" in out, "report CLI")
+        with open(os.path.join(td, "r.csv")) as f:
+            lines = f.read().strip().splitlines()
+        check(len(lines) == 5 and lines[-1].startswith("weighted"), "report CSV")
         rc, out = cli("list")
         check(rc == 0 and "3 done" in out and "1 queued" in out, out.strip().splitlines()[-1])
         rc, out = cli("show", "00001")

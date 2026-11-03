@@ -18,6 +18,7 @@ Usage:
     python3 tools/jobs.py remove ID ... | --batch NAME
     python3 tools/jobs.py move ID --to POS               # reorder (1 = next to run)
     python3 tools/jobs.py export NAME                    # results as CSV (board, weight, EVs, ...)
+    python3 tools/jobs.py report NAME [--csv FILE]       # root strategy per flop + weighted average
 
 TREE is either a UPI script (set_range / set_pot / set_eff_stack / add_line ... as you would send
 the solver) or a PioViewer-style config with `#Key#Value` sizing headers, which is expanded with
@@ -320,6 +321,89 @@ def start_pot(setup: list[str]) -> float:
     return pot
 
 
+def root_summary(s) -> dict:
+    """The first decision's strategy over the acting player's whole range: {player, actions, freqs}.
+
+    Frequencies are range-weighted (sum of reach x action probability / sum of reach), the numbers an
+    aggregate flop report shows. Actions are the last step of each child id ("c", "b50", ...): the
+    same on every flop of a batch, because line amounts do not depend on the board."""
+    import math
+    import server as vserver
+    node = vserver.parse_node_block(s.cmd("show_node r:0"))
+    player = {"OOP_DEC": "OOP", "IP_DEC": "IP"}.get(node["type"])
+    if player is None:
+        return {}
+    actions = [k["id"].rsplit(":", 1)[1] for k in vserver.parse_children(s.cmd("show_children r:0"))]
+    rows = [l.split() for l in s.cmd("show_strategy r:0").splitlines() if l.strip()]
+    reach = [float(x) for x in s.cmd(f"show_range {player} r:0").split()]
+    num = [0.0] * len(rows)
+    tot = 0.0
+    for i, r in enumerate(reach):
+        vals = [float(row[i]) for row in rows]
+        if r > 0 and all(math.isfinite(v) for v in vals):
+            tot += r
+            for a, v in enumerate(vals):
+                num[a] += r * v
+    if tot <= 0 or len(actions) != len(rows):
+        return {}
+    return {"player": player, "actions": actions, "freqs": [round(x / tot, 6) for x in num]}
+
+
+def action_label(a: str, pot: float) -> str:
+    """'c' -> 'check', 'b50' -> 'bet 50 (50%)' at the root (pot = the starting pot)."""
+    if a == "c":
+        return "check"
+    if a == "f":
+        return "fold"
+    if a.startswith("b") and a[1:].isdigit():
+        return f"bet {a[1:]}" + (f" ({100 * int(a[1:]) / pot:.0f}%)" if pot > 0 else "")
+    return a
+
+
+def report(q: Queue, name: str, solver_exe: str | None = None) -> dict:
+    """Per-flop root strategy, EVs and exploitability of a batch, plus the weighted average.
+
+    Done jobs from before root summaries were recorded are read from their saves (needs solver_exe)."""
+    b = q.batch(name)
+    pot = start_pot(b["setup"])
+    rows, actions, player = [], None, None
+    for j in q.jobs(name):
+        if j["status"] != "done":
+            continue
+        r = j.get("result") or {}
+        if not r.get("root") and solver_exe and os.path.isfile(j["out"]):
+            import server as vserver
+            s = vserver.Solver(solver_exe)
+            try:
+                s.cmd(f'load_tree "{j["out"]}"', timeout=3600)
+                r["root"] = root_summary(s)
+                j["result"] = r
+                q.save(j)
+            except vserver.SolverError:
+                pass
+            finally:
+                close_solver(s)
+        root = r.get("root") or {}
+        if root and actions is None:
+            actions, player = root["actions"], root["player"]
+        rows.append({"id": j["id"], "board": j["board"], "weight": j["weight"], "ev_oop": r.get("ev_oop"),
+                     "ev_ip": r.get("ev_ip"), "exploitability": r.get("exploitability"),
+                     "freqs": root.get("freqs") if root.get("actions") == actions else None})
+    total = {}
+    have = [x for x in rows if x["freqs"] is not None]
+    wsum = sum(x["weight"] for x in have)
+    if have and wsum > 0:
+        total["freqs"] = [sum(x["weight"] * x["freqs"][a] for x in have) / wsum for a in range(len(actions))]
+        for k in ("ev_oop", "ev_ip"):
+            if all(x[k] is not None for x in have):
+                total[k] = sum(x["weight"] * x[k] for x in have) / wsum
+        total["weight"] = wsum
+        total["flops"] = len(have)
+    return {"batch": name, "pot": pot, "player": player,
+            "actions": actions or [], "labels": [action_label(a, pot) for a in actions or []],
+            "rows": rows, "total": total, "pending": sum(j["status"] != "done" for j in q.jobs(name))}
+
+
 def close_solver(s) -> None:
     """End a job's solver process and close its pipes."""
     try:
@@ -415,6 +499,10 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
             log(f"{tag} stopped; back in the queue")
             return "queued"
         res = parse_results(s.cmd("calc_results", timeout=3600))
+        try:
+            res["root"] = root_summary(s)
+        except (vserver.SolverError, ValueError, IndexError):
+            pass  # a report can still read it from the save later
         try:
             res["iterations"] = int(float(s.cmd("show_iters")))
         except (ValueError, vserver.SolverError):
@@ -552,6 +640,11 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("name")
     ex.add_argument("-o", "--output", help="file (default stdout)")
 
+    rp = sub.add_parser("report", help="aggregate report: root strategy per flop and weighted average")
+    rp.add_argument("name")
+    rp.add_argument("--csv", help="also write it as CSV")
+    rp.add_argument("--solver", default=default_solver(), help="reads older saves without a root summary")
+
     args = ap.parse_args(argv)
     q = Queue(args.queue)
     try:
@@ -613,15 +706,51 @@ def main(argv: list[str] | None = None) -> int:
             print(f"job {args.id} is now number {args.to} in the queue")
         elif args.cmd == "export":
             q.batch(args.name)
+            js = q.jobs(args.name)
+            actions = next(((j.get("result") or {}).get("root", {}).get("actions") for j in js
+                            if (j.get("result") or {}).get("root")), None) or []
             fields = ["id", "board", "weight", "status", "ev_oop", "ev_ip", "mes_oop", "mes_ip",
-                      "exploitability", "iterations", "seconds", "out"]
+                      "exploitability", "iterations", "seconds", "out"] + [f"freq_{a}" for a in actions]
             out = open(args.output, "w", newline="") if args.output else sys.stdout
             w = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
             w.writeheader()
-            for j in q.jobs(args.name):
-                w.writerow({**j, **(j.get("result") or {})})
+            for j in js:
+                r = j.get("result") or {}
+                row = {**j, **r}
+                root = r.get("root") or {}
+                if root.get("actions") == actions:
+                    row.update({f"freq_{a}": f for a, f in zip(actions, root["freqs"])})
+                w.writerow(row)
             if args.output:
                 out.close()
+        elif args.cmd == "report":
+            rep = report(q, args.name, os.path.abspath(args.solver) if os.path.isfile(args.solver) else None)
+            labels = rep["labels"]
+            head = f"{'board':<10} {'weight':>7} {'EV OOP':>8} {'expl %':>7}  " + "  ".join(f"{l:>14}" for l in labels)
+            print(f"{rep['batch']}: {rep['player'] or '?'} at the root, starting pot {rep['pot']:g}")
+            print(head)
+            pot = rep["pot"] or 1
+            for x in rep["rows"]:
+                ex = f"{100 * x['exploitability'] / pot:.2f}" if x["exploitability"] is not None else "-"
+                fr = "  ".join(f"{100 * f:>13.1f}%" for f in x["freqs"]) if x["freqs"] else "(no root summary)"
+                ev = f"{x['ev_oop']:.2f}" if x["ev_oop"] is not None else "-"
+                print(f"{x['board']:<10} {x['weight']:>7g} {ev:>8} {ex:>7}  {fr}")
+            t = rep["total"]
+            if t:
+                fr = "  ".join(f"{100 * f:>13.1f}%" for f in t["freqs"])
+                ev = f"{t['ev_oop']:.2f}" if "ev_oop" in t else "-"
+                print(f"{'weighted':<10} {t['weight']:>7g} {ev:>8} {'':>7}  {fr}   ({t['flops']} flops)")
+            if rep["pending"]:
+                print(f"({rep['pending']} job(s) not done yet are left out)")
+            if args.csv:
+                with open(args.csv, "w", newline="") as f:
+                    w = csv.writer(f)
+                    w.writerow(["board", "weight", "ev_oop", "ev_ip", "exploitability"] + labels)
+                    for x in rep["rows"]:
+                        w.writerow([x["board"], x["weight"], x["ev_oop"], x["ev_ip"], x["exploitability"]] +
+                                   (x["freqs"] or [""] * len(labels)))
+                    if t:
+                        w.writerow(["weighted", t["weight"], t.get("ev_oop"), t.get("ev_ip"), ""] + t["freqs"])
     except JobError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

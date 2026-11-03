@@ -15,6 +15,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -212,7 +213,7 @@ class GzIn {
  public:
   explicit GzIn(const std::string& path) {
     f_ = gzopen(path.c_str(), "rb");
-    if (!f_) throw CmdError{"cannot open " + path};
+    if (!f_) throw CmdError{"couldn't open " + path + ": " + std::strerror(errno)};  // Pio's wording
     gzbuffer(f_, 1 << 20);
   }
   ~GzIn() {
@@ -729,7 +730,16 @@ std::string Upi::cmd_load_tree(const Args& a) {
     if (a[i] != "full" && a[i] != "fast" && a[i] != "auto") throw CmdError{"incorrect or missing argument"};
   bool full_load = a.size() > 1 && a[1] == "full";
   stop_solver();
-  GzIn in(a[0]);
+  std::unique_ptr<GzIn> inp;
+  try {
+    inp = std::make_unique<GzIn>(a[0]);
+  } catch (const CmdError&) {
+    // Pio 3.10 (probed): a load_tree that cannot open its file also drops the current tree.
+    solver_.reset();
+    tree_.reset();
+    throw;
+  }
+  GzIn& in = *inp;
   LoadedConfig lc = read_config_section(in);
   auto t = std::make_unique<GameTree>();
   t->payoff = lc.pm;

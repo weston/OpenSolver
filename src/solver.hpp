@@ -68,6 +68,19 @@ struct SdFold {
 };
 void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
                            float* compat = nullptr, const SdFold* fold = nullptr);
+// One showdown terminal for showdown_batch (#186): out (and compat) start zeroed; compat set: also the
+// compatible mass (call_and_fold); xf set: the opponent's fused fold (call_with_opp_fold).
+struct SdJob {
+  const float* ro;
+  float W, L, T;
+  float* out;
+  float* compat;
+  const float* xf;
+  float pay;
+};
+// Jobs on one board, each bit-identical to its own showdown_board call. On AVX-512 builds up to five
+// share one sweep over the board (at most one with a fused fold).
+void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* jobs);
 #if PIO_SHOWDOWN_AVX512
 void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
                            float* compat = nullptr, const SdFold* fold = nullptr);
@@ -150,8 +163,18 @@ class Solver {
   bool allin_tables = true;
   // Values of p's hands at a showdown terminal against opponent reach ro (public for tests).
   void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
+  void traverser_update(const GNode& n, uint32_t ni, int p, const float* rp, const float* ro, const float* sigma,
+                        const float* cfv, const uint8_t* pruned, const float* out);
+  // #186 two-phase river walk (CFR mode): top-down reaches and strategies into buffers that live until
+  // the river chance task returns, every showdown of the subtree evaluated in batches, then values and
+  // updates bottom-up. Same operations in the same order as walk_t, so bit-identical.
+  void river_cfr(uint32_t ni, int p, const float* rp, const float* ro, float* out);
+  void river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   template <class E>
   void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
+  // #186: Solver::river_cfr for river subtrees in the CFR walk. Only AVX-512 builds batch the kernels;
+  // elsewhere the two-phase walk is overhead (M4: +2-3.5%), so it is off by default there.
+  bool river_batch = PIO_SHOWDOWN_AVX512 != 0;
   bool pruning = true;  // on by default (#51): inactive before t > 2*prune_period, then never
                         // slower and up to ~8% faster on long solves (bench data in the comment)
   // 8, not 32. The period trades activation delay (pruning is inactive until t > 2*period)

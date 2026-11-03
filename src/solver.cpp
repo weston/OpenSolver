@@ -287,7 +287,167 @@ void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, i
     for (int i = 0; i < np; ++i) out[pe[i].idx] += ltv[i];
   }
 }
+// #186: up to NT showdown terminals of one board in one sweep; job fi (if >= 0) carries the opponent's
+// fused fold. Each job runs exactly the operations showdown_board_avx512 runs for it, in the same
+// order (bit-identical outputs); shared are the decode of p's entries, each opponent entry's load and
+// card masks, and the final pass's decode. Microbenchmark on srp_big boards, 5 mixed jobs: 0.75x.
+template <int NT>
+void showdown_batch_avx512(const ShowdownBoard& sb, int p, const SdJob* job, int fi) {
+  const int o = 1 - p;
+  const SdEntry* pe = sb.ent[p].data();
+  const SdEntry* oe = sb.ent[o].data();
+  const int np = static_cast<int>(sb.ent[p].size());
+  const auto* gr = sb.groups[p].data();
+  const int ng = static_cast<int>(sb.groups[p].size());
+  ArenaScope sc;
+  float* buf = sc.a.alloc(static_cast<size_t>(np) * 2 * NT);
+  float* ltv[NT];
+  float* lev[NT];
+  for (int t = 0; t < NT; ++t) {
+    ltv[t] = buf + static_cast<size_t>(2 * t) * np;
+    lev[t] = ltv[t] + np;
+  }
+  CsRegs cs[NT], csf;
+  float cum[NT] = {}, cumf = 0;
+  const float* xf = fi >= 0 ? job[fi].xf : nullptr;
+  const __m512i b8 = _mm512_set1_epi32(0xff);
+  int i0 = 0, j0 = 0;
+  for (int g = 0; g < ng; ++g) {
+    const int i1 = gr[g].first, j1 = gr[g].second;
+    __m512i c1 = _mm512_setzero_si512(), c2 = c1;
+    if (i0 < i1) {
+      for (int i = i0; i < i1; i += 16) {
+        const __mmask16 m = sd_tail_mask(i1 - i);
+        const __m512i w = sd_words(pe + i, m, 0);
+        c1 = _mm512_and_si512(_mm512_srli_epi32(w, 16), b8);
+        c2 = _mm512_srli_epi32(w, 24);
+        for (int t = 0; t < NT; ++t)
+          _mm512_mask_storeu_ps(ltv[t] + i, m, _mm512_sub_ps(_mm512_sub_ps(_mm512_set1_ps(cum[t]), cs[t](c1)), cs[t](c2)));
+      }
+    }
+    for (int j = j0; j < j1; ++j) {
+      const SdEntry q = oe[j];
+      const uint64_t mm = (1ull << q.c1) | (1ull << q.c2);
+      const __mmask16 k0 = static_cast<__mmask16>(mm), k1 = static_cast<__mmask16>(mm >> 16),
+                      k2 = static_cast<__mmask16>(mm >> 32), k3 = static_cast<__mmask16>(mm >> 48);
+      for (int t = 0; t < NT; ++t) {
+        const float r = job[t].ro[q.idx];
+        cum[t] += r;
+        const __m512 vx = _mm512_set1_ps(r);
+        cs[t].r[0] = _mm512_mask_add_ps(cs[t].r[0], k0, cs[t].r[0], vx);
+        cs[t].r[1] = _mm512_mask_add_ps(cs[t].r[1], k1, cs[t].r[1], vx);
+        cs[t].r[2] = _mm512_mask_add_ps(cs[t].r[2], k2, cs[t].r[2], vx);
+        cs[t].r[3] = _mm512_mask_add_ps(cs[t].r[3], k3, cs[t].r[3], vx);
+      }
+      if (xf) {
+        const float f = xf[q.idx];
+        cumf += f;
+        const __m512 vf = _mm512_set1_ps(f);
+        csf.r[0] = _mm512_mask_add_ps(csf.r[0], k0, csf.r[0], vf);
+        csf.r[1] = _mm512_mask_add_ps(csf.r[1], k1, csf.r[1], vf);
+        csf.r[2] = _mm512_mask_add_ps(csf.r[2], k2, csf.r[2], vf);
+        csf.r[3] = _mm512_mask_add_ps(csf.r[3], k3, csf.r[3], vf);
+      }
+    }
+    if (i0 < i1) {
+      if (i1 - i0 <= 16) {  // c1/c2 still hold this group's cards
+        for (int t = 0; t < NT; ++t)
+          _mm512_mask_storeu_ps(lev[t] + i0, sd_tail_mask(i1 - i0),
+                                _mm512_sub_ps(_mm512_sub_ps(_mm512_set1_ps(cum[t]), cs[t](c1)), cs[t](c2)));
+      } else {
+        for (int i = i0; i < i1; i += 16) {
+          const __mmask16 m = sd_tail_mask(i1 - i);
+          const __m512i w = sd_words(pe + i, m, 0);
+          c1 = _mm512_and_si512(_mm512_srli_epi32(w, 16), b8);
+          c2 = _mm512_srli_epi32(w, 24);
+          for (int t = 0; t < NT; ++t)
+            _mm512_mask_storeu_ps(lev[t] + i, m, _mm512_sub_ps(_mm512_sub_ps(_mm512_set1_ps(cum[t]), cs[t](c1)), cs[t](c2)));
+        }
+      }
+    }
+    i0 = i1;
+    j0 = j1;
+  }
+  bool live[NT];
+  for (int t = 0; t < NT; ++t) live[t] = !(cum[t] == 0.0f && (t != fi || cumf == 0.0f));
+  for (int i = 0; i < np; i += 16) {
+    const __mmask16 m = sd_tail_mask(np - i);
+    const __m512i w = sd_words(pe + i, m, 0);
+    const __m512i k1 = _mm512_and_si512(_mm512_srli_epi32(w, 16), b8);
+    const __m512i k2 = _mm512_srli_epi32(w, 24);
+    const __m512i same = _mm512_srai_epi32(_mm512_slli_epi32(sd_words(pe + i, m, 4), 16), 16);  // int16
+    const __mmask16 sm = _mm512_mask_cmpge_epi32_mask(m, same, _mm512_setzero_si512());
+    for (int t = 0; t < NT; ++t) {
+      if (!live[t]) continue;
+      const __m512 sr = _mm512_mask_i32gather_ps(_mm512_setzero_ps(), sm, same, job[t].ro, 4);
+      const __m512 le = _mm512_add_ps(_mm512_maskz_loadu_ps(m, lev[t] + i), sr);
+      const __m512 compat = _mm512_add_ps(_mm512_sub_ps(_mm512_sub_ps(_mm512_set1_ps(cum[t]), cs[t](k1)), cs[t](k2)), sr);
+      const __m512 v = _mm512_fmadd_ps(_mm512_set1_ps(job[t].L), compat,
+                                       _mm512_fmadd_ps(_mm512_set1_ps(job[t].W - job[t].T), _mm512_maskz_loadu_ps(m, ltv[t] + i),
+                                                       _mm512_mul_ps(_mm512_set1_ps(job[t].T - job[t].L), le)));
+      _mm512_mask_storeu_ps(ltv[t] + i, m, v);
+      if (job[t].compat) _mm512_mask_storeu_ps(lev[t] + i, m, compat);
+      if (t == fi) {
+        const __m512 fs = _mm512_mask_i32gather_ps(_mm512_setzero_ps(), sm, same, xf, 4);
+        _mm512_mask_storeu_ps(lev[t] + i, m, _mm512_add_ps(_mm512_sub_ps(_mm512_sub_ps(_mm512_set1_ps(cumf), csf(k1)), csf(k2)), fs));
+      }
+    }
+  }
+  for (int t = 0; t < NT; ++t) {
+    if (!live[t]) continue;
+    float* out = job[t].out;
+    if (t == fi) {
+      const float pay = job[t].pay;
+      for (int i = 0; i < np; ++i) {
+        const int idx = pe[i].idx;
+        out[idx] += ltv[t][i];
+        out[idx] = std::fma(pay, lev[t][i], out[idx]);
+      }
+    } else if (float* cmp = job[t].compat) {
+      for (int i = 0; i < np; ++i) {
+        const int idx = pe[i].idx;
+        out[idx] += ltv[t][i];
+        cmp[idx] = lev[t][i];
+      }
+    } else {
+      for (int i = 0; i < np; ++i) out[pe[i].idx] += ltv[t][i];
+    }
+  }
+}
+
 #endif
+
+void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job) {
+#if PIO_SHOWDOWN_AVX512
+  // Greedy batches of up to five jobs, at most one with a fused fold (its CsRegs are four more zmm).
+  SdJob b[5];
+  int k = 0, fi = -1;
+  auto flush = [&] {
+    switch (k) {
+      case 1: showdown_batch_avx512<1>(sb, p, b, fi); break;
+      case 2: showdown_batch_avx512<2>(sb, p, b, fi); break;
+      case 3: showdown_batch_avx512<3>(sb, p, b, fi); break;
+      case 4: showdown_batch_avx512<4>(sb, p, b, fi); break;
+      case 5: showdown_batch_avx512<5>(sb, p, b, fi); break;
+      default: break;
+    }
+    k = 0;
+    fi = -1;
+  };
+  for (int i = 0; i < n; ++i) {
+    if (k == 5 || (job[i].xf && fi >= 0)) flush();
+    if (job[i].xf) fi = k;
+    b[k++] = job[i];
+  }
+  flush();
+#else
+  for (int i = 0; i < n; ++i) {
+    const SdFold f{job[i].xf, job[i].pay};
+    showdown_board_scalar(sb, job[i].W, job[i].L, job[i].T, p, job[i].ro, job[i].out, job[i].compat,
+                          job[i].xf ? &f : nullptr);
+  }
+#endif
+}
 
 void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
                             float* compat, const SdFold* fold) const {
@@ -701,6 +861,307 @@ void Solver::walk(Walk mode, uint32_t ni, int p, const float* rp, const float* r
   }
 }
 
+// The traverser's regret and strategy-sum update at a decision node (extracted from walk_t so the
+// two-phase river walk, #186, runs exactly the same code). out is the node's value under sigma.
+void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* rp, const float* ro, const float* sigma,
+                              const float* cfv, const uint8_t* pruned, const float* out) {
+  const int A = n.num_children;
+  const int Hp = g_.num_hands(p);
+  ArenaScope sc;
+  float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+  // Strategy-sum accumulation (accumulate_). With avg_reset (default) it runs from t = 1 and
+  // Solver::iterate zeroes the sums at t = avg_delay + 1 (#135); without it, it is skipped until
+  // t > avg_delay and S stays untouched (zero) until then.
+  float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+  // Predictive CFR stores each round's instantaneous regret for the next round's
+  // matching input; keep the array fresh whenever it is allocated.
+  float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
+  const float pm = pos_mult_, nm = neg_mult_, sm = strat_mult_;
+  const float* inc = nullptr;
+  float* mass = nullptr;
+  if (n.flags & GF_INCENTIVES) {
+    auto it = g_.incentives.find(ni);
+    if (it != g_.incentives.end()) {
+      inc = it->second.data();
+      mass = sc.a.alloc(Hp);
+      compat_mass(p, ro, mass);
+    }
+  }
+  const uint8_t* lockmask = nullptr;
+  if (n.flags & GF_COMBO_LOCKED) {
+    auto it = g_.combo_lock.find(ni);
+    if (it != g_.combo_lock.end()) lockmask = it->second.data();
+  }
+  uint32_t mr = 0, ms = 0;  // max |regret| and max strategy sum as float bits (abs_bits, game.hpp)
+  const bool fast = !lockmask && !inc;
+  const bool accum = accumulate_;
+  for (int a = 0; a < A; ++a) {
+    float* r = R + static_cast<size_t>(a) * Hp;
+    float* s = S + static_cast<size_t>(a) * Hp;
+    float* pr = P ? P + static_cast<size_t>(a) * Hp : nullptr;
+    const float* c = cfv + static_cast<size_t>(a) * Hp;
+    const float* sa = sigma + static_cast<size_t>(a) * Hp;
+    const float ia = inc ? inc[a] : 0.0f;
+    if (pruned && pruned[a]) {
+      // RBP pruned: the regret row is NOT touched (not even discounted). Discounting a frozen
+      // row makes it forget its magnitude exponentially (at beta=0 it halves every iteration)
+      // while the true update would keep it near its (negative) fixed point, so discounted
+      // frozen rows churn back into play at every revisiting iteration. A completely frozen row
+      // instead stays below the unpruned value until genuinely re-measured, so pruning only ever
+      // DELAYS a re-entry, never invents one. The strategy sum gets its usual discount: with
+      // sigma == 0 on the whole row that is exactly the unpruned update. (Skip it during the
+      // avg_delay phase, exactly like the unpruned rows do.) The maxima only matter for 16-bit storage.
+      if (accum)
+        for (int h = 0; h < Hp; ++h) s[h] *= sm;
+      if (g_.compressed) {
+        if (accum)
+          for (int h = 0; h < Hp; ++h) ms = std::max(ms, nonneg_bits(s[h]));
+        for (int h = 0; h < Hp; ++h) mr = std::max(mr, abs_bits(r[h]));
+      }
+      continue;
+    }
+    if (fast && !g_.compressed) {
+      // float32 storage: plain update (no max tracking needed)
+      if (pr) {
+        if (accum) regret_row<true, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
+        else regret_row<true, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
+      } else {
+        if (accum) regret_row<false, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
+        else regret_row<false, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
+      }
+    } else if (fast) {
+      if (pr) {
+        if (accum) regret_row_max<true, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+        else regret_row_max<true, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+      } else {
+        if (accum) regret_row_max<false, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+        else regret_row_max<false, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+      }
+    } else {
+      for (int h = 0; h < Hp; ++h) {
+        if (lockmask && lockmask[h]) continue;
+        float x = r[h];
+        x *= x > 0.0f ? pm : nm;
+        float bonus = inc ? ia * mass[h] : 0.0f;
+        const float inst = c[h] + bonus - out[h];
+        r[h] = x + inst;
+        if (pr) pr[h] = inst;
+        if (accum) s[h] = s[h] * sm + rp[h] * sa[h];
+      }
+    }
+  }
+  g_.regrets_commit(n, R, fast ? std::bit_cast<float>(mr) : -1.0f);
+  if (accum) g_.strat_commit(n, S, fast ? std::bit_cast<float>(ms) : -1.0f);
+}
+
+
+// ---- #186 two-phase river walk ---------------------------------------------------------------
+namespace {
+struct RNode {
+  uint32_t ni;
+  bool own;              // actor is the traverser
+  const float* rp;       // traverser reach at the node
+  const float* ro;       // opponent reach at the node
+  float* sigma;          // current strategy, A x H[actor]
+  float* rows;           // own: cfv per action; opponent: contribution per action (A x Hp)
+  uint8_t* flag;         // own: pruned (or null); opponent: used
+  float* out;            // the node's value row (in the parent's rows, or the caller's)
+};
+struct RiverWork {
+  std::vector<RNode> nodes;
+  std::vector<SdJob> jobs;
+  std::vector<std::pair<float*, float>> scale;  // call_and_fold's fold rows: compat * pay
+  const ShowdownBoard* sb = nullptr;
+  bool busy = false;
+};
+thread_local RiverWork tl_rw;
+}  // namespace
+
+void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out) {
+  RiverWork& w = tl_rw;
+  Arena& ar = arena();
+  const GNode& n = g_.nodes[ni];
+  const int o = 1 - p;
+  const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
+  const int A = n.num_children;
+  const int actor = n.player;
+  const int Ha = g_.num_hands(actor);
+  float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
+  current_strategy(ni, sigma);
+  auto showdown_job = [&](const GNode& sd, const float* reach, float* dst, float* compat, const float* xf, float pay) {
+    const ActionNode& an = g_.an(sd);
+    w.sb = &g_.showdowns[sd.aux];
+    w.jobs.push_back({reach, static_cast<float>(g_.terminal_payoff(an, p, 1)), static_cast<float>(g_.terminal_payoff(an, p, -1)),
+                      static_cast<float>(g_.terminal_payoff(an, p, 0)), dst, compat, xf, pay});
+  };
+  if (actor == p) {
+    uint8_t* pruned = nullptr;
+    if (prune_this_iter_ && !(n.flags & (GF_LOCKED | GF_COMBO_LOCKED | GF_INCENTIVES | GF_ELIMINATED))) {
+      pruned = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
+      for (int a = 0; a < A; ++a) pruned[a] = all_zero(sigma + static_cast<size_t>(a) * Hp, Hp) ? 1 : 0;
+    }
+    float* cfv = ar.alloc(static_cast<size_t>(A) * Hp);
+    float* rpa = ar.alloc(static_cast<size_t>(A) * Hp);
+    w.nodes.push_back({ni, true, rp, ro, sigma, cfv, pruned, out});
+    int paired_f = -1, paired_s = -1;
+    if (A >= 2) {
+      for (int a = 0; a < A; ++a) {
+        const ANodeKind k = g_.nodes[n.first_child + static_cast<uint32_t>(a)].kind;
+        if (k == ANodeKind::Fold) paired_f = a;
+        else if (k == ANodeKind::Showdown) paired_s = a;
+      }
+      if (paired_f >= 0 && paired_s >= 0 && !(pruned && (pruned[paired_f] || pruned[paired_s]))) {
+        float* cs = cfv + static_cast<size_t>(paired_s) * Hp;
+        float* cf = cfv + static_cast<size_t>(paired_f) * Hp;
+        std::memset(cs, 0, sizeof(float) * Hp);
+        std::memset(cf, 0, sizeof(float) * Hp);
+        showdown_job(g_.nodes[n.first_child + static_cast<uint32_t>(paired_s)], ro, cs, cf, nullptr, 0.0f);
+        const ActionNode& fa = g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(paired_f)]);
+        w.scale.push_back({cf, static_cast<float>(g_.terminal_payoff(fa, p, p == fa.player ? -1 : 1))});
+      } else {
+        paired_f = paired_s = -1;
+      }
+    }
+    for (int a = 0; a < A; ++a) {
+      if (pruned && pruned[a]) continue;
+      if (a == paired_f || a == paired_s) continue;
+      const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
+      float* ca = cfv + static_cast<size_t>(a) * Hp;
+      const GNode& child = g_.nodes[ci];
+      if (child.kind == ANodeKind::Fold) {
+        fold_value(child, p, ro, ca);
+      } else if (child.kind == ANodeKind::Showdown) {
+        std::memset(ca, 0, sizeof(float) * Hp);
+        showdown_job(child, ro, ca, nullptr, nullptr, 0.0f);
+      } else {
+        const float* sa = sigma + static_cast<size_t>(a) * Hp;
+        float* rp2 = rpa + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) rp2[h] = rp[h] * sa[h];
+        river_down(ci, p, rp2, ro, ca);
+      }
+    }
+    return;
+  }
+  float* ro2s = ar.alloc(static_cast<size_t>(A) * Ho);
+  float* contrib = ar.alloc(static_cast<size_t>(A) * Hp);
+  uint8_t* used = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
+  w.nodes.push_back({ni, false, rp, ro, sigma, contrib, used, out});
+  int opp_f = -1, opp_s = -1;
+  if (A >= 2) {
+    for (int a = 0; a < A; ++a) {
+      const ANodeKind k = g_.nodes[n.first_child + static_cast<uint32_t>(a)].kind;
+      if (k == ANodeKind::Fold) opp_f = a;
+      else if (k == ANodeKind::Showdown) opp_s = a;
+    }
+    if (opp_f < 0 || opp_s < 0) opp_f = opp_s = -1;
+  }
+  for (int a = 0; a < A; ++a) {
+    used[a] = 0;
+    if (a == opp_f) continue;
+    const float* sa = sigma + static_cast<size_t>(a) * Ho;
+    const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
+    float* tmp = contrib + static_cast<size_t>(a) * Hp;
+    const GNode& child = g_.nodes[ci];
+    if (a == opp_s) {
+      float* ro2 = ro2s + static_cast<size_t>(a) * Ho;
+      for (int k = 0; k < Ho; ++k) ro2[k] = ro[k] * sa[k];
+      float* xf = ro2s + static_cast<size_t>(opp_f) * Ho;
+      const float* sf = sigma + static_cast<size_t>(opp_f) * Ho;
+      for (int k = 0; k < Ho; ++k) xf[k] = ro[k] * sf[k];
+      std::memset(tmp, 0, sizeof(float) * Hp);
+      showdown_job(child, ro2, tmp, nullptr, xf,
+                   static_cast<float>(g_.terminal_payoff(g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(opp_f)]), p, 1)));
+      used[a] = 1;
+      continue;
+    }
+    if (child.kind == ANodeKind::Fold) {
+      const float pay = static_cast<float>(g_.terminal_payoff(g_.an(child), p, 1));
+      const uint8_t* oc1 = g_.hcard[o][0].data();
+      const uint8_t* oc2 = g_.hcard[o][1].data();
+      float cs[NUM_CARDS] = {0};
+      float total = 0;
+      for (int k = 0; k < Ho; ++k) {
+        const float v = ro[k] * sa[k];
+        total += v;
+        cs[oc1[k]] += v;
+        cs[oc2[k]] += v;
+      }
+      if (total == 0.0f) {
+        strategy_only(ci, p, rp);
+        continue;
+      }
+      const uint8_t* pc1 = g_.hcard[p][0].data();
+      const uint8_t* pc2 = g_.hcard[p][1].data();
+      const int32_t* same = g_.same_hand[p].data();
+      for (int h = 0; h < Hp; ++h) {
+        float m = total - cs[pc1[h]] - cs[pc2[h]];
+        if (same[h] >= 0) m += ro[same[h]] * sa[same[h]];
+        tmp[h] = pay * m;
+      }
+      used[a] = 1;
+      continue;
+    }
+    float* ro2 = ro2s + static_cast<size_t>(a) * Ho;
+    bool any = false;
+    for (int k = 0; k < Ho; ++k) {
+      float v = ro[k] * sa[k];
+      ro2[k] = v;
+      any |= v != 0.0f;
+    }
+    if (!any) {
+      strategy_only(ci, p, rp);
+      continue;
+    }
+    if (child.kind == ANodeKind::Showdown) {
+      std::memset(tmp, 0, sizeof(float) * Hp);
+      showdown_job(child, ro2, tmp, nullptr, nullptr, 0.0f);
+    } else {
+      river_down(ci, p, rp, ro2, tmp);
+    }
+    used[a] = 1;
+  }
+}
+
+void Solver::river_cfr(uint32_t root, int p, const float* rp, const float* ro, float* out) {
+  RiverWork& w = tl_rw;
+  w.busy = true;
+  w.nodes.clear();
+  w.jobs.clear();
+  w.scale.clear();
+  w.sb = nullptr;
+  river_down(root, p, rp, ro, out);
+  if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data());
+  const int Hp = g_.num_hands(p);
+  for (auto& [row, pay] : w.scale)
+    for (int h = 0; h < Hp; ++h) row[h] *= pay;
+  for (size_t i = w.nodes.size(); i-- > 0;) {
+    const RNode& r = w.nodes[i];
+    const GNode& n = g_.nodes[r.ni];
+    const int A = n.num_children;
+    std::memset(r.out, 0, sizeof(float) * Hp);
+    if (r.own) {
+      for (int a = 0; a < A; ++a) {
+        if (r.flag && r.flag[a]) continue;
+        const float* sa = r.sigma + static_cast<size_t>(a) * Hp;
+        const float* c = r.rows + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) r.out[h] += sa[h] * c[h];
+      }
+      if (!(n.flags & GF_LOCKED)) traverser_update(n, r.ni, p, r.rp, r.ro, r.sigma, r.rows, r.flag, r.out);
+    } else {
+      for (int a = 0; a < A; ++a) {
+        if (!r.flag[a]) continue;
+        const float* c = r.rows + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) r.out[h] += c[h];
+      }
+    }
+  }
+  w.busy = false;
+}
+
+// Note (#186): in the CFR walk, river subtrees are walked by Solver::river_cfr / river_down on builds
+// where river_batch is on. Any change to the river semantics below (decision nodes at board_len 5,
+// fold pairing, fused opponent folds, pruning, strategy_only) must be mirrored there; test_solver's
+// [river batch] check compares the two walks bit for bit.
 template <Walk M>
 void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float* out) {
   const GNode& n = g_.nodes[ni];
@@ -737,7 +1198,11 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
           if (M == Walk::CFR) strategy_only(n.first_child + static_cast<uint32_t>(k), p, rp2);
           return;
         }
-        walk_t<M>(n.first_child + static_cast<uint32_t>(k), p, rp2, ro2, rk);
+        if (M == Walk::CFR && river_batch && n.board_len == 4 && !tl_rw.busy &&
+            g_.nodes[n.first_child + static_cast<uint32_t>(k)].kind == ANodeKind::Decision)
+          river_cfr(n.first_child + static_cast<uint32_t>(k), p, rp2, ro2, rk);  // #186
+        else
+          walk_t<M>(n.first_child + static_cast<uint32_t>(k), p, rp2, ro2, rk);
         for (uint16_t h : g_.hands_with_card[p][card]) rk[h] = 0.0f;
       };
       if (parallel && K > 1) {
@@ -870,90 +1335,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     }
     if (M != Walk::CFR) return;
     if (n.flags & GF_LOCKED) return;
-    float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
-    // Strategy-sum accumulation (accumulate_). With avg_reset (default) it runs from t = 1 and
-    // Solver::iterate zeroes the sums at t = avg_delay + 1 (#135); without it, it is skipped until
-    // t > avg_delay and S stays untouched (zero) until then.
-    float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
-    // Predictive CFR stores each round's instantaneous regret for the next round's
-    // matching input; keep the array fresh whenever it is allocated.
-    float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
-    const float pm = pos_mult_, nm = neg_mult_, sm = strat_mult_;
-    const float* inc = nullptr;
-    float* mass = nullptr;
-    if (n.flags & GF_INCENTIVES) {
-      auto it = g_.incentives.find(ni);
-      if (it != g_.incentives.end()) {
-        inc = it->second.data();
-        mass = sc.a.alloc(Hp);
-        compat_mass(p, ro, mass);
-      }
-    }
-    const uint8_t* lockmask = nullptr;
-    if (n.flags & GF_COMBO_LOCKED) {
-      auto it = g_.combo_lock.find(ni);
-      if (it != g_.combo_lock.end()) lockmask = it->second.data();
-    }
-    uint32_t mr = 0, ms = 0;  // max |regret| and max strategy sum as float bits (abs_bits, game.hpp)
-    const bool fast = !lockmask && !inc;
-    const bool accum = accumulate_;
-    for (int a = 0; a < A; ++a) {
-      float* r = R + static_cast<size_t>(a) * Hp;
-      float* s = S + static_cast<size_t>(a) * Hp;
-      float* pr = P ? P + static_cast<size_t>(a) * Hp : nullptr;
-      const float* c = cfv + static_cast<size_t>(a) * Hp;
-      const float* sa = sigma + static_cast<size_t>(a) * Hp;
-      const float ia = inc ? inc[a] : 0.0f;
-      if (pruned && pruned[a]) {
-        // RBP pruned: the regret row is NOT touched (not even discounted). Discounting a frozen
-        // row makes it forget its magnitude exponentially (at beta=0 it halves every iteration)
-        // while the true update would keep it near its (negative) fixed point, so discounted
-        // frozen rows churn back into play at every revisiting iteration. A completely frozen row
-        // instead stays below the unpruned value until genuinely re-measured, so pruning only ever
-        // DELAYS a re-entry, never invents one. The strategy sum gets its usual discount: with
-        // sigma == 0 on the whole row that is exactly the unpruned update. (Skip it during the
-        // avg_delay phase, exactly like the unpruned rows do.) The maxima only matter for 16-bit storage.
-        if (accum)
-          for (int h = 0; h < Hp; ++h) s[h] *= sm;
-        if (g_.compressed) {
-          if (accum)
-            for (int h = 0; h < Hp; ++h) ms = std::max(ms, nonneg_bits(s[h]));
-          for (int h = 0; h < Hp; ++h) mr = std::max(mr, abs_bits(r[h]));
-        }
-        continue;
-      }
-      if (fast && !g_.compressed) {
-        // float32 storage: plain update (no max tracking needed)
-        if (pr) {
-          if (accum) regret_row<true, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
-          else regret_row<true, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
-        } else {
-          if (accum) regret_row<false, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
-          else regret_row<false, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
-        }
-      } else if (fast) {
-        if (pr) {
-          if (accum) regret_row_max<true, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
-          else regret_row_max<true, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
-        } else {
-          if (accum) regret_row_max<false, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
-          else regret_row_max<false, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
-        }
-      } else {
-        for (int h = 0; h < Hp; ++h) {
-          if (lockmask && lockmask[h]) continue;
-          float x = r[h];
-          x *= x > 0.0f ? pm : nm;
-          float bonus = inc ? ia * mass[h] : 0.0f;
-          const float inst = c[h] + bonus - out[h];
-          r[h] = x + inst;
-          if (pr) pr[h] = inst;
-          if (accum) s[h] = s[h] * sm + rp[h] * sa[h];
-        }
-      }
-    }
-    g_.regrets_commit(n, R, fast ? std::bit_cast<float>(mr) : -1.0f);
-    if (accum) g_.strat_commit(n, S, fast ? std::bit_cast<float>(ms) : -1.0f);
+    traverser_update(n, ni, p, rp, ro, sigma, cfv, pruned, out);
     return;
   }
 

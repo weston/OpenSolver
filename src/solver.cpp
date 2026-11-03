@@ -2051,6 +2051,213 @@ void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r
 // both; they only differ at p's own decisions (mix by the average strategy vs maximize). Carrying
 // both vectors up one traversal halves the cost of an exploitability check. The arithmetic per
 // vector is exactly that of walk_t<Evaluate> / walk_t<BestResponse>, in the same order.
+// ---- two-phase river walk for the exploitability check ----------------------------------------
+// walk_evbr's river subtrees the way river_cfr does CFR's: average strategies and opponent reaches
+// top-down, every showdown of the subtree in one batched kernel call (a terminal's value is the same
+// for the on-policy and the best-response halves), then on-policy values and best responses bottom-up.
+// Same operations in the same order as walk_evbr, so bit-identical; test_solver checks it.
+namespace {
+struct ENode {
+  uint32_t ni;
+  bool own;
+  float* sigma;   // average strategy, A x H[actor]
+  float* cev;     // per action: on-policy value of the child (A x Hp)
+  float* cbr;     // per action: best-response value of the child (A x Hp)
+  uint8_t* kind;  // per action: 0 unused (opponent nodes only), 1 terminal (cbr = cev), 2 subtree
+  float* ev;
+  float* br;
+};
+struct EvbrWork {
+  std::vector<ENode> nodes;
+  std::vector<SdJob> jobs;
+  std::vector<std::pair<float*, float>> scale;
+  const ShowdownBoard* sb = nullptr;
+  bool busy = false;
+};
+thread_local EvbrWork tl_ew;
+}  // namespace
+
+void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br) {
+  EvbrWork& w = tl_ew;
+  Arena& ar = arena();
+  const GNode& n = g_.nodes[ni];
+  const int o = 1 - p;
+  const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
+  const int A = n.num_children;
+  const int actor = n.player;
+  const int Ha = g_.num_hands(actor);
+  float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
+  average_strategy(ni, sigma);
+  float* cev = ar.alloc(static_cast<size_t>(A) * Hp);
+  float* cbr = ar.alloc(static_cast<size_t>(A) * Hp);
+  uint8_t* kind = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
+  w.nodes.push_back({ni, actor == p, sigma, cev, cbr, kind, ev, br});
+  auto showdown_job = [&](const GNode& sd, const float* reach, float* dst, float* compat, const float* xf, float pay) {
+    const ActionNode& an = g_.an(sd);
+    w.sb = &g_.showdowns[sd.aux];
+    w.jobs.push_back({reach, static_cast<float>(g_.terminal_payoff(an, p, 1)), static_cast<float>(g_.terminal_payoff(an, p, -1)),
+                      static_cast<float>(g_.terminal_payoff(an, p, 0)), dst, compat, xf, pay});
+  };
+  int pf = -1, ps = -1;
+  if (A >= 2) {
+    for (int a = 0; a < A; ++a) {
+      const ANodeKind k = g_.nodes[n.first_child + static_cast<uint32_t>(a)].kind;
+      if (k == ANodeKind::Fold) pf = a;
+      else if (k == ANodeKind::Showdown) ps = a;
+    }
+    if (pf < 0 || ps < 0) pf = ps = -1;
+  }
+  if (actor == p) {
+    if (ps >= 0) {  // call_and_fold
+      float* cs = cev + static_cast<size_t>(ps) * Hp;
+      float* cf = cev + static_cast<size_t>(pf) * Hp;
+      std::memset(cs, 0, sizeof(float) * Hp);
+      std::memset(cf, 0, sizeof(float) * Hp);
+      showdown_job(g_.nodes[n.first_child + static_cast<uint32_t>(ps)], ro, cs, cf, nullptr, 0.0f);
+      const ActionNode& fa = g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]);
+      w.scale.push_back({cf, static_cast<float>(g_.terminal_payoff(fa, p, p == fa.player ? -1 : 1))});
+      kind[ps] = kind[pf] = 1;
+    }
+    for (int a = 0; a < A; ++a) {
+      if (a == pf || a == ps) continue;
+      const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
+      float* ea = cev + static_cast<size_t>(a) * Hp;
+      const GNode& child = g_.nodes[ci];
+      if (child.kind == ANodeKind::Fold) {
+        fold_value(child, p, ro, ea);
+        kind[a] = 1;
+      } else if (child.kind == ANodeKind::Showdown) {
+        std::memset(ea, 0, sizeof(float) * Hp);
+        showdown_job(child, ro, ea, nullptr, nullptr, 0.0f);
+        kind[a] = 1;
+      } else {
+        river_evbr_down(ci, p, ro, ea, cbr + static_cast<size_t>(a) * Hp);
+        kind[a] = 2;
+      }
+    }
+    return;
+  }
+  float* ro2s = ar.alloc(static_cast<size_t>(A) * Ho);
+  for (int a = 0; a < A; ++a) {
+    kind[a] = 0;
+    if (a == pf) continue;  // added by the call's kernel below (call_with_opp_fold)
+    const float* sa = sigma + static_cast<size_t>(a) * Ho;
+    const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
+    float* ea = cev + static_cast<size_t>(a) * Hp;
+    const GNode& child = g_.nodes[ci];
+    if (a == ps) {
+      float* ro2 = ro2s + static_cast<size_t>(a) * Ho;
+      for (int k = 0; k < Ho; ++k) ro2[k] = ro[k] * sa[k];
+      float* xf = ro2s + static_cast<size_t>(pf) * Ho;
+      const float* sf = sigma + static_cast<size_t>(pf) * Ho;
+      for (int k = 0; k < Ho; ++k) xf[k] = ro[k] * sf[k];
+      std::memset(ea, 0, sizeof(float) * Hp);
+      showdown_job(child, ro2, ea, nullptr, xf,
+                   static_cast<float>(g_.terminal_payoff(g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]), p, 1)));
+      kind[a] = 1;
+      continue;
+    }
+    if (child.kind == ANodeKind::Fold) {
+      const float pay = static_cast<float>(g_.terminal_payoff(g_.an(child), p, 1));
+      const uint8_t* oc1 = g_.hcard[o][0].data();
+      const uint8_t* oc2 = g_.hcard[o][1].data();
+      float cs[NUM_CARDS] = {0};
+      float total = 0;
+      for (int k = 0; k < Ho; ++k) {
+        const float v = ro[k] * sa[k];
+        total += v;
+        cs[oc1[k]] += v;
+        cs[oc2[k]] += v;
+      }
+      if (total == 0.0f) continue;
+      const uint8_t* pc1 = g_.hcard[p][0].data();
+      const uint8_t* pc2 = g_.hcard[p][1].data();
+      const int32_t* same = g_.same_hand[p].data();
+      for (int h = 0; h < Hp; ++h) {
+        float m = total - cs[pc1[h]] - cs[pc2[h]];
+        if (same[h] >= 0) m += ro[same[h]] * sa[same[h]];
+        ea[h] = pay * m;
+      }
+      kind[a] = 1;
+      continue;
+    }
+    float* ro2 = ro2s + static_cast<size_t>(a) * Ho;
+    bool any = false;
+    for (int k = 0; k < Ho; ++k) {
+      float v = ro[k] * sa[k];
+      ro2[k] = v;
+      any |= v != 0.0f;
+    }
+    if (!any) continue;
+    if (child.kind == ANodeKind::Showdown) {
+      std::memset(ea, 0, sizeof(float) * Hp);
+      showdown_job(child, ro2, ea, nullptr, nullptr, 0.0f);
+      kind[a] = 1;
+    } else {
+      river_evbr_down(ci, p, ro2, ea, cbr + static_cast<size_t>(a) * Hp);
+      kind[a] = 2;
+    }
+  }
+}
+
+void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float* br) {
+  EvbrWork& w = tl_ew;
+  w.busy = true;
+  w.nodes.clear();
+  w.jobs.clear();
+  w.scale.clear();
+  w.sb = nullptr;
+  river_evbr_down(root, p, ro, ev, br);
+  if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data(), g_.num_hands(1 - p));
+  const int Hp = g_.num_hands(p);
+  for (auto& [row, pay] : w.scale)
+    for (int h = 0; h < Hp; ++h) row[h] *= pay;
+  for (size_t i = w.nodes.size(); i-- > 0;) {
+    const ENode& r = w.nodes[i];
+    const GNode& n = g_.nodes[r.ni];
+    const int A = n.num_children;
+    for (int a = 0; a < A; ++a)
+      if (r.kind[a] == 1) std::memcpy(r.cbr + static_cast<size_t>(a) * Hp, r.cev + static_cast<size_t>(a) * Hp, sizeof(float) * Hp);
+    if (r.own) {
+      std::memset(r.ev, 0, sizeof(float) * Hp);
+      for (int a = 0; a < A; ++a) {
+        const float* sa = r.sigma + static_cast<size_t>(a) * Hp;
+        const float* c = r.cev + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) r.ev[h] += sa[h] * c[h];
+      }
+      std::memcpy(r.br, r.cbr, sizeof(float) * Hp);
+      for (int a = 1; a < A; ++a) {
+        const float* c = r.cbr + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) r.br[h] = std::max(r.br[h], c[h]);
+      }
+      if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) {
+        const uint8_t* lockmask = nullptr;
+        if (!(n.flags & GF_LOCKED)) {
+          auto it = g_.combo_lock.find(r.ni);
+          if (it != g_.combo_lock.end()) lockmask = it->second.data();
+        }
+        for (int h = 0; h < Hp; ++h) {
+          if (lockmask && !lockmask[h]) continue;
+          float v = 0.0f;
+          for (int a = 0; a < A; ++a) v += r.sigma[static_cast<size_t>(a) * Hp + h] * r.cbr[static_cast<size_t>(a) * Hp + h];
+          r.br[h] = v;
+        }
+      }
+    } else {
+      std::memset(r.ev, 0, sizeof(float) * Hp);
+      std::memset(r.br, 0, sizeof(float) * Hp);
+      for (int a = 0; a < A; ++a) {
+        if (!r.kind[a]) continue;
+        const float* e = r.cev + static_cast<size_t>(a) * Hp;
+        const float* b = r.cbr + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) r.ev[h] += e[h];
+        for (int h = 0; h < Hp; ++h) r.br[h] += b[h];
+      }
+    }
+  }
+  w.busy = false;
+}
+
 void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br) {
   const GNode& n = g_.nodes[ni];
   const int o = 1 - p;
@@ -2088,7 +2295,11 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
           std::memset(rk, 0, sizeof(float) * 2 * Hp);
           return;
         }
-        walk_evbr(n.first_child + static_cast<uint32_t>(k), p, rp2, ro2, rk, rk + Hp);
+        if (river_batch && n.board_len == 4 && !tl_ew.busy &&
+            g_.nodes[n.first_child + static_cast<uint32_t>(k)].kind == ANodeKind::Decision)
+          river_evbr(n.first_child + static_cast<uint32_t>(k), p, ro2, rk, rk + Hp);
+        else
+          walk_evbr(n.first_child + static_cast<uint32_t>(k), p, rp2, ro2, rk, rk + Hp);
         for (uint16_t h : g_.hands_with_card[p][card]) rk[h] = rk[Hp + h] = 0.0f;
       };
       if (parallel && K > 1) {
@@ -2269,6 +2480,7 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
     for (int h = 0; h < Hp; ++h) br[h] += b[h];
   }
 }
+
 
 RootStats Solver::root_stats() {
   RootStats st;

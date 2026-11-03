@@ -388,8 +388,11 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   keeps Pio's codes with honest descriptions.
 - **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.
 - `show_all_freqs` prints real frequencies (Pio 3.10 prints `nan`); `estimate_schematic_tree` reports
-  real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `show_nuts` breaks
-  ties in its own order; `node_count` counts every node in preflop trees.
+  real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `node_count`
+  counts every node in preflop trees.
+- Equal values are listed in 1326 order in `show_nuts` and the sorted `_pp` listings (`show_strategy_pp`,
+  `calc_ev_pp`, `calc_eq_pp`); Pio lists ties in an order that changes with the rest of the list. Black-box
+  probes ruled out a stable sort and MSVC `std::sort` / heap orders over the 1326 order, so we keep ours.
 - `_pp` listings omit hands that are only in the opponent's range by default; Pio always lists the union
   of both ranges. `set_union_hands on` (before `build_tree`) gives Pio's exact hand list (#9, #61).
 - Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
@@ -405,16 +408,21 @@ response-by-response diff): formats, tree shapes (`node_count` matches on postfl
 ranges, equities, rake and ICM payoffs, node locking, truncated saves, and equilibrium EVs. The range
 explorer (`show_categories`, `show_cats`, ...) is byte-identical on 88 boards (`tests/data/pio_categories/`).
 
-## Performance (Apple M4, 10 threads)
+## Performance
 
-| Tree | Memory | Time |
-|---|---|---|
-| Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 1.6 s -> 0.06% pot |
-| Real Pio 25bb HU script, 2 sizes everywhere | 6.4 GB (3.3 GB with `small_strats`) | ~1 s / iteration |
+Against PioSOLVER 3.10 on the same PC (AMD Zen 5, 16 cores / 32 threads), both driven over UPI and run
+back to back, to the same target (0.6 chips, `set_info_freq auto`), 32 threads:
 
-Single-threaded on the same tree (`tests/pio_compare/bench_flop.txt`), PioSOLVER-edge 3.10.1 on a Zen 5
-runs 60 iterations in 4.63 s vs 4.73 s here (Apple M4), and this solver's DCFR reaches lower
-exploitability per iteration (0.119 vs 0.182 chips after 60), so it reaches a given accuracy sooner.
+| Tree | Memory | WSolver | PioSOLVER 3.10 |
+|---|---|---|---|
+| `srp_big`: SRP flop, 710 lines | 13 GB (16-bit) | **42.3 s** (123 iterations) | 70.2 s |
+| `threebet_mono`: 3-bet pot, monotone flop | 542 MB | **3.08 s** (168 iterations) | 6.55 s |
+
+Pio's convergence per iteration is about the same as ours on these trees, so the gap comes from how fast
+each iteration runs. On the smaller bench trees (40-307 MB, measured at #147) WSolver was 1.1-2.3x faster
+on one thread; at 32 threads it was about even on `deep` and 1.8x faster on `flop_srp_4` (Pio's sub-second times
+there are only upper bounds). Method, history and per-tree numbers: [bench/vs_pio.md](bench/vs_pio.md);
+where the time goes: [bench/where-the-time-goes.md](bench/where-the-time-goes.md).
 
 `build_tree` checks free memory and switches to compressed storage automatically when float32
 storage would not fit (`small_strats auto`; force with `on` / `off`).

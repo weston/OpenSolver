@@ -291,6 +291,17 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
   1 thread (3.13 vs 3.11 s), so the x86 builds keep one width. Also measured: 47% (threebet_mono) and
   60% (srp_big) of the opponent entries the kernel adds are zero in every lane, but the opponent loop
   is the smaller half of the kernel (~64 entries per call against 128 hero entries done three times).
+- **More NEON kernel variants after #234, none kept** (M4, threebet_mono, 1 thread, 30 iterations, all
+  bit-identical). Inside the kernel the strength-group loop is 46-57% of its time, the final pass 14-18%,
+  the output scatter 15-25%, the reach transpose 6-16% (54-64 groups per call, about 2 hero and 2.5
+  opponent hands each).
+  - Output in hand order (4 hands' rows transposed in registers, vector stores into each job's row,
+    instead of one scalar scatter per job): 4.62 -> 4.68 s.
+  - Skipping opponent entries whose reach is zero in every lane (47% of them): 4.71 -> 4.74 s.
+  - Hero queries in fixed chunks of 1 / 2 / 4 per group (one loop trip for most groups instead of a
+    data-dependent 0-3): +3% / +5% / +9%. Branch mispredictions are not what the group loop costs.
+- **Walking the tree in reverse on alternate passes**, so the next pass starts on what the last one
+  left in L3: PC, threebet_mono at 32 threads, float32 1.497 vs 1.491 s, 16-bit within noise.
 - **Pio's per-iteration convergence matches ours** on threebet_mono (see bench/vs_pio.md), so no
   algorithmic gap was found there; the lead is per-iteration speed.
 

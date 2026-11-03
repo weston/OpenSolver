@@ -83,8 +83,7 @@ class Solver {
   // strategy sum both saves the accumulation work and leaves a cleaner average. #80 swept this
   // and found nothing, but that predated the alpha/gamma retune (#72) and the prune_period fix
   // (#131), which changed where the time goes. Re-swept at the current defaults, to 0.05% of
-  // pot, 1 thread, iteration counts unchanged (so this is per-iteration saving, not faster
-  // convergence):
+  // pot, 1 thread:
   //
   //   tree          delay 0    delay 32     exploitability
   //   flop_srp_2     12.59 s    10.85 s     (+13.8%)   0.026 vs 0.026
@@ -92,6 +91,11 @@ class Solver {
   //   deep           43.18 s    41.21 s     (+4.6%)    0.020 vs 0.020
   //   flop_3bet       4.26 s     4.20 s     (+1.4%)    0.099 vs 0.089
   //   turn            0.24 s     0.23 s                0.045 vs 0.045
+  //
+  // Those iteration counts looked unchanged, which led me to call this a per-iteration saving
+  // rather than better convergence. That was wrong: they were reported at set_info_freq 5, so
+  // both rounded to 80. At info_freq 1 the exact counts are 79 (delay 0) against 76 (delay 32)
+  // on flop_srp_4, i.e. fewer iterations. See the avg_reset note below for the real mechanism.
   //   preflop         0.09 s     0.08 s                0.007 vs 0.007
   //
   // Better or equal on every tree with exploitability equal or better.

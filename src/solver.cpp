@@ -6,7 +6,7 @@
 #include <cstring>
 #include <cstdlib>
 
-#if PIO_SHOWDOWN_AVX512
+#if PIO_SHOWDOWN_AVX512 || PIO_SHOWDOWN_AVX2
 #include <immintrin.h>
 #endif
 
@@ -419,6 +419,9 @@ void showdown_batch_avx512(const ShowdownBoard& sb, int p, const SdJob* job, int
   }
 }
 
+#endif  // PIO_SHOWDOWN_AVX512
+
+#if PIO_SHOWDOWN_AVX512 || PIO_SHOWDOWN_AVX2
 // Showdown jobs as SIMD lanes (#209): one 256-bit lane per job, plus one per fused fold, for batches
 // of 3-8 lanes. showdown_batch_avx512 keeps a CsRegs set (4 zmm) per job and adds every opponent
 // entry into each with four masked adds; here cs[] is 52 x 8 floats in memory, card-major, so one
@@ -430,7 +433,8 @@ void showdown_batch_avx512(const ShowdownBoard& sb, int p, const SdJob* job, int
 // transposes), which replaces gathers: on Zen 5 a 256-bit gather per entry cost more than all of
 // the adds it fed. Microbenchmark on srp_big boards (483 / 315 entries): 0.43-0.68x the time of
 // showdown_batch_avx512 for 4-14 lanes; 1-3 lanes stay on it (0.86-1.45x there).
-static void showdown_lanes_avx512(const ShowdownBoard& sb, int p, int n, const SdJob* job, int ho) {
+// It is plain AVX2 + FMA code (256-bit), so AVX2-only builds use it as well (#225).
+static void showdown_lanes_256(const ShowdownBoard& sb, int p, int n, const SdJob* job, int ho) {
   const int o = 1 - p;
   const SdEntry* pe = sb.ent[p].data();
   const SdEntry* oe = sb.ent[o].data();
@@ -539,7 +543,7 @@ static void showdown_lanes_avx512(const ShowdownBoard& sb, int p, int n, const S
 #endif
 
 #if PIO_SHOWDOWN_NEON
-// The AVX-512 lanes kernel (showdown_lanes_avx512) for AArch64: 8 lanes as two 128-bit halves, one
+// The AVX-512 lanes kernel (showdown_lanes_256) for AArch64: 8 lanes as two 128-bit halves, one
 // lane per job plus one per fused fold. Same operations per lane as showdown_board_scalar, in the
 // same order (clang and GCC contract its value line to fma(L, compat, fma(a, lt, b*le)); the fold is
 // its explicit fma), so the outputs are bit-identical; test_solver's [river batch] check covers it.
@@ -654,7 +658,7 @@ static void showdown_lanes_neon(const ShowdownBoard& sb, int p, int n, const SdJ
 
 void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int ho) {
 #if PIO_SHOWDOWN_AVX512
-  // Packs of up to 8 lanes (a job, plus one more for a fused fold) go to showdown_lanes_avx512. Packs of
+  // Packs of up to 8 lanes (a job, plus one more for a fused fold) go to showdown_lanes_256. Packs of
   // 1-3 lanes (at most one fused fold), where its fixed cost does not pay, use showdown_batch_avx512 as
   // before; the small bench trees have nothing else (flop_3bet: 1 job per board; deep, flop_srp_2: 1-2).
   int k = 0;
@@ -669,11 +673,11 @@ void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int
       case 1: showdown_batch_avx512<1>(sb, p, job + k, fi); break;
       case 2: showdown_batch_avx512<2>(sb, p, job + k, fi); break;
       case 3: showdown_batch_avx512<3>(sb, p, job + k, fi); break;
-      default: showdown_lanes_avx512(sb, p, m, job + k, ho); break;
+      default: showdown_lanes_256(sb, p, m, job + k, ho); break;
     }
     k += m;
   }
-#elif PIO_SHOWDOWN_NEON
+#elif PIO_SHOWDOWN_NEON || PIO_SHOWDOWN_AVX2
   // Packs of up to 8 lanes; a lone job without a fold stays on the scalar kernel (the lanes kernel's
   // fixed cost is larger than one job's work).
   int k = 0;
@@ -684,7 +688,11 @@ void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int
       ++m;
     }
     if (lanes >= 2) {
+#if PIO_SHOWDOWN_NEON
       showdown_lanes_neon(sb, p, m, job + k, ho);
+#else
+      showdown_lanes_256(sb, p, m, job + k, ho);
+#endif
     } else {
       for (int i = k; i < k + m; ++i) {
         const SdFold f{job[i].xf, job[i].pay};

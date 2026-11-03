@@ -1,5 +1,6 @@
 #include "parallel.hpp"
 
+#include <cstdint>
 #include <algorithm>
 #include <cstring>
 
@@ -139,7 +140,7 @@ float* Arena::alloc(size_t n) {
     if (cur_ < blocks_.size()) {
       Block& b = blocks_[cur_];
       if (off_ + n <= b.size) {
-        float* p = b.mem.get() + off_;
+        float* p = b.base + off_;
         off_ += n;
         return p;
       }
@@ -149,8 +150,14 @@ float* Arena::alloc(size_t n) {
     }
     size_t sz = std::max(kBlockFloats, n);
     Block b;
-    // over-allocate for 64-byte alignment
-    b.mem.reset(new float[sz + 16]);
+    // Over-allocate so the base can be rounded up to 64 bytes. new float[] only promises
+    // the implementation's alignment for float, so the 64-byte guarantee in the header has
+    // to be established here rather than assumed (#77). With 16 MB blocks the allocator
+    // happens to hand back page-aligned memory, so this was latent rather than visible.
+    b.mem.reset(new float[sz + kAlignFloats]);
+    uintptr_t raw = reinterpret_cast<uintptr_t>(b.mem.get());
+    uintptr_t aligned = (raw + 63) & ~uintptr_t(63);
+    b.base = reinterpret_cast<float*>(aligned);
     b.size = sz;
     blocks_.push_back(std::move(b));
     // Align start of the block.

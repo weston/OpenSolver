@@ -305,6 +305,19 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
     data-dependent 0-3): +3% / +5% / +9%. Branch mispredictions are not what the group loop costs.
 - **Walking the tree in reverse on alternate passes**, so the next pass starts on what the last one
   left in L3: PC, threebet_mono at 32 threads, float32 1.497 vs 1.491 s, 16-bit within noise.
+- **After #237 / #238** (M4, threebet_mono, 1 and 10 threads; bit-identical, none kept). Profile at 1 thread
+  with #238 in: the river walk is 91% of an iteration; inside it the lanes kernel 41%, `current_strategy`
+  17.5%, `traverser_update` 9.2% (was 19.5% before #238's prefetch), the value sums ~7%.
+  - **More prefetching**: the next traverser node's regret rows during the bottom-up pass (they are still
+    cached from `current_strategy`): within noise. Regret rows a fixed 2 / 8 / 32 KB ahead in storage
+    order at each node (river subtrees are stored in visit order): +5% / +7% / +10%. With #238's child-row
+    result, software prefetch of regrets only gets in the hardware prefetcher's way.
+  - **Regret-matching fallback for only the hands that need it** in `average_strategy` (every river node
+    has some, the board-blocked hands with zero sums, so the whole `current_strategy` ran there): check
+    cost +10%, or unchanged when restricted to nodes where at most 1/8 of the hands need it. The full
+    vectorised call is cheaper than a scalar per-hand loop.
+  - **Board-blocked hands are 8.05% of river storage** on every tree (river rows are 98-99% of all
+    storage; turn rows 4%), so 8% of the bytes streamed per iteration are dead. Compacting them is #239.
 - **Pio's per-iteration convergence matches ours** on threebet_mono (see bench/vs_pio.md), so no
   algorithmic gap was found there; the lead is per-iteration speed.
 

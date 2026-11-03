@@ -267,3 +267,39 @@ Consistent with the +2-3.5% recorded on an M4, and the overhead is smaller on th
 expected. So the ARM half of #186 has a low bar: a scalar multi-terminal sweep needs to beat about
 1-3.5% of total runtime to break even, against showdown being ~60% of it. That is a favourable
 ratio, and it means #186 is worth doing on arm64 and not only on AVX-512 builds.
+
+### Ruled out: a scalar multi-terminal sweep (#186 on arm64)
+
+I implemented the multi-terminal sweep for the **scalar** kernel — one pass over the board's entries
+for all T jobs, each job keeping its own `cs[]`/`cum`/`ltv`/`lev` and accumulating in exactly the
+order its standalone call would. It is **bit-identical** and it **buys nothing**.
+
+Measured on `threebet_mono` (T=4.67), 9 interleaved reps with alternating order:
+
+```
+river_batch off (current default)        min 0.209  median 0.215   --
+river_batch on + batched scalar sweep    min 0.217  median 0.222   +3.2 to +3.5%
+batched sweep vs standalone loop,
+  same two-phase walk                                              -0.7% to +2.1% (noise)
+```
+
+The whole +3.4% two-phase walk overhead survives, because the kernel change saved ~0%.
+
+**Why, and this is the part worth keeping:** #186's estimate comes from sharing "the opponent entry
+load and **mask construction**" across terminals. Mask construction is an **AVX-512 concept** — it is
+the `bit(c1)|bit(c2)` build plus 4 shifts and a `kmov` feeding four masked adds. The scalar kernel
+has no mask construction at all; it does `cs[q.c1] += r` directly. So the shared work the estimate
+is built on **does not exist in the scalar formulation**. What is left to amortise is one 6-byte
+`SdEntry` load that is already in L1, while the per-job `ro[q.idx]` gather and the three adds are
+irreducibly per-job. Batching also costs locality: `cs + j*52` and `ltv + j*np` are strided where the
+standalone kernel has one contiguous `cs[52]`.
+
+So **#186 is genuinely AVX-512-specific**, not merely estimated on x86. Correcting my own earlier
+claim on that issue that the ARM half looked worth doing: the break-even is cheap (1-3.5%), but the
+saving is zero, so cheap break-even does not help.
+
+The implementation is not committed. A note on validating any future attempt: `test_solver`'s
+`[river batch]` check passes **vacuously** for this kernel, because its tree only ever has T=1, so
+the batched path is never entered. I confirmed that with a call counter before trusting it. Validate
+instead by A/B-ing the two kernels under the same two-phase walk on `threebet_mono` or `srp_big` and
+comparing solver output byte for byte.

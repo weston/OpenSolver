@@ -122,6 +122,17 @@ both of which have already produced wrong numbers in issue comments:
   that as solve time and you can be off by a factor of hundreds.
 - A tree's *share* of runtime is not its *amount*. The preflop betting tree is 98% showdown, and
   also solves in 0.4 s, so optimizing it buys nothing. Check the absolute number before optimizing.
+- A compiler feature can make things **slower** while every diagnostic says it is working. `make
+  release` shipped a 12% slower binary for a while (#199) because clang's front-end PGO
+  (`-fprofile-instr-generate`) counts function entries *before* inlining: functions the instrumented
+  build inlined recorded entry count 0, clang called them cold, dropped their inline threshold to 45,
+  and stopped inlining the showdown kernel that is 49-65% of runtime. The profile was fresh,
+  complete, trained on byte-for-byte the benchmarked workload, and
+  `-Wprofile-instr-out-of-date`/`-unprofiled`/`-missing` all reported zero warnings. Only
+  `llvm-profdata show --all-functions` revealed it, showing the hot kernel at 2,646,970 entries and
+  both of its callers at 0. If a build mode is meant to be faster, **time it**; and if a profile
+  looks wrong, read the counts rather than trusting the mismatch warnings. Use IR-level
+  `-fprofile-generate`, never `-fprofile-instr-generate`.
 
 When sanity-checking `.github/workflows/ci.yml` locally, note that Ruby's `YAML.safe_load` and
 Python's `yaml.safe_load` both silently keep the **last** of two duplicate mapping keys. A workflow

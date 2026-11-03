@@ -78,9 +78,10 @@ struct SdJob {
   const float* xf;
   float pay;
 };
-// Jobs on one board, each bit-identical to its own showdown_board call. On AVX-512 builds up to five
-// share one sweep over the board (at most one with a fused fold).
-void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* jobs);
+// Jobs on one board, each bit-identical to its own showdown_board call. ho = the opponent's hand count
+// (the length of every ro / xf row). On AVX-512 builds the jobs run as SIMD lanes, up to eight lanes
+// per sweep over the board (showdown_lanes_avx512 in solver.cpp).
+void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* jobs, int ho);
 #if PIO_SHOWDOWN_AVX512
 void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
                            float* compat = nullptr, const SdFold* fold = nullptr);

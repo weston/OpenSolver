@@ -268,7 +268,7 @@ expected. So the ARM half of #186 has a low bar: a scalar multi-terminal sweep n
 1-3.5% of total runtime to break even, against showdown being ~60% of it. That is a favourable
 ratio, and it means #186 is worth doing on arm64 and not only on AVX-512 builds.
 
-### Ruled out: a scalar multi-terminal sweep (#186 on arm64)
+### Ruled out: a *scalar* multi-terminal sweep (#186 on arm64) -- but SIMD lanes win (#219)
 
 I implemented the multi-terminal sweep for the **scalar** kernel — one pass over the board's entries
 for all T jobs, each job keeping its own `cs[]`/`cum`/`ltv`/`lev` and accumulating in exactly the
@@ -294,9 +294,28 @@ is built on **does not exist in the scalar formulation**. What is left to amorti
 irreducibly per-job. Batching also costs locality: `cs + j*52` and `ltv + j*np` are strided where the
 standalone kernel has one contiguous `cs[52]`.
 
-So **#186 is genuinely AVX-512-specific**, not merely estimated on x86. Correcting my own earlier
-claim on that issue that the ARM half looked worth doing: the break-even is cheap (1-3.5%), but the
-saving is zero, so cheap break-even does not help.
+**Correction.** I first wrote here that this made #186 "genuinely AVX-512-specific". That is wrong,
+and #219 proves it: a **NEON lanes** kernel batches the same terminals on ARM and is a large win.
+Re-measured on this machine (`threebet_mono`, 20 threads, interleaved, best 10 of 14 reps, sd 0.002):
+
+```
+NEON lanes (current default)   min 0.185  median 0.190
+-DPIO_NO_NEON_LANES            min 0.214  median 0.220
+                                          -13.5% to -13.7%
+```
+
+(#219 reports -22% on an M4.) My measurements above were taken against a pre-#219 tree, where
+`river_batch` still read `PIO_SHOWDOWN_AVX512 != 0`.
+
+So the useful conclusion is narrower than "AVX-512 only", and sharper than the original estimate:
+
+> The batching win comes from **SIMD lane parallelism across terminals**, not from amortising shared
+> scalar work.
+
+The negative result above is what isolates that. Amortising the shared scalar part — the `SdEntry`
+load and decode — buys **zero**, which is why a scalar sweep fails. The win is in executing several
+terminals' adds *simultaneously* as lanes, which is why both AVX-512 (#209) and NEON (#219) succeed.
+Anyone extending this should be chasing lanes, not shared loads.
 
 The implementation is not committed. A note on validating any future attempt: `test_solver`'s
 `[river batch]` check passes **vacuously** for this kernel, because its tree only ever has T=1, so

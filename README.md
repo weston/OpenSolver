@@ -20,7 +20,28 @@ make            # builds ./solver (-O3, native CPU optimizations)
 make release    # builds ./solver-release: LTO, native arch (add PGO=1 to also train a profile)
 make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
 make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
+make install    # installs the binary as `wsolver` under /usr/local (see below)
 ./solver        # talk UPI on stdin/stdout
+```
+
+### Installing
+
+`make install` copies the binary to `$PREFIX/bin/wsolver` and the docs to
+`$PREFIX/share/doc/wsolver`, with `PREFIX` defaulting to `/usr/local`:
+
+```sh
+make install                        # /usr/local/bin/wsolver (may need sudo)
+make install PREFIX=$HOME/.local    # no sudo needed
+make install DESTDIR=/tmp/stage     # staged install, for packaging
+make uninstall                      # removes both
+```
+
+The installed command is `wsolver` rather than `solver`, which is too generic
+for a shared `bin` directory; override it with `BINNAME=`. To install the
+release build instead of the default one, point `INSTALL_BIN` at it:
+
+```sh
+make release && make install INSTALL_BIN=solver-release
 ```
 
 `make release` leaves the default build untouched and produces a second binary,

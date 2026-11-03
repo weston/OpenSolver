@@ -535,6 +535,42 @@ def check_info_freq_auto(u):
     u.cmd("free_tree")
 
 
+def check_go_limits_and_errors(u):
+    """Pio 3.10 behavior, probed black-box: go limits below one iteration still run one, the unit is
+    required, timed stops say "timeout reached", bad players say "incorrect player", and a load_tree
+    that cannot open its file drops the current tree."""
+    print("[go limits, player errors, failed load_tree]")
+    set_small_tree(u)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree")
+    u.cmd("set_accuracy 0")
+
+    def run(cmd):
+        before = int(u.cmd("show_iters"))
+        u.solver_msgs.clear()
+        resp = u.cmd(cmd)
+        u.cmd("wait_for_solver")
+        stops = [b[0] for b in u.solver_msgs if b and b[0].startswith("SOLVER: stopped")]
+        return resp, int(u.cmd("show_iters")) - before, stops
+
+    for cmd, why in (("go 0 steps", "required number of steps done"), ("go -5 steps", "required number of steps done"),
+                     ("go 1.7 steps", "required number of steps done"), ("go 0 seconds", "timeout reached")):
+        resp, n, stops = run(cmd)
+        check(resp == "go ok!" and n == 1 and stops == [f"SOLVER: stopped ({why})"],
+              f"{cmd}: one iteration, stopped ({why}) [{resp!r}, {n}, {stops}]")
+    resp, n, _ = run("go 3")
+    check(resp == "ERROR: go incorrect or missing argument" and n == 0, "go without a unit errors (Pio)")
+    for cmd in ("calc_ev XYZ r:0", "show_range XYZ", "set_range XYZ 0.5", "calc_eq XYZ", "show_nuts XYZ"):
+        name = cmd.split()[0]
+        check(u.cmd(cmd) == f"ERROR: {name} incorrect player", f"{cmd}: incorrect player")
+    check(u.cmd("set_first_iteration_player XYZ") == "ERROR: set_first_iteration_player incorrect or missing argument",
+          "set_first_iteration_player keeps the generic error (Pio)")
+    missing = os.path.join(tempfile.gettempdir(), "wsolver_no_such_dir", "x.cfr")
+    r = u.cmd("load_tree " + missing)
+    check(r.startswith(f"ERROR: load_tree couldn't open {missing}: "), f"load_tree error text ({r})")
+    check(u.cmd("is_tree_present") == "false", "a failed load_tree drops the current tree (Pio)")
+    u.cmd("set_accuracy 0.005")
+
+
 def main(exe, big=False):
     u = Upi(exe)
     try:
@@ -567,6 +603,7 @@ def main(exe, big=False):
 
         check_go_partial(u)
         check_info_freq_auto(u)
+        check_go_limits_and_errors(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")

@@ -196,7 +196,7 @@ int Upi::player_arg(const std::string& s) const {
   for (auto& ch : u) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
   if (u == "OOP") return 0;
   if (u == "IP") return 1;
-  throw CmdError{"incorrect or missing argument"};
+  throw CmdError{"incorrect player"};  // Pio's message (probed); set_first_iteration_player differs
 }
 
 void Upi::require_tree() const {
@@ -396,7 +396,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
         if (info_auto_) next_report_ = next_auto_report(tick, st.exploitability, accuracy_ > 0 ? target : 0.0);
       }
       if (limit) {
-        reason = steps > 0 && done >= steps ? "required number of steps done" : "required time elapsed";
+        reason = steps > 0 && done >= steps ? "required number of steps done" : "timeout reached";  // Pio's words
         break;
       }
     }
@@ -664,10 +664,12 @@ void Upi::register_commands() {
     double secs = 0;
     long long steps = 0;
     if (!a.empty()) {
+      // Pio 3.10 (probed): the unit is required; an amount below 1 step or at most 0 seconds still
+      // runs one iteration (0 here would otherwise mean "no limit" and never stop).
       double v = arg_double(a, 0, "amount");
-      std::string unit = a.size() > 1 ? a[1] : "seconds";
-      if (unit == "steps" || unit == "step") steps = static_cast<long long>(v);
-      else if (unit == "seconds" || unit == "second" || unit == "s") secs = v;
+      std::string unit = a.size() > 1 ? a[1] : "";
+      if (unit == "steps" || unit == "step") steps = std::max<long long>(1, static_cast<long long>(v));
+      else if (unit == "seconds" || unit == "second" || unit == "s") secs = v > 0 ? v : 1e-9;
       else throw CmdError{"incorrect or missing argument"};
     }
     if (solving_) return std::string("go ok!");
@@ -832,7 +834,8 @@ void Upi::register_commands() {
   H["show_step"] = [this](const Args&) { return pfmt("%f", step_); };
   H["show_iters"] = [this](const Args&) { return std::to_string(tree_ ? tree_->iterations : 0); };
   H["set_first_iteration_player"] = [this](const Args& a) {
-    if (a.empty()) throw CmdError{"incorrect or missing argument"};
+    if (a.empty() || (a[0] != "OOP" && a[0] != "IP" && a[0] != "oop" && a[0] != "ip"))
+      throw CmdError{"incorrect or missing argument"};  // Pio: not "incorrect player" here
     int p = player_arg(a[0]);
     first_player_ = p;
     if (solver_) solver_->first_player = p;

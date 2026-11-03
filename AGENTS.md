@@ -188,6 +188,11 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   IP alike; recorded in `tests/data/pio_probe2_calc_ev_pp.txt`, #61). Opponent-only hands show matchups
   `0.00`. Tie order among equal-EV combos is not reproducible. `set_union_hands` is ours: Pio answers
   `ERROR: Command set_union_hands not recognized`.
+- `go` (probed #177): the unit is required (`go 3` errors); `go 0 steps`, `go -5 steps`, `go 1.7 steps` and `go 0 seconds`
+  each run exactly one iteration. Stops read `SOLVER: stopped (required number of steps done|timeout reached|
+  required accuracy reached)`. A bad player argument is `ERROR: <cmd> incorrect player` (but
+  `set_first_iteration_player` says `incorrect or missing argument`). `load_tree` of a missing file answers
+  `couldn't open <path>: No such file or directory` and drops the current tree.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
 - `eliminate_path` is a one-time edit that moves the frequency to check/call.

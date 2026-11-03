@@ -3,6 +3,7 @@
 // data inside these regions, so nothing moves while you click through a line.
 
 import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy } from "./cards.js";
+import { nodeShown } from "./preview.js";
 import { get, q, fail, showTip, hideTip, fmt, fmtChips } from "./api.js";
 import { syncFurther } from "./further.js";
 
@@ -158,6 +159,7 @@ export async function gotoNode(id) {
     if (S.mode !== "strategy") await loadModeData();
     if (seq !== S.seq) return;
     render();
+    nodeShown(id, cur, { inSubgame: !!S.sub, refresh: () => { if (S.loaded && S.id === id) gotoNode(id); } });
     if (!S.sub && !document.getElementById("view-study").classList.contains("hidden")) history.replaceState(null, "", "#study=" + id + urlState());
   } catch (e) {
     if (seq === S.seq) fail(e);

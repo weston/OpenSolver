@@ -2,6 +2,7 @@
 // a card-button board picker, the bet-size form, and the solve panel with the convergence chart.
 
 import { H, RANKS, SUITS, GLYPH, el, cardEl } from "./cards.js";
+import { startPreview, previewOn } from "./preview.js";
 import { parseRange, formatRange, rangeStats } from "./ranges.js";
 import { get, post, toast, fail, prefs, fmt, fmtChips } from "./api.js";
 import { drawChart } from "./chart.js";
@@ -337,8 +338,9 @@ async function solve() {
   const pot = rootPotNow || Number($("f-pot").value);
   const pct = Number($("f-accuracy").value);
   try {
-    await post("/api/solve", { accuracy: (pct / 100) * pot });
-    toast("Solving…");
+    const r = await post("/api/solve", { accuracy: (pct / 100) * pot, preview: previewOn() });
+    toast(r.sketch ? "Sketching the flop…" : "Solving…");
+    startPreview();
   } catch (e) { fail(e); }
 }
 

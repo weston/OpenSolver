@@ -186,6 +186,9 @@ class Solver {
   // updates bottom-up. Same operations in the same order as walk_t, so bit-identical.
   void river_cfr(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   void river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out);
+  // The same for the exploitability check's fused walk (walk_evbr): on-policy values and best responses.
+  void river_evbr(uint32_t ni, int p, const float* ro, float* ev, float* br);
+  void river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br);
   template <class E>
   void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
   // #186: Solver::river_cfr for river subtrees in the CFR walk. AVX-512, AVX2 and NEON builds batch the

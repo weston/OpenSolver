@@ -255,6 +255,10 @@ bool validate_line(const ActionTreeParams& p, const std::vector<int32_t>& line, 
   return true;
 }
 
+// Out-of-line so the recursive destructor (and the vector<unique_ptr<ActionNode>> destroy it
+// pulls in) is instantiated in this TU only. See the comment in action_tree.hpp (#216).
+ActionNode::~ActionNode() = default;
+
 std::unique_ptr<ActionNode> build_action_tree(const ActionTreeParams& p, const LineSet& lines, std::string& err) {
   Builder b;
   b.p = p;

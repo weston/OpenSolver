@@ -17,19 +17,32 @@ public UPI documentation; it contains no PioSOLVER code.
 
 ```sh
 make            # builds ./solver (-O3, native CPU optimizations)
-make release    # builds ./solver-release: LTO + PGO (profile trained on the bench trees)
+make release    # builds ./solver-release: LTO, native arch (add PGO=1 to also train a profile)
 make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
 make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
 ./solver        # talk UPI on stdin/stdout
 ```
 
 `make release` leaves the default build untouched and produces a second binary,
-`./solver-release`, with link-time optimization and profile-guided optimization
-(the profile is trained on `tests/pio_compare/bench_flop.txt` and the bench
-river/turn trees, single- and multi-threaded, by `bench/train_pgo.sh`). Results
-are identical to the default build; solve time is a few percent lower (see the
-benchmark table in the pull request history for #56). Clang needs
-`llvm-profdata` (shipped with the toolchain; on macOS it is found via `xcrun`).
+`./solver-release`, with link-time optimization. Results are identical to the
+default build.
+
+Profile-guided optimization is available but **off by default**, because on
+arm64 it currently makes the binary slower rather than faster. Measured on an
+M1 Ultra (`flop_srp_2`, 60 steps, 1 thread, interleaved runs, sd ~1%), relative
+to the default `make` build: LTO alone is -0.5% (free), PGO alone is +11.6%
+(slower), and the two together are +12.1%. See #199. Build with `PGO=1` to
+re-test it on your own hardware:
+
+```sh
+make release PGO=1
+```
+
+That trains a profile on `tests/pio_compare/bench_flop.txt` and the bench
+river/turn trees, single- and multi-threaded, via `bench/train_pgo.sh`, and
+needs `llvm-profdata` under Clang (shipped with the toolchain; on macOS it is
+found via `xcrun`). Measure before shipping a PGO build.
+
 The native CPU flag (`-mcpu=native` on ARM, `-march=native` on x86) also applies
 to the release build; override `RELEASE_ARCH` for portable binaries, e.g.
 `make release RELEASE_ARCH=-march=x86-64-v3` on Linux or

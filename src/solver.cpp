@@ -1158,6 +1158,10 @@ void Solver::river_cfr(uint32_t root, int p, const float* rp, const float* ro, f
   w.busy = false;
 }
 
+// Note (#186): in the CFR walk, river subtrees are walked by Solver::river_cfr / river_down on builds
+// where river_batch is on. Any change to the river semantics below (decision nodes at board_len 5,
+// fold pairing, fused opponent folds, pruning, strategy_only) must be mirrored there; test_solver's
+// [river batch] check compares the two walks bit for bit.
 template <Walk M>
 void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float* out) {
   const GNode& n = g_.nodes[ni];

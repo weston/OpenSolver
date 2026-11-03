@@ -226,3 +226,44 @@ exactly zero at showdown terminals (#151, verified at +4.3% bit-identical on `de
 per-hand regret pruning on the traverser's side took `deep` from 180 to 425 iterations (#151), and
 sampling the strategy average took `flop_srp_2` from 75 to 970 (#135). Cheapening a per-iteration
 update by dropping contributions costs more in convergence than it saves in work.
+
+## Showdown terminals per river subtree, measured on arm64 (#186)
+
+#186 wants a river subtree's showdown terminals evaluated in one sweep over the board's strength
+groups, and estimates 15-20% per iteration from roughly 6.2 kernels per river subtree visit. That
+6.2 came from the owner's x86 PC. Measured here by instrumenting `showdown_batch` with `river_batch`
+forced on (1 thread, 8 iterations; **T** is jobs per call, all sharing one `ShowdownBoard`):
+
+| tree | mean T | biggest T buckets (calls) |
+|---|---|---|
+| `srp_big` | **5.76** | T=3: 1.17M, T=1: 437K, T=7: 608K, T=9: 260K, T=16: 109K |
+| `threebet_mono` | **4.67** | T=3: 198K, T=1: 81K, T=7: 79K, T=11: 32K |
+| `flop_srp_2` | 1.39 | only T=1 (130K) and T=2 (84K) |
+| `deep` | 1.15 | only T=1 (528K) and T=2 (96K) |
+
+**The premise holds, but only on the realistic trees.** `srp_big` at 5.76 is close to the 6.2
+reported on x86, so the batching opportunity is real on arm64 too.
+
+**The trap: do not measure #186 on the default bench trees.** `flop_srp_2` and `deep` have T of 1.15
+to 1.39 — there is essentially nothing to batch there, so a correct implementation will measure as
+*no change or slightly worse* on exactly the trees people reach for first. It has to be measured on
+`srp_big` and `threebet_mono`.
+
+Also note T=1 is 14% of calls on `srp_big` and T=3 is the single largest bucket, so a multi-terminal
+sweep has to stay fast at small T rather than only winning at T=8+.
+
+### What the two-phase walk costs on arm64
+
+`river_batch` (the two-phase walk `river_cfr` / `river_down`) is compiled on arm64 but **off by
+default**, because without a batched kernel it is pure overhead. Re-measured on this machine
+(M1 Ultra, 20 threads, interleaved, alternating order):
+
+```
+threebet_mono   +3.4%   (T = 4.67)
+srp_big         +1.1%   (T = 5.76)
+```
+
+Consistent with the +2-3.5% recorded on an M4, and the overhead is smaller on the higher-T tree, as
+expected. So the ARM half of #186 has a low bar: a scalar multi-terminal sweep needs to beat about
+1-3.5% of total runtime to break even, against showdown being ~60% of it. That is a favourable
+ratio, and it means #186 is worth doing on arm64 and not only on AVX-512 builds.

@@ -38,3 +38,17 @@ The morning run (DCFR retune #72 in place) had WSolver at 13.50 / 8.62 / 3.76 / 
   19% faster there (deep: 0.406 -> 0.329 s per 40 iterations), but it needs about 1.8x the iterations (#55),
   so float32 stays the default.
 - Scaling curve (deep, 40 iterations, #144 build): 1 -> 16 threads 8.0x, flat from 16 to 32.
+
+## Realistic trees (2026-11-02, later)
+
+The bench trees above are small (40-307 MB). Two realistic study trees, now in `bench/trees/`
+(`threebet_mono`, and `srp_big` behind `--include-big`), told a different story at first:
+
+| tree | WSolver before #161/#162 | WSolver after | PioSOLVER 3.10 |
+|---|---|---|---|
+| srp_big (13 GB, 710 lines), to 1% of pot, 32 threads | 446 s | **70.4 s** (140 iterations) | 70.5 s |
+| threebet_mono (542 MB), to 0.3% of pot, 32 threads | 5.39 s | **4.29 s** (170 iterations) | 6.68 s |
+
+Two fixes: #161 (width-neutral scheduler jobs flooded the pool on trees with many turn decisions:
+32 threads ran 2.6x slower than 16) and #162 (beta 0 -> 0.5 after iteration 50: with beta 0 the
+average oscillated and stalled near 1% of pot on the big tree). Use these trees when tuning.

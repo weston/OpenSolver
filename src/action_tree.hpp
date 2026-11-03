@@ -30,11 +30,6 @@ struct ActionNode {
   bool allin = false;      // no further betting possible (all-in runout)
   int32_t inv[2] = {0, 0};          // total invested (absolute: includes set_pot's per-player chips)
   int32_t dead = 0;                  // dead money of the (sub)tree this node belongs to
-  // Payoff offset (preflop chips sunk before a schematic subtree). CURRENTLY ALWAYS ZERO:
-  // nothing assigns it, so `chips += offset[p]` in terminal_payoff is a no-op and the
-  // whole-hand vs schematic-relative split comes from the `subtree` flag plus the
-  // schematic's own set_pot. Kept as a hook; do not reason about it as live (see #107).
-  int32_t offset[2] = {0, 0};
   int32_t street_start[2] = {0, 0};  // invested at the start of the current street
   std::vector<int32_t> line;         // add_line-style number sequence to reach this node
   std::vector<Action> actions;       // Decision only; same order as children
@@ -52,7 +47,6 @@ struct ActionTreeParams {
   int32_t eff_stack = 0;           // maximum total investment (absolute, like add_line numbers)
   int32_t start_inv[2] = {0, 0};   // set_pot's per-player chips (preflop: the blinds)
   int32_t dead = 0;                // set_pot's dead money
-  int32_t offset[2] = {0, 0};      // payoff offset for schematic subtrees inside preflop trees
 };
 
 // Builds the tree; returns nullptr and sets err on invalid lines.

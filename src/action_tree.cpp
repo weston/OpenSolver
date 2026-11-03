@@ -74,8 +74,6 @@ struct Builder {
                                                 const std::vector<int32_t>& key) {
     auto n = std::make_unique<ActionNode>();
     n->dead = from.dead;
-    n->offset[0] = from.offset[0];
-    n->offset[1] = from.offset[1];
     n->board_len = static_cast<uint8_t>(board_len);
     n->inv[0] = from.inv[0];
     n->inv[1] = from.inv[1];
@@ -99,8 +97,6 @@ struct Builder {
     int me = n.player, op = 1 - me;
     auto c = std::make_unique<ActionNode>();
     c->dead = n.dead;
-    c->offset[0] = n.offset[0];
-    c->offset[1] = n.offset[1];
     c->board_len = n.board_len;
     c->inv[0] = n.inv[0];
     c->inv[1] = n.inv[1];
@@ -272,8 +268,6 @@ std::unique_ptr<ActionNode> build_action_tree(const ActionTreeParams& p, const L
   root->inv[0] = root->street_start[0] = p.start_inv[0];
   root->inv[1] = root->street_start[1] = p.start_inv[1];
   root->dead = p.dead;
-  root->offset[0] = p.offset[0];
-  root->offset[1] = p.offset[1];
   if (p.eff_stack <= std::max(p.start_inv[0], p.start_inv[1])) {
     // No chips behind: straight to an all-in showdown over the runouts.
     root->allin = true;

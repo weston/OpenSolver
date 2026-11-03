@@ -110,7 +110,7 @@ nothing.
 
 Recorded so they are not re-attempted:
 
-- **Reach-based subtree pruning** never fires. At ε=1e-3, a million times looser than useful,
+- **Reach-based subtree pruning** never fires (**subtree level only** - per-*entry* skipping is a real 4.3% win, see #151 below). At ε=1e-3, a million times looser than useful,
   exploitability stayed bit-identical — proof that nothing was being skipped. Mixed strategies keep
   reach strictly positive, and folds are terminal nodes rather than subtrees. (#51)
 - **Interleaving the `win`/`tie` preflop tables** targets a path that is not hot: the plain preflop
@@ -127,3 +127,11 @@ Recorded so they are not re-attempted:
   tolerates truncation but not decimation.** (#135)
 - **An adaptive `min(avg_delay, t/4)`** is a no-op: it compares `t` against a fraction of itself, so
   it is true for every `t >= 1` and never skips anything. (#135)
+
+**The granularity rule.** Subtree-level reach pruning never fires because a node almost always has
+*someone* in it; per-entry skipping pays because 55-60% of individual opponent reach entries are
+exactly zero at showdown terminals (#151, verified at +4.3% bit-identical on `deep`). And skipping
+**exact zeros** is safe because it changes nothing, whereas skipping **small** contributions is not:
+per-hand regret pruning on the traverser's side took `deep` from 180 to 425 iterations (#151), and
+sampling the strategy average took `flop_srp_2` from 75 to 970 (#135). Cheapening a per-iteration
+update by dropping contributions costs more in convergence than it saves in work.

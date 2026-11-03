@@ -107,13 +107,27 @@ This path is close to its CPU ceiling, and the reasons are all measured rather t
 2. **x86 gather (#89) — unknown, needs x86 hardware.** AVX2 `vgatherdps` / AVX-512 gather might
    vectorize the two `cs[]` lookup loops that NEON cannot. AVX2 gathers are microcoded and often no
    better than scalar, so this is empirical.
-3. **GPU (#87) — no-go for now.** Unified memory removes the usual blocker on Apple Silicon and the
-   parallelism is there, but arithmetic intensity is ~3 flops per 3 memory touches, each board
-   carries a serial scan, bit-stability is lost, and it means two permanent backends. Revisit once
-   (1) is done.
-4. **Convergence — already taken.** γ 2→3 gave -11% wall time and 455 iterations against 500
-   (#52, `dcfr_sweep.md`). γ=5 is faster still in total but regresses a low-SPR 3-bet pot at tight
-   targets, so it is available via `set_dcfr` rather than default.
+3. **GPU (#58) — no-go, and the bar went up.** Unified memory removes the usual blocker on Apple
+   Silicon and the parallelism is there, but arithmetic intensity is ~3 flops per 3 memory touches,
+   each board carries a serial scan, bit-stability is lost, and it means two permanent backends.
+   This entry used to say "revisit once (1) is done"; (1) is now largely done, and the measurements
+   in `gpu_feasibility.md` (#217) make the answer *more* negative, not less:
+   - the CPU target is now **~10 G entry-visits/s** at 20 threads, not the 556 M single-thread figure
+     the case was originally argued against;
+   - Metal has **no float atomics in `threadgroup` address space** (`device` only), so the mapping
+     that document recommends — `cs[52]` in threadgroup memory with threads cooperating — cannot be
+     written as specified;
+   - the atomics-free alternative compiles but reads every opponent entry from all 52 threads, ~52x
+     the CPU's memory traffic, on a kernel that is already throughput-bound on memory.
+
+   It was never blocked on tooling, though: a shader compiles at runtime via `newLibraryWithSource`
+   with only Command Line Tools.
+4. **Convergence — already taken.** The current defaults are **α=1.3, γ=4** after the #72 retune.
+   The earlier γ 2→3 step gave -11% wall time and 455 iterations against 500 (#52,
+   `dcfr_sweep.md`), and #72 then moved past it; γ=5 is faster still in total but regresses a low-SPR
+   3-bet pot at tight targets, so it is available via `set_dcfr` rather than default. Re-sweeping is
+   cheap and has paid before — see the `avg_delay` entry below — so do it after anything that moves
+   where the time goes, rather than trusting a sweep from an older default.
 
 ## Check the defaults before optimising the code
 

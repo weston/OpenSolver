@@ -1138,6 +1138,13 @@ void Upi::register_node_commands() {
     lock_node_impl(r.node, false);
     return std::string("unlock_node ok!");
   };
+  // Pio: clears every whole-node lock; combo locks stay (as with unlock_node).
+  H["unlock_all"] = [this](const Args&) {
+    require_tree();
+    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~GF_LOCKED);
+    return std::string("unlock_all ok!");
+  };
   auto line_nodes = [this](const std::string& id) {
     std::set<uint32_t> nodes;
     for_each_runout(id, [&](const NodeRef& r, double) {

@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 #include "parallel.hpp"
@@ -196,7 +197,7 @@ int Upi::player_arg(const std::string& s) const {
   for (auto& ch : u) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
   if (u == "OOP") return 0;
   if (u == "IP") return 1;
-  throw CmdError{"incorrect or missing argument"};
+  throw CmdError{"incorrect player"};  // Pio's message (probed); set_first_iteration_player differs
 }
 
 void Upi::require_tree() const {
@@ -278,7 +279,7 @@ std::string Upi::stats_block(const RootStats& st, double running_time) {
   return buf;
 }
 
-void Upi::start_solver(double seconds, long long steps) {
+void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   require_tree();
   if (solving_) return;
   if (solver_thread_.joinable()) solver_thread_.join();
@@ -287,16 +288,64 @@ void Upi::start_solver(double seconds, long long steps) {
   if (!tree_->load_all(lerr)) throw CmdError{"cannot read the tree's file: " + lerr};
   stop_flag_ = false;
   solving_ = true;
-  solver_thread_ = std::thread([this, seconds, steps] { solver_thread_main(seconds, steps); });
+  solver_thread_ = std::thread([this, seconds, steps, sub = std::move(sub)] { solver_thread_main(seconds, steps, std::move(sub)); });
 }
 
-void Upi::solver_thread_main(double seconds, long long steps) {
+void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps) {
+  auto job = std::make_shared<SubtreeJob>();
+  job->root = r.node;
+  job->id = r.id;
+  node_reach(r, job->r0, job->r1);
+  job->pot = tree_->cfg.start_pot();
+  const GNode& n = tree_->nodes[r.node];
+  if (n.kind == ANodeKind::Decision) {
+    const ActionNode& an = tree_->an(n);
+    job->pot = an.dead + an.inv[0] + an.inv[1];
+  }
+  start_solver(seconds, steps, std::move(job));
+}
+
+// Adaptive report schedule (set_info_freq auto, an extension). Each report is an exploitability
+// check costing about one iteration, and a solve stopping on an accuracy target overshoots by half
+// the report interval on average: at a fixed info_freq of 10 that is ~9% of a 140-iteration solve
+// (srp_big). Exploitability falls roughly as t^-k, so after each report the last two reports give k
+// and an estimate t* of the iteration where the target is met; the next report goes there, clamped
+// to [2, max(5, t/2)] iterations so a poor early estimate cannot overshoot by much and progress
+// still updates. Early DCFR curves fall faster than later ones, so estimates err early (an extra
+// check) rather than late. Without a target or a downward trend, reports are geometric (every
+// max(5, t/4) iterations). The schedule depends only on iteration counts and exploitabilities, so
+// a solve stays deterministic.
+long long Upi::next_auto_report(long long t, double e, double target) {
+  long long gap = std::max<long long>(5, t / 4);
+  if (target > 0 && e > target && last_rep_t_ > 0 && t > last_rep_t_ && last_rep_e_ > e) {
+    double k = std::log(last_rep_e_ / e) / std::log(static_cast<double>(t) / static_cast<double>(last_rep_t_));
+    k = std::clamp(k, 0.5, 4.0);
+    const double tstar = static_cast<double>(t) * std::pow(e / target, 1.0 / k);
+    const long long g = static_cast<long long>(std::ceil(tstar - static_cast<double>(t)));
+    gap = std::clamp<long long>(g, 2, std::max<long long>(5, t / 2));
+  }
+  last_rep_t_ = t;
+  last_rep_e_ = e;
+  return t + gap;
+}
+
+void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   out_raw("SOLVER: started\n");
+  double best_e = std::numeric_limits<double>::infinity();  // 16-bit stall detection (#182)
+  int stalled = 0;
+  if (info_auto_) {
+    next_report_ = (sub ? 0 : tree_->iterations) + 10;
+    last_rep_t_ = 0;
+    last_rep_e_ = 0;
+  }
   auto t0 = std::chrono::steady_clock::now();
-  double base = solve_seconds_;
+  double base = sub ? 0.0 : solve_seconds_;
   long long done = 0;
   std::string reason = "requested";
   const std::string endl_str = end_string_.empty() ? "END" : end_string_;
+  // A partial solve without an info frequency would never check its stop conditions:
+  // fall back to solve_subtree's every-25-iterations cadence.
+  const long long sub_freq = sub ? (info_freq_ > 0 ? info_freq_ : 25) : info_freq_;
   for (;;) {
     if (stop_flag_) {
       reason = stop_reason_.empty() ? "requested" : stop_reason_;
@@ -312,27 +361,64 @@ void Upi::solver_thread_main(double seconds, long long steps) {
     RootStats st{};
     {
       std::lock_guard<std::mutex> lk(tree_mu_);
-      ++tree_->iterations;
-      ++iterations_;
-      // DCFR discount clock; restarted when the payoff model changes (warm start, fast adaptation).
-      solver_->iterate(static_cast<int>(tree_->iterations - discount_restart_));
+      // DCFR discount clock: the tree's own counter for a whole solve (restarted when the payoff
+      // model changes), a fresh 1..N for a subtree solve (exactly what solve_partial does).
+      if (sub) {
+        solver_->iterate_subtree(sub->root, static_cast<int>(done + 1), sub->r0.data(), sub->r1.data());
+      } else {
+        ++tree_->iterations;
+        ++iterations_;
+        solver_->iterate(static_cast<int>(tree_->iterations - discount_restart_));
+      }
       ++done;
       double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-      solve_seconds_ = base + el;
+      if (!sub) solve_seconds_ = base + el;
       bool limit = (steps > 0 && done >= steps) || (seconds > 0 && el >= seconds);
-      if (info_freq_ > 0 && (tree_->iterations % info_freq_ == 0)) report = true;
+      long long tick = sub ? done : tree_->iterations;
+      if (info_auto_ ? tick >= next_report_ : (sub_freq > 0 && tick % sub_freq == 0)) report = true;
       if (limit) report = true;
       if (report) {
-        st = solver_->root_stats();
-        out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
-        double target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
+        double target;
+        if (sub) {
+          RootStats pst{};
+          explo_at_reach(sub->root, sub->r0.data(), sub->r1.data(), &pst);
+          st = pst;
+          // A "partial:" first line marks the block as a subtree solve's (the viewer routes it
+          // away from the whole-tree convergence series).
+          out_raw("SOLVER:\npartial: " + sub->id + "\n" + stats_block(st, el) + endl_str + "\n");
+          target = accuracy_fraction_ ? accuracy_ * sub->pot : accuracy_;
+        } else {
+          st = solver_->root_stats();
+          out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
+          target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
+        }
         if (accuracy_ > 0 && st.exploitability <= target) {
           reason = "required accuracy reached";
           break;
         }
+        // 16-bit storage has an exploitability floor (threebet_mono: ~0.09% of pot, #182). Under
+        // small_strats auto, a whole-tree solve whose last three reports set no new best while above
+        // its target switches to float32 if that fits, once, and carries on from the same state.
+        if (!sub && tree_->compressed && small_strats_ == "auto" && accuracy_ > 0) {
+          if (st.exploitability < best_e) {
+            best_e = st.exploitability;
+            stalled = 0;
+          } else if (++stalled == 3) {
+            // decompress() allocates the float32 arrays while the 16-bit ones are still live: the peak
+            // extra is the whole float32 storage, twice the net difference (8 vs 4 bytes per entry).
+            const uint64_t need = 2 * (tree_->memory_bytes_for(false, predictive_) - tree_->memory_bytes_for(true, predictive_));
+            if (need <= available_memory_bytes() * 9 / 10) {
+              tree_->decompress();
+              out_raw("SOLVER: 16-bit storage stopped improving; switched to 32-bit storage\n");
+            } else {
+              out_raw("SOLVER: 16-bit storage stopped improving; 32-bit storage does not fit\n");
+            }
+          }
+        }
+        if (info_auto_) next_report_ = next_auto_report(tick, st.exploitability, accuracy_ > 0 ? target : 0.0);
       }
       if (limit) {
-        reason = steps > 0 && done >= steps ? "required number of steps done" : "required time elapsed";
+        reason = steps > 0 && done >= steps ? "required number of steps done" : "timeout reached";  // Pio's words
         break;
       }
     }
@@ -382,7 +468,26 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   uint64_t full = t->memory_bytes_for(false, predictive_), small = t->memory_bytes_for(true, predictive_);
   if (small_strats_ == "on") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
-  else t->compressed = c.preflop || full > avail * 9 / 10;  // auto: preflop trees always small (like Pio)
+  else {
+    // auto: 16-bit storage for preflop trees (like Pio), when float32 does not fit, and (x86) when
+    // the float32 tree is large for the thread count. 16-bit converges in the same number of
+    // iterations as float32 down to ~0.05% of pot on the bench trees, so the choice is speed per
+    // iteration: on x86, half the bytes win once (float32 bytes x threads) reaches about 2 GB, and
+    // the conversion arithmetic loses below that (Zen 5 32 threads flop_srp_4 -24%, deep -10%,
+    // flop_srp_2 -9%, flop_3bet +7%; 1 thread deep +20%). On Apple silicon the memory system keeps
+    // up with float32: since the regret update vectorizes under clang (#180), float32 is faster on
+    // every tree (M4 10 threads, time to 0.05% of pot: deep 3.87 vs 4.10 s, flop_srp_4 2.08 vs
+    // 2.14, flop_3bet 0.50 vs 0.52, flop_srp_2 0.96 vs 0.99; threebet_mono 24.9 s vs never), so
+    // there 16-bit is only for capacity. 16-bit also has a precision floor: flop_3bet plateaus at
+    // 0.009 chips against 0.002, threebet_mono at ~0.09% of pot (bench/where-the-time-goes.md).
+#if defined(__aarch64__) || defined(_M_ARM64)
+    t->compressed = c.preflop || full > avail * 9 / 10;
+#else
+    const uint64_t th = threads_ > 0 ? static_cast<uint64_t>(threads_)
+                                     : std::max<uint64_t>(1, std::thread::hardware_concurrency());
+    t->compressed = c.preflop || full > avail * 9 / 10 || full * th >= (uint64_t(2) << 30);
+#endif
+  }
   uint64_t need = t->memory_bytes_for(t->compressed, predictive_);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board
   if (!mem_ignore && need > avail)
@@ -588,15 +693,41 @@ void Upi::register_commands() {
     double secs = 0;
     long long steps = 0;
     if (!a.empty()) {
+      // Pio 3.10 (probed): the unit is required; an amount below 1 step or at most 0 seconds still
+      // runs one iteration (0 here would otherwise mean "no limit" and never stop).
       double v = arg_double(a, 0, "amount");
-      std::string unit = a.size() > 1 ? a[1] : "seconds";
-      if (unit == "steps" || unit == "step") steps = static_cast<long long>(v);
-      else if (unit == "seconds" || unit == "second" || unit == "s") secs = v;
+      std::string unit = a.size() > 1 ? a[1] : "";
+      if (unit == "steps" || unit == "step") steps = std::max<long long>(1, static_cast<long long>(v));
+      else if (unit == "seconds" || unit == "second" || unit == "s") secs = v > 0 ? v : 1e-9;
       else throw CmdError{"incorrect or missing argument"};
     }
     if (solving_) return std::string("go ok!");
     out_raw(std::string("go ok!\n") + (end_string_.empty() ? "" : end_string_ + "\n"));
     start_solver(secs, steps);
+    return std::string("\x01");
+  };
+  // Ours (#153): continue solving a subtree asynchronously, exactly like `go` but iterating
+  // below a node (Solver::iterate_subtree, the solve_partial path) with a fresh DCFR clock.
+  // Progress blocks are marked with a "partial: <node>" first line; `stop` works as usual;
+  // the accuracy target refers to the node's pot when given as a fraction. Pio has no such
+  // command; the viewer's "Solve further" button is the client.
+  H["go_partial"] = [this](const Args& a) {
+    require_tree();
+    if (a.empty() || a.size() > 3) throw CmdError{"incorrect or missing argument"};
+    double secs = 0;
+    long long steps = 0;
+    if (a.size() > 1) {
+      double v = arg_double(a, 1, "amount");
+      std::string unit = a.size() > 2 ? a[2] : "seconds";
+      if (unit == "steps" || unit == "step") steps = static_cast<long long>(v);
+      else if (unit == "seconds" || unit == "second" || unit == "s") secs = v;
+      else throw CmdError{"incorrect or missing argument"};
+    }
+    NodeRef r = resolve(a[0]);
+    if (r.pseudo_root) r = resolve("r:0");
+    if (solving_) return std::string("go_partial ok!");
+    out_raw(std::string("go_partial ok!\n") + (end_string_.empty() ? "" : end_string_ + "\n"));
+    start_subtree_solve(r, secs, steps);
     return std::string("\x01");
   };
   H["stop"] = [this](const Args&) {
@@ -624,7 +755,13 @@ void Upi::register_commands() {
     return std::string("set_threads ok!");
   };
   H["set_info_freq"] = [this](const Args& a) {
-    info_freq_ = static_cast<int>(std::max<long long>(0, arg_int(a, 0, "frequency")));
+    if (!a.empty() && a[0] == "auto") {  // extension: adaptive reporting (Upi::next_auto_report)
+      info_auto_ = true;
+      return std::string("set_info_freq ok!");
+    }
+    const long long f = arg_int(a, 0, "frequency");  // parse first: a bad argument changes nothing
+    info_auto_ = false;
+    info_freq_ = static_cast<int>(std::max<long long>(0, f));
     return std::string("set_info_freq ok!");
   };
   H["set_accuracy"] = [this](const Args& a) {
@@ -653,12 +790,25 @@ void Upi::register_commands() {
   // (t/(t+1))^gamma. beta very negative underflows to 0, i.e. CFR+'s "discard negative
   // regrets"; alpha must stay small, since a large exponent overflows t^alpha to inf and
   // inf/(inf+1) is NaN.
+  // set_dcfr alpha beta gamma [beta_late switch]: three values give constant exponents (the
+  // published DCFR form); five add the beta schedule (beta -> beta_late after iteration `switch`).
   H["set_dcfr"] = [this](const Args& a) {
-    if (a.size() < 3) throw CmdError{"incorrect or missing argument"};
+    if (a.size() != 3 && a.size() != 5) throw CmdError{"incorrect or missing argument"};
     double al = arg_double(a, 0, "alpha"), be = arg_double(a, 1, "beta"), ga = arg_double(a, 2, "gamma");
     if (!(al > 0.0) || al > 10.0 || be > 10.0 || !(ga >= 0.0) || ga > 10.0)
       throw CmdError{"incorrect or missing argument"};
-    dcfr_ = DcfrParams{al, be, ga};
+    DcfrParams d;
+    d.alpha = al;
+    d.beta = be;
+    d.gamma = ga;
+    d.beta_switch = 0;
+    if (a.size() == 5) {
+      d.beta_late = arg_double(a, 3, "beta_late");
+      long long sw = arg_int(a, 4, "switch");
+      if (d.beta_late > 10.0 || sw < 0 || sw > 1000000000) throw CmdError{"incorrect or missing argument"};
+      d.beta_switch = static_cast<int>(sw);
+    }
+    dcfr_ = d;
     if (solver_) solver_->params = dcfr_;
     return std::string("set_dcfr ok!");
   };
@@ -673,8 +823,9 @@ void Upi::register_commands() {
     apply_pcfr_settings();
     return std::string("set_predictive ok!");
   };
-  // set_avg_delay <n>: iterations 1..n only move regrets; the strategy average starts
-  // accumulating at iteration n+1 (warm-started average). 0 = accumulate from t=1.
+  // set_avg_delay <n>: the strategy average drops iterations 1..n. It accumulates from t=1 and is
+  // reset at iteration n+1 (#135), so a solve stopped earlier still has its full average. Default
+  // 32; 0 = keep every iteration. Partial (subtree) re-solves ignore it.
   H["set_avg_delay"] = [this](const Args& a) {
     long long n = arg_int(a, 0, "iterations");
     if (n < 0 || n > 1000000) throw CmdError{"incorrect or missing argument"};
@@ -713,7 +864,8 @@ void Upi::register_commands() {
   H["show_step"] = [this](const Args&) { return pfmt("%f", step_); };
   H["show_iters"] = [this](const Args&) { return std::to_string(tree_ ? tree_->iterations : 0); };
   H["set_first_iteration_player"] = [this](const Args& a) {
-    if (a.empty()) throw CmdError{"incorrect or missing argument"};
+    if (a.empty() || (a[0] != "OOP" && a[0] != "IP" && a[0] != "oop" && a[0] != "ip"))
+      throw CmdError{"incorrect or missing argument"};  // Pio: not "incorrect player" here
     int p = player_arg(a[0]);
     first_player_ = p;
     if (solver_) solver_->first_player = p;
@@ -770,10 +922,10 @@ void Upi::register_commands() {
   H["build_tree"] = [this](const Args& a) { return cmd_build_tree(a); };
   H["list_algorithms"] = [](const Args&) {
     return std::string(
-        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4); this solver uses one algorithm for every code\n"
-        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
-        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)\n"
-        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0, gamma 4)");
+        "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4); this solver uses one algorithm for every code\n"
+        "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
+        "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
+        "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)");
   };
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};

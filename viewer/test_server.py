@@ -195,6 +195,55 @@ class ViewerTest(unittest.TestCase):
         self.assertEqual(st, 200, d)
         self.assertEqual(len(d["ev"]), 1326)
 
+    def test_08b_categories(self):
+        # #154: category breakdown at the root decision (pre-solve strategies are uniform)
+        st, d = self.req("/api/categories?id=r:0")
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["board"], CFG["board"])
+        self.assertEqual(d["id"], "r:0")
+        self.assertEqual(d["player"], d["actor"])  # default player is the actor
+        # category shares partition the range: made and draw buckets each sum to it
+        self.assertAlmostEqual(sum(c["combos"] for c in d["made"]), d["total"], places=3)
+        self.assertAlmostEqual(sum(c["combos"] for c in d["draws"]), d["total"], places=3)
+        for c in d["made"] + d["draws"]:
+            self.assertAlmostEqual(c["pct"], c["combos"] / d["total"], places=4)
+        # hand-counted categories of the known test range on QhQc2c:
+        # AA + KK are overpairs (12 combos), JJ + TT underpairs, QsQd is quads
+        by_name = {c["name"]: c for c in d["made"]}
+        self.assertAlmostEqual(by_name["overpair"]["combos"], 12.0, places=4)
+        self.assertAlmostEqual(by_name["underpair"]["combos"], 12.0, places=4)
+        self.assertAlmostEqual(by_name["quads"]["combos"], 1.0, places=4)
+        self.assertEqual(set(by_name["overpair"]["classes"]), {"AA", "KK"})
+        self.assertIn("AQs", by_name["trips"]["classes"])  # trips: AQ + KQs (10 combos)
+        self.assertAlmostEqual(by_name["trips"]["combos"], 10.0, places=4)
+        # per-category strategies agree with the range-weighted strategy of the node:
+        # reconstruct the overall action mix from the category rows and compare it
+        # against /api/strategy's own rows
+        st, s = self.req("/api/strategy?id=r:0")
+        self.assertEqual(st, 200, s)
+        tot = sum(w or 0 for w in s["reach"])
+        for j, row in enumerate(s["freq"]):
+            overall = sum((f or 0) * (w or 0) for f, w in zip(row, s["reach"])) / tot
+            from_cats = sum(c["combos"] * c["strategy"][j] for c in d["made"]) / d["total"]
+            self.assertAlmostEqual(from_cats, overall, places=3)
+        # EVs are present for in-range categories
+        self.assertIsNotNone(by_name["overpair"]["ev"])
+        # the opponent toggle reports shares/EVs but no strategy
+        st, d2 = self.req("/api/categories?id=r:0&player=IP")
+        self.assertEqual(st, 200, d2)
+        self.assertTrue(all(c["strategy"] is None for c in d2["made"]))
+        self.assertAlmostEqual(sum(c["combos"] for c in d2["made"]), d2["total"], places=3)
+        # chance and terminal nodes fall back to the last decision, like the matrix
+        st, d3 = self.req("/api/categories?id=" + urllib.parse.quote("r:0:c:c"))
+        self.assertEqual(st, 200, d3)
+        self.assertEqual(d3["id"], "r:0:c")  # checked-through flop -> deal turn
+        self.assertEqual(d3["actor"], "IP")
+        # bad inputs
+        st, _ = self.req("/api/categories?id=r:0&player=BB")
+        self.assertEqual(st, 400)
+        st, _ = self.req("/api/categories?id=" + urllib.parse.quote("r:0\nshow_version"))
+        self.assertEqual(st, 400)
+
     def test_09_solve_with_live_progress(self):
         st, d = self.req("/api/solve", "POST", {"accuracy": 1.0})
         self.assertEqual(st, 200, d)
@@ -227,6 +276,84 @@ class ViewerTest(unittest.TestCase):
         self.assertTrue(all(pts[i]["t"] <= pts[i + 1]["t"] for i in range(len(pts) - 1)))
         self.assertAlmostEqual(pts[-1]["explo"], expl, places=3)
 
+    def test_09b_solve_further_subtree(self):
+        """#153: solve further at a decision node mutates only that subtree."""
+        st, d = self.req("/api/strategy?id=" + urllib.parse.quote("r:0:c"))
+        self.assertEqual(st, 200, d)
+        child_before = d["freq"]
+        st, d = self.req("/api/strategy?id=r:0")
+        root_before = d["freq"]
+        st, conv_before = self.req("/api/convergence")
+        # input validation first
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 0})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": "junk"})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c show_version", "accuracy": 0.1})
+        self.assertEqual(st, 400)
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c:c", "accuracy": 0.1})
+        self.assertEqual(st, 400)  # a chance node, not a decision
+        # the real run: subtree solve on the main tree to 0.3 chips (0.75% of the 40-chip pot)
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 0.3})
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["node"], "r:0:c")
+        self.assertEqual(d["pot"], 40)
+        partial = None
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            st, d = self.req("/api/progress")
+            self.assertEqual(st, 200)
+            if d["partial"] and d["partial"]["done"]:
+                partial = d["partial"]
+                break
+            time.sleep(0.25)
+        self.assertIsNotNone(partial, "subtree solve never reported done")
+        self.assertEqual(partial["node"], "r:0:c")
+        self.assertEqual(partial["pot"], 40)
+        self.assertIsNotNone(partial["point"], partial)
+        self.assertLessEqual(partial["point"]["explo"], 0.31, partial["point"])
+        self.assertTrue(any(l.startswith("Exploitable for:") for l in partial["progress"]), partial["progress"])
+        # strategies changed at the node but are bit-identical above it
+        st, d = self.req("/api/strategy?id=" + urllib.parse.quote("r:0:c"))
+        self.assertNotEqual(d["freq"], child_before, "subtree strategy should change")
+        st, d = self.req("/api/strategy?id=r:0")
+        self.assertEqual(d["freq"], root_before, "root strategy must be untouched")
+        # partial blocks never pollute the whole-tree convergence series
+        st, conv_after = self.req("/api/convergence")
+        self.assertEqual(conv_after["points"], conv_before["points"])
+
+    def test_09c_solve_further_root_and_busy(self):
+        """#153: at the root it is the whole-tree solve; a busy solver refuses a new one."""
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0", "accuracy": 0.0001})
+        self.assertEqual(st, 200, d)
+        self.assertTrue(d.get("root"))
+        seen_solving = False
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            st, d = self.req("/api/progress")
+            if d["solving"]:
+                seen_solving = True
+                break
+            if d["solver_status"].startswith("stopped"):
+                break
+            time.sleep(0.1)
+        if seen_solving:
+            st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 0.05})
+            self.assertEqual(st, 400)
+            self.assertIn("already running", d["error"])
+            st, d = self.req("/api/stop", "POST", {})
+            self.assertEqual(st, 200, d)
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                st, d = self.req("/api/progress")
+                if not d["solving"]:
+                    break
+                time.sleep(0.1)
+            self.assertFalse(d["solving"])
+        # a root run goes through /api/solve's path, so no partial state survives
+        st, d = self.req("/api/status")
+        self.assertIsNone(d["partial"])
+
     def test_10_save_and_load(self):
         path = os.path.join(tempfile.mkdtemp(), "tiny.cfr")
         st, d = self.req("/api/save", "POST", {"path": path, "no_rivers": True})
@@ -242,6 +369,15 @@ class ViewerTest(unittest.TestCase):
         self.assertEqual(st, 200, d)
         self.assertIn("freq", d)
 
+    def test_10a_solve_further_refused_on_loaded_tree(self):
+        # #153: view-only saves carry no solver state — solve further is refused (UI disables it)
+        st, d = self.req("/api/status")
+        self.assertEqual(st, 200)
+        self.assertTrue(d["loaded_file"])
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 0.2})
+        self.assertEqual(st, 400)
+        self.assertIn("file", d["error"])
+
     def test_10b_new_tree_resets_series_and_ignores_iso(self):
         # isomorphism is always on (#113): an old client's iso=False must not turn it off
         st, d = self.req("/api/generate", "POST", dict(CFG, iso=False))
@@ -252,6 +388,63 @@ class ViewerTest(unittest.TestCase):
         self.assertEqual(st, 200, d)
         st, d = self.req("/api/node?id=r:0")
         self.assertEqual(st, 200, d)
+
+    def test_10c_per_player_sizes(self):
+        # #141: IP's own sizes; an empty IP list means IP has no bets on that street
+        cfg = dict(CFG, flop_bet="50", flop_bet_ip="75", flop_raise="", flop_raise_ip="",
+                   river_allin=False, river_allin_ip=False, allin_threshold=100)  # no promotion
+        st, d = self.req("/api/generate", "POST", cfg)
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/build", "POST", {})
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/node?id=r:0")
+        self.assertIn("r:0:b20", [c["id"] for c in d["children"]])      # OOP 50% of 40
+        st, d = self.req("/api/node?id=r:0:c")
+        self.assertIn("r:0:c:b30", [c["id"] for c in d["children"]])    # IP 75% of 40
+        st, d = self.req("/api/generate", "POST", dict(cfg, flop_bet_ip=""))
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/build", "POST", {})
+        st, d = self.req("/api/node?id=r:0:c")
+        self.assertEqual([c["id"] for c in d["children"]], ["r:0:c:c"])   # IP can only check
+        # bad IP sizes are rejected like OOP's
+        st, d = self.req("/api/generate", "POST", dict(cfg, flop_bet_ip="3x"))
+        self.assertEqual(st, 400)
+
+    def test_10d_turn_and_river_boards(self):
+        # a 4- or 5-card board starts the tree on that street (builder lines must not run past it)
+        for board, first_kid in (("QhQc2c5d", "r:0:b"), ("QhQc2c5d9s", "r:0:b")):
+            st, d = self.req("/api/generate", "POST", dict(CFG, board=board))
+            self.assertEqual(st, 200, d)
+            st, d = self.req("/api/build", "POST", {})
+            self.assertEqual(st, 200, d)
+            st, d = self.req("/api/node?id=r:0")
+            self.assertEqual(st, 200, d)
+            self.assertEqual(d["node"]["board"].replace(" ", ""), board)
+            self.assertTrue(any(c["id"].startswith(first_kid) for c in d["children"]), d["children"])
+
+    def test_10e_oop_needs_donk_sizes_to_lead(self):
+        # #152 (owner's rule): after OOP calls the flop bet, OOP can lead the turn only
+        # with turn donk sizes configured; an empty Donk column means check only.
+        # a deeper stack / threshold of 100 keeps the small sizes off the all-in
+        cfg = dict(CFG, stack=200, allin_threshold=100)
+        for body, turn_children in (
+                (cfg, None),                                  # no donk: check only
+                (dict(cfg, turn_donk="30"), [":b50", ":c"])):  # 24 + 30% of the 88 pot
+            st, d = self.req("/api/generate", "POST", body)
+            self.assertEqual(st, 200, d)
+            st, d = self.req("/api/build", "POST", {})
+            self.assertEqual(st, 200, d)
+            # flop: OOP checks, IP bets 24 (60% of 40), OOP calls -> the turn
+            st, d = self.req("/api/node?id=r:0:c:b24:c")
+            self.assertEqual(st, 200, d)
+            self.assertEqual(d["node"]["type"], "SPLIT_NODE")
+            turn = d["children"][0]["id"]
+            st, d = self.req("/api/node?id=" + urllib.parse.quote(turn))
+            self.assertEqual(st, 200, d)
+            self.assertEqual(d["node"]["type"], "OOP_DEC")
+            want = [turn + ":c"] if turn_children is None \
+                else [turn + suffix for suffix in turn_children]
+            self.assertEqual([c["id"] for c in d["children"]], want)
 
     def test_11_restart_solver(self):
         st, d = self.req("/api/restart", "POST", {})

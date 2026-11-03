@@ -42,6 +42,9 @@
     <div class="study-main">
       <div class="node-head">
         <div id="node-title" class="node-title"></div>
+        <span id="subgame-tag" class="tag busy hidden" title="Browsing a re-solved subtree (opponent range fixed at the re-solve node)">Re-solved</span>
+        <button id="btn-resolve" class="btn small hidden" title="Re-solve this subtree with other sizes">Re-solve…</button>
+        <button id="btn-further" class="btn small hidden" title="Continue solving the tree from this node down (changes its strategies in memory)">Solve further…</button>
         <div class="seg" id="view-seg">
           <button data-mode="strategy" class="active">Strategy</button>
           <button data-mode="range">Range</button>
@@ -74,10 +77,12 @@
         <button data-side="hand" class="active">Hand</button>
         <button data-side="node">Node</button>
         <button data-side="ranges">Ranges</button>
+        <button data-side="cats">Cats</button>
       </div>
       <div id="side-hand" class="side-page"></div>
       <div id="side-node" class="side-page hidden"></div>
       <div id="side-ranges" class="side-page hidden"></div>
+      <div id="side-cats" class="side-page hidden"></div>
     </aside>
   </section>
 </main>
@@ -137,12 +142,8 @@
             <label class="field"><span>Add all-in below</span><div class="suffix"><input id="f-allin-limit" type="number" value="300"><i>% pot</i></div></label>
           </div>
           <table class="sizes">
-            <thead><tr><th></th><th>Bet</th><th>Raise</th><th>Donk <small>(OOP lead)</small></th><th title="Maximum bets + raises on the street">Cap</th><th>All-in</th></tr></thead>
-            <tbody>
-              <tr data-street="flop"><th>Flop</th><td><input data-k="bet" value="30, 60"></td><td><input data-k="raise" value="50"></td><td><input data-k="donk" placeholder="none"></td><td><input data-k="raisecap" class="cap" type="number" min="0" max="99" placeholder="∞" title="Maximum bets + raises on the street (empty = no cap)"></td><td><label class="switch"><input type="checkbox" data-k="allin"><span></span></label></td></tr>
-              <tr data-street="turn"><th>Turn</th><td><input data-k="bet" value="60"></td><td><input data-k="raise" value="50"></td><td><input data-k="donk" placeholder="none"></td><td><input data-k="raisecap" class="cap" type="number" min="0" max="99" placeholder="∞" title="Maximum bets + raises on the street (empty = no cap)"></td><td><label class="switch"><input type="checkbox" data-k="allin"><span></span></label></td></tr>
-              <tr data-street="river"><th>River</th><td><input data-k="bet" value="65"></td><td><input data-k="raise" value="50"></td><td><input data-k="donk" placeholder="none"></td><td><input data-k="raisecap" class="cap" type="number" min="0" max="99" placeholder="∞" title="Maximum bets + raises on the street (empty = no cap)"></td><td><label class="switch"><input type="checkbox" data-k="allin" checked><span></span></label></td></tr>
-            </tbody>
+            <thead><tr><th></th><th></th><th>Bet</th><th>Raise</th><th>Donk <small>(OOP lead)</small></th><th title="Maximum bets + raises on the street">Cap</th><th>All-in</th></tr></thead>
+            <tbody id="sizes-body"></tbody>
           </table>
         </div>
       </section>
@@ -154,8 +155,9 @@
         <div class="solve-form">
           <label class="field"><span>Target exploitability</span><div class="suffix"><input id="f-accuracy" type="number" step="0.05" min="0.01" value="0.3"><i>% pot</i></div></label>
           <div class="btn-row">
-            <button id="btn-build" class="btn">Build tree</button>
-            <button id="btn-solve" class="btn primary">Build &amp; solve</button>
+            <button id="btn-build" class="btn" title="Build the tree from the form, without solving">Build</button>
+            <button id="btn-resume" class="btn" title="Solve the current tree, continuing from where it stopped" disabled>Solve</button>
+            <button id="btn-solve" class="btn primary" title="Rebuild the tree from the form, then solve it">Build &amp; solve</button>
             <button id="btn-stop" class="btn danger hidden">Stop</button>
           </div>
           <div id="build-info" class="build-info"></div>
@@ -208,6 +210,75 @@
     <div class="topbar-spacer"></div>
     <button id="lib-cancel" class="btn ghost">Cancel</button>
     <button id="lib-ok" class="btn primary">Load</button>
+  </div>
+</dialog>
+
+<dialog id="resolve-dialog" class="dialog rs">
+  <div class="rs-head">
+    <div>
+      <h2>Re-solve from here</h2>
+      <div id="rs-context" class="rs-context"></div>
+    </div>
+    <div class="seg" id="rs-tabs">
+      <button data-tab="search" class="active">Find best sizes</button>
+      <button data-tab="edit">Edit sizes</button>
+    </div>
+  </div>
+  <div class="rs-body">
+    <div id="rs-edit" class="hidden">
+      <table class="sizes rs-sizes">
+        <thead><tr><th></th><th></th><th>Bet</th><th>Raise</th><th>Donk</th><th title="Maximum bets + raises on the street">Cap</th><th>All-in</th></tr></thead>
+        <tbody id="rs-rows"></tbody>
+      </table>
+    </div>
+    <div id="rs-search">
+      <div class="rs-search-form">
+        <label class="field"><span>Street</span><select id="rs-street"></select></label>
+        <label class="field grow"><span id="rs-cand-label">Candidate bet sizes</span><input id="rs-candidates" value="25, 33, 50, 75, 100, 150" spellcheck="false"></label>
+        <label class="field"><span>Keep</span><select id="rs-n"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+      </div>
+      <p class="hint">Solves the subtree once per subset of N candidates (greedy above 12 subsets) and ranks them by the acting player's EV. Other streets use the sizes from <i>Edit sizes</i>.</p>
+    </div>
+    <div class="rs-acc">
+      <label class="field"><span>Accuracy per solve</span><div class="suffix"><input id="rs-accuracy" type="number" step="0.1" min="0.05" value="0.5"><i>% pot</i></div></label>
+      <p class="hint rs-caveat">The opponent's range stays fixed at this node (unsafe re-solving, as in Pio's subtree re-solves). Results are shown in memory; the saved tree is unchanged.</p>
+    </div>
+    <!-- Top-down flow: settings, then the action, then its results, then where to go next. -->
+    <div class="rs-run">
+      <button id="rs-go" class="btn primary rs-go">Search</button>
+      <button id="rs-stop" class="btn danger hidden">Stop</button>
+    </div>
+    <div id="rs-progress" class="rs-progress hidden">
+      <div class="rs-bar"><span id="rs-bar-fill"></span></div>
+      <div id="rs-status" class="rs-status"></div>
+      <table id="rs-table" class="rs-table"></table>
+      <div id="rs-next" class="rs-next hidden">
+        <div class="rs-next-text"><b>Result ready.</b> <span id="rs-next-what"></span></div>
+        <button id="rs-browse" class="btn primary">Open result in Study →</button>
+      </div>
+    </div>
+  </div>
+  <div class="lib-foot">
+    <div class="topbar-spacer"></div>
+    <button id="rs-close" class="btn ghost">Close</button>
+  </div>
+</dialog>
+
+<dialog id="sf-dialog" class="dialog">
+  <h2>Solve further from here</h2>
+  <div id="sf-context" class="rs-context"></div>
+  <label class="field"><span>Target exploitability</span><div class="suffix"><input id="sf-accuracy" type="number" step="0.05" min="0.01" value="0.5"><i>% of this pot</i></div></label>
+  <p class="hint">Runs more iterations on the loaded tree, from this node down. Strategies at and
+    below this node change in memory; the rest of the tree and any saved file are untouched.
+    At the tree root this just continues the whole solve.</p>
+  <div id="sf-progress" class="rs-progress hidden">
+    <div class="rs-bar indet" id="sf-bar"><span id="sf-bar-fill"></span></div>
+    <div id="sf-status" class="rs-status">Starting…</div>
+  </div>
+  <div class="btn-row end">
+    <button id="sf-stop" class="btn danger hidden">Stop</button>
+    <button id="sf-close" class="btn ghost">Close</button>
+    <button id="sf-go" class="btn primary">Solve</button>
   </div>
 </dialog>
 

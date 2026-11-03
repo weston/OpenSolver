@@ -483,8 +483,9 @@ std::string Upi::cmd_calc_eq_preflop(const Args& a) {
 }
 
 std::string Upi::cmd_show_nuts(const Args& a) {
+  if (a.empty()) throw CmdError{"incorrect or missing argument"};
+  int p = player_arg(a[0]);  // Pio checks the player before the board argument
   if (a.size() < 2) throw CmdError{"incorrect or missing argument"};
-  int p = player_arg(a[0]);
   std::vector<int> board;
   if (!parse_cards(a[1], board) || board.size() < 3) throw CmdError{"incorrect or missing argument"};
   uint64_t bm = board_mask(board);
@@ -750,8 +751,12 @@ std::string Upi::cmd_round_up_to(const Args& a) {
 
 double Upi::explo_at(const NodeRef& r, std::vector<float>& r0, std::vector<float>& r1, RootStats* out_stats) {
   node_reach(r, r0, r1);
+  return explo_at_reach(r.node, r0.data(), r1.data(), out_stats);
+}
+
+double Upi::explo_at_reach(uint32_t node, const float* r0, const float* r1, RootStats* out_stats) {
   RootStats st;
-  const float* rr[2] = {r0.data(), r1.data()};
+  const float* rr[2] = {r0, r1};
   int H0 = tree_->num_hands(0);
   std::vector<float> m(H0);
   solver_->compat_mass(0, rr[1], m.data());
@@ -764,11 +769,11 @@ double Upi::explo_at(const NodeRef& r, std::vector<float>& r0, std::vector<float
   for (int p = 0; p < 2; ++p) {
     int Hp = tree_->num_hands(p);
     std::vector<float> out(Hp);
-    solver_->walk(Walk::Evaluate, r.node, p, rr[p], rr[1 - p], out.data());
+    solver_->walk(Walk::Evaluate, node, p, rr[p], rr[1 - p], out.data());
     double s = 0;
     for (int h = 0; h < Hp; ++h) s += static_cast<double>(rr[p][h]) * out[h];
     st.ev[p] = s / M;
-    solver_->walk(Walk::BestResponse, r.node, p, rr[p], rr[1 - p], out.data());
+    solver_->walk(Walk::BestResponse, node, p, rr[p], rr[1 - p], out.data());
     s = 0;
     for (int h = 0; h < Hp; ++h) s += static_cast<double>(rr[p][h]) * out[h];
     st.mes[p] = s / M;

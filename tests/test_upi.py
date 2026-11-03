@@ -454,12 +454,126 @@ def check_union_hands(u):
 
     # Deep node where OOP has 20 in and faces an all-in: the opponent-only hands have a
     # negative counterfactual value, so Pio's signed -inf rather than a bare inf.
-    n_off = sorted(t for t in off["deep"] if t in ("inf", "-inf"))
-    n_on = sorted(t for t in on["deep"] if t in ("inf", "-inf"))
+    # Look at exactly the six 88 combos: other hands can also print +-inf there whenever OOP's
+    # average strategy never reaches the node with them (EV = cfv / 0, as in Pio), which depends
+    # on how far the loose solve got, not on union_hands.
+    order = u.cmd("show_hand_order").split()
+    idx88 = [i for i, c in enumerate(order) if c[0] == "8" and c[2] == "8"]
+    n_off = sorted(off["deep"][i] for i in idx88)
+    n_on = sorted(on["deep"][i] for i in idx88)
     check(n_off == ["inf"] * 6, f"without union_hands the six hands print unsigned inf ({n_off[:2]}...)")
     check(n_on == ["-inf"] * 6, f"with union_hands they print -inf, the sign of their cfv ({n_on[:2]}...)")
 
     u.cmd("set_union_hands off")
+    u.cmd("free_tree")
+
+
+def check_go_partial(u):
+    """go_partial (#153): asynchronous subtree solves, like `go` but below a node."""
+    print("[go_partial: asynchronous subtree solving]")
+    set_small_tree(u)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree for go_partial")
+    u.cmd("set_accuracy 0")
+    u.cmd("go 200 steps")
+    u.cmd("wait_for_solver")
+    root_strat = u.cmd("show_strategy r:0")
+    child_strat = u.cmd("show_strategy r:0:c")
+
+    # A step-limited subtree solve: progress blocks are marked, DCFR clock restarts,
+    # strategies at and below the node change, everything above is bit-identical.
+    u.solver_msgs.clear()
+    u.cmd("set_info_freq 10")
+    check(u.cmd("go_partial r:0:c 100 steps") == "go_partial ok!", "go_partial returns immediately")
+    u.cmd("wait_for_solver")
+    blocks = [b for b in u.solver_msgs if b and b[0].startswith("partial: ")]
+    check(blocks and all(b[0] == "partial: r:0:c" for b in blocks), f"progress blocks marked partial: r:0:c ({len(blocks)})")
+    text = "\n".join(blocks[-1]) if blocks else ""
+    check("Exploitable for:" in text and "EV OOP:" in text, "partial block has the stats block")
+    check(any(b and b[0].startswith("SOLVER: stopped (required number of steps done") for b in u.solver_msgs),
+          "stopped (required number of steps done)")
+    check(u.cmd("show_strategy r:0") == root_strat, "strategy above the node is untouched")
+    check(u.cmd("show_strategy r:0:c") != child_strat, "the subtree's strategy changed")
+
+    # An accuracy-driven subtree solve stops on the subtree exploitability target.
+    u.solver_msgs.clear()
+    u.cmd("set_accuracy 0.02")
+    check(u.cmd("go_partial r:0:c") == "go_partial ok!", "go_partial with an accuracy target")
+    u.cmd("wait_for_solver")
+    blocks = [b for b in u.solver_msgs if b and b[0].startswith("partial: ")]
+    m = re.search(r"Exploitable for: ([-\d.eE+]+)", "\n".join(blocks[-1])) if blocks else None
+    # the check runs at the report that crossed the target: printed value can round up by 0.0005
+    check(m is not None and float(m.group(1)) <= 0.0205, f"stops at the target ({m and m.group(1)} <= 0.02)")
+    check(any(b and b[0].startswith("SOLVER: stopped (required accuracy reached") for b in u.solver_msgs),
+          "stopped (required accuracy reached)")
+    check(u.cmd("show_strategy r:0") == root_strat, "strategy above the node still untouched")
+
+    check(u.cmd("go_partial").startswith("ERROR"), "go_partial needs an argument")
+    check(u.cmd("go_partial r:0:bogus").startswith("ERROR"), "go_partial on a bad node errors")
+    check(u.cmd("go_partial r:0:c 2 eons").startswith("ERROR"), "go_partial on a bad unit errors")
+    u.cmd("free_tree")
+
+
+def check_go_limits_and_errors(u):
+    """Pio 3.10 behavior, probed black-box: go limits below one iteration still run one, the unit is
+    required, timed stops say "timeout reached", bad players say "incorrect player", and a load_tree
+    that cannot open its file drops the current tree."""
+    print("[go limits, player errors, failed load_tree]")
+    set_small_tree(u)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree")
+    u.cmd("set_accuracy 0")
+
+    def run(cmd):
+        before = int(u.cmd("show_iters"))
+        u.solver_msgs.clear()
+        resp = u.cmd(cmd)
+        u.cmd("wait_for_solver")
+        stops = [b[0] for b in u.solver_msgs if b and b[0].startswith("SOLVER: stopped")]
+        return resp, int(u.cmd("show_iters")) - before, stops
+
+    for cmd, why in (("go 0 steps", "required number of steps done"), ("go -5 steps", "required number of steps done"),
+                     ("go 1.7 steps", "required number of steps done"), ("go 0 seconds", "timeout reached")):
+        resp, n, stops = run(cmd)
+        check(resp == "go ok!" and n == 1 and stops == [f"SOLVER: stopped ({why})"],
+              f"{cmd}: one iteration, stopped ({why}) [{resp!r}, {n}, {stops}]")
+    resp, n, _ = run("go 3")
+    check(resp == "ERROR: go incorrect or missing argument" and n == 0, "go without a unit errors (Pio)")
+    for cmd in ("calc_ev XYZ r:0", "show_range XYZ", "set_range XYZ 0.5", "calc_eq XYZ", "show_nuts XYZ"):
+        name = cmd.split()[0]
+        check(u.cmd(cmd) == f"ERROR: {name} incorrect player", f"{cmd}: incorrect player")
+    check(u.cmd("set_first_iteration_player XYZ") == "ERROR: set_first_iteration_player incorrect or missing argument",
+          "set_first_iteration_player keeps the generic error (Pio)")
+    missing = os.path.join(tempfile.gettempdir(), "wsolver_no_such_dir", "x.cfr")
+    r = u.cmd("load_tree " + missing)
+    check(r.startswith(f"ERROR: load_tree couldn't open {missing}: "), f"load_tree error text ({r})")
+    check(u.cmd("is_tree_present") == "false", "a failed load_tree drops the current tree (Pio)")
+    u.cmd("set_accuracy 0.005")
+
+
+def check_info_freq_auto(u):
+    """set_info_freq auto: adaptive report schedule; stops on the target with fewer checks."""
+    print("[set_info_freq auto]")
+    set_small_tree(u)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree for info_freq auto")
+    check(u.cmd("set_info_freq auto") == "set_info_freq ok!", "set_info_freq auto accepted")
+    u.cmd("set_accuracy 0.005")
+    u.solver_msgs.clear()
+    u.cmd("go")
+    u.cmd("wait_for_solver")
+    blocks = [b for b in u.solver_msgs if b and any(l.startswith("Exploitable for:") for l in b)]
+    m = re.search(r"Exploitable for: ([-\d.eE+]+)", "\n".join(blocks[-1])) if blocks else None
+    check(m is not None and float(m.group(1)) <= 0.0055, f"auto stops at the target ({m and m.group(1)} <= 0.005)")
+    check(any(b and b[0].startswith("SOLVER: stopped (required accuracy reached") for b in u.solver_msgs),
+          "auto: stopped (required accuracy reached)")
+    iters = int(u.cmd("show_iters").split()[-1])
+    check(len(blocks) < max(3, iters // 10), f"auto checks less often than every 10 ({len(blocks)} reports, {iters} iterations)")
+    check(u.cmd("set_info_freq auto2").startswith("ERROR"), "set_info_freq rejects other words")
+    u.solver_msgs.clear()
+    u.cmd("set_accuracy 0")
+    u.cmd("go 30 steps")
+    u.cmd("wait_for_solver")
+    n_auto = len([b for b in u.solver_msgs if b and any(l.startswith("Exploitable for:") for l in b)])
+    check(n_auto < 10, f"a rejected set_info_freq leaves auto on ({n_auto} reports in 30 steps)")
+    u.cmd("set_info_freq 25")
     u.cmd("free_tree")
 
 
@@ -492,6 +606,10 @@ def main(exe, big=False):
         check_calc_eq_preflop_exact(u)
 
         check_union_hands(u)
+
+        check_go_partial(u)
+        check_go_limits_and_errors(u)
+        check_info_freq_auto(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")

@@ -29,6 +29,19 @@ struct DcfrParams {
   double alpha = 1.3;  // positive regret discount exponent
   double beta = 0.0;   // negative regret discount exponent
   double gamma = 4.0;  // strategy-sum discount exponent
+  // beta schedule: from iteration beta_switch + 1 on, negative regrets use beta_late instead of beta
+  // (0 = no switch). beta = 0 halves every negative regret each iteration, so discarded actions keep
+  // re-entering; on large trees with many actions (a realistic 13 GB SRP tree: 3 flop sizes x 2
+  // raises, 2 turn and 2 river sizes) the average then oscillates and stalls around 1% of pot.
+  // Slower forgetting late in the solve fixes that: exploitability at iteration 125 / 150 / 200
+  // 0.83 / 0.66 / 0.75 -> 0.67 / 0.44 / 0.24, and 1% of pot in 140 instead of 220 iterations (70 s,
+  // level with PioSOLVER on the same PC). Constant beta 0.5 does as well there but costs the small
+  // bench trees 25-40% more iterations; switching after 50 keeps them within 0-11% (deep 180 -> 200,
+  // flop_3bet 95 -> 100, river 165 -> 175; flop_srp_4, flop_srp_2, turn unchanged). Constant
+  // beta 0.25 oscillates too.
+  double beta_late = 0.5;
+  int beta_switch = 50;
+  double beta_at(int t) const { return beta_switch > 0 && t > beta_switch ? beta_late : beta; }
 };
 
 // Showdown values against one river board: out[h] += value of p's hand h given opponent reach ro,
@@ -40,9 +53,37 @@ struct DcfrParams {
 #else
 #define PIO_SHOWDOWN_AVX512 0
 #endif
-void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+// compat (optional, hand-indexed, zeroed by the caller): also store each of p's hands' card-removal
+// compatible opponent mass, sum of ro over opponent hands disjoint from h. It is a by-product of the
+// kernel, and exactly what a fold child with the same opponent reach needs (Solver::call_and_fold).
+// fold (optional): an opponent fold sibling of this showdown (opponent decision facing p's bet: fold or
+// call). Its value pay * (compatible mass of xf) is added to out in the same kernel call: the fold mass
+// is accumulated in the kernel's opponent pass and its card-removal lookups ride along in the final
+// pass, instead of a separate pass over both hand lists (Solver::call_with_opp_fold). xf is the fold
+// reach (opponent reach * fold probability), precomputed so the kernels only add: a product inside
+// them could be FMA-contracted differently by the scalar and the AVX-512 code.
+struct SdFold {
+  const float* xf;  // opponent's reach into the fold, by opponent hand
+  float pay;        // p's payoff when the opponent folds
+};
+void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                           float* compat = nullptr, const SdFold* fold = nullptr);
+// One showdown terminal for showdown_batch (#186): out (and compat) start zeroed; compat set: also the
+// compatible mass (call_and_fold); xf set: the opponent's fused fold (call_with_opp_fold).
+struct SdJob {
+  const float* ro;
+  float W, L, T;
+  float* out;
+  float* compat;
+  const float* xf;
+  float pay;
+};
+// Jobs on one board, each bit-identical to its own showdown_board call. On AVX-512 builds up to five
+// share one sweep over the board (at most one with a fused fold).
+void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* jobs);
 #if PIO_SHOWDOWN_AVX512
-void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                           float* compat = nullptr, const SdFold* fold = nullptr);
 #endif
 
 struct RootStats {
@@ -61,7 +102,42 @@ class Solver {
   bool write_best_response = false;  // BestResponse walks store the pure BR strategy (set_mes)
   // #71 convergence experiments (set_predictive / set_avg_delay):
   bool predictive = false;  // regret matching input is R + last instantaneous regret (PCFR+-style)
-  int avg_delay = 0;        // strategies only enter the average after this iteration (0 = from t=1)
+  // 32, not 0. The first iterations are the noisiest, and skipping their contribution to the
+  // strategy sum both saves the accumulation work and leaves a cleaner average. #80 swept this
+  // and found nothing, but that predated the alpha/gamma retune (#72) and the prune_period fix
+  // (#131), which changed where the time goes. Re-swept at the current defaults, to 0.05% of
+  // pot, 1 thread:
+  //
+  //   tree          delay 0    delay 32     exploitability
+  //   flop_srp_2     12.59 s    10.85 s     (+13.8%)   0.026 vs 0.026
+  //   flop_srp_4     26.46 s    24.11 s     (+8.9%)    0.029 vs 0.028
+  //   deep           43.18 s    41.21 s     (+4.6%)    0.020 vs 0.020
+  //   flop_3bet       4.26 s     4.20 s     (+1.4%)    0.099 vs 0.089
+  //   turn            0.24 s     0.23 s                0.045 vs 0.045
+  //
+  // Those iteration counts looked unchanged, which led me to call this a per-iteration saving
+  // rather than better convergence. That was wrong: they were reported at set_info_freq 5, so
+  // both rounded to 80. At info_freq 1 the exact counts are 79 (delay 0) against 76 (delay 32)
+  // on flop_srp_4, i.e. fewer iterations. See the avg_reset note below for the real mechanism.
+  //   preflop         0.09 s     0.08 s                0.007 vs 0.007
+  //
+  // Better or equal on every tree with exploitability equal or better.
+  //
+  // The old way to apply it (skip accumulation for t <= avg_delay) leaves the average EMPTY if a
+  // solve stops before the delay, falling back to near-pure regret-derived strategies. #135 fixed
+  // that with avg_reset: accumulate from t = 1 and zero the sums at t = avg_delay + 1, which is
+  // bit-identical past the delay and keeps the full average before it. Measured then (1 thread,
+  // time to 0.2% / 0.05% of pot): flop_srp_4 -11% / -4%, flop_srp_2 0 / -9%, deep -1% / -2%,
+  // flop_3bet, turn, river, preflop unchanged. Accumulation itself is only 2.5-6% of an
+  // iteration, so the gain is convergence (a cleaner average), not skipped work.
+  // The UPI default is 32 (Upi::avg_delay_); this struct's 0 keeps library callers (tests) exact.
+  int avg_delay = 0;       // strategies only enter the average after this iteration (0 = from t=1)
+  // How the delay is applied (#135). false: iterations t <= avg_delay skip accumulation, so a solve
+  // stopped before the delay has an EMPTY average. true (default): accumulate from t = 1 and zero
+  // the strategy sums at the start of iteration avg_delay + 1, so the average is never empty and
+  // every run past the delay is bit-identical to the skipping version.
+  bool avg_reset = true;
+  void reset_strategy_sums();  // zero every unlocked strategy sum (locked strategies are kept)
 
   // Regret-based pruning (set_pruning, #51; Brown & Sandholm, "Regret-Based Pruning in
   // Extensive-Form Games", NIPS 2015). During a CFR walk only, an action of the traverser whose
@@ -82,9 +158,53 @@ class Solver {
   // unpruned iteration counts exactly on every bench tree while keeping the per-iteration savings
   // of the long tail (deep to 0.05% pot: 33.1s -> 30.5s).
   // Best-response, evaluate and strategy_only walks are never pruned.
+  // All-in terminals before the river from the precomputed outcome tables (AllinRunouts::e2) when
+  // they exist; false evaluates every runout with the showdown kernel (the reference, for tests).
+  bool allin_tables = true;
+  // Values of p's hands at a showdown terminal against opponent reach ro (public for tests).
+  void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
+  void traverser_update(const GNode& n, uint32_t ni, int p, const float* rp, const float* ro, const float* sigma,
+                        const float* cfv, const uint8_t* pruned, const float* out);
+  // #186 two-phase river walk (CFR mode): top-down reaches and strategies into buffers that live until
+  // the river chance task returns, every showdown of the subtree evaluated in batches, then values and
+  // updates bottom-up. Same operations in the same order as walk_t, so bit-identical.
+  void river_cfr(uint32_t ni, int p, const float* rp, const float* ro, float* out);
+  void river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out);
+  template <class E>
+  void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
+  // #186: Solver::river_cfr for river subtrees in the CFR walk. Only AVX-512 builds batch the kernels;
+  // elsewhere the two-phase walk is overhead (M4: +2-3.5%), so it is off by default there.
+  bool river_batch = PIO_SHOWDOWN_AVX512 != 0;
   bool pruning = true;  // on by default (#51): inactive before t > 2*prune_period, then never
                         // slower and up to ~8% faster on long solves (bench data in the comment)
-  int prune_period = 32;  // <= 1: never force a full iteration
+  // 8, not 32. The period trades activation delay (pruning is inactive until t > 2*period)
+  // against how often a full measurement iteration is forced, and those pull opposite ways.
+  // At the targets the suite actually reports (0.2% of pot, reached in 35-100 iterations) the
+  // activation delay dominates: period 32 does not engage until t=64, so on flop_srp_2 - which
+  // reaches target at t=45 - pruning never ran at all. Measured to 0.2% of pot, 1 thread:
+  //
+  //   tree          iters   period 8   period 32
+  //   flop_srp_4      50     17.24 s    18.72 s   (+7.9%)
+  //   flop_srp_2      45      7.78 s     8.25 s   (+5.7%)
+  //   deep           100     24.92 s    25.49 s   (+2.2%)
+  //   flop_3bet       50      2.41 s     2.43 s   (+0.8%)
+  //   turn            35      0.10 s     0.10 s   (=)
+  //
+  // Better or equal on every tree, results bit-identical. The crossover is past ~100
+  // iterations: at 180 on deep, period 32 wins back 1.3% (26.23 s vs 26.58 s), because by
+  // then the activation delay is amortised and the forced full iterations dominate.
+  //
+  // CAREFUL if you raise it. The period sets BOTH the measurement frequency and the
+  // activation delay (`t > 2 * prune_period`), so raising it pushes activation out too and
+  // can switch pruning off entirely for a short solve. `set_pruning on 64` delays activation
+  // to t=128, and every bench tree reaches 0.2% of pot by t=100, so pruning never runs:
+  // flop_srp_2 goes 7.71 s -> 8.22 s, i.e. slower than the default despite asking for more
+  // pruning. Only raise it for runs that will go well past 2x the new period.
+  //
+  // Decoupling the two (a separate warmup field) was tried and rejected: it removes the
+  // footgun but is ~1.3% slower, because the extra int changes this struct's layout, and at
+  // fixed warmup the period sweep showed no consistent winner across trees.
+  int prune_period = 8;  // <= 1: never force a full iteration
 
   // CFR iterations restricted to the subtree at `ni` with the given (canonical) reaches.
   void iterate_subtree(uint32_t ni, int t, const float* r0, const float* r1);
@@ -112,11 +232,27 @@ class Solver {
  private:
   template <Walk M>
   void walk_t(uint32_t ni, int p, const float* rp, const float* ro, float* out);
+  template <typename F>
+  void run_actions(const GNode& n, int A, F& act);
   void strategy_only(uint32_t ni, int p, const float* rp);
   void flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, const float* rp, const float* ro, float* out);
+  // Evaluate and BestResponse in one traversal (root_stats): ev = on-policy values, br = best
+  // response values, both for player p against the opponent's average strategy.
+  void walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br);
   void fold_value(const GNode& n, int p, const float* ro, float* out) const;
-  void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
-  void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) const;
+  void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                      float* compat = nullptr, const SdFold* fold = nullptr) const;
+  // River decision of the opponent facing p's bet: the call (showdown, reach xc = ro * sigma_call) and
+  // fold (reach ro * sigma_fold) contributions in one kernel call, summed into out. False if the pair
+  // does not qualify (both terminals at a 5-card board); then nothing is written.
+  // xf: scratch for the fold reach (num_hands(opponent) floats).
+  bool call_with_opp_fold(const GNode& sd, const GNode& fold, int p, const float* xc, const float* ro,
+                          const float* sfold, float* xf, float* out) const;
+  // River decision of the traverser facing a bet: its fold and call (showdown) children see the same
+  // opponent reach, so one showdown kernel call gives both rows (the fold from the kernel's compatible
+  // mass instead of a separate compat_mass pass). Returns false (nothing written) if the pair does not
+  // qualify: both children must be terminals at a 5-card board.
+  bool call_and_fold(const GNode& sd, const GNode& fold, int p, const float* ro, float* sd_out, float* fold_out) const;
 
   GameTree& g_;
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;

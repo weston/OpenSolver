@@ -304,8 +304,37 @@ void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps)
   start_solver(seconds, steps, std::move(job));
 }
 
+// Adaptive report schedule (set_info_freq auto, an extension). Each report is an exploitability
+// check costing about one iteration, and a solve stopping on an accuracy target overshoots by half
+// the report interval on average: at a fixed info_freq of 10 that is ~9% of a 140-iteration solve
+// (srp_big). Exploitability falls roughly as t^-k, so after each report the last two reports give k
+// and an estimate t* of the iteration where the target is met; the next report goes there, clamped
+// to [2, max(5, t/2)] iterations so a poor early estimate cannot overshoot by much and progress
+// still updates. Early DCFR curves fall faster than later ones, so estimates err early (an extra
+// check) rather than late. Without a target or a downward trend, reports are geometric (every
+// max(5, t/4) iterations). The schedule depends only on iteration counts and exploitabilities, so
+// a solve stays deterministic.
+long long Upi::next_auto_report(long long t, double e, double target) {
+  long long gap = std::max<long long>(5, t / 4);
+  if (target > 0 && e > target && last_rep_t_ > 0 && t > last_rep_t_ && last_rep_e_ > e) {
+    double k = std::log(last_rep_e_ / e) / std::log(static_cast<double>(t) / static_cast<double>(last_rep_t_));
+    k = std::clamp(k, 0.5, 4.0);
+    const double tstar = static_cast<double>(t) * std::pow(e / target, 1.0 / k);
+    const long long g = static_cast<long long>(std::ceil(tstar - static_cast<double>(t)));
+    gap = std::clamp<long long>(g, 2, std::max<long long>(5, t / 2));
+  }
+  last_rep_t_ = t;
+  last_rep_e_ = e;
+  return t + gap;
+}
+
 void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   out_raw("SOLVER: started\n");
+  if (info_auto_) {
+    next_report_ = (sub ? 0 : tree_->iterations) + 10;
+    last_rep_t_ = 0;
+    last_rep_e_ = 0;
+  }
   auto t0 = std::chrono::steady_clock::now();
   double base = sub ? 0.0 : solve_seconds_;
   long long done = 0;
@@ -343,7 +372,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       if (!sub) solve_seconds_ = base + el;
       bool limit = (steps > 0 && done >= steps) || (seconds > 0 && el >= seconds);
       long long tick = sub ? done : tree_->iterations;
-      if (sub_freq > 0 && (tick % sub_freq == 0)) report = true;
+      if (info_auto_ ? tick >= next_report_ : (sub_freq > 0 && tick % sub_freq == 0)) report = true;
       if (limit) report = true;
       if (report) {
         double target;
@@ -364,6 +393,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           reason = "required accuracy reached";
           break;
         }
+        if (info_auto_) next_report_ = next_auto_report(tick, st.exploitability, accuracy_ > 0 ? target : 0.0);
       }
       if (limit) {
         reason = steps > 0 && done >= steps ? "required number of steps done" : "required time elapsed";
@@ -694,6 +724,11 @@ void Upi::register_commands() {
     return std::string("set_threads ok!");
   };
   H["set_info_freq"] = [this](const Args& a) {
+    if (!a.empty() && a[0] == "auto") {  // extension: adaptive reporting (Upi::next_auto_report)
+      info_auto_ = true;
+      return std::string("set_info_freq ok!");
+    }
+    info_auto_ = false;
     info_freq_ = static_cast<int>(std::max<long long>(0, arg_int(a, 0, "frequency")));
     return std::string("set_info_freq ok!");
   };

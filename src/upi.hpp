@@ -192,6 +192,12 @@ class Upi {
   double recalc_accuracy_[3] = {0, 0, 0};
   int always_recalc_street_ = 0, always_recalc_ms_ = 0;
   int info_freq_ = 25;
+  // set_info_freq auto: report (and test the accuracy target) on an adaptive schedule instead of
+  // every info_freq_ iterations. See Upi::next_auto_report.
+  bool info_auto_ = false;
+  long long next_report_ = 0, last_rep_t_ = 0;
+  double last_rep_e_ = 0;
+  long long next_auto_report(long long t, double e, double target);
   int threads_ = 0;
   double step_ = 1.0;
   std::string algorithm_ = "auto";

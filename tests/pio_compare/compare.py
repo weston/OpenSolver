@@ -9,6 +9,7 @@ The PioSOLVER side runs over SSH (black-box: only UPI commands are sent). Config
   PIO_KEY   ssh private key              (default: ~/.ssh/pio_pc_ed25519)
   PIO_EXE   solver path on the Windows box (default: C:\\PioSOLVER\\PioSOLVER3-edge-znver5.exe)
   PIO_LOCAL =1 to run PIO_EXE directly, when this script runs on the Pio machine itself
+            (also from WSL on that machine, with PIO_EXE=/mnt/c/PioSOLVER/PioSOLVER3-edge-znver5.exe)
 
 Each script line that is a command gets one response. "set_end_string END" is prepended automatically.
 
@@ -57,7 +58,8 @@ def run_ours(exe, cmds, timeout):
 
 def run_pio(cmds, timeout):
     exe = os.environ.get("PIO_EXE", r"C:\PioSOLVER\PioSOLVER3-edge-znver5.exe")
-    folder, name = exe.rsplit("\\", 1)
+    # A POSIX PIO_EXE (e.g. /mnt/c/PioSOLVER/... under WSL interop) splits on "/"; Pio needs its folder as cwd.
+    folder, name = os.path.split(exe) if "/" in exe else exe.rsplit("\\", 1)
     if os.environ.get("PIO_LOCAL") == "1":  # running on the Pio machine itself
         p = subprocess.run([exe], cwd=folder, input="\r\n".join(cmds) + "\r\n", capture_output=True, text=True,
                            timeout=timeout)

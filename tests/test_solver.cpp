@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <string>
 
 #include "../src/cards.hpp"
@@ -186,7 +187,6 @@ static bool mem_accounting() {
 // of a river, a turn and a flop tree, both perspectives, with random reaches (some exact zeros, so
 // blocked and empty groups occur), random payoffs and a non-zero `out` to accumulate into.
 static bool showdown_kernels_match() {
-#if PIO_SHOWDOWN_AVX512
   struct Spot {
     const char *board, *r0, *r1;
   } spots[] = {
@@ -200,7 +200,7 @@ static bool showdown_kernels_match() {
     return rng;
   };
   auto unit = [&] { return static_cast<float>(next() >> 40) / static_cast<float>(1 << 24); };
-  long boards = 0, bad = 0;
+  long boards = 0, bad = 0, bad_compat = 0;
   for (const Spot& sp : spots) {
     GameConfig cfg;
     parse_cards(sp.board, cfg.board);
@@ -223,19 +223,30 @@ static bool showdown_kernels_match() {
         for (float& x : a) x = 100 * unit() - 50;
         b = a;
         const float W = 150 * unit(), L = -100 * unit(), T = 0.5f * (W + L);
-        showdown_board_scalar(sb, W, L, T, p, ro.data(), a.data());
-        showdown_board_avx512(sb, W, L, T, p, ro.data(), b.data());
+        std::vector<float> ca(Hp, 0.0f), cb(Hp, 0.0f);
+        showdown_board_scalar(sb, W, L, T, p, ro.data(), a.data(), ca.data());
+#if PIO_SHOWDOWN_AVX512
+        showdown_board_avx512(sb, W, L, T, p, ro.data(), b.data(), cb.data());
         bad += std::memcmp(a.data(), b.data(), sizeof(float) * Hp) != 0;
+        bad += std::memcmp(ca.data(), cb.data(), sizeof(float) * Hp) != 0;
+#else
+        (void)b;
+        (void)cb;
+#endif
+        // compat must be the card-removal compatible mass (call_and_fold's fold row)
+        for (const SdEntry& e : sb.ent[p]) {
+          double want = 0;
+          for (const SdEntry& q : sb.ent[1 - p])
+            if (q.c1 != e.c1 && q.c1 != e.c2 && q.c2 != e.c1 && q.c2 != e.c2) want += ro[q.idx];
+          if (std::fabs(ca[e.idx] - want) > 1e-4 * (1 + std::fabs(want))) ++bad_compat;
+        }
         ++boards;
       }
     }
   }
-  std::printf("[showdown] AVX-512 vs scalar kernel: %ld of %ld board/player pairs differ\n", bad, boards);
-  return bad == 0 && boards > 0;
-#else
-  std::printf("[showdown] AVX-512 kernel not built (needs AVX-512F/BW/VBMI); nothing to compare\n");
-  return true;
-#endif
+  std::printf("[showdown] AVX-512 vs scalar kernel: %ld of %ld board/player pairs differ%s; %ld wrong compat values\n",
+              bad, boards, PIO_SHOWDOWN_AVX512 ? "" : " (AVX-512 kernel not built: scalar only)", bad_compat);
+  return bad == 0 && bad_compat == 0 && boards > 0;
 }
 
 int main(int argc, char** argv) {

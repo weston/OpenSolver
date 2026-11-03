@@ -53,9 +53,14 @@ struct DcfrParams {
 #else
 #define PIO_SHOWDOWN_AVX512 0
 #endif
-void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+// compat (optional, hand-indexed, zeroed by the caller): also store each of p's hands' card-removal
+// compatible opponent mass, sum of ro over opponent hands disjoint from h. It is a by-product of the
+// kernel, and exactly what a fold child with the same opponent reach needs (Solver::call_and_fold).
+void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                           float* compat = nullptr);
 #if PIO_SHOWDOWN_AVX512
-void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                           float* compat = nullptr);
 #endif
 
 struct RootStats {
@@ -192,7 +197,13 @@ class Solver {
   void walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br);
   void fold_value(const GNode& n, int p, const float* ro, float* out) const;
   void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
-  void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) const;
+  void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                      float* compat = nullptr) const;
+  // River decision of the traverser facing a bet: its fold and call (showdown) children see the same
+  // opponent reach, so one showdown kernel call gives both rows (the fold from the kernel's compatible
+  // mass instead of a separate compat_mass pass). Returns false (nothing written) if the pair does not
+  // qualify: both children must be terminals at a 5-card board.
+  bool call_and_fold(const GNode& sd, const GNode& fold, int p, const float* ro, float* sd_out, float* fold_out) const;
 
   GameTree& g_;
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;

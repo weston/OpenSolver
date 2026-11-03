@@ -1008,6 +1008,50 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     }
   } else
 #endif
+#if PIO_SHOWDOWN_NEON
+  if (!P && A <= 16) {
+    // NEON form of the AVX-512 single pass above (#175): 4 hands at a time with every action's row in
+    // registers, instead of three passes through arena rows. The generic loops' operations in the same
+    // order (r + 0, max with 0, sum over actions in order, 1/sum, fma(v, inv, add)): identical floats.
+    // M4, 10 threads: -2 to -5% on every bench tree (threebet_mono 6.12 -> 5.95 s).
+    g_.ensure_loaded(n);
+    const bool q16 = g_.compressed;
+    const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    const float qs = q16 ? g_.rscale[n.aux] : 0.0f;
+    const float32x4_t z = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), uni = vdupq_n_f32(1.0f / static_cast<float>(A));
+    float32x4_t v[16];
+    int h = 0;
+    for (; h + 4 <= H; h += 4) {
+      float32x4_t sum = z;
+      for (int a = 0; a < A; ++a) {
+        const size_t off = static_cast<size_t>(a) * H + h;
+        float32x4_t x = q16 ? vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vld1_s16(Q + off))), qs) : vld1q_f32(R + off);
+        x = vaddq_f32(x, z);   // the generic loop's r + 0 (turns -0 into +0)
+        x = vmaxq_f32(x, z);   // v > 0 ? v : 0
+        v[a] = x;
+        sum = vaddq_f32(sum, x);
+      }
+      const uint32x4_t pos = vcgtq_f32(sum, z);
+      const float32x4_t inv = vbslq_f32(pos, vdivq_f32(one, sum), z);
+      const float32x4_t add = vbslq_f32(pos, z, uni);
+      for (int a = 0; a < A; ++a) vst1q_f32(out + static_cast<size_t>(a) * H + h, vfmaq_f32(add, v[a], inv));
+    }
+    for (; h < H; ++h) {  // the generic loops' operations, one hand
+      float sum = 0.0f, vv[16];
+      for (int a = 0; a < A; ++a) {
+        const size_t off = static_cast<size_t>(a) * H + h;
+        float x = (q16 ? static_cast<float>(Q[off]) * qs : R[off]) + 0.0f;
+        x = x > 0.0f ? x : 0.0f;
+        vv[a] = x;
+        sum += x;
+      }
+      const bool pos = sum > 0.0f;
+      const float inv = pos ? 1.0f / sum : 0.0f, add = pos ? 0.0f : 1.0f / static_cast<float>(A);
+      for (int a = 0; a < A; ++a) out[static_cast<size_t>(a) * H + h] = std::fma(vv[a], inv, add);
+    }
+  } else
+#endif
   {
   const float* R = g_.regrets_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
   float* sum = sc.a.alloc_zero(H);

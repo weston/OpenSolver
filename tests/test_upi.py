@@ -230,6 +230,74 @@ def check_locking(u):
     check(all(abs(st2[1][i] - 1) < 1e-4 for i in in_range), "set_strategy round-trips (in-range hands)")
 
 
+def check_lock_save_load(u):
+    """Locks must survive dump_tree / load_tree (#200 part 1, persistence).
+
+    The flags live in the node records and the combo mask in its own section, so a lock can be lost
+    in three distinct ways: the flag, the mask, or the locked strategy itself. A lost flag is the
+    dangerous one -- nothing looks wrong until the next solve quietly moves a strategy the user
+    pinned, so this also re-solves after the reload and checks the locked combos did not budge.
+    """
+    print("[locks survive save / load]")
+    u.cmd("unlock_node r:0")
+    weights = floats(u.cmd("show_range OOP r:0"))
+    in_range = [i for i, w in enumerate(weights) if w > 0]
+    check(len(in_range) > 30, f"enough in-range combos to lock ({len(in_range)})")
+    picked = in_range[::3]
+    vec = ["0"] * 1326
+    for i in picked:
+        vec[i] = "1"
+    check(u.cmd("combo_lock_node r:0 " + " ".join(vec)) == "combo_lock_node ok!", "combo_lock_node")
+    check("COMBO_LOCKED" in u.cmd("show_node r:0"), "COMBO_LOCKED flag set")
+    # Out-of-range combos cannot be locked (they have no local hand), so the readback is exactly the
+    # in-range subset we asked for. Checking this before saving separates a mask bug from a save bug.
+    got = [i for i, v in enumerate(floats(u.cmd("show_locked_combos r:0"))) if v > 0]
+    check(got == picked, f"show_locked_combos returns the combos we locked ({len(got)} vs {len(picked)})")
+    combos_before = u.cmd("show_locked_combos r:0")
+    rows_before = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "locked.cfr")
+        check(u.cmd(f'dump_tree "{path}" lossless') == "dump_tree ok!", "dump_tree with a combo lock")
+        u.cmd("free_tree")
+        check(u.cmd(f'load_tree "{path}" full') == "load_tree ok!", "load_tree with a combo lock")
+        check("COMBO_LOCKED" in u.cmd("show_node r:0"), "COMBO_LOCKED flag survives reload")
+        check(u.cmd("show_locked_combos r:0") == combos_before, "locked combo set survives reload")
+        rows_mid = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+        dev = max(abs(a - b) for ra, rb in zip(rows_before, rows_mid) for a, b in zip(ra, rb))
+        check(dev < 1e-6, f"strategy exact after lossless reload (max dev {dev:.2e})")
+        u.cmd("go 30 steps")
+        u.cmd("wait_for_solver")
+        rows_after = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+        dev_locked = max(abs(rows_before[k][i] - rows_after[k][i])
+                         for k in range(len(rows_before)) for i in picked)
+        check(dev_locked < 1e-4, f"reloaded lock still holds under solving (max dev {dev_locked:.2e})")
+        # Guard against the above becoming vacuous: if those 30 iterations ever stop moving anything
+        # (a no-op `go` after a reload, say), the lock check would pass no matter how broken the lock
+        # is. The unlocked combos at the same node are the control and must move.
+        rest = sorted(set(in_range) - set(picked))
+        dev_free = max(abs(rows_before[k][i] - rows_after[k][i])
+                       for k in range(len(rows_before)) for i in rest)
+        # 3e-4 sits ~3x above the 1e-4 lock tolerance it guards and ~4x below the movement actually
+        # observed here (1.3e-3): the tree is well converged by this point, so the control is small.
+        check(dev_free > 3e-4,
+              f"control: unlocked combos at the same node did move ({dev_free:.2e}), so the lock "
+              f"check above is not vacuous")
+        # A whole-node lock through the default (quantised) save: the flag is exact, the strategy is
+        # only within the compression precision, like every other default-save strategy.
+        u.cmd("unlock_node r:0")
+        u.cmd("lock_node r:0")
+        rows_before = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+        q = os.path.join(td, "locked_q.cfr")
+        check(u.cmd(f'dump_tree "{q}"') == "dump_tree ok!", "dump_tree (default) with a node lock")
+        u.cmd("free_tree")
+        u.cmd(f'load_tree "{q}" full')
+        check("LOCKED" in u.cmd("show_node r:0"), "LOCKED flag survives a default (quantised) save")
+        rows_after = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+        dev = max(abs(a - b) for ra, rb in zip(rows_before, rows_after) for a, b in zip(ra, rb))
+        check(dev < 1.0 / 2047 + 1e-6, f"locked strategy within 11-bit precision (max dev {dev:.2e})")
+        u.cmd("unlock_node r:0")
+
+
 def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
     print("[save / load]")
     with tempfile.TemporaryDirectory() as td:
@@ -349,6 +417,7 @@ def run_big_tree(u, order):
     check_isomorphism(u, order)
     check_locking(u)
     check_save_load(u, "r:0:c:b24")
+    check_lock_save_load(u)
     check_lines(u, 100)
 
 
@@ -368,6 +437,7 @@ def run_small_tree(u, order):
     check_locking(u)
     check_save_load(u, "r:0:c:b12", deep_paths=("r:0:c:c:3d", "r:0:c:b12:c:Ad:c", "r:0:c:c:Ks:c:c:3h", "r:0:b12:c:7d:c:c:9s"),
                     whole_tree=True)
+    check_lock_save_load(u)
     check_lines(u, 10)
 
 

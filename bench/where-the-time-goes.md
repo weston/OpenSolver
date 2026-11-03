@@ -84,6 +84,15 @@ first place to look.
 | #134 | -9 to -14% available | `set_avg_delay 32`; #80's sweep predated the alpha/gamma retune and the pruning fix |
 | #86 | -13% `deep` | (not hidden - confirmed independently at 180 iterations) |
 
+**One counterexample, and it is instructive.** #164 vectorised the regret-update max reductions for
+a bit-identical 4.6-5.9% on arm64 (11-14% claimed on x86). That is a code win, not a default. It does
+not contradict the gather result above: those loops are *gather-bound* and forcing them is slower,
+whereas this one is a **contiguous reduction** that was blocked by float `max` semantics. The trick
+generalises - non-negative floats order identically to their IEEE-754 bit patterns read as unsigned
+integers, so `max(|x|)` becomes an integer max, and compilers vectorise integer max reductions
+**without** `-ffast-math` where they refuse to for float max because of NaN. Worth looking for other
+float reductions in hot paths that could be re-expressed this way.
+
 Two lessons that generalise:
 
 - **A feature with an activation precondition must state it where a benchmarker will trip over it.**

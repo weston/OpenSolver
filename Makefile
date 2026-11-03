@@ -74,13 +74,14 @@ windows: $(WIN_OBJ)
 bench: solver
 	python3 bench/run.py --out bench/results
 
-# ----- release build: LTO + PGO -----------------------------------------------
+# ----- release build: LTO, and optionally PGO ---------------------------------
 # `make release` produces ./solver-release without touching the default ./solver
-# or the default build flags:
-#   1. compile an instrumented binary into build/pgo/gen/,
-#   2. run bench/train_pgo.sh (tests/pio_compare/bench_flop.txt plus the bench
+# or the default build flags. By default it compiles with LTO and the arch flags
+# below. With PGO=1 it additionally:
+#   1. compiles an instrumented binary into build/pgo/gen/,
+#   2. runs bench/train_pgo.sh (tests/pio_compare/bench_flop.txt plus the bench
 #      river/turn trees, 1 thread and all threads) to collect a profile,
-#   3. compile the final binary with LTO, the profile, and the arch flags below.
+#   3. compiles the final binary with that profile as well.
 # RELEASE_ARCH defaults to native on both platforms (ARM: -mcpu, x86: -march),
 # like the default build. Override it for portable binaries, e.g. on Linux:
 #   make release RELEASE_ARCH=-march=x86-64-v3
@@ -107,6 +108,25 @@ PGO_USE  := -fprofile-use=$(CURDIR)/$(PGO_DIR)/gcc -fprofile-correction
 LTO_FLAG := -flto=auto
 endif
 
+# PGO is opt-in (#199). Measured on arm64 (M1 Ultra, flop_srp_2, 60 steps,
+# 1 thread, interleaved with alternating order, 8 reps, sd ~1%), relative to the
+# default `make` build:
+#     LTO only     -0.5%   (free)
+#     PGO only    +11.6%   (slower)
+#     LTO + PGO   +12.1%   (slower)
+# Applying the profile costs more than using no profile at all, on the same tree
+# family the profile trains on (bench_flop is ~73% of training mass weighted by
+# nodes x iterations), so the training inputs are not the cause -- the profile's
+# effect on codegen is. Until that is understood, `make release` ships LTO only.
+# To re-test PGO:  make release PGO=1
+PGO ?= 0
+ifeq ($(PGO),1)
+PGO_TRAIN_DEP := $(PGO_DIR)/trained.stamp
+else
+PGO_USE       :=
+PGO_TRAIN_DEP :=
+endif
+
 release: solver-release
 
 $(PGO_DIR)/gen $(PGO_DIR)/opt:
@@ -123,7 +143,7 @@ $(PGO_DIR)/trained.stamp: $(PGO_DIR)/instrumented bench/train_pgo.sh
 	    bench/train_pgo.sh $(PGO_DIR)/instrumented $(CURDIR)/$(PGO_DIR) "$(LLVM_PROFDATA)"
 	touch $@
 
-$(PGO_DIR)/opt/%.o: src/%.cpp $(PGO_DEPS) $(PGO_DIR)/trained.stamp | $(PGO_DIR)/opt
+$(PGO_DIR)/opt/%.o: src/%.cpp $(PGO_DEPS) $(PGO_TRAIN_DEP) | $(PGO_DIR)/opt
 	$(CXX) $(RELEASE_CXXFLAGS) $(LTO_FLAG) $(PGO_USE) -c $< -o $@
 
 solver-release: $(OPT_OBJ)

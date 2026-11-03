@@ -13,6 +13,9 @@ public UPI documentation; it contains no PioSOLVER code.
 - Optional 16-bit compressed storage (`small_strats`), roughly halving memory.
 - **Regret-based pruning** on by default (`set_pruning off|on [period]`): a traverser action whose current strategy is exactly zero for every hand is skipped — exactly, so results are bit-identical — and revisited every `period`-th iteration (default 8). Worth about 13% on a deep tree.
 
+New here? **[docs/quickstart.md](docs/quickstart.md)** walks through installing, solving a spot and
+reading the output in about five minutes. The rest of this file is reference and internals.
+
 ## Build and run
 
 ```sh

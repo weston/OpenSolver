@@ -321,6 +321,9 @@ class GameTree {
   // total of 512 MB), so Solver::showdown_value evaluates one matrix product instead of a showdown
   // kernel call per runout (a turn all-in: ~48 calls; srp_big: 17% of all kernel calls).
   void build_allin_tables();
+  // Bytes the tables take (and, with todo, which runout sets get one): shared by the build and
+  // memory_bytes_for, which counts them before allocate_storage builds them.
+  uint64_t allin_table_plan(std::vector<uint32_t>* todo) const;
 
  private:
   std::unordered_map<uint64_t, int> showdown_index_;

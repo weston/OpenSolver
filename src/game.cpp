@@ -447,7 +447,6 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   std::vector<int> board = cfg.board;
   Filler f{*this, iso};
   f.fill(0, aroot.get(), board);
-  build_allin_tables();
   if (allocate) allocate_storage();
   return true;
 }
@@ -486,20 +485,28 @@ void fill_allin_table(const GameTree& g, const AllinRunouts& ar, const std::vect
 }
 }  // namespace
 
-void GameTree::build_allin_tables() {
-  if (cfg.preflop) return;
-  const int H0 = num_hands(0), H1 = num_hands(1);
-  std::vector<uint32_t> todo;
+uint64_t GameTree::allin_table_plan(std::vector<uint32_t>* todo) const {
+  if (cfg.preflop) return 0;
+  const uint64_t pairs = static_cast<uint64_t>(num_hands(0)) * num_hands(1);
   uint64_t total = 0;
   for (uint32_t i = 0; i < allins.size(); ++i) {
     const AllinRunouts& ar = allins[i];
     if (ar.exact || ar.boards.empty()) continue;
-    const uint64_t per = static_cast<uint64_t>(H0) * H1 * (ar.boards.size() <= 127 ? 1 : 2);
+    const uint64_t per = pairs * (ar.boards.size() <= 127 ? 1 : 2);
     if (total + per > (uint64_t(512) << 20)) break;
     total += per;
-    todo.push_back(i);
+    if (todo) todo->push_back(i);
   }
-  if (todo.empty()) return;
+  return total;
+}
+
+void GameTree::build_allin_tables() {
+  const int H0 = num_hands(0), H1 = num_hands(1);
+  std::vector<uint32_t> todo;
+  allin_table_plan(&todo);
+  bool built = false;
+  for (uint32_t i : todo) built |= !(allins[i].e2.empty() && allins[i].e2b.empty());
+  if (todo.empty() || built) return;
   // Pairs sharing a card never meet: their counts stay 0, so a reach on them contributes nothing.
   std::vector<uint8_t> compat(static_cast<size_t>(H0) * H1);
   for (int h = 0; h < H0; ++h) {
@@ -525,11 +532,16 @@ uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
   for (auto& s : showdowns)
     b += (s.ent[0].size() + s.ent[1].size()) * sizeof(SdEntry) + (s.groups[0].size() + s.groups[1].size()) * 4 +
          sizeof(ShowdownBoard);
-  for (auto& a : allins) b += a.e2.size() * sizeof(uint16_t) + a.e2b.size();
+  uint64_t tables = 0;
+  for (auto& a : allins) tables += a.e2.size() * sizeof(uint16_t) + a.e2b.size();
+  b += tables ? tables : allin_table_plan(nullptr);  // before allocate_storage builds them
   return b;
 }
 
 void GameTree::allocate_storage() {
+  // The all-in outcome tables belong with the storage: built only for a tree that will be solved,
+  // not for estimate_tree's throwaway build or a build the memory check rejects (#185 review).
+  build_allin_tables();
   regrets.clear();
   regrets.shrink_to_fit();
   strat.clear();

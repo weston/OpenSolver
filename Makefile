@@ -118,16 +118,17 @@ LTO_FLAG := -flto=auto
 endif
 
 # PGO is opt-in (#199). Measured on arm64 (M1 Ultra, flop_srp_2, 60 steps,
-# 1 thread, interleaved with alternating order, 8 reps, sd ~1%), relative to the
-# default `make` build:
-#     LTO only     -0.5%   (free)
-#     PGO only    +11.6%   (slower)
-#     LTO + PGO   +12.1%   (slower)
-# Applying the profile costs more than using no profile at all, on the same tree
-# family the profile trains on (bench_flop is ~73% of training mass weighted by
-# nodes x iterations), so the training inputs are not the cause -- the profile's
-# effect on codegen is. Until that is understood, `make release` ships LTO only.
-# To re-test PGO:  make release PGO=1
+# 1 thread, interleaved with alternating order, 8 reps), relative to the default
+# `make` build:
+#     LTO only       -0.2%
+#     LTO + PGO      -0.1%
+# PGO is at parity, not a win -- an isolated 12-rep run put it at -1.65%, but
+# that is only 1.2x sd and does not clear the 2x bar this repo uses. Since it
+# roughly doubles release build time for no measured gain, it stays off by
+# default. It is worth re-testing per machine and workload.
+# (Before the IR-instrumentation fix, PGO was +12.1% SLOWER here; see the
+# PGO_GEN comment above for why, and do not switch those flags back.)
+# To build with PGO:  make release PGO=1
 PGO ?= 0
 ifeq ($(PGO),1)
 PGO_TRAIN_DEP := $(PGO_DIR)/trained.stamp
@@ -184,7 +185,28 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINNAME)
 	rm -rf $(DESTDIR)$(DOCDIR)
 
-clean:
-	rm -rf build solver solver-release
+# ----- source distribution -----------------------------------------------------
+# `make dist` writes dist/wsolver-<version>-src.tar.gz plus a .sha256 next to it,
+# so a recipient can verify what they got. VERSION is read from src/version.hpp
+# rather than duplicated here, and `git archive` means the tarball contains
+# exactly what is committed -- no build output, no stray local files.
+# NB: no '#' in this sed script -- make strips from '#' to end of line even
+# inside $(shell ...), which silently truncates the call.
+VERSION  := $(shell sed -n 's/.*SOLVER_VERSION "\(.*\)".*/\1/p' src/version.hpp)
+DISTNAME := $(BINNAME)-$(VERSION)-src
 
-.PHONY: all test test-big windows bench release install uninstall clean
+dist:
+	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
+	@git diff-index --quiet HEAD -- || echo "WARNING: uncommitted changes to tracked files are NOT in the tarball"
+	@u=$$(git ls-files --others --exclude-standard | head -5); \
+	  test -z "$$u" || { echo "WARNING: untracked files are NOT in the tarball:"; echo "$$u" | sed 's/^/  /'; }
+	mkdir -p dist
+	git archive --format=tar.gz --prefix=$(DISTNAME)/ -o dist/$(DISTNAME).tar.gz HEAD
+	cd dist && shasum -a 256 $(DISTNAME).tar.gz > $(DISTNAME).tar.gz.sha256
+	@echo "dist/$(DISTNAME).tar.gz"
+	@cat dist/$(DISTNAME).tar.gz.sha256
+
+clean:
+	rm -rf build solver solver-release dist
+
+.PHONY: all test test-big windows bench release install uninstall dist clean

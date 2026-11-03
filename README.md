@@ -48,21 +48,32 @@ make release && make install INSTALL_BIN=solver-release
 `./solver-release`, with link-time optimization. Results are identical to the
 default build.
 
-Profile-guided optimization is available but **off by default**, because on
-arm64 it currently makes the binary slower rather than faster. Measured on an
-M1 Ultra (`flop_srp_2`, 60 steps, 1 thread, interleaved runs, sd ~1%), relative
-to the default `make` build: LTO alone is -0.5% (free), PGO alone is +11.6%
-(slower), and the two together are +12.1%. See #199. Build with `PGO=1` to
-re-test it on your own hardware:
+Profile-guided optimization is available but **off by default**, because it
+measures at parity rather than as a win:
 
 ```sh
 make release PGO=1
 ```
 
-That trains a profile on `tests/pio_compare/bench_flop.txt` and the bench
+Measured on an M1 Ultra (`flop_srp_2`, 60 steps, 1 thread, interleaved runs,
+8 reps), relative to the default `make` build: LTO alone is -0.2%, LTO plus PGO
+is -0.1%. Since `PGO=1` roughly doubles release build time for no measured gain,
+it stays opt-in. It is worth re-testing on your own hardware and workload, where
+a profile may help more than it does here -- our hot loop is a single
+gather-bound reduction with little branch layout left to improve.
+
+`PGO=1` trains a profile on `tests/pio_compare/bench_flop.txt` and the bench
 river/turn trees, single- and multi-threaded, via `bench/train_pgo.sh`, and
 needs `llvm-profdata` under Clang (shipped with the toolchain; on macOS it is
-found via `xcrun`). Measure before shipping a PGO build.
+found via `xcrun`).
+
+One warning if you change the PGO flags: use **IR-level** instrumentation
+(`-fprofile-generate`), never clang's front-end instrumentation
+(`-fprofile-instr-generate`). The latter counts function entries before
+inlining, so functions the instrumented build inlines record entry count 0;
+clang then treats them as cold and refuses to inline them in the optimised
+build. That cost us 12% by un-inlining the showdown kernel, which is 49-65% of
+runtime. See #199 and the comment in the Makefile.
 
 The native CPU flag (`-mcpu=native` on ARM, `-march=native` on x86) also applies
 to the release build; override `RELEASE_ARCH` for portable binaries, e.g.

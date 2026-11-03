@@ -514,9 +514,12 @@ void Upi::apply_pcfr_settings() {
   if (!solver_) return;
   solver_->predictive = predictive_;
   solver_->avg_delay = avg_delay_;
-  // resize() on an empty ZVec is a fresh calloc: zero pages, committed only when the
-  // solver first writes them (which during a solve is every iteration, but never at all
-  // while the feature stays off).
+  // Costs storage_floats * 4 bytes, committed immediately. ZeroAlloc::allocate does use
+  // calloc, so the pages start out lazy, but vector::resize then value-initializes every
+  // element (a memset for float), touching all of them before the solver runs. Measured on
+  // flop_srp_2: peak RSS 155 MB with predictive off against 225 MB on, i.e. the whole array
+  // up front. It is counted in memory_bytes_for(.., with_preds) so the build_tree check sees
+  // it (#98); nothing is committed while the feature stays off, since the vector stays empty.
   if (predictive_ && tree_ && tree_->preds.size() < tree_->storage_floats)
     tree_->preds.resize(tree_->storage_floats);
 }

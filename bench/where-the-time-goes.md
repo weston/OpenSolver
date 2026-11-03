@@ -56,9 +56,22 @@ This path is close to its CPU ceiling, and the reasons are all measured rather t
 
 ## What is actually left, in order of size
 
-1. **Thread scaling (#53) — worth ~2-3x, the largest available win.** Measured 6-8x on 20 cores,
-   and a net *loss* on the smallest trees (the preflop tree is slower on 20 threads than on 1).
-   Platform-independent and costs no bit-stability.
+1. **Thread scaling (#53) — now ~1.4x left on postflop trees, no longer the largest win.** The
+   "6-8x on 20 cores, 2-3x available" figure this list used to carry is **stale**; the work since
+   (#144-#146, #161, #111) has largely spent it. Re-measured with a two-point slope (0 vs 20
+   iterations, best of 3, so startup and tree build cancel):
+
+   | tree | 1 thread s/iter | 20 threads s/iter | speedup |
+   |---|---|---|---|
+   | `deep` | 0.16349 | 0.01143 | **14.30x** |
+   | `flop_srp_2` | 0.11009 | 0.00781 | **14.10x** |
+   | `flop_3bet` | 0.03012 | 0.00245 | **12.32x** |
+   | `turn` | 0.00159 | 0.00079 | 2.01x |
+
+   So on the trees that cost real time, 20 cores already return 12.3-14.3x and the remaining
+   headroom is about **1.4x**, not 2-3x. Small trees still scale badly (`turn` at 2.01x), but they
+   are cheap in absolute terms — the share-is-not-amount rule applies. Note also that the old claim
+   of a net *loss* on the smallest trees no longer holds: `turn` is a 2x gain.
 2. **x86 gather (#89) — unknown, needs x86 hardware.** AVX2 `vgatherdps` / AVX-512 gather might
    vectorize the two `cs[]` lookup loops that NEON cannot. AVX2 gathers are microcoded and often no
    better than scalar, so this is empirical.

@@ -543,7 +543,7 @@ static void showdown_lanes_256(const ShowdownBoard& sb, int p, int n, const SdJo
 #endif
 
 #if PIO_SHOWDOWN_NEON
-// The AVX-512 lanes kernel (showdown_lanes_256) for AArch64: 8 lanes as two 128-bit halves, one
+// The x86 lanes kernel (showdown_lanes_256) for AArch64: 8 lanes as two 128-bit halves, one
 // lane per job plus one per fused fold. Same operations per lane as showdown_board_scalar, in the
 // same order (clang and GCC contract its value line to fma(L, compat, fma(a, lt, b*le)); the fold is
 // its explicit fma), so the outputs are bit-identical; test_solver's [river batch] check covers it.
@@ -1013,6 +1013,51 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
       const __m512 add = _mm512_mask_blend_ps(pos, uni, z);
       for (int a = 0; a < A; ++a)
         _mm512_mask_storeu_ps(out + static_cast<size_t>(a) * H + h, m, _mm512_fmadd_ps(v[a], inv, add));
+    }
+  } else
+#endif
+#if PIO_SHOWDOWN_AVX2
+  if (!P && A <= 16) {
+    // AVX2 form of the single pass (#175 / NEON #222) for x86 builds without AVX-512: 8 hands at a
+    // time with every action's row in registers. The generic loops' operations in the same order.
+    g_.ensure_loaded(n);
+    const bool q16 = g_.compressed;
+    const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    const __m256 qs = _mm256_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm256_setzero_ps(),
+                 one = _mm256_set1_ps(1.0f), uni = _mm256_set1_ps(1.0f / static_cast<float>(A));
+    __m256 v[16];
+    int h = 0;
+    for (; h + 8 <= H; h += 8) {
+      __m256 sum = z;
+      for (int a = 0; a < A; ++a) {
+        const size_t off = static_cast<size_t>(a) * H + h;
+        __m256 x = q16 ? _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(
+                                           _mm_loadu_si128(reinterpret_cast<const __m128i*>(Q + off)))),
+                                       qs)
+                       : _mm256_loadu_ps(R + off);
+        x = _mm256_add_ps(x, z);  // the generic loop's r + 0 (turns -0 into +0)
+        x = _mm256_max_ps(x, z);  // v > 0 ? v : 0 (maxps returns its second operand, +0, for -0/+0 and 0)
+        v[a] = x;
+        sum = _mm256_add_ps(sum, x);
+      }
+      const __m256 pos = _mm256_cmp_ps(sum, z, _CMP_GT_OQ);
+      const __m256 inv = _mm256_and_ps(pos, _mm256_div_ps(one, sum));
+      const __m256 add = _mm256_andnot_ps(pos, uni);
+      for (int a = 0; a < A; ++a) _mm256_storeu_ps(out + static_cast<size_t>(a) * H + h, _mm256_fmadd_ps(v[a], inv, add));
+    }
+    for (; h < H; ++h) {  // the generic loops' operations, one hand
+      float sum = 0.0f, vv[16];
+      for (int a = 0; a < A; ++a) {
+        const size_t off = static_cast<size_t>(a) * H + h;
+        float x = (q16 ? static_cast<float>(Q[off]) * g_.rscale[n.aux] : R[off]) + 0.0f;
+        x = x > 0.0f ? x : 0.0f;
+        vv[a] = x;
+        sum += x;
+      }
+      const bool pos = sum > 0.0f;
+      const float inv = pos ? 1.0f / sum : 0.0f, add = pos ? 0.0f : 1.0f / static_cast<float>(A);
+      for (int a = 0; a < A; ++a) out[static_cast<size_t>(a) * H + h] = std::fma(vv[a], inv, add);
     }
   } else
 #endif

@@ -484,6 +484,28 @@ void GameTree::allocate_storage() {
   }
 }
 
+void GameTree::decompress() {
+  if (!compressed) return;
+  regrets.resize(storage_floats);
+  strat.resize(storage_floats);
+  for (const GNode& n : nodes) {
+    if (n.kind != ANodeKind::Decision) continue;
+    const size_t len = node_size(n);
+    const float rs = rscale[n.aux], ss = sscale[n.aux];
+    const int16_t* rq = regrets_q.data() + n.storage;
+    const uint16_t* sq = strat_q.data() + n.storage;
+    float* r = regrets.data() + n.storage;
+    float* s = strat.data() + n.storage;
+    for (size_t i = 0; i < len; ++i) r[i] = static_cast<float>(rq[i]) * rs;
+    for (size_t i = 0; i < len; ++i) s[i] = static_cast<float>(sq[i]) * ss;
+  }
+  compressed = false;
+  regrets_q.clear();
+  regrets_q.shrink_to_fit();
+  strat_q.clear();
+  strat_q.shrink_to_fit();
+}
+
 void GameTree::clear_storage() {
   lazy.reset();  // everything is zero now: nothing left to read from a save file
   std::fill(regrets.begin(), regrets.end(), 0.0f);

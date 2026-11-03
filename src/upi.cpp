@@ -11,6 +11,7 @@
 #endif
 
 #include <algorithm>
+#include <limits>
 #include <charconv>
 #include <cmath>
 #include <cstring>
@@ -330,6 +331,8 @@ long long Upi::next_auto_report(long long t, double e, double target) {
 
 void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   out_raw("SOLVER: started\n");
+  double best_e = std::numeric_limits<double>::infinity();  // 16-bit stall detection (#182)
+  int stalled = 0;
   if (info_auto_) {
     next_report_ = (sub ? 0 : tree_->iterations) + 10;
     last_rep_t_ = 0;
@@ -392,6 +395,23 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
         if (accuracy_ > 0 && st.exploitability <= target) {
           reason = "required accuracy reached";
           break;
+        }
+        // 16-bit storage has an exploitability floor (threebet_mono: ~0.09% of pot, #182). Under
+        // small_strats auto, a whole-tree solve whose last three reports set no new best while above
+        // its target switches to float32 if that fits, once, and carries on from the same state.
+        if (!sub && tree_->compressed && small_strats_ == "auto" && accuracy_ > 0) {
+          if (st.exploitability < best_e) {
+            best_e = st.exploitability;
+            stalled = 0;
+          } else if (++stalled == 3) {
+            const uint64_t need = tree_->memory_bytes_for(false, predictive_) - tree_->memory_bytes_for(true, predictive_);
+            if (need <= available_memory_bytes() * 9 / 10) {
+              tree_->decompress();
+              out_raw("SOLVER: 16-bit storage stopped improving; switched to 32-bit storage\n");
+            } else {
+              out_raw("SOLVER: 16-bit storage stopped improving; 32-bit storage does not fit\n");
+            }
+          }
         }
         if (info_auto_) next_report_ = next_auto_report(tick, st.exploitability, accuracy_ > 0 ? target : 0.0);
       }

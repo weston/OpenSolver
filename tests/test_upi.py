@@ -513,28 +513,6 @@ def check_go_partial(u):
     u.cmd("free_tree")
 
 
-def check_info_freq_auto(u):
-    """set_info_freq auto: adaptive report schedule; stops on the target with fewer checks."""
-    print("[set_info_freq auto]")
-    set_small_tree(u)
-    check(u.cmd("build_tree") == "build_tree ok!", "build_tree for info_freq auto")
-    check(u.cmd("set_info_freq auto") == "set_info_freq ok!", "set_info_freq auto accepted")
-    u.cmd("set_accuracy 0.005")
-    u.solver_msgs.clear()
-    u.cmd("go")
-    u.cmd("wait_for_solver")
-    blocks = [b for b in u.solver_msgs if b and any(l.startswith("Exploitable for:") for l in b)]
-    m = re.search(r"Exploitable for: ([-\d.eE+]+)", "\n".join(blocks[-1])) if blocks else None
-    check(m is not None and float(m.group(1)) <= 0.0055, f"auto stops at the target ({m and m.group(1)} <= 0.005)")
-    check(any(b and b[0].startswith("SOLVER: stopped (required accuracy reached") for b in u.solver_msgs),
-          "auto: stopped (required accuracy reached)")
-    iters = int(u.cmd("show_iters").split()[-1])
-    check(len(blocks) < max(3, iters // 10), f"auto checks less often than every 10 ({len(blocks)} reports, {iters} iterations)")
-    check(u.cmd("set_info_freq auto2").startswith("ERROR"), "set_info_freq rejects other words")
-    u.cmd("set_info_freq 25")
-    u.cmd("free_tree")
-
-
 def check_go_limits_and_errors(u):
     """Pio 3.10 behavior, probed black-box: go limits below one iteration still run one, the unit is
     required, timed stops say "timeout reached", bad players say "incorrect player", and a load_tree
@@ -571,6 +549,28 @@ def check_go_limits_and_errors(u):
     u.cmd("set_accuracy 0.005")
 
 
+def check_info_freq_auto(u):
+    """set_info_freq auto: adaptive report schedule; stops on the target with fewer checks."""
+    print("[set_info_freq auto]")
+    set_small_tree(u)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree for info_freq auto")
+    check(u.cmd("set_info_freq auto") == "set_info_freq ok!", "set_info_freq auto accepted")
+    u.cmd("set_accuracy 0.005")
+    u.solver_msgs.clear()
+    u.cmd("go")
+    u.cmd("wait_for_solver")
+    blocks = [b for b in u.solver_msgs if b and any(l.startswith("Exploitable for:") for l in b)]
+    m = re.search(r"Exploitable for: ([-\d.eE+]+)", "\n".join(blocks[-1])) if blocks else None
+    check(m is not None and float(m.group(1)) <= 0.0055, f"auto stops at the target ({m and m.group(1)} <= 0.005)")
+    check(any(b and b[0].startswith("SOLVER: stopped (required accuracy reached") for b in u.solver_msgs),
+          "auto: stopped (required accuracy reached)")
+    iters = int(u.cmd("show_iters").split()[-1])
+    check(len(blocks) < max(3, iters // 10), f"auto checks less often than every 10 ({len(blocks)} reports, {iters} iterations)")
+    check(u.cmd("set_info_freq auto2").startswith("ERROR"), "set_info_freq rejects other words")
+    u.cmd("set_info_freq 25")
+    u.cmd("free_tree")
+
+
 def main(exe, big=False):
     u = Upi(exe)
     try:
@@ -602,8 +602,8 @@ def main(exe, big=False):
         check_union_hands(u)
 
         check_go_partial(u)
-        check_info_freq_auto(u)
         check_go_limits_and_errors(u)
+        check_info_freq_auto(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")

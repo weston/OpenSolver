@@ -136,7 +136,8 @@ struct CsRegs {
   }
 };
 
-void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) {
+void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                           float* compat_out) {
   const int o = 1 - p;
   const SdEntry* pe = sb.ent[p].data();
   const SdEntry* oe = sb.ent[o].data();
@@ -206,20 +207,31 @@ void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, i
     const __m512 v =
         _mm512_fmadd_ps(vl, compat, _mm512_fmadd_ps(va, _mm512_maskz_loadu_ps(m, ltv + i), _mm512_mul_ps(vb, le)));
     _mm512_mask_storeu_ps(ltv + i, m, v);  // ltv[i..i+15] is consumed: reuse it for the values
+    if (compat_out) _mm512_mask_storeu_ps(lev + i, m, compat);  // and lev[] for the compatible mass
   }
-  for (int i = 0; i < np; ++i) out[pe[i].idx] += ltv[i];
+  if (compat_out) {
+    for (int i = 0; i < np; ++i) {
+      const int idx = pe[i].idx;
+      out[idx] += ltv[i];
+      compat_out[idx] = lev[i];
+    }
+  } else {
+    for (int i = 0; i < np; ++i) out[pe[i].idx] += ltv[i];
+  }
 }
 #endif
 
-void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) const {
+void Solver::showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                            float* compat) const {
 #if PIO_SHOWDOWN_AVX512
-  showdown_board_avx512(sb, W, L, T, p, ro, out);
+  showdown_board_avx512(sb, W, L, T, p, ro, out, compat);
 #else
-  showdown_board_scalar(sb, W, L, T, p, ro, out);
+  showdown_board_scalar(sb, W, L, T, p, ro, out, compat);
 #endif
 }
 
-void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) {
+void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                           float* compat_out) {
   const int o = 1 - p;
   const SdEntry* pe = sb.ent[p].data();
   const SdEntry* oe = sb.ent[o].data();
@@ -285,6 +297,7 @@ void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, i
     const float le = lev[i] + sr;
     const float compat = cum - cs[sd_w_c1(w)] - cs[sd_w_c2(w)] + sr;
     out[sd_w_idx(w)] += a * ltv[i] + b * le + L * compat;
+    if (compat_out) compat_out[sd_w_idx(w)] = compat;
   }
   if (np > 0) {
     const SdEntry q = pe[np - 1];
@@ -292,6 +305,7 @@ void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, i
     const float le = lev[np - 1] + sr;
     const float compat = cum - cs[q.c1] - cs[q.c2] + sr;
     out[q.idx] += a * ltv[np - 1] + b * le + L * compat;
+    if (compat_out) compat_out[q.idx] = compat;
   }
 }
 
@@ -362,6 +376,23 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
     for (int h = 0; h < Hp; ++h) out[h] += src[h];
   }
   for (int h = 0; h < Hp; ++h) out[h] *= ar.scale;
+}
+
+bool Solver::call_and_fold(const GNode& sd, const GNode& fold, int p, const float* ro, float* sd_out,
+                           float* fold_out) const {
+  if (sd.kind != ANodeKind::Showdown || fold.kind != ANodeKind::Fold || sd.board_len != 5) return false;
+  const ActionNode& an = g_.an(sd);
+  const float W = static_cast<float>(g_.terminal_payoff(an, p, 1));
+  const float L = static_cast<float>(g_.terminal_payoff(an, p, -1));
+  const float T = static_cast<float>(g_.terminal_payoff(an, p, 0));
+  const int Hp = g_.num_hands(p);
+  std::memset(sd_out, 0, sizeof(float) * Hp);
+  std::memset(fold_out, 0, sizeof(float) * Hp);
+  showdown_board(g_.showdowns[sd.aux], W, L, T, p, ro, sd_out, fold_out);
+  const ActionNode& fa = g_.an(fold);
+  const float pay = static_cast<float>(g_.terminal_payoff(fa, p, p == fa.player ? -1 : 1));
+  for (int h = 0; h < Hp; ++h) fold_out[h] *= pay;
+  return true;
 }
 
 void Solver::current_strategy(uint32_t ni, float* out) const {
@@ -570,8 +601,25 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     }
     float* cfv = sc.a.alloc(static_cast<size_t>(A) * Hp);
     float* rpa = sc.a.alloc(static_cast<size_t>(A) * Hp);  // per-action reach: actions may run in parallel
+    // River fold + call: both rows from one showdown kernel call (call_and_fold).
+    int paired_f = -1, paired_s = -1;
+    if (n.board_len == 5 && A >= 2) {
+      for (int a = 0; a < A; ++a) {
+        const ANodeKind k = g_.nodes[n.first_child + static_cast<uint32_t>(a)].kind;
+        if (k == ANodeKind::Fold) paired_f = a;
+        else if (k == ANodeKind::Showdown) paired_s = a;
+      }
+      if (paired_f >= 0 && paired_s >= 0 && !(pruned && (pruned[paired_f] || pruned[paired_s])) &&
+          call_and_fold(g_.nodes[n.first_child + static_cast<uint32_t>(paired_s)],
+                        g_.nodes[n.first_child + static_cast<uint32_t>(paired_f)], p, ro,
+                        cfv + static_cast<size_t>(paired_s) * Hp, cfv + static_cast<size_t>(paired_f) * Hp)) {
+      } else {
+        paired_f = paired_s = -1;
+      }
+    }
     auto act = [&](int a) {
       if (pruned && pruned[a]) return;  // cfv[a] intentionally left undefined
+      if (a == paired_f || a == paired_s) return;  // filled by call_and_fold
       const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
       float* ca = cfv + static_cast<size_t>(a) * Hp;
       const GNode& child = g_.nodes[ci];
@@ -1138,7 +1186,25 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
     float* cev = sc.a.alloc(static_cast<size_t>(A) * Hp);
     float* cbr = sc.a.alloc(static_cast<size_t>(A) * Hp);
     float* rpa = sc.a.alloc(static_cast<size_t>(A) * Hp);
+    int paired_f = -1, paired_s = -1;  // river fold + call from one kernel call, as in walk_t
+    if (n.board_len == 5 && A >= 2) {
+      for (int a = 0; a < A; ++a) {
+        const ANodeKind k = g_.nodes[n.first_child + static_cast<uint32_t>(a)].kind;
+        if (k == ANodeKind::Fold) paired_f = a;
+        else if (k == ANodeKind::Showdown) paired_s = a;
+      }
+      if (paired_f >= 0 && paired_s >= 0 &&
+          call_and_fold(g_.nodes[n.first_child + static_cast<uint32_t>(paired_s)],
+                        g_.nodes[n.first_child + static_cast<uint32_t>(paired_f)], p, ro,
+                        cev + static_cast<size_t>(paired_s) * Hp, cev + static_cast<size_t>(paired_f) * Hp)) {
+        std::memcpy(cbr + static_cast<size_t>(paired_s) * Hp, cev + static_cast<size_t>(paired_s) * Hp, sizeof(float) * Hp);
+        std::memcpy(cbr + static_cast<size_t>(paired_f) * Hp, cev + static_cast<size_t>(paired_f) * Hp, sizeof(float) * Hp);
+      } else {
+        paired_f = paired_s = -1;
+      }
+    }
     auto act = [&](int a) {
+      if (a == paired_f || a == paired_s) return;  // filled by call_and_fold
       const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
       float* ea = cev + static_cast<size_t>(a) * Hp;
       float* ba = cbr + static_cast<size_t>(a) * Hp;

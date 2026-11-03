@@ -288,6 +288,10 @@ class GameTree {
   bool fast_loaded = false;   // loaded without `full` (Pio: some commands need load_all_nodes)
   bool loaded_compressed = false;
   std::unordered_set<uint32_t> recalced;  // street roots re-solved on demand  // a truncated save was loaded (later streets unsolved)
+  // Root results (EV OOP, EV IP, MES OOP, MES IP, exploitability) of the solve that produced a truncated
+  // save. While its streets are missing, calc_results reports these, as Pio does (#195).
+  bool has_saved_stats = false;
+  double saved_stats[5] = {0, 0, 0, 0, 0};
 
   int num_hands(int p) const { return static_cast<int>(hands[p].size()); }
   int root_board_len() const { return static_cast<int>(cfg.board.size()); }

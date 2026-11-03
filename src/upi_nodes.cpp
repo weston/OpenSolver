@@ -993,7 +993,15 @@ void Upi::register_node_commands() {
   H["calc_results"] = [this](const Args&) {
     require_tree();
     TreePause np(pause_requests_, tree_mu_, pause_cv_);
-    RootStats st = solver_->root_stats();
+    RootStats st;
+    if (tree_->missing_street && tree_->has_saved_stats) {
+      // A truncated save whose streets are still missing: those are unsolved until browsed, so report
+      // the results of the solve that produced the save, as Pio does (#195).
+      const double* v = tree_->saved_stats;
+      st.ev[0] = v[0], st.ev[1] = v[1], st.mes[0] = v[2], st.mes[1] = v[3], st.exploitability = v[4];
+    } else {
+      st = solver_->root_stats();
+    }
     std::string s = stats_block(st, solve_seconds_);
     // drop the leading "running time" line to match the 3.x layout (EV OOP first)
     s = s.substr(s.find('\n') + 1);

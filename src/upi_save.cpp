@@ -284,7 +284,7 @@ Header read_header(GzIn& in) {
 }
 
 void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const std::vector<std::string>& info,
-                  long long iters, double secs) {
+                  long long iters, double secs, const double* stats) {
   w.put(static_cast<uint8_t>(c.board.size()));
   for (int x : c.board) w.put(static_cast<uint8_t>(x));
   for (int i = 0; i < 3; ++i) w.put(c.pot[i]);
@@ -337,10 +337,16 @@ void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const s
       }
     }
   }
+  // Only truncated saves carry the root-results block (#195); other saves stay byte-identical.
+  if (stats) {
+    w.put(static_cast<uint8_t>(1));
+    for (int i = 0; i < 5; ++i) w.put(stats[i]);
+  }
 }
 
 void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::string>& info, long long& iters,
-                 double& secs) {
+                 double& secs, bool& has_stats, double* stats) {
+  has_stats = false;
   uint8_t n = r.get<uint8_t>();
   if (n != 0 && (n < 3 || n > 5)) throw CmdError{"file format error (board)"};  // 0 = preflop tree
   c.board.clear();
@@ -410,6 +416,12 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
     }
     c.schematics.push_back(std::move(sc));
   }
+  // Optional trailing block (#195): root results of the solve behind a truncated save. Readers that
+  // predate it stop after the schematics and ignore these bytes, so the version stays 5.
+  if (r.p == r.end) return;
+  has_stats = r.get<uint8_t>() != 0;
+  if (has_stats)
+    for (int i = 0; i < 5; ++i) stats[i] = r.get<double>();
 }
 
 struct LoadedConfig {
@@ -419,6 +431,8 @@ struct LoadedConfig {
   std::vector<std::string> info;
   long long iters = 0;
   double secs = 0;
+  bool has_stats = false;
+  double stats[5] = {0, 0, 0, 0, 0};
 };
 
 LoadedConfig read_config_section(GzIn& in) {
@@ -429,7 +443,7 @@ LoadedConfig read_config_section(GzIn& in) {
   std::string buf(len, '\0');
   in.read(buf.data(), len);
   Reader r{buf.data(), buf.data() + buf.size()};
-  read_config(r, lc.cfg, lc.pm, lc.info, lc.iters, lc.secs);
+  read_config(r, lc.cfg, lc.pm, lc.info, lc.iters, lc.secs, lc.has_stats, lc.stats);
   return lc;
 }
 
@@ -671,8 +685,21 @@ std::string Upi::cmd_dump_tree(const Args& a) {
                                             (lossless ? (g.compressed ? kModeQ16 : 0) : kModeQuant));
   out.put(mode);
   out.put(static_cast<uint8_t>(lossless ? 0 : prec));
+  // A truncated save keeps the root results of the solve (#195): once loaded, its missing streets are
+  // unsolved until browsed, so they cannot be recomputed from the file. Carry them over when this tree
+  // is itself a truncated save that still has missing streets.
+  double stats[5];
+  const double* stats_p = nullptr;
+  if (truncate && g.missing_street == 0 && g.iterations > 0) {
+    RootStats st = solver_->root_stats();
+    double v[5] = {st.ev[0], st.ev[1], st.mes[0], st.mes[1], st.exploitability};
+    std::copy(v, v + 5, stats);
+    stats_p = stats;
+  } else if (truncate && g.missing_street && g.has_saved_stats) {
+    stats_p = g.saved_stats;
+  }
   Writer w;
-  write_config(w, g.cfg, g.payoff, tree_info_, g.iterations, solve_seconds_);
+  write_config(w, g.cfg, g.payoff, tree_info_, g.iterations, solve_seconds_, stats_p);
   out.put(static_cast<uint32_t>(w.buf.size()));
   out.write(w.buf.data(), w.buf.size());
   Writer m;
@@ -815,6 +842,8 @@ std::string Upi::cmd_load_tree(const Args& a) {
   t->iterations = lc.iters;
   t->incomplete = lc.h.truncate != 0;
   t->missing_street = lc.h.truncate ? static_cast<int>(lc.h.truncate) + 1 : 0;
+  t->has_saved_stats = lc.h.truncate && lc.has_stats;
+  std::copy(lc.stats, lc.stats + 5, t->saved_stats);
   // Like Pio, loads are "fast" unless `full` is given: node data is read on first access (v4 saves),
   // and rebuild_tree / solve_all_splits need load_all_nodes first.
   t->fast_loaded = !full_load;

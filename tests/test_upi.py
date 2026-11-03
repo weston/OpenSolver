@@ -280,6 +280,7 @@ def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
         check(sizes["default"] * 2 < sizes["lossless"] and sizes["no_turns"] * 10 < sizes["default"],
               f"save sizes: lossless {sizes['lossless'] >> 10} KB > default {sizes['default'] >> 10} KB > no_turns {sizes['no_turns'] >> 10} KB")
         small = os.path.join(td, "small.cfr")
+        res_before = u.cmd("calc_results")
         u.cmd(f'dump_tree "{small}" no_rivers lossless')
         check(os.path.getsize(small) < os.path.getsize(path), "no_rivers save is smaller")
         if deep_paths:
@@ -289,6 +290,14 @@ def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
             check("INCOMPLETE_TREE" in flags and "FAST_LOAD" in flags, "no_rivers: incomplete + fast-load flags")
             check(u.cmd("show_strategy " + strat_path) == s_before, "no_rivers: lazily loaded strategy exact")
             check(u.cmd("rebuild_tree").startswith("ERROR"), "rebuild_tree needs load_all_nodes")
+            # The rivers are unsolved until browsed: calc_results reports the solve behind the save, as
+            # Pio does, also after re-saving the truncated tree (#195).
+            check(u.cmd("calc_results") == res_before, "no_rivers: calc_results is the saved solve's")
+            again = os.path.join(td, "again.cfr")
+            u.cmd(f'dump_tree "{again}" no_rivers')
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{again}"')
+            check(u.cmd("calc_results") == res_before, "re-saved no_rivers: calc_results carried over")
             u.cmd("free_tree")
             u.cmd(f'load_tree "{path}"')
             u.cmd("set_equal_strats")  # must not be undone by later lazy reads of the file

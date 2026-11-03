@@ -304,6 +304,9 @@ class GameTree {
 
   // Payoff for player p at a terminal given outcome (1 win, 0 tie, -1 lose).
   double terminal_payoff(const ActionNode& an, int p, int outcome) const;
+  // Mean number of showdown terminals per river subtree of the action tree (river decision nodes
+  // entered from a chance node), i.e. how many jobs Solver::river_cfr can batch per board. 0 if none.
+  double river_showdowns_per_root() const;
   std::vector<std::unique_ptr<ActionNode>> schematic_roots;  // owned postflop trees (preflop mode)
   std::vector<uint8_t> perm_all;  // suit permutations valid for both ranges (flop-deal symmetrization)
   std::vector<float> flop_compat[2];  // per hand: compatible share of the subset flop weight

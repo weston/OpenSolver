@@ -821,6 +821,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   t->loaded_compressed = (lc.h.mode & 2) != 0;
   tree_ = std::move(t);
   solver_ = std::make_unique<Solver>(*tree_);
+  solver_->river_batch = Solver::river_batch_for(*tree_);
   solver_->first_player = first_player_;
   solver_->params = dcfr_;  // settings persist over load_tree the way they do over build_tree
   apply_pcfr_settings();

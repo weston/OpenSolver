@@ -14,6 +14,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -498,6 +499,7 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   t->allocate_storage();
   tree_ = std::move(t);
   solver_ = std::make_unique<Solver>(*tree_);
+  solver_->river_batch = Solver::river_batch_for(*tree_);
   solver_->first_player = first_player_;
   solver_->params = dcfr_;
   apply_pcfr_settings();

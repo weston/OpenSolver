@@ -47,6 +47,27 @@ double GameTree::terminal_payoff(const ActionNode& an, int p, int outcome) const
   return payoff.icm.value(p, s + chips) - payoff.icm.value(p, s);
 }
 
+double GameTree::river_showdowns_per_root() const {
+  if (!aroot) return 0.0;
+  long long roots = 0, sds = 0;
+  auto count_sd = [&](auto&& self, const ActionNode& a) -> long long {
+    if (a.kind == ANodeKind::Showdown) return 1;
+    long long c = 0;
+    for (const auto& ch : a.children) c += self(self, *ch);
+    return c;
+  };
+  auto walk = [&](auto&& self, const ActionNode& a, bool after_chance) -> void {
+    if (a.kind == ANodeKind::Decision && a.board_len == 5 && after_chance) {
+      ++roots;
+      sds += count_sd(count_sd, a);
+      return;
+    }
+    for (const auto& ch : a.children) self(self, *ch, a.kind == ANodeKind::Chance);
+  };
+  walk(walk, *aroot, false);
+  return roots ? static_cast<double>(sds) / static_cast<double>(roots) : 0.0;
+}
+
 int GameTree::showdown_board_id(const std::vector<int>& board) {
   uint64_t mask = board_mask(board);
   auto it = showdown_index_.find(mask);

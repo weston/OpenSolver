@@ -903,7 +903,19 @@ void Upi::register_commands() {
     return l;
   };
   H["add_line"] = [this, parse_line](const Args& a) {
-    cfg_.lines.add.push_back(parse_line(a));  // validated at build_tree, like Pio
+    cfg_.lines.add.push_back(parse_line(a));  // amounts are validated at build_tree
+    // Like Pio, a line that runs past the end of the hand is reported here but kept: build_tree
+    // uses its valid prefix.
+    if (cfg_.board.size() >= 3) {
+      ActionTreeParams ap;
+      ap.board_len = static_cast<int>(cfg_.board.size());
+      ap.eff_stack = cfg_.eff_stack;
+      ap.start_inv[0] = cfg_.pot[0];
+      ap.start_inv[1] = cfg_.pot[1];
+      std::string err;
+      if (!validate_line(ap, cfg_.lines.add.back(), err) && err.rfind("Specified line is too long", 0) == 0)
+        throw CmdError{err};
+    }
     return std::string("add_line ok!");
   };
   H["remove_line"] = [this, parse_line](const Args& a) {

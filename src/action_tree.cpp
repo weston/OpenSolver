@@ -12,6 +12,7 @@ struct Builder {
   std::set<std::vector<int32_t>> removed;
   std::vector<std::vector<int32_t>> forced;
   std::string err;
+  bool past_end = false;  // the last add_line ran past the end of the hand and was cut there
 
   bool is_removed(const std::vector<int32_t>& key) const {
     // A node is removed if its line, or any prefix of it, was removed.
@@ -179,8 +180,14 @@ struct Builder {
         n = n->children[0].get();
       }
       if (n->kind != ANodeKind::Decision) {
-        err = "line continues past the end of the hand";
-        return false;
+        if (n->kind == ANodeKind::Chance) {  // preflop exit: postflop actions need a schematic tree
+          err = "line continues past the end of the hand";
+          return false;
+        }
+        // Pio 3.10 (probed): a line that runs past a fold, an all-in call or the river keeps its
+        // valid prefix; add_line reports "Specified line is too long" and the tree still builds.
+        past_end = true;
+        return true;
       }
       Action a;
       if (!classify(*n, line[i], a)) return false;
@@ -252,8 +259,16 @@ bool validate_line(const ActionTreeParams& p, const std::vector<int32_t>& line, 
   root.blind_option = p.board_len == 0;
   root.inv[0] = root.street_start[0] = p.start_inv[0];
   root.inv[1] = root.street_start[1] = p.start_inv[1];
+  if (p.eff_stack <= std::max(p.start_inv[0], p.start_inv[1])) {
+    root.allin = true;
+    root.kind = ANodeKind::Showdown;
+  }
   if (!b.add_line(&root, line)) {
     err = b.err;
+    return false;
+  }
+  if (b.past_end) {
+    err = "Specified line is too long. Some actions were not included in the tree.";
     return false;
   }
   return true;

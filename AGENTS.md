@@ -222,6 +222,15 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `remove_line`, `force_line`). `set_pot` changes only the values given and errors (after applying them)
   with fewer than two; bare `set_eff_stack` errors. A bad `set_board` errors and clears the board.
   Pio accepts `add_line abc` (it built `b200`); ours still rejects a token without a leading digit.
+- A line that runs past the end of the hand (fold, all-in call, river close) answers `ERROR: add_line
+  Specified line is too long. Some actions were not included in the tree.`, but its valid prefix is kept
+  and `build_tree` succeeds.
+- Pio edits a live line tree command by command; ours collects add/remove/force sets and applies them at
+  `build_tree`. They agree when a script removes or forces after its adds (the usual shape). They differ
+  when a line is re-added after `remove_line` (Pio re-adds it, ours keeps it removed), when `add_line`
+  follows `force_line` (Pio adds it beside the forced line), and for `remove_line` / `force_line` of a
+  line that does not exist (Pio errors, ours accepts). Pio accepts bets above the effective stack; ours
+  rejects them at `build_tree`.
 - Legacy commands Pio 3.10 still answers: `set_bet_sizes <n>...` (atoi per token) and `set_donk_bet <n>`
   (true unless atoi is 0) are only stored, `build_tree` ignores them; `show_tree_params` prints
   `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the

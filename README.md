@@ -393,6 +393,10 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   ties in its own order; `node_count` counts every node in preflop trees.
 - `_pp` listings omit hands that are only in the opponent's range by default; Pio always lists the union
   of both ranges. `set_union_hands on` (before `build_tree`) gives Pio's exact hand list (#9, #61).
+- `add_line` / `remove_line` / `force_line` are collected and applied at `build_tree`, where Pio edits
+  its line tree command by command. Scripts that add first and then remove or force (the usual shape)
+  build the same tree. Re-adding a removed line, or adding after `force_line`, does not (see AGENTS.md).
+  Bets above the effective stack are rejected at `build_tree`; Pio builds them.
 - Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
   there; results are identical with isomorphism on or off (#12).
 - **Preflop equity** (`calc_eq_preflop`, preflop all-ins) is exact: a 1326x1326 hand-vs-hand

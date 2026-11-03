@@ -586,6 +586,19 @@ def check_legacy_params(u):
     for c in ("lock_node", "show_node r:0", "set_rake 0.05 3", "set_icm 100 100", "clear_cache", "go 10 steps"):
         check(u.cmd(c).endswith(" missing/incorrect tree"), f"{c} without a tree: missing/incorrect tree first")
 
+    print("[over-long lines keep their prefix]")
+    u.cmd("set_board Kh9h4h")
+    u.cmd("set_pot 0 0 100")
+    u.cmd("set_eff_stack 200")
+    u.cmd("clear_lines")
+    long_msg = "ERROR: add_line Specified line is too long. Some actions were not included in the tree."
+    check(u.cmd("add_line 50 50 200 200 0") == long_msg, "a line past an all-in call: Pio's add_line error")
+    check(u.cmd("add_line 50 0") == "add_line ok!", "a fold ends a line exactly")
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree keeps the valid prefix")
+    lines = u.cmd("show_all_lines").split("\n")
+    check("r:0:b50:c:?:b200:c" in lines and not any(l.startswith("r:0:b50:c:?:b200:c:") for l in lines),
+          "the over-long line stops at the all-in call")
+
     print("[rake and ICM belong to the tree]")
     u.cmd("set_board KhQs7d4c2s")
     u.cmd("set_pot 0 0 100")

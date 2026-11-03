@@ -60,6 +60,14 @@ struct DcfrParams {
 #else
 #define PIO_SHOWDOWN_NEON 0
 #endif
+// x86 with AVX2 + FMA but not the AVX-512 set above (most Intel desktops, Zen 2/3, -march=x86-64-v3
+// builds): the lanes kernel is plain 256-bit code, so it runs there too (#225). -DPIO_NO_AVX2_LANES
+// opts out.
+#if !PIO_SHOWDOWN_AVX512 && defined(__AVX2__) && defined(__FMA__) && !defined(PIO_NO_AVX2_LANES)
+#define PIO_SHOWDOWN_AVX2 1
+#else
+#define PIO_SHOWDOWN_AVX2 0
+#endif
 // compat (optional, hand-indexed, zeroed by the caller): also store each of p's hands' card-removal
 // compatible opponent mass, sum of ro over opponent hands disjoint from h. It is a by-product of the
 // kernel, and exactly what a fold child with the same opponent reach needs (Solver::call_and_fold).
@@ -86,8 +94,8 @@ struct SdJob {
   float pay;
 };
 // Jobs on one board, each bit-identical to its own showdown_board call. ho = the opponent's hand count
-// (the length of every ro / xf row). On AVX-512 builds the jobs run as SIMD lanes, up to eight lanes
-// per sweep over the board (showdown_lanes_avx512 in solver.cpp).
+// (the length of every ro / xf row). On AVX-512, AVX2 and NEON builds the jobs run as SIMD lanes, up to
+// eight lanes per sweep over the board (showdown_lanes_256 in solver.cpp; NEON: showdown_lanes_neon).
 void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* jobs, int ho);
 #if PIO_SHOWDOWN_AVX512
 void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
@@ -180,11 +188,11 @@ class Solver {
   void river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   template <class E>
   void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
-  // #186: Solver::river_cfr for river subtrees in the CFR walk. AVX-512 and NEON builds batch the
+  // #186: Solver::river_cfr for river subtrees in the CFR walk. AVX-512, AVX2 and NEON builds batch the
   // kernels; elsewhere the two-phase walk is overhead (M4 before the NEON kernel: +2-3.5%), so it is
   // off by default there.
-  bool river_batch = PIO_SHOWDOWN_AVX512 != 0 || PIO_SHOWDOWN_NEON != 0;
-  // The default for a tree (Upi sets it when it creates the solver). AVX-512: always. NEON: when the
+  bool river_batch = PIO_SHOWDOWN_AVX512 != 0 || PIO_SHOWDOWN_NEON != 0 || PIO_SHOWDOWN_AVX2 != 0;
+  // The default for a tree (Upi sets it when it creates the solver). AVX-512: always. NEON and AVX2: when the
   // action tree has at least 2.5 showdown terminals per river subtree (GameTree::river_showdowns_per_root),
   // since below that the batches are 1-2 jobs, the lanes kernel does not run, and only the two-phase
   // walk's overhead is left (M4, 10 threads: threebet_mono, 5.16 per river, -21%; flop_srp_2 1.40,
@@ -193,7 +201,7 @@ class Solver {
 #if PIO_SHOWDOWN_AVX512
     (void)g;
     return true;
-#elif PIO_SHOWDOWN_NEON
+#elif PIO_SHOWDOWN_NEON || PIO_SHOWDOWN_AVX2
     return g.river_showdowns_per_root() >= 2.5;
 #else
     (void)g;

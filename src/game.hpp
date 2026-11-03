@@ -251,6 +251,9 @@ class GameTree {
   void regrets_commit(const GNode& n, const float* data, float maxabs = -1.0f);  // maxabs < 0: compute
   void strat_commit(const GNode& n, const float* data, float maxval = -1.0f);
   void clear_storage();  // all regrets / strategy sums to 0
+  // 16-bit -> float32 storage in place (#182): decodes every node exactly as regrets_ro / strat_ro do,
+  // then frees the 16-bit arrays. Needs room for the float32 arrays; no walk may be running.
+  void decompress();
 
   // Lazy loading (see LazyStore). Every accessor above calls ensure_loaded first.
   std::unique_ptr<LazyStore> lazy;

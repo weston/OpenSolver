@@ -271,6 +271,54 @@ static bool showdown_kernels_match() {
   return bad == 0 && bad_compat == 0 && boards > 0;
 }
 
+// #182: decompressing a 16-bit tree mid-solve keeps every value (same decode as regrets_ro /
+// strat_ro), and the solve continues on float32 storage.
+static bool decompress_midsolve() {
+  GameConfig cfg;
+  parse_cards("KhQs7d", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ,JJ,TT,AK,AQ,KQ,QJs,JTs", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = cfg.range[1][i] = w[i];
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 150;
+  cfg.lines.add = {{0, 50}, {50, 150}};
+  GameTree g;
+  if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+  g.compressed = true;
+  g.allocate_storage();
+  Solver s(g);
+  for (int t = 1; t <= 40; ++t) s.iterate(t);
+  std::vector<float> before;
+  for (uint32_t ni = 0; ni < g.nodes.size(); ++ni) {
+    const GNode& n = g.nodes[ni];
+    if (n.kind != ANodeKind::Decision) continue;
+    std::vector<float> a(g.node_size(n)), b(g.node_size(n));
+    const float* r = g.regrets_ro(n, a.data());
+    const float* st = g.strat_ro(n, b.data());
+    before.insert(before.end(), r, r + a.size());
+    before.insert(before.end(), st, st + b.size());
+  }
+  const double e0 = s.root_stats().exploitability;
+  g.decompress();
+  std::vector<float> after;
+  for (uint32_t ni = 0; ni < g.nodes.size(); ++ni) {
+    const GNode& n = g.nodes[ni];
+    if (n.kind != ANodeKind::Decision) continue;
+    const float* r = g.regrets_ro(n, nullptr);
+    const float* st = g.strat_ro(n, nullptr);
+    after.insert(after.end(), r, r + g.node_size(n));
+    after.insert(after.end(), st, st + g.node_size(n));
+  }
+  const bool same = !g.compressed && g.regrets_q.empty() && before == after;
+  const double e1 = s.root_stats().exploitability;
+  for (int t = 41; t <= 120; ++t) s.iterate(t);
+  const double e2 = s.root_stats().exploitability;
+  std::printf("[decompress] values %s, exploitability %.5f == %.5f, then %.5f after 80 more float32 iterations\n",
+              same ? "identical" : "DIFFER", e0, e1, e2);
+  return same && e0 == e1 && e2 < e1;
+}
+
 int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
@@ -318,6 +366,7 @@ int main(int argc, char** argv) {
   fails += !run_pruning();
   fails += !mem_accounting();
   fails += !showdown_kernels_match();
+  fails += !decompress_midsolve();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

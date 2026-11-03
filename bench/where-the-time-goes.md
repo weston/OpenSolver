@@ -195,6 +195,27 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
   an iteration; inside it the batched showdown kernel is 47%, regret updates 17%, `current_strategy`
   12%, and the rest of the river walk (reach products, fold rows, job setup, the value sums on the
   way up) about 18%.
+- **After #209** (showdown jobs as SIMD lanes; the PC, 2026-11-03). Profile, threebet_mono, 1 thread:
+  an iteration is 21% cheaper than after #189 (the batched kernel's cycles per river batch 6,650 ->
+  3,730); the kernel is now 32% of an iteration, regret updates 21%, `current_strategy` 14%, the
+  river walk's value sums 3.7%, the traverser's node setup 3.0%, reach products ~3%, and allocation,
+  recursion and job setup ~10%. Things tried on top of it, none kept:
+  - **Decoding 16-bit rows inside the regret update** (one pass instead of decode-R, decode-S, update):
+    bit-identical, but threebet_mono 3.20 vs 3.20 s at 32 threads, srp_big 42.8 vs 42.8 s, 1 thread
+    6.150 vs 6.128 s. The decode passes are short vectorized loops, and the row update itself is the cost.
+  - **Thread pinning** (worker i on logical CPU i+1): now 10% *slower* on threebet_mono at 32 threads
+    (2.60 -> 2.86 s); it was -6% before #189.
+  - **Prefetching the traverser's strategy-sum rows** on the way down the two-phase river walk (the
+    update reads them on the way up, a whole subtree later): threebet_mono 2.644 / 2.614 (T0) / 2.589 s
+    (T1), srp_big 39.6 vs 39.3 s: within noise.
+  - **Terminal payoffs from a per-action-node table** instead of `terminal_payoff` per showdown job:
+    no gain (within noise; if anything slower).
+  - **Exploitability checks** cost 1.2 iterations each on threebet_mono (19.6 vs 16.2 ms at 32 threads)
+    and 1.0 on srp_big (0.31 s); `set_info_freq auto` runs 10 and 8 of them, 6-8% of a solve. The
+    check walk (`walk_evbr`) still evaluates showdowns one terminal at a time; giving it the
+    two-phase river walk and the lanes kernel would save an estimated 1-2%, not worth a third copy of
+    the river semantics. Separately, the auto schedule's check at iteration 33 lands right after the
+    avg_delay reset (threebet_mono: 25.1 -> 40.4 chips), so it is uninformative.
 - **Pio's per-iteration convergence matches ours** on threebet_mono (see bench/vs_pio.md), so no
   algorithmic gap was found there; the lead is per-iteration speed.
 

@@ -76,6 +76,74 @@ Revisit when: CPU scaling is near-linear, SIMD (#54) has taken what it can from 
 showdown is still the dominant cost. At that point the ceiling is clearer and a prototype is worth
 building.
 
+## Update: the toolchain is fine, the recommended mapping is not (measured)
+
+Three things checked on this machine since the above was written. Together they **strengthen the
+no-go**, and one of them invalidates the design this document recommends.
+
+### 1. The CPU bar is roughly 18x higher than the 556 M figure above
+
+Re-measured on `flop_srp_2` with a two-point slope (0 vs 40 iterations, 3 runs each, so startup and
+tree build cancel):
+
+```
+ 1 thread:   0.0925 s / iteration
+20 threads:  0.00662 s / iteration      (14.0x speedup)
+```
+
+Re-sampled the showdown share rather than reusing the 58.9% above, because #151, #164 and #209 all
+targeted showdown since. It did **not** drop — `sample` puts `showdown_board_scalar` +
+`showdown_value` at 2,864 of 4,433 non-waiting samples, about 65%, and that is an upper bound
+because the listing truncates frames under 5 samples. Call it 59–65%.
+
+At 41,265,447 entry-visits/iteration that gives:
+
+```
+ 1 thread:   ~690-760 M entry-visits/s
+20 threads:  ~9.6-10.6 G entry-visits/s
+```
+
+**Any GPU prototype has to beat ~10 G entry-visits/s to be worth having on this machine**, not the
+556 M single-thread number quoted earlier. The CPU work since this document was written moved the
+goalposts a long way.
+
+### 2. The runtime-compile path works — the GPU was never tooling-blocked
+
+Confirmed by building against the Metal framework and calling `newLibraryWithSource:options:error:`:
+the shader compiles at runtime with only Command Line Tools installed, no offline `metal` compiler
+and no full Xcode. Device limits on the M1 Ultra: 1024 max threads per threadgroup, **32,768 bytes**
+of threadgroup memory, `threadExecutionWidth` 32, unified memory yes.
+
+So "#58 needs Xcode" is wrong and should not be used as a reason to defer it.
+
+### 3. Float atomics do not exist in `threadgroup` memory, which breaks the mapping above
+
+The design in this document says to put `cs[52]` in threadgroup shared memory and have threads
+cooperate within a strength group. That requires accumulating floats into `cs[]` from many threads.
+Metal rejects it:
+
+```
+error: no matching function for call to 'atomic_fetch_add_explicit'
+note: candidate not viable: cannot pass pointer to address space 'threadgroup'
+      as a pointer to address space 'device' in 1st argument
+```
+
+`atomic_fetch_add` for `float` is **`device`-address-space only**. Threadgroup float atomics are not
+available, so the recommended mapping cannot be written as specified. The options are all worse:
+
+- **Card-parallel** (thread `c` owns `cs[c]`, scans the group's opponent entries, adds where
+  `c1==c || c2==c`). Needs no atomics and **compiles** — verified. But every opponent entry is then
+  read by all 52 threads, roughly **52x the memory traffic** of the CPU's single read. For a kernel
+  this document already characterises as throughput-bound on memory rather than arithmetic, that is
+  the wrong direction.
+- **Device-memory atomics**: works, but moves the hottest accumulator off-chip.
+- **Per-thread private partials then reduce**: 52 floats per thread spills to device-backed private
+  memory, which is the problem this document already flagged.
+
+None of these is fatal on its own, but combined with a 10 G entry-visits/s bar on a gather-bound
+scan, the expected outcome is clearly negative. Revisit only if CPU scaling saturates (#53) and
+somebody has a mapping that avoids both the atomics gap and the read amplification.
+
 ## If someone does build the prototype
 
 Spec for the measurement #58 asks for, so it does not have to be re-derived:

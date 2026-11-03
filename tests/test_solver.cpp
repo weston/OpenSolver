@@ -375,6 +375,36 @@ static bool allin_tables_match() {
   return bad == 0 && terminals > 0;
 }
 
+// #186: the two-phase river walk (river_cfr) must reproduce walk_t exactly: same regrets and
+// strategy sums, bit for bit, after many iterations with pruning, fold pairing, the opponent's fused
+// fold and all-in tables in play. Forced on here so scalar builds test the walk logic too.
+static bool river_batch_matches() {
+  GameConfig cfg;
+  parse_cards("KhQs7d4c", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ,JJ,TT,99,77,44,AK,AQ,AJ,KQ,KJ,QJ,JT,T9s,98s,87s,A5s,K5s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+  if (!parse_range("AA,KK,QQ,JJ,TT,88,77,55,AK,AQ,KQ,KT,QJ,QT,JT,J9s,T9s,65s,A4s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 400;
+  cfg.lines.add = {{0, 50, 50, 150, 150}, {0, 0, 50, 150, 400}, {50, 150, 150, 400}, {0, 0, 0, 100, 100}, {0, 100, 400}};
+  GameTree g1, g2;
+  if (!g1.build(cfg, err) || !g2.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+  Solver s1(g1), s2(g2);
+  s1.river_batch = false;
+  s2.river_batch = true;
+  for (int t = 1; t <= 60; ++t) {
+    s1.iterate(t);
+    s2.iterate(t);
+  }
+  const bool same = g1.regrets == g2.regrets && g1.strat == g2.strat;
+  std::printf("[river batch] two-phase river walk vs walk_t after 60 iterations: %s (%zu floats)\n",
+              same ? "identical" : "DIFFER", g1.regrets.size());
+  return same && !g1.regrets.empty();
+}
+
 int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
@@ -424,6 +454,7 @@ int main(int argc, char** argv) {
   fails += !showdown_kernels_match();
   fails += !decompress_midsolve();
   fails += !allin_tables_match();
+  fails += !river_batch_matches();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

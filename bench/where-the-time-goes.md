@@ -275,6 +275,22 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
     two-phase river walk and the lanes kernel would save an estimated 1-2%, not worth a third copy of
     the river semantics. Separately, the auto schedule's check at iteration 33 lands right after the
     avg_delay reset (threebet_mono: 25.1 -> 40.4 chips), so it is uninformative.
+- **The PC is memory-bound from 8 threads up, even at 16-bit** (2026-11-03, threebet_mono, 60 iterations,
+  after #226). 1 / 4 / 8 / 16 / 32 threads: 9.58 / 2.65 / 1.45 / 1.02 / 0.90 s (10.6x at 32). float32
+  takes 1.46 s at both 16 and 32 threads, against 0.99 / 0.88 s for 16-bit, and two 8-thread solves run
+  side by side take 1.83 s each (1.45 s alone), so 16 cores of independent work add only ~10% over one
+  32-thread solve. Per element and iteration the walk moves ~10 bytes at 16-bit (the owner's pass reads
+  and writes R and S, the other pass reads R); that is ~48 GB/s at 32 threads against ~58 GB/s for
+  float32. Compute savings therefore show at 1 thread and on the Mac, and only partly on the PC at 32.
+  Neither zero-reach shortcut is available at cache-line granularity: 54-55% of reach entries at river
+  nodes are exactly zero, but only 6-7% of 32-hand lines are.
+- **Half-width lanes for packs of up to 4 lanes** (#234). 3-4 lanes are 50-65% of the lanes kernel's
+  work on srp_big and threebet_mono, so the NEON kernel now has a 4-lane width: M4, 10 threads,
+  threebet_mono to 0.6 chips 5.89 -> 5.54 s (-6%), srp_big 12 iterations 8.21 -> 7.78 s (-5%),
+  bit-identical. The same split on x86 (a 128-bit `showdown_lanes_256`) is no faster on Zen 5, even at
+  1 thread (3.13 vs 3.11 s), so the x86 builds keep one width. Also measured: 47% (threebet_mono) and
+  60% (srp_big) of the opponent entries the kernel adds are zero in every lane, but the opponent loop
+  is the smaller half of the kernel (~64 entries per call against 128 hero entries done three times).
 - **Pio's per-iteration convergence matches ours** on threebet_mono (see bench/vs_pio.md), so no
   algorithmic gap was found there; the lead is per-iteration speed.
 

@@ -473,6 +473,12 @@ explorer (`show_categories`, `show_cats`, ...) is byte-identical on 88 boards (`
 | Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 0.9 s -> 0.025% pot |
 | Real Pio 25bb HU script, 2 sizes everywhere | 6.4 GB (3.3 GB with `small_strats`) | ~1 s / iteration |
 
+The M4 row above **predates the NEON lanes kernel** (#219, which reports -22% on an M4), so it
+understates current speed and wants re-measuring on an M4. For a figure that is current, the same
+wide-SRP tree on an M1 Ultra at 20 threads runs 100 iterations in **0.63 s** to the same 0.025% of
+pot (0.015 chips on a 60 pot), 163 MB peak. Full per-tree numbers, including the larger `srp_big` and
+`threebet_mono` trees, are in `bench/results.md`; regenerate with `make bench`.
+
 Single-threaded on the same tree (`tests/pio_compare/bench_flop.txt`), PioSOLVER-edge 3.10.1 on a Zen 5
 runs 60 iterations in 4.63 s vs 4.73 s here (Apple M4), and this solver's DCFR reaches **0.042 chips of
 exploitability after 60 iterations against Pio's 0.182** — about 4x closer to equilibrium for the same

@@ -1051,7 +1051,10 @@ void Upi::register_node_commands() {
     bool final_node = n.kind == ANodeKind::Fold || n.kind == ANodeKind::Showdown;
     if (!final_node) throw CmdError{"incorrect node"};
     auto v = [&](int outcome) {
-      double x = tree_->terminal_payoff(an, p, outcome, true);  // schematic-relative, like Pio
+      // Schematic-relative, like Pio: the schematic's own set_pot supplies the pot, so no
+      // extra adjustment is needed here (the old `subtree` flag only gated a payoff offset
+      // that was always zero, so it never did anything - see #107).
+      double x = tree_->terminal_payoff(an, p, outcome);
       return fmt(x == 0 ? 0.0 : x);
     };
     if (n.kind == ANodeKind::Fold) return v(0) + " " + v(0) + " " + v(0);

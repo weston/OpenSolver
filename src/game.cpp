@@ -24,7 +24,7 @@ double IcmModel::value(int p, double stack) const {
   return a.second + t * (b.second - a.second);
 }
 
-double GameTree::terminal_payoff(const ActionNode& an, int p, int outcome, bool subtree) const {
+double GameTree::terminal_payoff(const ActionNode& an, int p, int outcome) const {
   // Investments are absolute (they include set_pot's per-player chips); `dead` is the (sub)tree's
   // dead money. Payoff = share of the final pot - own investment.
   double D = an.dead;
@@ -42,7 +42,6 @@ double GameTree::terminal_payoff(const ActionNode& an, int p, int outcome, bool 
     else if (outcome < 0) chips = -static_cast<double>(an.inv[p]);
     else chips = (P - R) / 2.0 - an.inv[p];
   }
-  if (!subtree) chips += an.offset[p];
   if (!payoff.icm.enabled) return chips;
   double s = payoff.icm.stacks[p];
   return payoff.icm.value(p, s + chips) - payoff.icm.value(p, s);
@@ -428,9 +427,10 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
       sp.start_inv[0] = sch->pot[0];
       sp.start_inv[1] = sch->pot[1];
       sp.dead = sch->pot[2];
-      // The schematic's pot stands for the preflop chips. Note `sp.offset` is deliberately
-      // left at zero: the whole-hand vs schematic-relative split is carried by the `subtree`
-      // flag in terminal_payoff, not by an offset (see #107).
+      // The schematic's pot stands for the preflop chips: its per-player chips are
+      // investments that payoffs subtract and its dead money is free, exactly as Pio takes
+      // set_pot literally. (For whole-hand chips, give each player's preflop investment in
+      // set_pot, e.g. `set_pot 100 100 0` after a 3-bet to 100.)
       // Like Pio, the schematic's set_pot is taken literally: its per-player chips are investments that
       // payoffs subtract, its dead money is free money. (For whole-hand chips, give each player's
       // preflop investment in set_pot, e.g. `set_pot 100 100 0` after a 3-bet to 100.)

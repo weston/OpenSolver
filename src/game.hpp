@@ -302,9 +302,8 @@ class GameTree {
   uint64_t memory_bytes_for(bool compress, bool with_preds = false) const;
   void allocate_storage();  // uses `compressed`
 
-  // Payoff for player p at a terminal given outcome (1 win, 0 tie, -1 lose). With subtree=true the
-  // preflop offset is left out (schematic-relative values, as show_win_evs prints them).
-  double terminal_payoff(const ActionNode& an, int p, int outcome, bool subtree = false) const;
+  // Payoff for player p at a terminal given outcome (1 win, 0 tie, -1 lose).
+  double terminal_payoff(const ActionNode& an, int p, int outcome) const;
   std::vector<std::unique_ptr<ActionNode>> schematic_roots;  // owned postflop trees (preflop mode)
   std::vector<uint8_t> perm_all;  // suit permutations valid for both ranges (flop-deal symmetrization)
   std::vector<float> flop_compat[2];  // per hand: compatible share of the subset flop weight

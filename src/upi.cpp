@@ -728,8 +728,9 @@ void Upi::register_commands() {
       info_auto_ = true;
       return std::string("set_info_freq ok!");
     }
+    const long long f = arg_int(a, 0, "frequency");  // parse first: a bad argument changes nothing
     info_auto_ = false;
-    info_freq_ = static_cast<int>(std::max<long long>(0, arg_int(a, 0, "frequency")));
+    info_freq_ = static_cast<int>(std::max<long long>(0, f));
     return std::string("set_info_freq ok!");
   };
   H["set_accuracy"] = [this](const Args& a) {

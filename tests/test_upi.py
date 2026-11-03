@@ -531,6 +531,12 @@ def check_info_freq_auto(u):
     iters = int(u.cmd("show_iters").split()[-1])
     check(len(blocks) < max(3, iters // 10), f"auto checks less often than every 10 ({len(blocks)} reports, {iters} iterations)")
     check(u.cmd("set_info_freq auto2").startswith("ERROR"), "set_info_freq rejects other words")
+    u.solver_msgs.clear()
+    u.cmd("set_accuracy 0")
+    u.cmd("go 30 steps")
+    u.cmd("wait_for_solver")
+    n_auto = len([b for b in u.solver_msgs if b and any(l.startswith("Exploitable for:") for l in b)])
+    check(n_auto < 10, f"a rejected set_info_freq leaves auto on ({n_auto} reports in 30 steps)")
     u.cmd("set_info_freq 25")
     u.cmd("free_tree")
 

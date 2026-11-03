@@ -56,11 +56,21 @@ struct DcfrParams {
 // compat (optional, hand-indexed, zeroed by the caller): also store each of p's hands' card-removal
 // compatible opponent mass, sum of ro over opponent hands disjoint from h. It is a by-product of the
 // kernel, and exactly what a fold child with the same opponent reach needs (Solver::call_and_fold).
+// fold (optional): an opponent fold sibling of this showdown (opponent decision facing p's bet: fold or
+// call). Its value pay * (compatible mass of xf) is added to out in the same kernel call: the fold mass
+// is accumulated in the kernel's opponent pass and its card-removal lookups ride along in the final
+// pass, instead of a separate pass over both hand lists (Solver::call_with_opp_fold). xf is the fold
+// reach (opponent reach * fold probability), precomputed so the kernels only add: a product inside
+// them could be FMA-contracted differently by the scalar and the AVX-512 code.
+struct SdFold {
+  const float* xf;  // opponent's reach into the fold, by opponent hand
+  float pay;        // p's payoff when the opponent folds
+};
 void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
-                           float* compat = nullptr);
+                           float* compat = nullptr, const SdFold* fold = nullptr);
 #if PIO_SHOWDOWN_AVX512
 void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
-                           float* compat = nullptr);
+                           float* compat = nullptr, const SdFold* fold = nullptr);
 #endif
 
 struct RootStats {
@@ -202,7 +212,13 @@ class Solver {
   void fold_value(const GNode& n, int p, const float* ro, float* out) const;
   void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
   void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
-                      float* compat = nullptr) const;
+                      float* compat = nullptr, const SdFold* fold = nullptr) const;
+  // River decision of the opponent facing p's bet: the call (showdown, reach xc = ro * sigma_call) and
+  // fold (reach ro * sigma_fold) contributions in one kernel call, summed into out. False if the pair
+  // does not qualify (both terminals at a 5-card board); then nothing is written.
+  // xf: scratch for the fold reach (num_hands(opponent) floats).
+  bool call_with_opp_fold(const GNode& sd, const GNode& fold, int p, const float* xc, const float* ro,
+                          const float* sfold, float* xf, float* out) const;
   // River decision of the traverser facing a bet: its fold and call (showdown) children see the same
   // opponent reach, so one showdown kernel call gives both rows (the fold from the kernel's compatible
   // mass instead of a separate compat_mass pass). Returns false (nothing written) if the pair does not

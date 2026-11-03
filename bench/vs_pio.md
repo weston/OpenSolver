@@ -69,3 +69,19 @@ checks (#165), river fold values taken from the showdown kernel for both players
 Per-iteration convergence is close to Pio's on these trees (threebet_mono, exploitability every 40
 iterations: Pio 20.0 / 3.99 / 1.33 / 0.625 / 0.42 / 0.30 vs ours 11.9 / 3.02 / 1.22 / 0.634 / 0.44 / 0.31),
 so the lead is per-iteration speed.
+
+### Update after #180-#185 (2026-11-03, same session, back to back)
+
+32 threads, target 0.6 chips; WSolver main 0efec0e with `set_info_freq auto`:
+
+| tree | WSolver | PioSOLVER 3.10 | ratio |
+|---|---|---|---|
+| srp_big (13 GB, 16-bit) | **42.3 s** (123 iterations, 0.597 chips) | 70.2 s (0.509) | 1.66x |
+| threebet_mono (542 MB) | **3.08 s** (168 iterations, 0.599) | 6.55 s (0.557) | 2.13x |
+
+New since the previous table: all-in terminals before the river from precomputed outcome tables
+(#185: one dot product per hand instead of ~48 showdown kernels per turn all-in), AVX-512 regret
+matching (#175). Pio's own check schedule overshoots the target a little further (it stops at 0.51
+/ 0.56 chips), so at equal final exploitability the ratio is slightly smaller.
+
+Session start for reference: srp_big took 446 s against Pio's 70.5 s.

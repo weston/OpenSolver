@@ -149,7 +149,33 @@ $(PGO_DIR)/opt/%.o: src/%.cpp $(PGO_DEPS) $(PGO_TRAIN_DEP) | $(PGO_DIR)/opt
 solver-release: $(OPT_OBJ)
 	$(CXX) $(RELEASE_CXXFLAGS) $(LTO_FLAG) $(PGO_USE) $^ -o $@ $(LDLIBS)
 
+# ----- install ----------------------------------------------------------------
+# Standard PREFIX/DESTDIR install, so there is a supported way to put the solver
+# on a machine instead of running it out of the build tree.
+#   make install                      -> /usr/local/bin/wsolver
+#   make install PREFIX=$HOME/.local  -> ~/.local/bin/wsolver
+#   make install DESTDIR=/tmp/stage   -> staged, for packaging
+# INSTALL_BIN picks which binary to install; point it at solver-release to ship
+# the LTO build (see the release section above):
+#   make release && make install INSTALL_BIN=solver-release
+# BINNAME is the installed command name. It is deliberately not "solver", which
+# is too generic for a shared bin directory.
+PREFIX      ?= /usr/local
+DESTDIR     ?=
+BINNAME     ?= wsolver
+INSTALL_BIN ?= solver
+DOCDIR      ?= $(PREFIX)/share/doc/$(BINNAME)
+
+install: $(INSTALL_BIN)
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(DOCDIR)
+	install -m 755 $(INSTALL_BIN) $(DESTDIR)$(PREFIX)/bin/$(BINNAME)
+	install -m 644 README.md docs/commands.md $(DESTDIR)$(DOCDIR)/
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINNAME)
+	rm -rf $(DESTDIR)$(DOCDIR)
+
 clean:
 	rm -rf build solver solver-release
 
-.PHONY: all test test-big windows bench release clean
+.PHONY: all test test-big windows bench release install uninstall clean

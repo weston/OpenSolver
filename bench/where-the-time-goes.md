@@ -266,7 +266,10 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
     (2.60 -> 2.86 s); it was -6% before #189.
   - **Prefetching the traverser's strategy-sum rows** on the way down the two-phase river walk (the
     update reads them on the way up, a whole subtree later): threebet_mono 2.644 / 2.614 (T0) / 2.589 s
-    (T1), srp_big 39.6 vs 39.3 s: within noise.
+    (T1), srp_big 39.6 vs 39.3 s: within noise. *Superseded by #238*: re-measured on main after #237,
+    prefetching every line of the node's rows (write intent) is -6% on the M4 at 1 and 10 threads and
+    -7 to -10% on Zen 5 from 1 to 32 threads on threebet_mono; only srp_big at 32 threads, which is
+    bandwidth-bound, is unchanged. Prefetching the children's regret rows as well is slower (+4-10%).
   - **Terminal payoffs from a per-action-node table** instead of `terminal_payoff` per showdown job:
     no gain (within noise; if anything slower).
   - **Exploitability checks** cost 1.2 iterations each on threebet_mono (19.6 vs 16.2 ms at 32 threads)

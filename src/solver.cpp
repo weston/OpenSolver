@@ -1354,6 +1354,20 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
                       static_cast<float>(g_.terminal_payoff(an, p, 0)), dst, compat, xf, pay});
   };
   if (actor == p) {
+    // Start fetching this node's strategy-sum rows now: traverser_update reads and writes them on the
+    // way back up, after the whole subtree and its showdown batch, and by then they have arrived
+    // instead of stalling the update (threebet_mono, M4: -6% at 1 and 10 threads; Zen 5: -9% at 1
+    // and 8 threads, -7% at 32). The regrets need no hint: current_strategy has just read them.
+    if (accumulate_) {
+      const size_t len = static_cast<size_t>(A) * Hp;
+      if (g_.compressed) {
+        const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + n.storage);
+        for (size_t off = 0; off < len * 2; off += 64) __builtin_prefetch(b + off, 1, 3);
+      } else {
+        const char* b = reinterpret_cast<const char*>(g_.strat.data() + n.storage);
+        for (size_t off = 0; off < len * 4; off += 64) __builtin_prefetch(b + off, 1, 3);
+      }
+    }
     uint8_t* pruned = nullptr;
     if (prune_this_iter_ && !(n.flags & (GF_LOCKED | GF_COMBO_LOCKED | GF_INCENTIVES | GF_ELIMINATED))) {
       pruned = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));

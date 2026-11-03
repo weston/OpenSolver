@@ -469,11 +469,47 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     if (n.flags & GF_ELIMINATED) apply_elimination(ni, out);
     return;
   }
-  const float* R = g_.regrets_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
   // Predictive (PCFR+-style, #71): match on R + the last instantaneous regret as an
   // optimistic guess of the next one. Preds are transient solver state (zero until the
   // node's first update), so this reduces to plain regret matching at t=1.
   const float* P = (predictive && !g_.preds.empty()) ? g_.preds.data() + n.storage : nullptr;
+#if PIO_SHOWDOWN_AVX512
+  if (!P && A <= 16) {
+    // One pass per 16 hands with every action's row in registers: positive parts, their sum, then
+    // normalise (uniform where all regrets are <= 0). The same operations in the same order as the
+    // generic three-pass loops below (sum over actions in order, 1/sum, o * inv + add as an fma), so
+    // the floats are identical; no arena sum/add rows, and 16-bit regrets decode in registers.
+    g_.ensure_loaded(n);
+    const bool q16 = g_.compressed;
+    const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    const __m512 qs = _mm512_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm512_setzero_ps(),
+                 one = _mm512_set1_ps(1.0f), uni = _mm512_set1_ps(1.0f / static_cast<float>(A));
+    __m512 v[16];
+    for (int h = 0; h < H; h += 16) {
+      const __mmask16 m = static_cast<__mmask16>(H - h >= 16 ? 0xffff : (1u << (H - h)) - 1);
+      __m512 sum = z;
+      for (int a = 0; a < A; ++a) {
+        const size_t off = static_cast<size_t>(a) * H + h;
+        // the rows are read interleaved: prefetch each one ahead (one stream per row per thread)
+        if (q16) _mm_prefetch(reinterpret_cast<const char*>(Q + off) + 256, _MM_HINT_T0);
+        else _mm_prefetch(reinterpret_cast<const char*>(R + off) + 512, _MM_HINT_T0);
+        __m512 x = q16 ? _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(_mm256_maskz_loadu_epi16(m, Q + off))), qs)
+                       : _mm512_maskz_loadu_ps(m, R + off);
+        x = _mm512_max_ps(x, z);  // v > 0 ? v : 0 (x is never NaN here)
+        v[a] = x;
+        sum = _mm512_add_ps(sum, x);
+      }
+      const __mmask16 pos = _mm512_cmp_ps_mask(sum, z, _CMP_GT_OQ);
+      const __m512 inv = _mm512_maskz_div_ps(pos, one, sum);
+      const __m512 add = _mm512_mask_blend_ps(pos, uni, z);
+      for (int a = 0; a < A; ++a)
+        _mm512_mask_storeu_ps(out + static_cast<size_t>(a) * H + h, m, _mm512_fmadd_ps(v[a], inv, add));
+    }
+  } else
+#endif
+  {
+  const float* R = g_.regrets_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
   float* sum = sc.a.alloc_zero(H);
   for (int a = 0; a < A; ++a) {
     const float* r = R + static_cast<size_t>(a) * H;
@@ -497,6 +533,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   for (int a = 0; a < A; ++a) {
     float* o = out + static_cast<size_t>(a) * H;
     for (int h = 0; h < H; ++h) o[h] = o[h] * sum[h] + add[h];
+  }
   }
   if (n.flags & GF_COMBO_LOCKED) {
     auto it = g_.combo_lock.find(ni);

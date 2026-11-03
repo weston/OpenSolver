@@ -99,8 +99,17 @@ CXX_IS_CLANG := $(shell $(CXX) --version 2>/dev/null | head -n1 | grep -qi clang
 ifeq ($(CXX_IS_CLANG),1)
 # Xcode does not put llvm-profdata on PATH; xcrun finds it when it is there.
 LLVM_PROFDATA ?= $(shell command -v llvm-profdata 2>/dev/null || xcrun -f llvm-profdata 2>/dev/null)
-PGO_GEN  := -fprofile-instr-generate
-PGO_USE  := -fprofile-instr-use=$(CURDIR)/$(PGO_DIR)/merged.profdata
+# IR-level instrumentation (-fprofile-generate), NOT front-end (-fprofile-instr-generate).
+# Front-end instrumentation counts function entries before inlining, so a function that the
+# instrumented build inlines records entry count 0. Clang then reads 0 at optimise time, calls the
+# function cold, drops its inline threshold to 45, and refuses to inline it. That hit the hottest
+# path we have: showdown_batch (cost 155) stopped being inlined into Solver::river_cfr, and the
+# profile claimed showdown_batch and river_cfr were entered 0 times while the kernel they call,
+# showdown_board_scalar, was entered 2,646,970 times. Net effect was a binary 11.7% SLOWER than
+# using no profile at all. IR-level instrumentation counts after inlining and does not invert like
+# this. See #199; don't switch back without re-measuring.
+PGO_GEN  := -fprofile-generate=$(CURDIR)/$(PGO_DIR)
+PGO_USE  := -fprofile-use=$(CURDIR)/$(PGO_DIR)/merged.profdata
 LTO_FLAG := -flto=thin
 else
 PGO_GEN  := -fprofile-generate=$(CURDIR)/$(PGO_DIR)/gcc

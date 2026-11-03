@@ -415,7 +415,7 @@ void showdown_batch_avx512(const ShowdownBoard& sb, int p, const SdJob* job, int
   }
 }
 
-// Showdown jobs as SIMD lanes (#203): one 256-bit lane per job, plus one per fused fold, for batches
+// Showdown jobs as SIMD lanes (#209): one 256-bit lane per job, plus one per fused fold, for batches
 // of 3-8 lanes. showdown_batch_avx512 keeps a CsRegs set (4 zmm) per job and adds every opponent
 // entry into each with four masked adds; here cs[] is 52 x 8 floats in memory, card-major, so one
 // opponent entry is one row load and three adds for all jobs, and p's queries are plain row loads

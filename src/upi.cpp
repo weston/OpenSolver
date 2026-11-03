@@ -272,9 +272,9 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
   static const std::set<std::string> needs_tree = {
       "calc_ev", "calc_ev_pp", "calc_global_freq", "calc_line_freq", "calc_results", "clear_cache",
       "combo_lock_node", "dump_tree", "eliminate_path", "estimate_rebuild_tree", "explo_partial", "go",
-      "load_all_nodes", "lock_node", "node_count", "set_strategy", "show_children", "show_effective_stack",
-      "show_incentives", "show_locked_combos", "show_node", "show_strategy", "show_strategy_pp",
-      "show_win_evs", "solve_all_splits", "solve_partial", "unlock_all", "unlock_node"};
+      "load_all_nodes", "lock_node", "node_count", "rebuild_tree", "set_strategy", "show_children",
+      "show_effective_stack", "show_incentives", "show_locked_combos", "show_node", "show_strategy",
+      "show_strategy_pp", "show_win_evs", "solve_all_splits", "solve_partial", "unlock_all", "unlock_node"};
   if (!tree_ && needs_tree.count(cmd)) require_tree();
   return it->second(args);
 }
@@ -937,17 +937,28 @@ void Upi::register_commands() {
   };
   H["add_line"] = [this, parse_line](const Args& a) {
     cfg_.lines.add.push_back(parse_line(a));  // amounts are validated at build_tree
-    // Like Pio, a line that runs past the end of the hand is reported here but kept: build_tree
-    // uses its valid prefix.
+    // Like Pio, the line is checked against the current config here but kept either way:
+    // - running past the end of the hand: "too long", and build_tree uses the valid prefix;
+    // - an amount below the bet faced or below one's own investment (other than a fold): Pio's
+    //   "Incorrect bet size." (Pio's build_tree then crashes; ours reports the amount).
+    // Pio checks neither the stack nor an all-in root here: with no stack set (or one the
+    // start investment already covers) every line it can classify is accepted, so we drop
+    // the stack for the check in that case.
     if (cfg_.board.size() >= 3) {
       ActionTreeParams ap;
       ap.board_len = static_cast<int>(cfg_.board.size());
-      ap.eff_stack = cfg_.eff_stack;
       ap.start_inv[0] = cfg_.pot[0];
       ap.start_inv[1] = cfg_.pot[1];
+      ap.eff_stack = cfg_.eff_stack > std::max(cfg_.pot[0], cfg_.pot[1])
+                         ? cfg_.eff_stack
+                         : std::numeric_limits<int32_t>::max();
       std::string err;
-      if (!validate_line(ap, cfg_.lines.add.back(), err) && err.rfind("Specified line is too long", 0) == 0)
-        throw CmdError{err};
+      if (!validate_line(ap, cfg_.lines.add.back(), err)) {
+        if (err.rfind("Specified line is too long", 0) == 0) throw CmdError{err};
+        if (err.find(" is between current investment") != std::string::npos ||
+            err.find(" is below current investment") != std::string::npos)
+          throw CmdError{"Incorrect bet size."};
+      }
     }
     return std::string("add_line ok!");
   };

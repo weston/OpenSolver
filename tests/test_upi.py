@@ -640,6 +640,20 @@ def check_legacy_params(u):
     lines = u.cmd("show_all_lines").split("\n")
     check("r:0:b50:c:?:b200:c" in lines and not any(l.startswith("r:0:b50:c:?:b200:c:") for l in lines),
           "the over-long line stops at the all-in call")
+    # add_line checks the line against the current config (probed on Pio 3.10): an amount below
+    # the bet faced is "Incorrect bet size." (0 facing a bet is a fold), and with no stack set
+    # Pio has no all-in root, so nothing is "too long" before the river.
+    bad_size = "ERROR: add_line Incorrect bet size."
+    u.cmd("clear_lines")
+    check(u.cmd("add_line 50 30") == bad_size, "an amount between own investment and the bet faced")
+    check(u.cmd("add_line 50 50 100 0") == bad_size, "an amount below own investment")
+    u.cmd("clear_lines")
+    u.cmd("set_eff_stack 0")
+    check(u.cmd("add_line 75 200") == "add_line ok!", "no stack set: no all-in root at add time (Pio)")
+    check(u.cmd("add_line 50 50 200 200 0") == bad_size, "no stack set: amounts are still checked")
+    check(u.cmd("add_line 0 0 0 0 0 0 0") == long_msg, "no stack set: past the river is too long")
+    u.cmd("clear_lines")
+    u.cmd("set_eff_stack 200")
 
     print("[rake and ICM belong to the tree]")
     u.cmd("set_board KhQs7d4c2s")

@@ -71,6 +71,8 @@ class Solver:
         self.version = ""
         self.generation = 0
         self.series = []         # convergence points of the current tree: {t, explo, ev_oop, ev_ip}
+        self.partial = None      # live/last subtree solve (#153): {node, pot, accuracy, done, ...}
+        self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
         self.start()
 
     def start(self):
@@ -99,9 +101,16 @@ class Solver:
                         block.append(l2)
                     point = parse_progress_point(block)
                     with self.state_lock:
-                        self.progress = block
-                        if point is not None:
-                            self.series.append(point)
+                        # A "partial: <node>" first line marks a subtree (solve further) solve:
+                        # its numbers are relative to the node's pot, so they must not enter the
+                        # main tree's convergence series (#153).
+                        if block and block[0].startswith("partial: ") and self.partial:
+                            self.partial["progress"] = block[1:]
+                            self.partial["point"] = point
+                        else:
+                            self.progress = block
+                            if point is not None:
+                                self.series.append(point)
                         self.events += 1
                 elif line.startswith("SOLVER:"):
                     with self.state_lock:
@@ -112,6 +121,9 @@ class Solver:
                             self.progress = []
                         elif msg.startswith("stopped"):
                             self.solving = False
+                            if self.partial:
+                                self.partial["done"] = True
+                                self.partial["stopped"] = msg[len("stopped ("):-1] or "requested"
                         self.events += 1
                 else:
                     q.put(line)
@@ -159,13 +171,27 @@ class Solver:
 
     def state(self):
         with self.state_lock:
+            partial = dict(self.partial) if self.partial else None
+            if partial:
+                partial["progress"] = list(partial["progress"])
             return {"solving": self.solving, "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
-                    "tree": self.tree_present, "version": self.version}
+                    "tree": self.tree_present, "version": self.version,
+                    "partial": partial, "loaded_file": self.loaded_file}
 
     def reset_series(self):
         with self.state_lock:
             self.series = []
+
+    def start_partial(self, node_id, accuracy, pot):
+        """Mark the subtree solve in flight, so the pump routes its blocks here (#153)."""
+        with self.state_lock:
+            self.partial = {"node": node_id, "accuracy": accuracy, "pot": pot,
+                            "done": False, "stopped": None, "progress": [], "point": None}
+
+    def clear_partial(self):
+        with self.state_lock:
+            self.partial = None
 
     def restart(self):
         with self.cmd_lock:
@@ -184,6 +210,8 @@ class Solver:
                 self.solving = False
                 self.progress = []
                 self.solver_status = ""
+                self.partial = None
+                self.loaded_file = False
 
 
 # ---------------------------------------------------------------- parsing UPI outputs
@@ -262,6 +290,25 @@ def card_token(s):
 NODE_ID_RE = re.compile(r"[rR][:0-9A-Za-z?]*")
 
 
+def combo_class(combo):
+    """"AhKd" -> "AKo" (the matrix class names used by the frontend)."""
+    a, b = combo[0], combo[2]
+    if a == b:
+        return a + b
+    hi, lo = (a, b) if RANKS.index(a) < RANKS.index(b) else (b, a)
+    return hi + lo + ("s" if combo[1] == combo[3] else "o")
+
+
+def class_sort_key(cls):
+    """Matrix (row-major) order: pairs on the diagonal, suited above, offsuit below."""
+    hi, lo = cls[0], cls[1]
+    if len(cls) == 2:
+        k = RANKS.index(hi)
+        return (k, k)
+    k = (RANKS.index(hi), RANKS.index(lo))
+    return k if cls[2] == "s" else (k[1], k[0])
+
+
 def node_id_arg(query, name="id", default="r:0"):
     """A node id becomes part of a UPI command line; anything outside the Pio id alphabet
     (digits, letters, ':', '?') could inject solver commands, so reject it."""
@@ -273,6 +320,13 @@ def node_id_arg(query, name="id", default="r:0"):
 
 # ---------------------------------------------------------------- the API
 
+_resolver = None  # resolve.ResolveManager, set by main()/tests; owns the 2nd solver
+
+
+def set_resolver(resolver):
+    global _resolver
+    _resolver = resolver
+
 
 def lib_query(query, name="name"):
     """Query-arg wrapper for library endpoints; LibraryError -> 400 via the handler."""
@@ -281,6 +335,10 @@ def lib_query(query, name="name"):
 
 def api(solver, lib, method, path, query, body):
     """Dispatch one API call; returns (status, data)."""
+    if path == "/api/resolve" or path.startswith("/api/resolve/"):
+        if _resolver is None:
+            raise SolverError("re-solve support not initialized")
+        return _resolver.api(method, path, query, body)
     if path == "/api/status":
         return 200, solver.state()
     if path == "/api/hand_order":
@@ -334,6 +392,13 @@ def api(solver, lib, method, path, query, body):
         return 200, {"oop": parse_floats(solver.cmd("show_range OOP " + node_id), NUM_COMBOS),
                      "ip": parse_floats(solver.cmd("show_range IP " + node_id), NUM_COMBOS)}
 
+    if path == "/api/categories":
+        node_id = node_id_arg(query)
+        player = query.get("player", ["actor"])[0].upper()
+        if player not in ("OOP", "IP", "ACTOR"):
+            raise SolverError("player must be OOP, IP or actor")
+        return 200, categories_at(solver, node_id, player)
+
     if path == "/api/ev":
         node_id = node_id_arg(query)
         player = query.get("player", ["OOP"])[0].upper()
@@ -379,18 +444,24 @@ def api(solver, lib, method, path, query, body):
     if path == "/api/build":
         solver.cmd("build_tree")
         solver.tree_present = True
+        solver.loaded_file = False
         solver.reset_series()
+        solver.clear_partial()
         return 200, {"node_count": solver.cmd("node_count")}
 
     if path == "/api/solve":
         b = need_body(body)
         acc = b.get("accuracy", 0.05)
-        if not isinstance(acc, (int, float)) or acc < 0:
+        if isinstance(acc, bool) or not isinstance(acc, (int, float)) or not math.isfinite(acc) or acc < 0:
             raise SolverError("bad accuracy")
         # Report (and check the target) every 10 iterations: a smoother convergence chart (#115)
         # and less overshoot past the target than the default 25.
-        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq 10", "go"])
+        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go"])
+        solver.clear_partial()
         return 200, {"ok": True}
+
+    if path == "/api/solve_node":
+        return 200, op_solve_node(solver, need_body(body))
 
     if path == "/api/stop":
         return 200, {"text": solver.cmd("stop")}
@@ -407,7 +478,9 @@ def api(solver, lib, method, path, query, body):
         path_arg = safe_path(b.get("path", ""))
         solver.cmds(["stop", "wait_for_solver", f'load_tree "{path_arg}"'])
         solver.tree_present = True
+        solver.loaded_file = True
         solver.reset_series()
+        solver.clear_partial()
         return 200, {"ok": True}
 
     if path == "/api/restart":
@@ -422,6 +495,113 @@ def ev_pair(solver, player, node_id):
     ev = parse_floats(lines[0], NUM_COMBOS)
     matchups = parse_floats(lines[1], NUM_COMBOS) if len(lines) > 1 else None
     return {"ev": ev, "matchups": matchups}
+
+
+def hand_order(solver):
+    """show_hand_order, cached on the solver (the Pio hand order never changes)."""
+    if not getattr(solver, "hand_order_cache", None):
+        solver.hand_order_cache = solver.cmd("show_hand_order").split()
+    return solver.hand_order_cache
+
+
+def categories_at(solver, node_id, player):
+    """Made-hand and draw category report at a decision node (#154).
+
+    Chance and terminal nodes fall back to the closest decision above them, the same
+    rule the Study matrix uses. Shares, per-category strategies and EVs are for
+    `player` ("actor" resolves to the decision's actor; the toggle in the UI passes
+    OOP/IP explicitly). Each category row carries its weighted combos, share of the
+    range, a range-weighted strategy per child action (only when the queried player
+    is the one to act), a range-and-matchups-weighted EV (the same average the Node
+    tab shows), and the matrix classes its combos live in.
+    """
+    player = player.upper()
+    empty = {"id": None, "board": "", "actor": None, "player": player if player != "ACTOR" else None,
+             "total": 0, "made_names": [], "draw_names": [], "made": [], "draws": []}
+    with solver.cmd_lock:
+        toks = node_id.split(":")
+        node = None
+        while len(toks) >= 2:
+            node = parse_node_block(solver.cmd("show_node " + ":".join(toks)))
+            if node["type"] in ("OOP_DEC", "IP_DEC"):
+                break
+            toks.pop()
+        if node is None or node["type"] not in ("OOP_DEC", "IP_DEC"):
+            return empty
+        nid = ":".join(toks)
+        actor = "OOP" if node["type"] == "OOP_DEC" else "IP"
+        if player == "ACTOR":
+            player = actor
+        board = "".join(node["board"].split())
+        if len(board) < 6:  # preflop decisions have no categories
+            return {**empty, "id": nid, "actor": actor, "player": player}
+
+        names = solver.cmd("show_category_names").split("\n")
+        made_names, draw_names = names[0].split(), names[1].split()
+        cat_lines = solver.cmd("show_categories " + board).split("\n")
+        made_ids = [int(t) for t in cat_lines[0].split()]
+        draw_ids = [int(t) for t in cat_lines[1].split()]
+        if len(made_ids) != NUM_COMBOS or len(draw_ids) != NUM_COMBOS:
+            raise SolverError("unexpected show_categories output")
+        reach = parse_floats(solver.cmd(f"show_range {player} {nid}"), NUM_COMBOS)
+        order = hand_order(solver)
+
+        strat_rows = None
+        if player == actor:
+            rows = [l for l in solver.cmd("show_strategy " + nid).split("\n") if l.strip()]
+            if all(len(r.split()) == NUM_COMBOS for r in rows):
+                strat_rows = [parse_floats(r, NUM_COMBOS) for r in rows]
+
+        ev_lines = solver.cmd(f"calc_ev {player} {nid}").split("\n")
+        evs = parse_floats(ev_lines[0], NUM_COMBOS)
+        mus = parse_floats(ev_lines[1], NUM_COMBOS) if len(ev_lines) > 1 else None
+
+    def new_acc(cid):
+        return {"id": cid, "combos": 0.0,
+                "strat": [0.0] * len(strat_rows) if strat_rows else None,
+                "ev_num": 0.0, "ev_den": 0.0, "classes": set()}
+
+    accs = {}
+    for i in range(NUM_COMBOS):
+        w = reach[i] or 0
+        if w <= 0:
+            continue
+        cls = combo_class(order[i])
+        for key in (("m", made_ids[i]), ("d", draw_ids[i])):
+            if key[1] < 0:  # blocked combo on a flop/turn board
+                continue
+            acc = accs.setdefault(key, new_acc(key[1]))
+            acc["combos"] += w
+            if acc["strat"] is not None:
+                for j, row in enumerate(strat_rows):
+                    acc["strat"][j] += w * (row[i] or 0)
+            mu = mus[i] if mus else 1
+            if evs[i] is not None and mu and mu > 0:
+                acc["ev_num"] += w * mu * evs[i]
+                acc["ev_den"] += w * mu
+            acc["classes"].add(cls)
+
+    total = sum(w for w in reach if w)
+
+    def row(key, names):
+        acc = accs[key]
+        combos, cid = acc["combos"], acc["id"]
+        r = {"id": cid, "name": names[cid] if cid < len(names) else str(cid),
+             "combos": round(combos, 4), "pct": combos / total if total else 0,
+             "strategy": [round(x / combos, 6) if combos else 0 for x in acc["strat"]]
+                         if acc["strat"] is not None else None,
+             "ev": round(acc["ev_num"] / acc["ev_den"], 4) if acc["ev_den"] > 0 else None,
+             "classes": sorted(acc["classes"], key=class_sort_key)}
+        return r
+
+    made = [row(k, made_names) for k in sorted(accs) if k[0] == "m" and accs[k]["combos"] > 0]
+    draws = [row(k, draw_names) for k in sorted(accs) if k[0] == "d" and accs[k]["combos"] > 0]
+    made.reverse()   # strongest made hands first; best draws first
+    draws.reverse()
+    return {"id": nid, "board": board, "actor": actor, "player": player,
+            "total": round(total, 4),
+            "made_names": made_names, "draw_names": draw_names,
+            "made": made, "draws": draws}
 
 
 def require_post(method):
@@ -447,6 +627,122 @@ def no_newlines(value, name):
     return value
 
 
+def _check_sizes(tb, b, key, allow_mult=True):
+    """A comma-separated size list in tools/tree_builder.py's grammar (#114): percentages,
+    geometric Ne, raise multiples Nx (raise fields only), a. Returns the normalized list."""
+    val = no_newlines(str(b.get(key, "") if b.get(key) is not None else ""), key).strip()
+    if not val:
+        return ""
+    parts = [p.strip() for p in val.split(",") if p.strip()]
+    try:
+        specs = tb.parse_size_list(val)
+    except ValueError:
+        raise SolverError(f"bad sizes in {key} "
+                          "(want percentages, geometric Ne, raise multiples Nx, or a)")
+    if len(specs) != len(parts):
+        raise SolverError(f"bad sizes in {key}")
+    for spec in specs:
+        if spec.kind == "mult":
+            if not allow_mult or spec.value > 1000:
+                raise SolverError(f"bad sizes in {key} (Nx is for raise fields, N <= 1000)")
+        elif spec.kind == "geo":
+            if spec.value is not None and spec.value > 99:
+                raise SolverError(f"bad sizes in {key} (Ne takes N <= 99)")
+        elif spec.kind == "pct" and spec.value > 100000:
+            raise SolverError(f"bad sizes in {key}")
+    return ",".join(parts)
+
+
+def _raise_cap(b, key):
+    val = b.get(key)
+    if val is None or val == "":
+        return None
+    try:
+        cap = int(val)
+        if cap < 0 or cap > 99:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise SolverError(f"bad {key} (want a non-negative integer)")
+    return cap
+
+
+def sizing_header(b, tb):
+    """Sizing fields of a request body -> tree builder #Key#Value lines (all but pot/stack/board).
+
+    Per street: {street}_bet / _raise / _donk / _allin are OOP's sizes (donk is OOP-only), and
+    IP's too unless the body has IP's own {street}_bet_ip / _raise_ip / _allin_ip (#141; an
+    empty IP value means IP has no sizes there). {street}_raisecap caps both players.
+    """
+    try:
+        allin_threshold = float(b.get("allin_threshold", 67))
+        add_allin_limit = float(b.get("add_allin_limit", 300))
+    except (TypeError, ValueError):
+        raise SolverError("bad all-in numbers")
+    header = [f"#AllinThreshold#{allin_threshold:g}",
+              f"#AddAllinOnlyIfLessThanThisTimesThePot#{add_allin_limit:g}"]
+    for street, name in (("flop", "Flop"), ("turn", "Turn"), ("river", "River")):
+        cap = _raise_cap(b, f"{street}_raisecap")
+        for player, sfx in (("", ""), ("IP", "_ip")):
+            def key(k):
+                own = f"{street}_{k}{sfx}"
+                return own if sfx and own in b else f"{street}_{k}"
+            bet = _check_sizes(tb, b, key("bet"), allow_mult=False)
+            rais = _check_sizes(tb, b, key("raise"))
+            if bet:
+                header.append(f"#{name}Config{player}.BetSize#{bet}")
+            if rais:
+                header.append(f"#{name}Config{player}.RaiseSize#{rais}")
+            if not player:
+                donk = _check_sizes(tb, b, f"{street}_donk", allow_mult=False)
+                if donk:
+                    header.append(f"#{name}Config.DonkBetSize#{donk}")
+            if bool(b.get(key("allin"))):
+                header.append(f"#{name}Config{player}.AddAllin#True")
+            if cap is not None:
+                header.append(f"#{name}Config{player}.RaiseCap#{cap}")
+    return header
+
+
+def op_solve_node(solver, b):
+    """POST /api/solve_node (#153): continue solving the in-memory tree from a node down.
+
+    accuracy is a target exploitability in chips (the UI sends % of the node's pot, converted).
+    At the tree root this is exactly a continued whole-tree solve. Otherwise the solver runs
+    `go_partial <id>`: async subtree iterations (solve_partial's iterate_subtree path) whose
+    progress blocks are marked "partial: <id>" and routed into state()["partial"].
+    """
+    node_id = node_id_arg({"id": [str(b.get("id", "r:0"))]})
+    try:
+        acc = float(b.get("accuracy"))
+    except (TypeError, ValueError):
+        raise SolverError("bad accuracy")
+    if not math.isfinite(acc) or acc <= 0 or acc > 1e9:
+        raise SolverError("bad accuracy (want a positive number, chips)")
+    if solver.state()["solving"]:
+        raise SolverError("the solver is already running (stop it first)")
+    if node_id in ("r", "r:0"):
+        # continuing at the root IS the whole-tree solve (issue's suggested design)
+        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go"])
+        solver.clear_partial()
+        return {"ok": True, "root": True}
+    if solver.loaded_file:
+        raise SolverError("solve further is not available for a tree loaded from a file "
+                          "(view-only saves carry no solver state to continue from)")
+    with solver.cmd_lock:
+        node = parse_node_block(solver.cmd("show_node " + node_id))
+        if node["type"] not in ("OOP_DEC", "IP_DEC"):
+            raise SolverError(f"{node['type']} is not a decision node")
+        pot = sum(p or 0 for p in node["pot"])
+        # mark in flight BEFORE go_partial returns, so the pump routes the first block right
+        solver.start_partial(node_id, acc, pot)
+        try:
+            solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go_partial " + node_id])
+        except SolverError:
+            solver.clear_partial()
+            raise
+    return {"ok": True, "node": node_id, "pot": pot}
+
+
 def op_generate(solver, b):
     """PioViewer-style bet sizes -> add_lines via tools/tree_builder.py, then configure the solver."""
     range_oop = no_newlines(str(b.get("range_oop", "")).strip(), "range_oop")
@@ -465,88 +761,41 @@ def op_generate(solver, b):
         raise SolverError("bad pot/stack/all-in numbers")
 
     tb = load_tree_builder()
-
-    def sizes(key, allow_mult=True):
-        val = no_newlines(str(b.get(key, "")), key).strip()
-        if not val:
-            return ""
-        parts = [p.strip() for p in val.split(",") if p.strip()]
-        try:
-            specs = tb.parse_size_list(val)
-        except ValueError:
-            raise SolverError(f"bad sizes in {key} "
-                              "(want percentages, geometric Ne, raise multiples Nx, or a)")
-        if len(specs) != len(parts):
-            raise SolverError(f"bad sizes in {key}")
-        for spec in specs:
-            if spec.kind == "mult":
-                if not allow_mult or spec.value > 1000:
-                    raise SolverError(f"bad sizes in {key} (Nx is for raise fields, N <= 1000)")
-            elif spec.kind == "geo":
-                if spec.value is not None and spec.value > 99:
-                    raise SolverError(f"bad sizes in {key} (Ne takes N <= 99)")
-            elif spec.kind == "pct" and spec.value > 100000:
-                raise SolverError(f"bad sizes in {key}")
-        return ",".join(parts)
-
-    def raise_cap(key):
-        val = b.get(key)
-        if val is None or val == "":
-            return None
-        try:
-            cap = int(val)
-            if cap < 0 or cap > 99:
-                raise ValueError
-        except (TypeError, ValueError):
-            raise SolverError(f"bad {key} (want a non-negative integer)")
-        return cap
-
-    header = [
-        f"#Pot#{pot}",
-        f"#EffectiveStacks#{stack}",
-        f"#AllinThreshold#{allin_threshold:g}",
-        f"#AddAllinOnlyIfLessThanThisTimesThePot#{add_allin_limit:g}",
-    ]
+    header = [f"#Pot#{pot}", f"#EffectiveStacks#{stack}"]
     if board:
         header.append(f"#Board#{board}")
-    for street, name in (("flop", "Flop"), ("turn", "Turn"), ("river", "River")):
-        bet = sizes(f"{street}_bet", allow_mult=False)
-        rais = sizes(f"{street}_raise")
-        donk = sizes(f"{street}_donk", allow_mult=False)
-        allin = bool(b.get(f"{street}_allin"))
-        cap = raise_cap(f"{street}_raisecap")
-        for player in ("", "IP"):
-            if bet:
-                header.append(f"#{name}Config{player}.BetSize#{bet}")
-            if rais:
-                header.append(f"#{name}Config{player}.RaiseSize#{rais}")
-            if not player and donk:
-                header.append(f"#{name}Config.DonkBetSize#{donk}")
-            if allin:
-                header.append(f"#{name}Config{player}.AddAllin#True")
-            if cap is not None:
-                header.append(f"#{name}Config{player}.RaiseCap#{cap}")
+    header += sizing_header(b, tb)
 
     try:
         cfg = tb.parse_config("\n".join(header))
-        lines = tb.format_lines(tb.build_lines(cfg))
+        # A 4- or 5-card board starts the tree on the turn or river: the builder must start
+        # there too, or its lines run past the end of the hand.
+        n_cards = len(board) // 2
+        start = tb.Node(n_cards - 3, (0, 0), tb.OOP, False, None) if n_cards in (4, 5) else None
+        lines = tb.format_lines(tb.build_lines(cfg, start))
     except (ValueError, ArithmeticError) as e:
         raise SolverError(f"bad sizes: {e}")
     if not lines:
         raise SolverError("config produced no lines (check bet/raise sizes)")
 
-    # Isomorphism is always on (owner decision, #113); an "iso" field from old clients is ignored.
+    # Isomorphism is always on (owner decision, #113), for turn cards too: "1 1" also merges
+    # suit-isomorphic turns when the tree starts on the turn (26% fewer nodes and faster on turn
+    # trees, #137; EV and exploitability identical, strategies within <1 point of the "1 0" solve,
+    # both equilibria). The UPI default stays "1 0" for Pio output parity. An "iso" field from old
+    # clients is ignored.
     cmds = ["stop", "wait_for_solver",
             "set_range OOP " + range_oop,
             "set_range IP " + range_ip]
     if board:
         cmds.append("set_board " + board)
     cmds += [f"set_eff_stack {stack}", f"set_pot 0 0 {pot}",
-             "set_isomorphism 1 0", "clear_lines"]
+             "set_isomorphism 1 1", "clear_lines"]
     cmds += lines
     solver.cmds(cmds)
     solver.tree_present = False
+    solver.loaded_file = False
     solver.reset_series()
+    solver.clear_partial()
     return {"lines": len(lines), "sample": [l[len("add_line "):] for l in lines[:8]]}
 
 
@@ -658,6 +907,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     solver = Solver(os.path.abspath(args.solver))
+    import resolve as vresolve  # local import: server/main <-> resolve module cycle
+    set_resolver(vresolve.ResolveManager(solver, Solver, os.path.abspath(args.solver)))
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     srv.solver = solver
@@ -670,10 +921,11 @@ def main(argv=None):
         pass
     finally:
         srv.server_close()
-        try:
-            solver.proc.kill()
-        except Exception:
-            pass
+        for s in ([solver] + ([_resolver.rsolver] if _resolver else [])):
+            try:
+                s.proc.kill()
+            except Exception:
+                pass
     return 0
 
 

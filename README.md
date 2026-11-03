@@ -7,7 +7,7 @@ A heads-up no-limit hold'em solver (postflop trees and full preflop trees) with 
 public UPI documentation; it contains no PioSOLVER code.
 
 - C++20, single binary, no dependencies beyond zlib (ships with macOS).
-- Vector-form **Discounted CFR** (α=1.5, β=0, γ=3) with exact card removal, no abstraction. `set_dcfr` overrides the exponents.
+- Vector-form **Discounted CFR** (α=1.3, γ=4; β=0, then 0.5 after iteration 50) with exact card removal, no abstraction. `set_dcfr` overrides the exponents (`set_dcfr a b g` constant, `set_dcfr a b g b_late t` with the β switch).
 - Multi-threaded over turn/river cards with a nested work-stealing pool.
 - Suit **isomorphism** (flop trees on by default, like Pio's `set_isomorphism 1 0`).
 - Optional 16-bit compressed storage (`small_strats`), roughly halving memory.
@@ -73,6 +73,7 @@ python3 tools/tree_builder.py config.txt            # print the add_line command
 python3 tools/tree_builder.py config.txt --full     # a complete UPI script, ready to pipe in
 python3 tools/tree_builder.py config.txt --compare  # diff against add_lines already in the file
 python3 tools/tree_builder.py --rules               # print the sizing rules
+python3 tools/tree_builder.py config.txt --pio-compat   # PioViewer's donk fallback (below)
 ```
 
 The input is any file with PioViewer's `#Key#Value` header; everything else in the file is
@@ -137,6 +138,14 @@ Rounding is to the nearest chip. Two all-in rules sit on top:
   the all-in. On a 40-chip river pot, 300% is 120 and the stack is 230, so no all-in is offered;
   facing a 26 bet the pot-if-called is 92, 300% of it is 276, and the all-in joins the raise.
 
+**Donk rule (#152, differs from PioViewer).** When OOP leads into the previous street's
+aggressor (IP bet or raised and OOP called), only `DonkBetSize` sizes are offered. An empty
+donk list means exactly that - OOP cannot lead at all (check only), and `AddAllin` adds no
+all-in lead either. PioViewer instead falls back to `BetSize` for an empty donk list;
+`--pio-compat` reproduces that for diffing against PioViewer saves whose donk list is
+unset. IP is never in this spot postflop - after OOP checks, IP's bet still uses `BetSize`,
+as PioViewer's recorded lines confirm (the fixture below exercises exactly that).
+
 Only maximal lines are emitted: the solver fills in check, call and fold at every node it
 creates, so a line only has to reach the deepest bet of its branch.
 
@@ -144,10 +153,11 @@ These rules were inferred from `tests/data/pio_25bbHU_2sizes.txt`, which carries
 header and the 266 lines PioViewer generated from it; `tests/test_tree_builder.py` checks that
 the builder reproduces that set exactly. (The `Ne`/`Nx`/`a` size forms and `RaiseCap` are our
 own extensions, not something PioViewer writes; plain percentage files like the fixture are
-unaffected.) Two details the fixture cannot pin down: the tie-break
-when a size lands exactly on .5 (half-up and half-even both reproduce it), and `DonkBetSize`,
-which the fixture sets equal to `BetSize` on every street - donk nodes are reached, but their
-size is indistinguishable from an ordinary bet there.
+unaffected.) One detail the fixture cannot pin down: the tie-break
+when a size lands exactly on .5 (half-up and half-even both reproduce it). It does pin down
+the donk rule above indirectly: it sets `DonkBetSize` equal to `BetSize` on every street, so
+its donk sizes are indistinguishable from the PioViewer fallback - but its IP check-bet lines
+prove that a bet after the opponent checks is an ordinary `BetSize`, not a donk.
 
 ## Viewer
 
@@ -172,10 +182,16 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     The text box under each grid stays in sync both ways, in the solver's range syntax
     (`AA,AKs:0.5,AsKs,22+,A5s-A2s`).
   - a card-button board picker;
-  - pot, stack, bet/raise/donk sizes per street (expanded with `tools/tree_builder.py`) and all-in
-    rules. Isomorphism is always on.
+  - pot, stack, and bet/raise sizes per street **for OOP and IP separately**, plus OOP donk sizes
+    (expanded with `tools/tree_builder.py`: `33` % pot, `2e` geometric over 2 streets, `3x` raise
+    to 3×, `a` all-in), a per-street raise cap and all-in rules. API fields: `{street}_bet`,
+    `_raise`, `_donk` and `_allin` are OOP's, and IP's too unless `{street}_bet_ip`, `_raise_ip` or
+    `_allin_ip` are given (#141). Isomorphism is always on.
+  - a library (`~/.wsolver/library`, or `--library DIR`): save and load single ranges from each
+    editor, or whole spots (ranges, board, sizes, target) from the spot bar, in `/`-separated
+    folders, with search, preview, rename and delete.
   - **Build & solve** with a target in % of the pot, and a live convergence chart
-    (exploitability on a log scale against time).
+    (exploitability in % of the pot against time, linear).
 - **Study:** a fixed layout, so nothing moves while you click through a line:
   - the board as card graphics and the line so far as colored action chips grouped by street
     (click one to return to that decision);
@@ -190,6 +206,22 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
 
   Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`)
   links to the current node and view.
+- **Re-solve (#117):** at any decision of the original tree, **Re-solve…** re-solves the subtree from
+  there in a second solver process. Either edit the sizes for the rest of the hand, or find the best
+  N sizes out of a candidate list. At a node facing a bet on its own street the candidates are
+  raise sizes (`3x` allowed). Results are ranked by the acting player's EV, and you can browse them
+  like the original tree; **↩ Original** in the action line, or ← at the subtree root, goes back.
+  This is unsafe re-solving: the opponent's range stays fixed at the node.
+- **Solve further (#153):** at a solved decision, **Solve further…** continues solving from that
+  node down on the *main* tree (the `solve_partial` path), to a target accuracy in % of the
+  node's pot, with live progress and a Stop button. Strategies at and below the node change in
+  memory; everything above is untouched. At the tree root it simply continues the whole solve.
+  Trees loaded from a file have no regrets to continue from, so the button is disabled there.
+  API: `POST /api/solve_node` `{id, accuracy}` (accuracy in chips, % of the node pot × pot);
+  progress comes back in `/api/status`'s `partial` (`{id, node, pot, point, progress, done,
+  stopped}`) alongside the existing whole-solve convergence series; `loaded_file` is also in
+  `/api/status`. Uses the UPI extension `go_partial <node> [N steps|seconds]` (see
+  `docs/commands.md`).
 - **Open / Save:** `dump_tree` (full / no rivers / flop only) and lazy `load_tree`. Browsing a
   truncated save re-solves missing streets on demand, as in Pio.
 - **Library (API):** named ranges and full build-form configs saved in folders under
@@ -200,6 +232,48 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
 `python3 viewer/test_server.py ./solver` runs the viewer's integration tests (a small tree,
 ~1 s; also part of `make test`). `python3 viewer/test_library.py` tests the library storage and
 its HTTP API without a solver.
+
+### Viewer: subgame re-solve and size search
+
+The server runs a **second solver process** (`viewer/resolve.py`) so a subtree can be
+re-solved with different bet sizes without touching the tree being browsed. At any
+decision node X it reads both players' ranges (`show_range`), the chips already in the
+middle (`show_node`'s pot line, passed verbatim to `set_pot`), the board, and the original
+stack (`show_effective_stack`), then builds a fresh tree rooted exactly at X from edited
+sizes — the same sizing fields as the build form, expanded by `tools/tree_builder.py`
+including any size syntax it learns in the future. Sizes for streets before X's street are
+ignored; a root that starts facing a bet automatically offers raises instead of bets. The
+previous street's aggressor is recovered from the node id's action/card token walk
+(`resolve._prev_aggressor`), so an OOP lead on X's street follows the same donk rule as a
+full build (#152); it degrades to bet sizes only when the id does not say (a root on the
+tree's first street, or an unrecognized token). The solver's tree
+roots are always OOP-to-act, so when X is IP's decision the subgame gets a one-child
+"forced check" wrapper root and X itself sits at `r:0:c`; `subgame_root` in the API output
+says which.
+
+**This is unsafe re-solving** (the same caveat as Pio's on-the-fly recalculations): the
+opponent's range at X is frozen at its solved reach, with no gadget game accounting for
+the counterfactual value of having *avoided* X. Results are for exploring sizings, not for
+exploitability claims.
+
+Endpoints (all JSON; ids refer to the main tree, subgame browsing uses subgame ids):
+
+| Endpoint | In | Out |
+|---|---|---|
+| `GET /api/resolve/context?id=<node>` | a decision node of the main tree | `{board, street ("flop"/"turn"/"river"), actor, pot: {oop, ip, dead}, stack}` — exactly what the subgame setup will use. 400 for chance/terminal/preflop nodes |
+| `POST /api/resolve/start` | `{id, accuracy?, <sizing fields as in /api/generate>}` | starts a re-solve job; 400 on bad input or while another job runs |
+| `POST /api/resolve/search` | `{id, street?, candidates: "25,50,100", n, accuracy?, <other sizing fields>}` | starts a size search: the `n`-size subset of `candidates` (used as both players' `BetSize` on `street`, defaulting to X's street) with the highest EV for the acting player. All C(k, n) subsets are solved up to 12 combinations; above that, greedy forward selection |
+| `GET /api/resolve/status` | — | `{busy, kind ("resolve"/"search"), node, error, done, total, method, rows (each `{sizes, ev, ev_oop, ev_ip}`, the acting player's EV first), best, context, result (root EVs, node count, line count, accuracy, calc_results text), tree, solve}` — poll this for progress; `solve` is the subgame solver's own status |
+| `GET /api/resolve/node`, `/strategy`, `/range`, `/ev`, `/calc_results` | same as the main-tree endpoints | browse the (re-)solved subgame. After a search these show the table's **best** subset |
+| `POST /api/resolve/stop` | — | cancels the running job (restarts the subgame solver); no-op when idle |
+
+Each search candidate is solved to the requested (loose) accuracy; the comparison table
+grows under `rows` as candidates finish.
+
+`python3 viewer/test_resolve.py ./solver` runs the tests: same-sizes re-solves reproduce
+the original node's strategy within solver tolerance, an edited config produces exactly
+the tree a direct build of the generated lines produces, and the search agrees with an
+independent brute force on a small river spot.
 
 ## Windows
 
@@ -303,7 +377,7 @@ For whole-hand accounting give the preflop investments per player (e.g. `set_pot
 Policy (owner decision, #10): match Pio wherever tools may depend on it (formats, codes, node ids,
 error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberate differences:
 
-- **`list_algorithms` reports `alpha 1.3, beta 0, gamma 4`, not Pio's `alpha 1.5, beta 0, gamma 2`.**
+- **`list_algorithms` reports `alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4`, not Pio's `alpha 1.5, beta 0, gamma 2`.**
   The strings are otherwise identical. Our DCFR defaults converge faster on every benchmark tree (see
   `bench/dcfr_sweep.md`), and the command reports the exponents actually in use rather than Pio's.
   `set_dcfr 1.5 0 2` restores the published values if exact parity matters.

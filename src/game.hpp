@@ -2,6 +2,7 @@
 // per-player hand lists, showdown orderings and strategy storage.
 #pragma once
 #include <array>
+#include <bit>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -17,6 +18,19 @@
 #include "cards.hpp"
 
 namespace pio {
+
+// Max reductions for the 16-bit storage scales. Non-negative floats order exactly like their IEEE-754
+// bit patterns read as unsigned integers, so max(|x|) (or the max of values that should be >= 0) can be
+// accumulated as an integer max. Compilers vectorize integer max reductions without -ffast-math; the
+// float form `m = x > m ? x : m` stays a scalar compare/select chain (it was ~2/3 of the regret-update
+// time on 16-bit trees and in RBP-pruned rows). The result is the same float, so quantisation is
+// bit-identical. NaN inputs differ: they now win the max (a NaN scale zeroes the row in
+// regrets_store/strat_store) instead of being skipped.
+inline uint32_t abs_bits(float x) { return std::bit_cast<uint32_t>(x) & 0x7fffffffu; }
+inline uint32_t nonneg_bits(float x) {  // negative values (and -0.0) count as 0
+  const uint32_t u = std::bit_cast<uint32_t>(x);
+  return static_cast<int32_t>(u) < 0 ? 0u : u;
+}
 
 using Weights1326 = std::array<float, NUM_COMBOS>;
 
@@ -54,6 +68,22 @@ struct GameConfig {
   int32_t pot[3] = {0, 0, 0};      // set_pot: oop, ip, dead
   int32_t eff_stack = 0;
   Weights1326 range[2]{};          // OOP, IP
+  // iso_turn is off to match Pio's `set_isomorphism 1 0`, not because it does not pay: it
+  // applies when the tree's ROOT board is 4 cards (see game.cpp, `bl == 4 && cfg.iso_turn`),
+  // and on bench/trees/turn.upi (Kh9h4h2c) it collapses 1603 nodes to 1174 (-27%) and the
+  // solve from 0.753 s to 0.553 s (-26.5%, sd 0.8%).
+  //
+  // EV (55.111) and exploitability (0.121) match, but the solved STRATEGIES do not: per-hand
+  // frequencies differ by up to 0.008, because collapsing branches aggregates the CFR updates
+  // over equivalent runouts and so follows a different trajectory to the same equilibrium.
+  // The gap WIDENS with convergence rather than closing (0.006 at 60 iterations, 0.015 at
+  // 300, 0.056 at 1200), which looks alarming but is benign: at 1200 iterations both reach
+  // the same EVs (55.124 / 44.876) with exploitability 0.001 and 0.003. They are converging
+  // to different members of the equilibrium set, not one of them to a wrong answer.
+  //
+  // So this is not a free switch - a client diffing frequencies against Pio will see the
+  // difference, and it gets bigger the longer you solve. Worth `set_isomorphism 1 1` for a
+  // turn-rooted solve where only EV matters; not for one whose frequencies are compared.
   bool iso_flop = true, iso_turn = false;
   // Keep each player's hand list as the union of both ranges, like Pio, so hands only in
   // the opponent's range still get a slot (and therefore a counterfactual value) instead
@@ -106,6 +136,13 @@ struct AllinRunouts {
   std::vector<uint32_t> boards;
   float scale;
   bool exact = false;
+  // Hand-vs-hand outcome counts over the runouts (GameTree::build_allin_tables): e2[h * H1 + o] =
+  // 2 * (boards where OOP hand h beats IP hand o) + (boards where they tie), 0 for pairs sharing a
+  // card. `valid` = runouts compatible with a disjoint pair (= 1 / scale). Turn all-ins (<= 96) are
+  // stored in e2b (uint8, half the bytes to stream), flop all-ins (<= 2352) in e2. Both empty: not built.
+  std::vector<uint16_t> e2;
+  std::vector<uint8_t> e2b;
+  int valid = 0;
 };
 
 struct ShowdownBoard {
@@ -221,6 +258,9 @@ class GameTree {
   void regrets_commit(const GNode& n, const float* data, float maxabs = -1.0f);  // maxabs < 0: compute
   void strat_commit(const GNode& n, const float* data, float maxval = -1.0f);
   void clear_storage();  // all regrets / strategy sums to 0
+  // 16-bit -> float32 storage in place (#182): decodes every node exactly as regrets_ro / strat_ro do,
+  // then frees the 16-bit arrays. Needs room for the float32 arrays; no walk may be running.
+  void decompress();
 
   // Lazy loading (see LazyStore). Every accessor above calls ensure_loaded first.
   std::unique_ptr<LazyStore> lazy;
@@ -277,6 +317,13 @@ class GameTree {
   // Index of the (5-card) showdown board, computing hand orderings on first use.
   int showdown_board_id(const std::vector<int>& board);
   int allin_runouts_id(const std::vector<int>& board);
+  // Fills AllinRunouts::e2 for the postflop all-in terminals (skipped for preflop trees and past a
+  // total of 512 MB), so Solver::showdown_value evaluates one matrix product instead of a showdown
+  // kernel call per runout (a turn all-in: ~48 calls; srp_big: 17% of all kernel calls).
+  void build_allin_tables();
+  // Bytes the tables take (and, with todo, which runout sets get one): shared by the build and
+  // memory_bytes_for, which counts them before allocate_storage builds them.
+  uint64_t allin_table_plan(std::vector<uint32_t>* todo) const;
 
  private:
   std::unordered_map<uint64_t, int> showdown_index_;

@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <string>
 
 #include "../src/cards.hpp"
@@ -11,6 +12,65 @@
 #include "../src/solver.hpp"
 
 using namespace pio;
+
+template <class V>
+static bool same_bytes(const V& a, const V& b) {
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0);
+}
+
+static bool parallel_equivalence() {
+  const int saved_threads = pool().threads();
+  for (bool compressed : {false, true}) {
+    for (bool iso : {false, true}) {
+      GameConfig cfg;
+      parse_cards("Kh9h4h", cfg.board);
+      std::string err;
+      RangeWeights weights;
+      if (!parse_range("AA,KK,QQ,AKs,AQo", weights, err)) return false;
+      cfg.range[0] = weights;
+      if (!parse_range("AA,KK,JJ,AQs,KQo", weights, err)) return false;
+      cfg.range[1] = weights;
+      cfg.pot[2] = 60;
+      // Keep bets below all-in: early all-in kernels intentionally partition
+      // runout sums by thread count, which can change float rounding even with
+      // the original scheduler. Ordinary chance reductions have a fixed order.
+      cfg.eff_stack = 1000;
+      cfg.iso_flop = iso;
+      cfg.lines.add = {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {20, 200}};
+      GameTree g;
+      g.compressed = compressed;
+      if (!g.build(cfg, err)) return false;
+      Solver s(g);
+      pool().set_threads(1);
+      for (int t = 1; t <= 10; ++t) s.iterate(t);
+      const auto regrets = g.regrets, strat = g.strat;
+      const auto regrets_q = g.regrets_q;
+      const auto strat_q = g.strat_q;
+      const auto rscale = g.rscale, sscale = g.sscale;
+      const RootStats expected = s.root_stats();
+      for (int threads : {2, 8}) {
+        g.clear_storage();
+        pool().set_threads(threads);
+        for (int t = 1; t <= 10; ++t) s.iterate(t);
+        const RootStats actual = s.root_stats();
+        if (!same_bytes(regrets, g.regrets) || !same_bytes(strat, g.strat) ||
+            !same_bytes(regrets_q, g.regrets_q) || !same_bytes(strat_q, g.strat_q) ||
+            !same_bytes(rscale, g.rscale) || !same_bytes(sscale, g.sscale) ||
+            actual.ev[0] != expected.ev[0] || actual.ev[1] != expected.ev[1] ||
+            actual.mes[0] != expected.mes[0] || actual.mes[1] != expected.mes[1] ||
+            actual.exploitability != expected.exploitability) {
+          std::printf("Parallel result differs: threads=%d compressed=%d iso=%d\n", threads, compressed, iso);
+          pool().set_threads(saved_threads);
+          return false;
+        }
+      }
+    }
+  }
+  pool().set_threads(saved_threads);
+  std::printf("[parallel equivalence] strategies, regrets, scales and stats byte-identical\n");
+  return true;
+}
 
 static bool run(const char* name, const char* board, const char* r0, const char* r1, int pot, int stack,
                 std::vector<std::vector<int32_t>> lines, int iters, double target_frac, bool iso = true) {
@@ -127,7 +187,6 @@ static bool mem_accounting() {
 // of a river, a turn and a flop tree, both perspectives, with random reaches (some exact zeros, so
 // blocked and empty groups occur), random payoffs and a non-zero `out` to accumulate into.
 static bool showdown_kernels_match() {
-#if PIO_SHOWDOWN_AVX512
   struct Spot {
     const char *board, *r0, *r1;
   } spots[] = {
@@ -141,7 +200,7 @@ static bool showdown_kernels_match() {
     return rng;
   };
   auto unit = [&] { return static_cast<float>(next() >> 40) / static_cast<float>(1 << 24); };
-  long boards = 0, bad = 0;
+  long boards = 0, bad = 0, bad_compat = 0;
   for (const Spot& sp : spots) {
     GameConfig cfg;
     parse_cards(sp.board, cfg.board);
@@ -164,25 +223,193 @@ static bool showdown_kernels_match() {
         for (float& x : a) x = 100 * unit() - 50;
         b = a;
         const float W = 150 * unit(), L = -100 * unit(), T = 0.5f * (W + L);
-        showdown_board_scalar(sb, W, L, T, p, ro.data(), a.data());
-        showdown_board_avx512(sb, W, L, T, p, ro.data(), b.data());
+        std::vector<float> ca(Hp, 0.0f), cb(Hp, 0.0f);
+        showdown_board_scalar(sb, W, L, T, p, ro.data(), a.data(), ca.data());
+#if PIO_SHOWDOWN_AVX512
+        showdown_board_avx512(sb, W, L, T, p, ro.data(), b.data(), cb.data());
         bad += std::memcmp(a.data(), b.data(), sizeof(float) * Hp) != 0;
+        bad += std::memcmp(ca.data(), cb.data(), sizeof(float) * Hp) != 0;
+#else
+        (void)b;
+        (void)cb;
+#endif
+        // fused opponent fold (call_with_opp_fold): out_fold = plain showdown + pay * compat(fro * fsig)
+        {
+          std::vector<float> xf(Ho), fa(Hp, 0.0f), fb(Hp, 0.0f), plain(Hp, 0.0f);
+          for (float& x : xf) x = next() % 4 == 0 ? 0.0f : unit();
+          const SdFold fd{xf.data(), 80 * unit() - 20};
+          showdown_board_scalar(sb, W, L, T, p, ro.data(), fa.data(), nullptr, &fd);
+#if PIO_SHOWDOWN_AVX512
+          showdown_board_avx512(sb, W, L, T, p, ro.data(), fb.data(), nullptr, &fd);
+          bad += std::memcmp(fa.data(), fb.data(), sizeof(float) * Hp) != 0;
+#endif
+          showdown_board_scalar(sb, W, L, T, p, ro.data(), plain.data());
+          for (const SdEntry& e : sb.ent[p]) {
+            double m = 0;
+            for (const SdEntry& q : sb.ent[1 - p])
+              if (q.c1 != e.c1 && q.c1 != e.c2 && q.c2 != e.c1 && q.c2 != e.c2) m += xf[q.idx];
+            const double want = plain[e.idx] + fd.pay * m;
+            // float rounding of the two terms (they can cancel): relative to their magnitudes
+            if (std::fabs(fa[e.idx] - want) > 1e-5 * (1 + std::fabs(plain[e.idx]) + std::fabs(fd.pay * m))) {
+              ++bad_compat;
+            }
+          }
+        }
+        // compat must be the card-removal compatible mass (call_and_fold's fold row)
+        for (const SdEntry& e : sb.ent[p]) {
+          double want = 0;
+          for (const SdEntry& q : sb.ent[1 - p])
+            if (q.c1 != e.c1 && q.c1 != e.c2 && q.c2 != e.c1 && q.c2 != e.c2) want += ro[q.idx];
+          if (std::fabs(ca[e.idx] - want) > 1e-4 * (1 + std::fabs(want))) ++bad_compat;
+        }
         ++boards;
       }
     }
   }
-  std::printf("[showdown] AVX-512 vs scalar kernel: %ld of %ld board/player pairs differ\n", bad, boards);
-  return bad == 0 && boards > 0;
-#else
-  std::printf("[showdown] AVX-512 kernel not built (needs AVX-512F/BW/VBMI); nothing to compare\n");
-  return true;
-#endif
+  std::printf("[showdown] AVX-512 vs scalar kernel: %ld of %ld board/player pairs differ%s; %ld wrong compat values\n",
+              bad, boards, PIO_SHOWDOWN_AVX512 ? "" : " (AVX-512 kernel not built: scalar only)", bad_compat);
+  return bad == 0 && bad_compat == 0 && boards > 0;
+}
+
+// #182: decompressing a 16-bit tree mid-solve keeps every value (same decode as regrets_ro /
+// strat_ro), and the solve continues on float32 storage.
+static bool decompress_midsolve() {
+  GameConfig cfg;
+  parse_cards("KhQs7d", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ,JJ,TT,AK,AQ,KQ,QJs,JTs", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = cfg.range[1][i] = w[i];
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 150;
+  cfg.lines.add = {{0, 50}, {50, 150}};
+  GameTree g;
+  if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+  g.compressed = true;
+  g.allocate_storage();
+  Solver s(g);
+  for (int t = 1; t <= 40; ++t) s.iterate(t);
+  std::vector<float> before;
+  for (uint32_t ni = 0; ni < g.nodes.size(); ++ni) {
+    const GNode& n = g.nodes[ni];
+    if (n.kind != ANodeKind::Decision) continue;
+    std::vector<float> a(g.node_size(n)), b(g.node_size(n));
+    const float* r = g.regrets_ro(n, a.data());
+    const float* st = g.strat_ro(n, b.data());
+    before.insert(before.end(), r, r + a.size());
+    before.insert(before.end(), st, st + b.size());
+  }
+  const double e0 = s.root_stats().exploitability;
+  g.decompress();
+  std::vector<float> after;
+  for (uint32_t ni = 0; ni < g.nodes.size(); ++ni) {
+    const GNode& n = g.nodes[ni];
+    if (n.kind != ANodeKind::Decision) continue;
+    const float* r = g.regrets_ro(n, nullptr);
+    const float* st = g.strat_ro(n, nullptr);
+    after.insert(after.end(), r, r + g.node_size(n));
+    after.insert(after.end(), st, st + g.node_size(n));
+  }
+  const bool same = !g.compressed && g.regrets_q.empty() && before == after;
+  const double e1 = s.root_stats().exploitability;
+  for (int t = 41; t <= 120; ++t) s.iterate(t);
+  const double e2 = s.root_stats().exploitability;
+  std::printf("[decompress] values %s, exploitability %.5f == %.5f, then %.5f after 80 more float32 iterations\n",
+              same ? "identical" : "DIFFER", e0, e1, e2);
+  return same && e0 == e1 && e2 < e1;
+}
+
+// All-in terminals before the river: the outcome-table path must match evaluating every runout with
+// the showdown kernel (flop all-in: 1176 runouts; turn all-in: 48), both players, random reaches.
+static bool allin_tables_match() {
+  struct Spot {
+    const char* board;
+    int stack;
+    std::vector<std::vector<int>> lines;
+  } spots[] = {{"KhQs7d", 150, {{0, 50}, {50, 150}}}, {"KhQs7d4c", 150, {{0, 150}}}};
+  uint64_t rng = 0x243f6a8885a308d3ull;
+  auto unit = [&] {
+    rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+    return static_cast<float>(rng >> 40) / static_cast<float>(1 << 24);
+  };
+  long terminals = 0, bad = 0;
+  double worst = 0;
+  for (const Spot& sp : spots) {
+    GameConfig cfg;
+    parse_cards(sp.board, cfg.board);
+    std::string err;
+    RangeWeights w;
+    if (!parse_range("AA,KK,QQ,JJ,TT,99,77,44,AK,AQ,AJ,KQ,KJ,QJ,JT,T9s,98s,87s,A5s", w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+    if (!parse_range("AA,KK,QQ,JJ,TT,88,77,AK,AQ,KQ,KT,QJ,QT,JT,J9s,T9s,65s", w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+    cfg.pot[2] = 100;
+    cfg.eff_stack = sp.stack;
+    cfg.lines.add = sp.lines;
+    GameTree g;
+    if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+    Solver s(g);
+    for (const GNode& n : g.nodes) {
+      if (n.kind != ANodeKind::Showdown || n.board_len == 5) continue;
+      if (g.allins[n.aux].e2.empty() && g.allins[n.aux].e2b.empty()) { ++bad; continue; }
+      for (int p = 0; p < 2; ++p) {
+        const int Hp = g.num_hands(p), Ho = g.num_hands(1 - p);
+        std::vector<float> ro(Ho), a(Hp), b(Hp);
+        for (float& x : ro) x = unit() < 0.3f ? 0.0f : unit();
+        s.allin_tables = true;
+        s.showdown_value(n, p, ro.data(), a.data());
+        s.allin_tables = false;
+        s.showdown_value(n, p, ro.data(), b.data());
+        double mag = 0;
+        for (int h = 0; h < Hp; ++h) mag = std::max(mag, std::fabs(static_cast<double>(b[h])));
+        for (int h = 0; h < Hp; ++h) {
+          const double d = std::fabs(static_cast<double>(a[h]) - b[h]) / (1.0 + mag);
+          worst = std::max(worst, d);
+          if (d > 2e-5) ++bad;
+        }
+        ++terminals;
+      }
+    }
+  }
+  std::printf("[allin tables] %ld terminal/player pairs, worst relative difference %.2e, %ld bad\n", terminals, worst, bad);
+  return bad == 0 && terminals > 0;
+}
+
+// #186: the two-phase river walk (river_cfr) must reproduce walk_t exactly: same regrets and
+// strategy sums, bit for bit, after many iterations with pruning, fold pairing, the opponent's fused
+// fold and all-in tables in play. Forced on here so scalar builds test the walk logic too.
+static bool river_batch_matches() {
+  GameConfig cfg;
+  parse_cards("KhQs7d4c", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ,JJ,TT,99,77,44,AK,AQ,AJ,KQ,KJ,QJ,JT,T9s,98s,87s,A5s,K5s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+  if (!parse_range("AA,KK,QQ,JJ,TT,88,77,55,AK,AQ,KQ,KT,QJ,QT,JT,J9s,T9s,65s,A4s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 400;
+  cfg.lines.add = {{0, 50, 50, 150, 150}, {0, 0, 50, 150, 400}, {50, 150, 150, 400}, {0, 0, 0, 100, 100}, {0, 100, 400}};
+  GameTree g1, g2;
+  if (!g1.build(cfg, err) || !g2.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+  Solver s1(g1), s2(g2);
+  s1.river_batch = false;
+  s2.river_batch = true;
+  for (int t = 1; t <= 60; ++t) {
+    s1.iterate(t);
+    s2.iterate(t);
+  }
+  const bool same = g1.regrets == g2.regrets && g1.strat == g2.strat;
+  std::printf("[river batch] two-phase river walk vs walk_t after 60 iterations: %s (%zu floats)\n",
+              same ? "identical" : "DIFFER", g1.regrets.size());
+  return same && !g1.regrets.empty();
 }
 
 int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
   int fails = 0;
+  fails += !parallel_equivalence();
   // #71 convergence experiments still converge: predictive regret matching (PCFR+-style,
   // matching input R + last instantaneous regret) and a delayed strategy average.
   {
@@ -225,6 +452,9 @@ int main(int argc, char** argv) {
   fails += !run_pruning();
   fails += !mem_accounting();
   fails += !showdown_kernels_match();
+  fails += !decompress_midsolve();
+  fails += !allin_tables_match();
+  fails += !river_batch_matches();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

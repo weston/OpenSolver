@@ -73,7 +73,7 @@ export function blockedBy(board) {
 /** A playing card graphic. size: "lg" | "" | "sm" | "xs" */
 export function cardEl(card, size = "") {
   const e = el("span", `pc s-${card[1]} ${size}`.trim());
-  e.appendChild(el("span", "r", card[0] === "T" ? "10" : card[0]));
+  e.appendChild(el("span", "r", card[0]));
   e.appendChild(el("span", "s", GLYPH[card[1]]));
   e.title = card;
   return e;

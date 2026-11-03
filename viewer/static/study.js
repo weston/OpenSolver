@@ -4,6 +4,7 @@
 
 import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy } from "./cards.js";
 import { get, q, fail, showTip, hideTip, fmt, fmtChips } from "./api.js";
+import { syncFurther } from "./further.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,9 +21,15 @@ const S = {
   ev: {},            // player -> /api/ev of the current node
   pinned: null,      // class pinned by click
   hover: null,
+  cats: null,        // {key, data} cache for the Categories tab (#154)
+  catsPlayer: null,  // OOP/IP override in that tab; null = the actor
+  catHl: null,       // Set of classes highlighted by a hovered category row
+  catPin: null,      // {name, classes} pinned by clicking a category row
   side: "hand",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
+  base: "/api",      // "/api/resolve" while browsing a re-solved subtree (#117)
+  sub: null,         // {origin, root, label} in subtree mode
 };
 
 /* ------------------------------------------------------------------ actions */
@@ -44,6 +51,7 @@ function betColor(f) {
 }
 const rgb = (c) => `rgb(${c.map((v) => Math.round(v)).join(",")})`;
 
+const pctLabel = (f) => `${Math.round(f * 100)}%`;
 const isDec = (n) => n && (n.type === "OOP_DEC" || n.type === "IP_DEC");
 const actorOf = (n) => (n.type === "OOP_DEC" ? "OOP" : "IP");
 const lastTok = (id) => id.slice(id.lastIndexOf(":") + 1);
@@ -75,26 +83,30 @@ function describe(parent, tok, pi, path) {
       const potAfterCall = pot + (facing - own);
       const frac = (amt - facing) / potAfterCall;
       const mult = facing - base > 0 ? (amt - base) / (facing - base) : 0;
+      // Headline size is always % of the pot (owner): a raise's size is its increment over
+      // the call, as a fraction of the pot after calling; chips and the multiple go below.
       return {
-        kind: allin ? "allin" : "raise", label: allin ? "All-in" : `Raise ${fmtChips(amt - base)}`,
-        sub: allin ? fmtChips(amt - base) : `${mult.toFixed(1)}x`, color: allin ? COL.allin : betColor(frac), frac: 10 + frac,
+        kind: allin ? "allin" : "raise", label: allin ? "All-in" : `Raise ${pctLabel(frac)}`,
+        sub: allin ? fmtChips(amt - base) : `to ${fmtChips(amt - base)} · ${mult.toFixed(1)}x`,
+        color: allin ? COL.allin : betColor(frac), frac: 10 + frac,
       };
     }
     const frac = (amt - own) / pot;
     return {
-      kind: allin ? "allin" : "bet", label: allin ? "All-in" : `Bet ${fmtChips(amt - own)}`,
-      sub: `${Math.round(frac * 100)}%`, color: allin ? COL.allin : betColor(frac), frac,
+      kind: allin ? "allin" : "bet", label: allin ? "All-in" : `Bet ${pctLabel(frac)}`,
+      sub: fmtChips(amt - own), color: allin ? COL.allin : betColor(frac), frac,
     };
   }
   return { kind: "other", label: tok, sub: "", color: "#8892a6", frac: 99 };
 }
 
-/** Actions at a decision node, in display order: fold, check/call, bets small -> large, all-in. */
+/** Actions at a decision node in display order (owner, #141): most aggressive on the left,
+ *  most passive on the right: all-in, bets/raises large -> small, check/call, fold. */
 function actionsOf(data, pi) {
   const node = data.node;
   const acts = data.children.map((c, k) => ({ k, id: c.id, ...describe(node, lastTok(c.id), pi, S.path) }));
   const rank = (x) => (x.kind === "fold" ? -2 : x.kind === "check" || x.kind === "call" ? -1 : x.kind === "allin" ? 1e9 : x.frac);
-  return acts.sort((x, y) => rank(x) - rank(y));
+  return acts.sort((x, y) => rank(y) - rank(x));
 }
 
 /* ------------------------------------------------------------------ data */
@@ -124,16 +136,16 @@ function overallFreqs(d, acts) {
 export async function gotoNode(id) {
   const seq = ++S.seq;
   try {
-    const p = await get("/api/path?id=" + q(id));
+    const p = await get(`${S.base}/path?id=` + q(id));
     const node = p.nodes[p.nodes.length - 1];
-    const cur = await get("/api/strategy?id=" + q(id));
+    const cur = await get(`${S.base}/strategy?id=` + q(id));
     // The matrix keeps showing a decision: this one, or the closest one above it.
     let dec = null, decId = null;
     if (isDec(node) && cur.freq) { dec = cur; decId = id; } else {
       for (let i = p.nodes.length - 2; i >= 0; i--) {
         if (isDec(p.nodes[i])) {
           decId = p.nodes[i].id;
-          dec = decId === S.decId && S.dec ? S.dec : await get("/api/strategy?id=" + q(decId));
+          dec = decId === S.decId && S.dec ? S.dec : await get(`${S.base}/strategy?id=` + q(decId));
           break;
         }
       }
@@ -141,20 +153,22 @@ export async function gotoNode(id) {
     if (seq !== S.seq) return;
     Object.assign(S, { id, path: p.nodes, eff: p.eff_stack || 0, cur, dec, decId, range: null, ev: {}, loaded: true });
     if (S.pinned && !H.byClass[S.pinned]) S.pinned = null;
+    // a pinned/hovered category is board-dependent: it does not survive navigation
+    S.catPin = null; S.catHl = null;
     if (S.mode !== "strategy") await loadModeData();
     if (seq !== S.seq) return;
     render();
-    if (!document.getElementById("view-study").classList.contains("hidden")) history.replaceState(null, "", "#study=" + id + urlState());
+    if (!S.sub && !document.getElementById("view-study").classList.contains("hidden")) history.replaceState(null, "", "#study=" + id + urlState());
   } catch (e) {
     if (seq === S.seq) fail(e);
   }
 }
 
 async function loadModeData() {
-  if (!S.range) S.range = await get("/api/range?id=" + q(S.id));
+  if (!S.range) S.range = await get(`${S.base}/range?id=` + q(S.id));
   if (S.mode === "ev") {
     const pl = viewPlayer();
-    if (!S.ev[pl]) S.ev[pl] = await get(`/api/ev?id=${q(S.id)}&player=${pl}`);
+    if (!S.ev[pl]) S.ev[pl] = await get(`${S.base}/ev?id=${q(S.id)}&player=${pl}`);
   }
 }
 
@@ -202,6 +216,19 @@ function renderPath() {
   box.textContent = "";
   const P = S.path;
   let lastLen = -1;
+  // Back: up one node (same as the left-arrow key), disabled at the root.
+  const back = el("button", "path-back", "‹");
+  back.title = "Up one node (←)";
+  back.disabled = P.length <= 1 && !S.sub;
+  back.onclick = goUp;
+  box.appendChild(back);
+  if (S.sub) {
+    const back = el("button", "step origin");
+    back.append(el("span", null, "↩ Original"), el("span", "sub", S.sub.label));
+    back.title = "Leave the re-solved subtree and return to " + S.sub.origin;
+    back.onclick = exitSubgame;
+    box.appendChild(back);
+  }
   const mark = (n) => {
     const cards = boardOf(n);
     if (cards.length === lastLen) return;
@@ -210,7 +237,10 @@ function renderPath() {
     if (cards.length >= 4) m.appendChild(cardEl(cards[cards.length - 1], "sm"));
     box.appendChild(m);
   };
-  for (let i = 0; i < P.length - 1; i++) {
+  // In a re-solved subtree, nodes above the subgame root are the backend's forced-check
+  // wrapper (IP roots), not real actions: skip them.
+  const first = S.sub ? Math.max(0, P.findIndex((p) => p.id === S.sub.root)) : 0;
+  for (let i = first; i < P.length - 1; i++) {
     const n = P[i];
     if (!isDec(n)) continue; // deals show up as street marks
     mark(n);
@@ -266,6 +296,10 @@ function renderTitle() {
   } else {
     t.append(el("span", "badge neutral", n.type));
   }
+  // re-solving is offered on decisions of the original tree
+  $("btn-resolve").classList.toggle("hidden", !(isDec(n) && !S.sub && S.cur && S.cur.freq));
+  syncFurther(isDec(n) && !S.sub && S.cur && S.cur.freq);
+  $("subgame-tag").classList.toggle("hidden", !S.sub);
   // player toggle only matters for range / EV
   const seg = $("player-seg");
   seg.classList.toggle("hidden", S.mode === "strategy");
@@ -314,7 +348,7 @@ function renderStrip() {
       const card = r + s;
       const b = el("button");
       b.style.background = `var(--suit-${s})`;
-      b.append(el("span", null, r === "T" ? "10" : r), el("span", null, GLYPH[s]));
+      b.append(el("span", null, r), el("span", null, GLYPH[s]));
       b.title = card;
       if (kids.has(card)) b.onclick = () => gotoNode(kids.get(card));
       else b.disabled = true;
@@ -431,6 +465,7 @@ function renderMatrix() {
     note.textContent = S.mode === "ev" ? `${pl} EV per class, in chips (pot ${fmtChips(pot)})` : `${pl} range at this node — bar height = weight`;
   }
   markSel();
+  markCatHl();
 }
 
 function markSel() {
@@ -441,11 +476,12 @@ function markSel() {
 /* ---- side panel ---- */
 
 function renderSide() {
-  for (const k of ["hand", "node", "ranges"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
+  for (const k of ["hand", "node", "ranges", "cats"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
   document.querySelectorAll(".side-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.side === S.side));
   if (S.side === "hand") renderHand();
   else if (S.side === "node") renderNodePanel();
-  else renderRangesPanel();
+  else if (S.side === "ranges") renderRangesPanel();
+  else renderCatsPanel();
 }
 
 function renderHand() {
@@ -536,9 +572,9 @@ async function renderNodePanel() {
   }
   try {
     for (const pl of ["OOP", "IP"]) {
-      if (!S.ev[pl]) S.ev[pl] = await get(`/api/ev?id=${q(S.id)}&player=${pl}`);
+      if (!S.ev[pl]) S.ev[pl] = await get(`${S.base}/ev?id=${q(S.id)}&player=${pl}`);
     }
-    if (!S.range) S.range = await get("/api/range?id=" + q(S.id));
+    if (!S.range) S.range = await get(`${S.base}/range?id=` + q(S.id));
     if (seq !== S.seq || S.side !== "node") return;
     for (const pl of ["OOP", "IP"]) {
       const e = S.ev[pl], w = pl === "OOP" ? S.range.oop : S.range.ip;
@@ -560,7 +596,7 @@ async function renderRangesPanel() {
   const box = $("side-ranges");
   const seq = S.seq;
   try {
-    if (!S.range) S.range = await get("/api/range?id=" + q(S.id));
+    if (!S.range) S.range = await get(`${S.base}/range?id=` + q(S.id));
   } catch (e) { fail(e); return; }
   if (seq !== S.seq || S.side !== "ranges") return;
   box.textContent = "";
@@ -585,6 +621,130 @@ async function renderRangesPanel() {
     }
     box.appendChild(mm);
   }
+}
+
+/* ---- categories tab (#154): made-hand and draw breakdown of the range at hand ---- */
+
+const DRAW_LABEL = {
+  no_draw: "No draw", bdfd_1card: "Backdoor FD (1 card)", bdfd_2card: "Backdoor FD (2 cards)",
+  "4out_straight_draw": "4-out straight draw", "8out_straight_draw": "8-out straight draw",
+  flush_draw: "Flush draw", combo_draw: "Combo draw",
+};
+
+const prettyCat = (name) => DRAW_LABEL[name] || name.replace(/[-_]/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+
+/** Apply the category hover/pin highlight to the matrix cells. */
+function markCatHl() {
+  if (!cells) return;
+  const set = S.catPin ? S.catPin.classes : S.catHl;
+  for (const x of cells) x.c.classList.toggle("cat-hl", !!(set && set.has(x.cls)));
+  $("matrix").classList.toggle("catmode", !!S.catPin);
+}
+
+async function renderCatsPanel() {
+  const box = $("side-cats");
+  const seq = S.seq;
+  const d = S.dec;
+  if (!S.decId || !d || !d.freq) {
+    box.dataset.key = "";
+    box.textContent = "";
+    box.appendChild(el("div", "side-empty", "Categories need a flop (or later) decision — preflop nodes have no board."));
+    return;
+  }
+  const pl = S.catsPlayer || d.actor;
+  const key = `${S.base}|${S.decId}|${pl}`;
+  if (!S.cats || S.cats.key !== key) {
+    let data;
+    try { data = await get(`${S.base}/categories?id=${q(S.decId)}&player=${pl}`); } catch (e) { fail(e); return; }
+    S.cats = { key, data };
+  }
+  if (seq !== S.seq || S.side !== "cats") return;
+  // renderSide runs on every matrix hover; rebuilding the list then would reset its scroll
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const data = S.cats.data;
+  box.textContent = "";
+
+  const head = el("div", "cats-head");
+  head.append(el("span", `badge ${pl.toLowerCase()}`, pl), el("span", "muted num", `${fmt(data.total)} combos`));
+  const seg = el("div", "seg small");
+  for (const p of ["OOP", "IP"]) {
+    const b = el("button", p === pl ? "active" : "", p);
+    b.onclick = () => { S.catsPlayer = p; renderCatsPanel(); };
+    seg.appendChild(b);
+  }
+  head.appendChild(seg);
+  box.appendChild(head);
+
+  if (!data.made.length) {
+    box.appendChild(el("div", "side-empty", "No board at this node — categories start on the flop."));
+    return;
+  }
+  const pi = S.path.findIndex((p) => p.id === S.decId);
+  const acts = actionsOf(d, pi);
+  if (pl !== data.actor) {
+    box.appendChild(el("div", "hint cats-note", `${pl} is not to act here — shares and EVs only, no strategy.`));
+  }
+  const section = (title, rows) => {
+    box.appendChild(el("h3", null, title));
+    rows.forEach((c) => box.appendChild(catRow(c, acts, box)));
+  };
+  section("Made hands", data.made);
+  const draws = data.draws.filter((c) => c.name !== "no_draw" || data.draws.length > 1);
+  if (draws.length) section("Draws", draws);
+  box.appendChild(el("div", "hint cats-note", "Hover a row to light up its hands in the matrix; click to pin."));
+}
+
+function catRow(c, acts, box) {
+  const row = el("div", "cat-row");
+  row.dataset.cat = c.name;
+  if (S.catPin && S.catPin.name === c.name) row.classList.add("sel");
+  const top = el("div", "cat-top");
+  top.append(el("span", "cat-name", prettyCat(c.name)),
+             el("span", "cat-share num", `${fmt(c.combos, c.combos < 10 ? 1 : 0)} c · ${fmt(c.pct * 100, c.pct < 0.1 ? 1 : 0)}%`),
+             el("span", "cat-ev num", c.ev != null ? fmtChips(c.ev) : "—"));
+  top.title = "Combos and share of the range; EV in chips (reach- and matchup-weighted)";
+  row.appendChild(top);
+  if (c.strategy) {
+    const bar = el("div", "mini-bar cat-bar");
+    const tip = `<div class="t">${prettyCat(c.name)}</div>` +
+      acts.map((a) => `<div class="r"><span>${`${a.label} ${a.sub}`.trim()}</span><b>${fmt((c.strategy[a.k] || 0) * 100)}%</b></div>`).join("");
+    acts.forEach((a) => {
+      const f = c.strategy[a.k] || 0;
+      if (f <= 0.0005) return;
+      const sp = el("span");
+      sp.style.background = a.color;
+      sp.style.width = (f * 100).toFixed(1) + "%";
+      bar.appendChild(sp);
+    });
+    row.appendChild(bar);
+    const mix = el("div", "cat-mix");
+    acts.forEach((a) => {
+      const f = c.strategy[a.k] || 0;
+      if (f <= 0.0005) return;
+      const itm = el("span", "cat-mix-item");
+      const sw = el("span", "sw");
+      sw.style.background = a.color;
+      itm.append(sw, el("span", null, `${a.label} ${a.sub}`.trim()), el("b", null, fmt(f * 100, f < 0.1 ? 1 : 0) + "%"));
+      mix.appendChild(itm);
+    });
+    row.appendChild(mix);
+    row.onmousemove = (ev) => showTip(ev, tip);
+  }
+  row.onmouseenter = () => { S.catHl = new Set(c.classes); if (!S.catPin) markCatHl(); };
+  row.onmouseleave = () => { S.catHl = null; hideTip(); if (!S.catPin) markCatHl(); };
+  row.onclick = () => {
+    S.catPin = S.catPin && S.catPin.name === c.name ? null : { name: c.name, classes: new Set(c.classes) };
+    markCatHl();
+    box.querySelectorAll(".cat-row").forEach((r) => r.classList.toggle("sel", !!S.catPin && S.catPin.name === r.dataset.cat));
+  };
+  return row;
+}
+
+/** Up one node: the parent (deals are steps too); at a re-solved subtree's root, back to the original. */
+function goUp() {
+  if (S.sub && S.id === S.sub.root) { exitSubgame(); return; }
+  if (S.path.length > 1) gotoNode(S.path[S.path.length - 2].id);
 }
 
 /* ------------------------------------------------------------------ wiring */
@@ -613,16 +773,18 @@ export function initStudy() {
   document.addEventListener("keydown", (e) => {
     if (document.getElementById("view-study").classList.contains("hidden")) return;
     if (e.target.closest("input, textarea, dialog")) return;
-    if ((e.key === "ArrowLeft" || e.key === "Backspace") && S.path.length > 1) {
+    if (e.key === "ArrowLeft" || e.key === "Backspace") {
       e.preventDefault();
-      // step back to the previous decision (skipping chance nodes is not wanted: deals are steps too)
-      gotoNode(S.path[S.path.length - 2].id);
-    } else if (e.key === "Escape") { S.pinned = null; markSel(); renderSide(); }
+      goUp();
+    } else if (e.key === "Escape") {
+      S.pinned = null; S.catPin = null; S.catHl = null;
+      markSel(); markCatHl(); renderSide();
+    }
   });
 }
 
 function syncUrl() {
-  if (S.loaded && !document.getElementById("view-study").classList.contains("hidden")) {
+  if (S.loaded && !S.sub && !document.getElementById("view-study").classList.contains("hidden")) {
     history.replaceState(null, "", "#study=" + S.id + urlState());
   }
 }
@@ -640,7 +802,7 @@ function urlState() {
 export function applyUrlState(params) {
   if (["strategy", "range", "ev"].includes(params.mode)) S.mode = params.mode;
   if (["OOP", "IP"].includes(params.player)) S.player = params.player;
-  if (["hand", "node", "ranges"].includes(params.side)) S.side = params.side;
+  if (["hand", "node", "ranges", "cats"].includes(params.side)) S.side = params.side;
   if (params.pin && H.byClass[params.pin]) S.pinned = params.pin;
   document.querySelectorAll("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.mode === S.mode));
 }
@@ -654,9 +816,27 @@ export function showEmpty() {
   $("side-hand").textContent = "";
 }
 
+/** Browse a re-solved subtree (#117) through the /api/resolve endpoints. */
+export function enterSubgame({ origin, root, label }) {
+  S.base = "/api/resolve";
+  S.sub = { origin, root, label };
+  S.dec = null; S.decId = null; S.pinned = null;
+  return gotoNode(root);
+}
+
+export function exitSubgame() {
+  const origin = S.sub ? S.sub.origin : "r:0";
+  S.base = "/api";
+  S.sub = null;
+  S.dec = null; S.decId = null;
+  return gotoNode(origin);
+}
+
 export const study = {
   get loaded() { return S.loaded; },
   get id() { return S.id; },
+  get pot() { return S.path.length ? potOf(S.path[S.path.length - 1]) : 0; },
+  get inSubgame() { return !!S.sub; },
   refresh() { return gotoNode(S.loaded ? S.id : "r:0"); },
-  reset() { S.pinned = null; S.decId = null; S.dec = null; return gotoNode("r:0"); },
+  reset() { S.pinned = null; S.decId = null; S.dec = null; S.base = "/api"; S.sub = null; return gotoNode("r:0"); },
 };

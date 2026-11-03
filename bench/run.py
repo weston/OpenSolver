@@ -14,6 +14,7 @@ Usage:
     python3 bench/run.py --targets 0.01,0.002   # fractions of the starting pot
     python3 bench/run.py --max-seconds 120      # give up on a tree after this long
     python3 bench/run.py --include-preflop      # + full preflop tree (GBs, minutes)
+    python3 bench/run.py --include-big          # + realistic 13 GB SRP tree (needs ~14 GB RAM)
     python3 bench/run.py --out bench/results    # write results.json and results.md
     make bench
 
@@ -49,7 +50,7 @@ DEFAULT_INFO_FREQ = 5
 
 # Trees that are too heavy for the default suite; added only via their --include-* flag.
 # preflop_full is a real file under trees/ but needs several GB and minutes per run.
-HEAVY_TREES = {"preflop_full"}
+HEAVY_TREES = {"preflop_full", "srp_big"}
 
 
 def tree_names() -> list[str]:
@@ -240,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="also run the 25bb fixture (several GB, minutes per run)")
     ap.add_argument("--include-preflop", action="store_true",
                     help="also run the full preflop tree (several GB, minutes per run)")
+    ap.add_argument("--include-big", action="store_true",
+                    help="also run srp_big, a realistic 100bb SRP tree (12.9 GB float32)")
     ap.add_argument("--out", default="", help="write <out>.json and <out>.md")
     ap.add_argument("--extra", default="",
                     help="semicolon-separated UPI commands inserted after the build and "
@@ -259,6 +262,8 @@ def main(argv: list[str] | None = None) -> int:
         names = names + ["fixture25bb"]
     if args.include_preflop:
         names = names + ["preflop_full"]
+    if args.include_big:
+        names = names + ["srp_big"]
     ncpu = os.cpu_count() or 1
     modes = [int(t) for t in args.threads.split(",") if t] or sorted({1, ncpu})
     targets = tuple(float(t) for t in args.targets.split(",") if t)

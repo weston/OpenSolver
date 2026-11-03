@@ -6,6 +6,9 @@ import { get, post, toast, fail, prefs, fmt } from "./api.js";
 import { initStudy, gotoNode, showEmpty, study, applyUrlState } from "./study.js";
 import { initBuild, updateProgress, treeLoadedElsewhere } from "./build.js";
 import { drawSpark } from "./chart.js";
+import { initLibrary } from "./library.js";
+import { initResolve, openResolve } from "./resolve.js";
+import { initFurther, pollFurther } from "./further.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -55,15 +58,22 @@ async function poll() {
   }
   const last = app.series[app.series.length - 1];
   const pct = last && app.rootPot ? (last.explo / app.rootPot) * 100 : null;
+  // Solve further (#153): the subtree solve has its own scale (the node's pot, not the root's)
+  const pt = st.partial && st.partial.point, ppot = st.partial && st.partial.pot;
+  const ppct = pt && ppot ? (pt.explo / ppot) * 100 : null;
   if (st.dead) setPill("err", "Solver stopped working — restart from Open");
+  else if (st.solving && st.partial) setPill("solving", `Solving further · ${ppct != null ? fmt(ppct, 2) + "%" : "…"} · ${pt ? fmt(pt.t, 0) + "s" : "0s"}`);
   else if (st.solving) setPill("solving", `Solving · ${pct != null ? fmt(pct, 2) + "%" : "…"} · ${last ? fmt(last.t, 0) + "s" : "0s"}`);
   else if (last) setPill("done", `Solved · ${fmt(pct, 2)}% pot`);
   else setPill("", app.tree ? "Tree ready" : "Idle");
   drawSpark($("pill-spark"), app.series, app.rootPot);
   updateProgress(st, app.series, app.rootPot);
+  pollFurther(st, app.series);
 
   if (wasSolving && !st.solving) {
-    toast(pct != null ? `Solve finished at ${fmt(pct, 2)}% of the pot` : "Solve finished");
+    toast(st.partial && st.partial.done && ppct != null
+      ? `Solve further finished at ${fmt(ppct, 2)}% of the node's pot`
+      : pct != null ? `Solve finished at ${fmt(pct, 2)}% of the pot` : "Solve finished");
     if (app.view === "study" && app.tree) study.refresh();
   }
   schedule();
@@ -126,6 +136,10 @@ async function boot() {
     initHands((await get("/api/hand_order")).order);
   } catch (e) { fail("Cannot reach the viewer server: " + e.message); return; }
   initStudy();
+  initLibrary();
+  initResolve();
+  initFurther();
+  $("btn-resolve").onclick = () => openResolve(study.id);
   initBuild({ built: async () => { app.tree = true; await refreshRootPot(); study.reset(); } });
 
   const st = await get("/api/status");
@@ -143,6 +157,16 @@ async function boot() {
   } else {
     setView(want === "build" || want === "study" ? want : app.tree ? "study" : "build");
   }
+  // Back/forward and edited URLs: follow #build / #study=<node> without a reload.
+  addEventListener("hashchange", () => {
+    const [h] = location.hash.slice(1).split("&");
+    const [v, id] = h.split("=");
+    if (v === "build" && app.view !== "build") setView("build");
+    else if (v === "study") {
+      if (app.view !== "study") setView("study");
+      if (id && app.tree && id !== study.id) gotoNode(id);
+    }
+  });
   poll();
 }
 

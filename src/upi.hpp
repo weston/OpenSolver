@@ -77,14 +77,24 @@ class Upi {
   bool execute_line(const std::string& line, bool silent = false);  // false on exit
   std::string dispatch(const std::string& cmd, const Args& args, bool& is_exit);
 
+  // A partial (subtree) solve running on the solver thread: go_partial (#153). Reach at the
+  // subtree root is captured once; the DCFR clock restarts at t = 1 for it (like solve_partial).
+  struct SubtreeJob {
+    uint32_t root = 0;
+    std::string id;                // normalized node id, echoed in SOLVER: blocks as "partial: <id>"
+    double pot = 0;                // total pot at the node (fraction accuracies refer to it)
+    std::vector<float> r0, r1;     // both players' reach at the node
+  };
+
   // ---- helpers ----
   void register_commands();
   void register_node_commands();
   void register_save_commands();
   void require_tree() const;
   void stop_solver(const char* reason = "requested");
-  void start_solver(double seconds, long long steps);
-  void solver_thread_main(double seconds, long long steps);
+  void start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub = nullptr);
+  void solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub);
+  void start_subtree_solve(const NodeRef& r, double seconds, long long steps);
   std::string stats_block(const RootStats& st, double running_time);
   std::string fmt(double v) const;
   std::string pfmt(const char* f, double v) const;  // printf-style single value
@@ -135,6 +145,8 @@ class Upi {
   void lock_node_impl(uint32_t ni, bool lock);
   void set_node_strategy(uint32_t ni, const float* local_strat);  // A*H canonical
   double explo_at(const NodeRef& r, std::vector<float>& r0, std::vector<float>& r1, RootStats* st = nullptr);
+  // Same, with the reach already computed (the solver thread's partial job keeps its own copy).
+  double explo_at_reach(uint32_t node, const float* r0, const float* r1, RootStats* st = nullptr);
   void solve_subtree(const NodeRef& r, double accuracy, long long max_iters, double max_seconds = 0);
   // Re-solve the street subtree containing r if its strategies are missing (truncated save) or
   // set_always_recalc asks for it. Call before reading strategies of r.
@@ -173,13 +185,19 @@ class Upi {
   double accuracy_ = 0;       // 0 = never
   DcfrParams dcfr_;           // set_dcfr: DCFR discount exponents (defaults 1.5 / 0 / 2)
   bool predictive_ = false;   // set_predictive: PCFR+-style prediction in regret matching (#71)
-  int avg_delay_ = 0;         // set_avg_delay: iterations before the average starts (#71)
+  int avg_delay_ = 32;         // set_avg_delay: early iterates dropped from the average (#71, #135)
   bool pruning_ = true;       // set_pruning; on by default (#51: never slower on the bench suite)
-  int prune_period_ = 32;     // every prune_period_-th iteration is measured in full
+  int prune_period_ = 8;      // every prune_period_-th iteration is measured in full (see DcfrParams)
   bool accuracy_fraction_ = false;
   double recalc_accuracy_[3] = {0, 0, 0};
   int always_recalc_street_ = 0, always_recalc_ms_ = 0;
   int info_freq_ = 25;
+  // set_info_freq auto: report (and test the accuracy target) on an adaptive schedule instead of
+  // every info_freq_ iterations. See Upi::next_auto_report.
+  bool info_auto_ = false;
+  long long next_report_ = 0, last_rep_t_ = 0;
+  double last_rep_e_ = 0;
+  long long next_auto_report(long long t, double e, double target);
   int threads_ = 0;
   double step_ = 1.0;
   std::string algorithm_ = "auto";

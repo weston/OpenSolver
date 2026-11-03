@@ -1,4 +1,5 @@
-// Convergence chart (#115): exploitability as % of the pot on a log axis, against solve time.
+// Convergence chart (#115): exploitability as % of the pot on a linear axis (owner preference,
+// #141), against solve time.
 // Plain SVG; redrawn from the full series on each update (a few hundred points at most).
 
 const NS = "http://www.w3.org/2000/svg";
@@ -14,10 +15,16 @@ function niceTime(t) {
   if (t < 60) return Math.round(t) + "s";
   return Math.floor(t / 60) + "m" + String(Math.round(t % 60)).padStart(2, "0");
 }
-function pctLabel(v) {
-  if (v >= 1) return v.toFixed(0) + "%";
-  if (v >= 0.1) return v.toFixed(1) + "%";
-  return v.toFixed(2) + "%";
+function pctLabel(v, step) {
+  const d = step >= 1 ? 0 : step >= 0.1 ? 1 : step >= 0.01 ? 2 : 3;
+  return v.toFixed(d) + "%";
+}
+
+/** A "nice" tick step (1, 2 or 5 x 10^k) giving about `n` intervals up to `max`. */
+function niceStep(max, n = 4) {
+  const raw = max / n, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const m = raw / p;
+  return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
 }
 
 /** points: [{t, explo}], pot: chips, target: % of pot (optional). */
@@ -37,19 +44,18 @@ export function drawChart(svg, points, pot, target) {
     return;
   }
   const tMax = Math.max(pts[pts.length - 1].t, 0.5);
-  let yMax = Math.max(...pts.map((p) => p.y)), yMin = Math.min(...pts.map((p) => p.y));
-  if (target > 0) yMin = Math.min(yMin, target);
-  let lo = Math.floor(Math.log10(yMin)), hi = Math.ceil(Math.log10(yMax));
-  if (hi - lo < 1) hi = lo + 1;
+  const yTop = Math.max(...pts.map((p) => p.y), target > 0 ? target : 0);
+  const step = niceStep(yTop);
+  const yMax = Math.ceil(yTop / step - 1e-9) * step;
   const x = (t) => L + (t / tMax) * (W - L - R);
-  const y = (v) => T + (1 - (Math.log10(v) - lo) / (hi - lo)) * (Hh - T - B);
+  const y = (v) => T + (1 - v / yMax) * (Hh - T - B);
 
   const grid = mk("g", { class: "grid" }, svg), axis = mk("g", { class: "axis" }, svg);
-  for (let e = lo; e <= hi; e++) {
-    const v = Math.pow(10, e), yy = y(v);
+  for (let v = 0; v <= yMax + step / 2; v += step) {
+    const yy = y(v);
     mk("line", { x1: L, x2: W - R, y1: yy, y2: yy }, grid);
     const t = mk("text", { x: L - 6, y: yy + 3, "text-anchor": "end" }, axis);
-    t.textContent = pctLabel(v);
+    t.textContent = pctLabel(v, step);
   }
   for (let i = 0; i <= 4; i++) {
     const tt = (tMax * i) / 4;
@@ -60,7 +66,7 @@ export function drawChart(svg, points, pot, target) {
     const yy = y(target);
     mk("line", { x1: L, x2: W - R, y1: yy, y2: yy, class: "target" }, svg);
     const t = mk("text", { x: W - R, y: yy - 4, "text-anchor": "end", class: "target-lbl" }, svg);
-    t.textContent = "target " + pctLabel(target);
+    t.textContent = "target " + pctLabel(target, target >= 1 ? 1 : target >= 0.1 ? 0.1 : 0.01);
   }
   const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.y).toFixed(1)}`).join("");
   mk("path", { d: `${d}L${x(pts[pts.length - 1].t).toFixed(1)},${Hh - B}L${x(pts[0].t).toFixed(1)},${Hh - B}Z`, class: "area" }, svg);
@@ -74,8 +80,8 @@ export function drawSpark(svg, points, pot) {
   svg.textContent = "";
   const pts = (points || []).filter((p) => p.explo > 0 && pot > 0);
   if (pts.length < 2) return;
-  const ys = pts.map((p) => Math.log10((p.explo / pot) * 100));
-  const lo = Math.min(...ys), hi = Math.max(...ys), tMax = pts[pts.length - 1].t || 1;
+  const ys = pts.map((p) => (p.explo / pot) * 100);
+  const lo = 0, hi = Math.max(...ys), tMax = pts[pts.length - 1].t || 1;
   const d = pts.map((p, i) => {
     const xx = (p.t / tMax) * 60, yy = hi > lo ? 2 + (1 - (ys[i] - lo) / (hi - lo)) * 14 : 9;
     return `${i ? "L" : "M"}${xx.toFixed(1)},${yy.toFixed(1)}`;

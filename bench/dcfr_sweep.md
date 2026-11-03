@@ -94,3 +94,28 @@ Lower alpha trades late convergence for early speed. Iterations to 0.2% on the r
 
 `bench/results.md` was not regenerated for this change: this Mac was shared with other agents' benchmark
 runs, so its wall times would be noisy. Iteration counts are the evidence here.
+
+## 2026-11-02: beta schedule (beta 0 -> 0.5 after iteration 50) from a realistic large tree
+
+The bench trees are small (40-307 MB). A realistic study tree - 100bb SRP (flop_srp_4's ranges and board),
+flop 33/75/150 with 50/100 raises, turn 50/100 (raise 60), river 50/100 + all-in, 710 lines, 12.9 GB -
+behaved differently: with beta 0 the average oscillates and stalls near 1% of pot. Owner's Zen 5 PC,
+32 threads, exploitability (chips, pot 60) at iterations 25..200:
+
+| config | 100 | 125 | 150 | 175 | 200 |
+|---|---|---|---|---|---|
+| 1.3 / 0 / 4 (old default) | 1.174 | 0.826 | 0.662 | 0.798 | 0.752 |
+| 1.3 / 0 / 4, pruning off | 1.228 | 1.154 | 0.880 | 0.546 | 0.596 |
+| 1.3 / 0 / 2 | 1.339 | 0.936 | 0.724 | 0.684 | 0.671 |
+| 1.3 / 0.25 / 4 | 0.970 | 0.859 | 0.573 | 0.577 | 0.668 |
+| 1.3 / 0.5 / 4 | 0.960 | 0.629 | 0.440 | 0.351 | 0.256 |
+| 1.3 / 0 -> 0.5 after 50 / 4 (new default) | 1.098 | 0.666 | 0.440 | 0.324 | 0.238 |
+| 1.3 / 0 -> 0.5 after 100 / 4 | 1.174 | 0.715 | 0.468 | 0.327 | 0.245 |
+| 1.3 / 1 / 3 | 3.265 | 2.380 | 1.846 | 1.500 | 1.265 |
+
+Time to 1% of pot: old default 220 iterations / 111 s; new default 140 iterations / 70.4 s.
+PioSOLVER 3.10 on the same PC and tree: 70.5 s (about 110 iterations).
+
+Constant beta 0.5 costs the small bench trees 25-40% more iterations; the switch after 50 keeps them
+close (PC, 32 threads, iterations to 0.05% of pot: deep 180 -> 200, flop_3bet 95 -> 100, river 165 -> 175;
+flop_srp_4 80, flop_srp_2 70, turn 75 unchanged).

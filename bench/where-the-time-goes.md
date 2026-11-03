@@ -284,7 +284,7 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
   float32. Compute savings therefore show at 1 thread and on the Mac, and only partly on the PC at 32.
   Neither zero-reach shortcut is available at cache-line granularity: 54-55% of reach entries at river
   nodes are exactly zero, but only 6-7% of 32-hand lines are.
-- **Half-width lanes for packs of up to 4 lanes** (#this). 3-4 lanes are 50-65% of the lanes kernel's
+- **Half-width lanes for packs of up to 4 lanes** (#234). 3-4 lanes are 50-65% of the lanes kernel's
   work on srp_big and threebet_mono, so the NEON kernel now has a 4-lane width: M4, 10 threads,
   threebet_mono to 0.6 chips 5.89 -> 5.54 s (-6%), srp_big 12 iterations 8.21 -> 7.78 s (-5%),
   bit-identical. The same split on x86 (a 128-bit `showdown_lanes_256`) is no faster on Zen 5, even at

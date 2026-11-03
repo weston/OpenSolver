@@ -145,6 +145,13 @@ class Solver {
   // unpruned iteration counts exactly on every bench tree while keeping the per-iteration savings
   // of the long tail (deep to 0.05% pot: 33.1s -> 30.5s).
   // Best-response, evaluate and strategy_only walks are never pruned.
+  // All-in terminals before the river from the precomputed outcome tables (AllinRunouts::e2) when
+  // they exist; false evaluates every runout with the showdown kernel (the reference, for tests).
+  bool allin_tables = true;
+  // Values of p's hands at a showdown terminal against opponent reach ro (public for tests).
+  void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
+  template <class E>
+  void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
   bool pruning = true;  // on by default (#51): inactive before t > 2*prune_period, then never
                         // slower and up to ~8% faster on long solves (bench data in the comment)
   // 8, not 32. The period trades activation delay (pruning is inactive until t > 2*period)
@@ -210,7 +217,6 @@ class Solver {
   // response values, both for player p against the opponent's average strategy.
   void walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br);
   void fold_value(const GNode& n, int p, const float* ro, float* out) const;
-  void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
   void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
                       float* compat = nullptr, const SdFold* fold = nullptr) const;
   // River decision of the opponent facing p's bet: the call (showdown, reach xc = ro * sigma_call) and

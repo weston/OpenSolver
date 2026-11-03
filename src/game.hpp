@@ -136,6 +136,13 @@ struct AllinRunouts {
   std::vector<uint32_t> boards;
   float scale;
   bool exact = false;
+  // Hand-vs-hand outcome counts over the runouts (GameTree::build_allin_tables): e2[h * H1 + o] =
+  // 2 * (boards where OOP hand h beats IP hand o) + (boards where they tie), 0 for pairs sharing a
+  // card. `valid` = runouts compatible with a disjoint pair (= 1 / scale). Turn all-ins (<= 96) are
+  // stored in e2b (uint8, half the bytes to stream), flop all-ins (<= 2352) in e2. Both empty: not built.
+  std::vector<uint16_t> e2;
+  std::vector<uint8_t> e2b;
+  int valid = 0;
 };
 
 struct ShowdownBoard {
@@ -310,6 +317,10 @@ class GameTree {
   // Index of the (5-card) showdown board, computing hand orderings on first use.
   int showdown_board_id(const std::vector<int>& board);
   int allin_runouts_id(const std::vector<int>& board);
+  // Fills AllinRunouts::e2 for the postflop all-in terminals (skipped for preflop trees and past a
+  // total of 512 MB), so Solver::showdown_value evaluates one matrix product instead of a showdown
+  // kernel call per runout (a turn all-in: ~48 calls; srp_big: 17% of all kernel calls).
+  void build_allin_tables();
 
  private:
   std::unordered_map<uint64_t, int> showdown_index_;

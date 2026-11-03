@@ -319,6 +319,62 @@ static bool decompress_midsolve() {
   return same && e0 == e1 && e2 < e1;
 }
 
+// All-in terminals before the river: the outcome-table path must match evaluating every runout with
+// the showdown kernel (flop all-in: 1176 runouts; turn all-in: 48), both players, random reaches.
+static bool allin_tables_match() {
+  struct Spot {
+    const char* board;
+    int stack;
+    std::vector<std::vector<int>> lines;
+  } spots[] = {{"KhQs7d", 150, {{0, 50}, {50, 150}}}, {"KhQs7d4c", 150, {{0, 150}}}};
+  uint64_t rng = 0x243f6a8885a308d3ull;
+  auto unit = [&] {
+    rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+    return static_cast<float>(rng >> 40) / static_cast<float>(1 << 24);
+  };
+  long terminals = 0, bad = 0;
+  double worst = 0;
+  for (const Spot& sp : spots) {
+    GameConfig cfg;
+    parse_cards(sp.board, cfg.board);
+    std::string err;
+    RangeWeights w;
+    if (!parse_range("AA,KK,QQ,JJ,TT,99,77,44,AK,AQ,AJ,KQ,KJ,QJ,JT,T9s,98s,87s,A5s", w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+    if (!parse_range("AA,KK,QQ,JJ,TT,88,77,AK,AQ,KQ,KT,QJ,QT,JT,J9s,T9s,65s", w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+    cfg.pot[2] = 100;
+    cfg.eff_stack = sp.stack;
+    cfg.lines.add = sp.lines;
+    GameTree g;
+    if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+    Solver s(g);
+    for (const GNode& n : g.nodes) {
+      if (n.kind != ANodeKind::Showdown || n.board_len == 5) continue;
+      if (g.allins[n.aux].e2.empty() && g.allins[n.aux].e2b.empty()) { ++bad; continue; }
+      for (int p = 0; p < 2; ++p) {
+        const int Hp = g.num_hands(p), Ho = g.num_hands(1 - p);
+        std::vector<float> ro(Ho), a(Hp), b(Hp);
+        for (float& x : ro) x = unit() < 0.3f ? 0.0f : unit();
+        s.allin_tables = true;
+        s.showdown_value(n, p, ro.data(), a.data());
+        s.allin_tables = false;
+        s.showdown_value(n, p, ro.data(), b.data());
+        double mag = 0;
+        for (int h = 0; h < Hp; ++h) mag = std::max(mag, std::fabs(static_cast<double>(b[h])));
+        for (int h = 0; h < Hp; ++h) {
+          const double d = std::fabs(static_cast<double>(a[h]) - b[h]) / (1.0 + mag);
+          worst = std::max(worst, d);
+          if (d > 2e-5) ++bad;
+        }
+        ++terminals;
+      }
+    }
+  }
+  std::printf("[allin tables] %ld terminal/player pairs, worst relative difference %.2e, %ld bad\n", terminals, worst, bad);
+  return bad == 0 && terminals > 0;
+}
+
 int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
@@ -367,6 +423,7 @@ int main(int argc, char** argv) {
   fails += !mem_accounting();
   fails += !showdown_kernels_match();
   fails += !decompress_midsolve();
+  fails += !allin_tables_match();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

@@ -398,6 +398,40 @@ void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, i
   }
 }
 
+template <class E>
+void Solver::allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro,
+                               float* out) const {
+  const int H0 = g_.num_hands(0), H1 = g_.num_hands(1);
+  const int Hp = g_.num_hands(p);
+  const float half = 0.5f * (W - L) * ar.scale;
+  const float twoV = 2.0f * static_cast<float>(ar.valid);
+  ArenaScope sc;
+  float* cm = sc.a.alloc(Hp);
+  compat_mass(p, ro, cm);
+  if (p == 0) {
+    for (int h = 0; h < H0; ++h) {
+      const E* row = e2 + static_cast<size_t>(h) * H1;
+      float part[16] = {};
+      int o = 0;
+      for (; o + 16 <= H1; o += 16)
+        for (int l = 0; l < 16; ++l) part[l] += ro[o + l] * static_cast<float>(row[o + l]);
+      float d = 0.0f;
+      for (; o < H1; ++o) d += ro[o] * static_cast<float>(row[o]);
+      for (int l = 0; l < 16; ++l) d += part[l];
+      out[h] = half * d + L * cm[h];
+    }
+  } else {
+    float* acc = sc.a.alloc_zero(H1);
+    for (int h = 0; h < H0; ++h) {
+      const float r = ro[h];
+      if (r == 0.0f) continue;  // most opponent hands have no reach at an all-in
+      const E* row = e2 + static_cast<size_t>(h) * H1;
+      for (int o = 0; o < H1; ++o) acc[o] += r * static_cast<float>(row[o]);
+    }
+    for (int j = 0; j < H1; ++j) out[j] = half * (twoV * cm[j] - acc[j]) + L * cm[j];
+  }
+}
+
 void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) const {
   const ActionNode& an = g_.an(n);
   const float W = static_cast<float>(g_.terminal_payoff(an, p, 1));
@@ -444,6 +478,15 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
     // 1.73 s for 2000 iterations) and nothing on a full preflop tree with flop subsets
     // (5.72 s vs 5.67 s). Outer parallelism over chance children is unaffected (#110).
     for (int h = 0; h < Hp; ++h) body(h);
+    return;
+  }
+  if (allin_tables && !(ar.e2.empty() && ar.e2b.empty()) && !g_.payoff.icm.enabled) {
+    // value(h) = scale * sum_o ro[o] * (W*wins + T*ties + L*losses) over the runouts. Without ICM a
+    // tie pays the midpoint, so with e2 = 2*wins + ties and V = runouts per disjoint pair,
+    // value(h) = (W - L) / (2V) * sum_o ro[o] * e2[h][o] + L * compat(h). For IP the table is read
+    // transposed: 2*wins_IP + ties = 2V - e2 on compatible pairs.
+    if (!ar.e2b.empty()) allin_table_value(ar, ar.e2b.data(), W, L, p, ro, out);
+    else allin_table_value(ar, ar.e2.data(), W, L, p, ro, out);
     return;
   }
   const int nb = static_cast<int>(ar.boards.size());

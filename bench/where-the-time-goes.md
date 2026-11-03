@@ -8,29 +8,36 @@ Measure with wall time or `make bench`. Not `solver_time` — see the warning in
 
 ## Self time by function, 1 thread
 
+Re-sampled after the lanes kernels (#209, #219) and the fused fold (#168). `sample` for 8-10 s at
+1 thread, 2.5K-7.4K working samples per tree, waiting threads excluded and frames under 5 samples
+truncated by the tool. Pre-#209 figures in brackets for comparison:
+
 | tree | showdown | fold | walk_t | strategy (cur+avg) | compat_mass |
 |---|---|---|---|---|---|
-| turn | 48.8% | 0.0% | 25.5% | 10.8% | 13.0% |
-| flop_srp_2 | 58.9% | 0.0% | 21.0% | 10.9% | 7.7% |
-| flop_srp_4 | 58.8% | 0.0% | 21.6% | 10.7% | 8.2% |
-| deep | 64.5% | 0.0% | 19.2% | 10.2% | 4.4% |
-| flop_3bet | 64.8% | 0.0% | 18.5% | 10.0% | 0.5% |
-| preflop | 98.2% | 0.0% | 0.9% | 0.4% | 0.4% |
+| turn | **66.0%** (48.8) | 0.0% | **8.8%** (25.5) | **14.4%** (10.8) | **0.0%** (13.0) |
+| flop_srp_2 | **63.3%** (58.9) | 0.0% | **9.9%** (21.0) | **16.7%** (10.9) | **0.3%** (7.7) |
+| flop_srp_4 | **65.1%** (58.8) | 0.0% | **10.4%** (21.6) | **14.4%** (10.7) | **0.3%** (8.2) |
+| deep | **61.2%** (64.5) | 0.0% | **11.8%** (19.2) | **14.2%** (10.2) | **0.2%** (4.4) |
+| flop_3bet | **51.8%** (64.8) | 0.0% | **17.7%** (18.5) | **13.8%** (10.0) | **0.7%** (0.5) |
+| preflop | not re-sampled — see below | | | | |
 
-`fold_value` is 0.0% everywhere. It is not a target, despite being a natural-sounding one.
+`fold_value` is 0.0% everywhere, still. It is not a target, despite being a natural-sounding one.
 
-**The table above predates the lanes kernels (#209, #219) and the fused fold (#168).** Re-sampled
-`flop_srp_2` at 1 thread (10 s of `sample`, 7,446 working samples, frames under 5 samples truncated):
+The structural change is **`compat_mass` has essentially vanished** — 4.4-13.0% down to 0.0-0.7% —
+because #168 folds the opponent's fold mass into the same showdown kernel call rather than a
+separate pass. `walk_t` roughly halved on every tree but `flop_3bet`. `strategy` rising is relative:
+the same work against a smaller total.
 
-| | showdown | walk_t/river | strategy | traverser_update | compat_mass | fold_value |
-|---|---|---|---|---|---|---|
-| then | 58.9% | 21.0% | 10.9% | — | 7.7% | 0.0% |
-| **now** | **63.3%** | **9.9%** | **16.7%** | 5.1% | **0.3%** | 0.0% |
+`preflop` cannot be sampled this way: it converges so fast that 20,000 steps complete in **0.03 s**,
+so the process exits before `sample` can attach. Its old 98.2% showdown row is left out rather than
+carried forward unverified — and per the share-is-not-amount rule below, a tree that solves in 0.03 s
+is not a target whatever its profile says.
 
-Two real shifts, not noise: `compat_mass` has essentially vanished (7.7% -> 0.3%) because #168 folds
-the opponent's fold mass into the same showdown kernel call, and `walk_t` has halved. `strategy`
-rising to 16.7% is relative — it is the same work against a smaller total. `fold_value` is still
-exactly 0.0%. The other trees' rows have not been re-sampled and should be read as pre-#209.
+**One caveat on comparing these to the bracketed numbers.** Pruning is inactive until
+`t > 2 * prune_period` = 16, so a long sampling run is mostly pruned iterations while a short one is
+not, and that changes the mix as well as the absolute cost. These runs are 400-4,000 iterations; the
+original window is unrecorded. Treat large shifts (`compat_mass`, `walk_t`) as real and single-digit
+ones as possibly just the window.
 
 ## The dominant cost, characterised
 

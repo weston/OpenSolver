@@ -128,6 +128,53 @@ Recorded so they are not re-attempted:
 - **An adaptive `min(avg_delay, t/4)`** is a no-op: it compares `t` against a fraction of itself, so
   it is true for every `t >= 1` and never skips anything. (#135)
 
+On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads, srp_big at
+16-bit storage), measured after #164-#168 (2026-11-03):
+
+- **The AVX-512 showdown kernel's group loop is not latency- or query-bound.** On srp_big it is 63% of
+  thread time; its group loop is 62% of the kernel (~63 strength groups per board, 6-7 of p's hands
+  each). Three restructurings were bit-identical or exact and gave nothing:
+  - one 16-lane query per card-sum state, serving group g's `le` and group g+1's `lt` at once (half
+    the lookups): +1-2%;
+  - two interleaved `CsRegs` accumulators to halve the add chain: within noise;
+  - a nonzero-reach bitmask and visiting only set bits: +10% at 1 thread, +2% at 32. 75% of opponent
+    entries are exactly zero at srp_big showdowns (67% already at the river chance node), but a gather
+    pre-pass plus data-dependent trip counts cost more than the skipped adds. The old per-group
+    trip count is fixed per board, so the predictor learns it.
+  - compacting the opponent side once per river subtree (zero-reach entries dropped, group ends
+    remapped): -1 to -3% on srp_big, and +10% on the scalar kernel (Mac), which already skips zeros
+    with a branch. Not worth its code.
+  The kernel's opponent pass appears throughput-bound on the 4 masked adds plus mask setup per entry.
+- **The scalar showdown kernel is slower than AVX-512 on wide ranges too** (srp_big iterations 21-60:
+  16.3 s vs 15.2 s), so AVX-512 is not losing to per-group vector overhead there.
+- **Four interleaved partial sums in the fold kernels' card-mass loop** (to break the `total` and
+  `cs[]` dependency chains): no change at 1 thread. The chains were not the bound; the later win was
+  removing the fold pass altogether (#166, #168).
+- **Regret matching (`current_strategy`) as a portable blocked loop** (16 hands at a time, all actions,
+  one pass): +13% at 1 thread. GCC handles the short variable-length inner loops badly. Explicit
+  AVX-512 registers do win (#175), but only with a software prefetch per row; without it, interleaved
+  row reads cost +8-10% on DRAM-streaming trees at 32 threads.
+- **Fusing the 16-bit decode into `current_strategy`'s first pass** (no scratch copy): within noise.
+- **Memory traffic is not the limit at 16-bit.** Turning strategy-sum accumulation off entirely (no S
+  traffic, about 40% of the bytes) did not make srp_big iterations faster. float32 is bandwidth-bound
+  above 8 threads (16 threads: 23% slower than 16-bit), 16-bit is not.
+- **Software-prefetching the strategy-sum rows** at node entry, and **flush-to-zero / DAZ**: no change.
+  The regret update's slowness before #164 was its scalar max reductions, not cache misses or
+  denormals.
+- **Lazy per-row discounting of pruned rows**: only 0.9% of rows are RBP-pruned on threebet_mono;
+  pruning pays by skipping subtrees, so there is nothing to save per row.
+- **Re-tuning the RBP period** on threebet_mono: 8 (the default) 3.88 s; 4 4.12 s; 16 3.92 s;
+  32 4.52 s; pruning off 4.11 s.
+- **Predictive CFR+ on a realistic tree** is still far worse: threebet_mono at 260 iterations, 0.76
+  vs 0.28 chips (#80 measured the same on the bench trees).
+- **Average delay 0 / 64 / 100 on srp_big** (vs 32): within 2-5% over iterations 125-200, not worth
+  another default change.
+- **Thread idle time is small at 32 threads**: about 1 s per worker in cv_wait (including the build) and 2 s
+  of yields in total, against ~760 s of thread work. The gap to linear scaling (16 threads: 75% efficiency)
+  is per-thread slowdown (SMT, bandwidth for float32), not scheduling.
+- **Pio's per-iteration convergence matches ours** on threebet_mono (see bench/vs_pio.md), so no
+  algorithmic gap was found there; the lead is per-iteration speed.
+
 **The granularity rule.** Subtree-level reach pruning never fires because a node almost always has
 *someone* in it; per-entry skipping pays because 55-60% of individual opponent reach entries are
 exactly zero at showdown terminals (#151, verified at +4.3% bit-identical on `deep`). And skipping

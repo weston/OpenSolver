@@ -483,8 +483,9 @@ std::string Upi::cmd_calc_eq_preflop(const Args& a) {
 }
 
 std::string Upi::cmd_show_nuts(const Args& a) {
+  if (a.empty()) throw CmdError{"incorrect or missing argument"};
+  int p = player_arg(a[0]);  // Pio checks the player before the board argument
   if (a.size() < 2) throw CmdError{"incorrect or missing argument"};
-  int p = player_arg(a[0]);
   std::vector<int> board;
   if (!parse_cards(a[1], board) || board.size() < 3) throw CmdError{"incorrect or missing argument"};
   uint64_t bm = board_mask(board);

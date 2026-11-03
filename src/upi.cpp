@@ -17,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <sstream>
 
@@ -198,7 +199,7 @@ int Upi::player_arg(const std::string& s) const {
   for (auto& ch : u) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
   if (u == "OOP") return 0;
   if (u == "IP") return 1;
-  throw CmdError{"incorrect or missing argument"};
+  throw CmdError{"incorrect player"};  // Pio's message (probed); set_first_iteration_player differs
 }
 
 void Upi::require_tree() const {
@@ -341,6 +342,8 @@ long long Upi::next_auto_report(long long t, double e, double target) {
 
 void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   out_raw("SOLVER: started\n");
+  double best_e = std::numeric_limits<double>::infinity();  // 16-bit stall detection (#182)
+  int stalled = 0;
   if (info_auto_) {
     next_report_ = (sub ? 0 : tree_->iterations) + 10;
     last_rep_t_ = 0;
@@ -404,10 +407,29 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           reason = "required accuracy reached";
           break;
         }
+        // 16-bit storage has an exploitability floor (threebet_mono: ~0.09% of pot, #182). Under
+        // small_strats auto, a whole-tree solve whose last three reports set no new best while above
+        // its target switches to float32 if that fits, once, and carries on from the same state.
+        if (!sub && tree_->compressed && small_strats_ == "auto" && accuracy_ > 0) {
+          if (st.exploitability < best_e) {
+            best_e = st.exploitability;
+            stalled = 0;
+          } else if (++stalled == 3) {
+            // decompress() allocates the float32 arrays while the 16-bit ones are still live: the peak
+            // extra is the whole float32 storage, twice the net difference (8 vs 4 bytes per entry).
+            const uint64_t need = 2 * (tree_->memory_bytes_for(false, predictive_) - tree_->memory_bytes_for(true, predictive_));
+            if (need <= available_memory_bytes() * 9 / 10) {
+              tree_->decompress();
+              out_raw("SOLVER: 16-bit storage stopped improving; switched to 32-bit storage\n");
+            } else {
+              out_raw("SOLVER: 16-bit storage stopped improving; 32-bit storage does not fit\n");
+            }
+          }
+        }
         if (info_auto_) next_report_ = next_auto_report(tick, st.exploitability, accuracy_ > 0 ? target : 0.0);
       }
       if (limit) {
-        reason = steps > 0 && done >= steps ? "required number of steps done" : "required time elapsed";
+        reason = steps > 0 && done >= steps ? "required number of steps done" : "timeout reached";  // Pio's words
         break;
       }
     }
@@ -464,17 +486,24 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   if (small_strats_ == "on") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
   else {
-    // auto: 16-bit storage for preflop trees (like Pio), when float32 does not fit, and when the
-    // float32 tree is large for the thread count. 16-bit now converges in the same number of
-    // iterations as float32 on every bench tree (the old 1.8x penalty, #55, no longer reproduces),
-    // so the choice is speed per iteration: half the bytes win once (float32 bytes x threads)
-    // reaches about 2 GB, and the conversion arithmetic loses below that. Measured time to 0.05%
-    // of pot: M4 10 threads deep -12%, flop_srp_4 -19%, flop_srp_2 +11%, flop_3bet +10%;
-    // Zen 5 32 threads flop_srp_4 -24%, deep -10%, flop_srp_2 -9%, flop_3bet +7%; Zen 5 1 thread
-    // deep +20% (all on the right side of the threshold).
+    // auto: 16-bit storage for preflop trees (like Pio), when float32 does not fit, and (x86) when
+    // the float32 tree is large for the thread count. 16-bit converges in the same number of
+    // iterations as float32 down to ~0.05% of pot on the bench trees, so the choice is speed per
+    // iteration: on x86, half the bytes win once (float32 bytes x threads) reaches about 2 GB, and
+    // the conversion arithmetic loses below that (Zen 5 32 threads flop_srp_4 -24%, deep -10%,
+    // flop_srp_2 -9%, flop_3bet +7%; 1 thread deep +20%). On Apple silicon the memory system keeps
+    // up with float32: since the regret update vectorizes under clang (#180), float32 is faster on
+    // every tree (M4 10 threads, time to 0.05% of pot: deep 3.87 vs 4.10 s, flop_srp_4 2.08 vs
+    // 2.14, flop_3bet 0.50 vs 0.52, flop_srp_2 0.96 vs 0.99; threebet_mono 24.9 s vs never), so
+    // there 16-bit is only for capacity. 16-bit also has a precision floor: flop_3bet plateaus at
+    // 0.009 chips against 0.002, threebet_mono at ~0.09% of pot (bench/where-the-time-goes.md).
+#if defined(__aarch64__) || defined(_M_ARM64)
+    t->compressed = c.preflop || full > avail * 9 / 10;
+#else
     const uint64_t th = threads_ > 0 ? static_cast<uint64_t>(threads_)
                                      : std::max<uint64_t>(1, std::thread::hardware_concurrency());
     t->compressed = c.preflop || full > avail * 9 / 10 || full * th >= (uint64_t(2) << 30);
+#endif
   }
   uint64_t need = t->memory_bytes_for(t->compressed, predictive_);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board
@@ -682,10 +711,12 @@ void Upi::register_commands() {
     double secs = 0;
     long long steps = 0;
     if (!a.empty()) {
+      // Pio 3.10 (probed): the unit is required; an amount below 1 step or at most 0 seconds still
+      // runs one iteration (0 here would otherwise mean "no limit" and never stop).
       double v = arg_double(a, 0, "amount");
-      std::string unit = a.size() > 1 ? a[1] : "seconds";
-      if (unit == "steps" || unit == "step") steps = static_cast<long long>(v);
-      else if (unit == "seconds" || unit == "second" || unit == "s") secs = v;
+      std::string unit = a.size() > 1 ? a[1] : "";
+      if (unit == "steps" || unit == "step") steps = std::max<long long>(1, static_cast<long long>(v));
+      else if (unit == "seconds" || unit == "second" || unit == "s") secs = v > 0 ? v : 1e-9;
       else throw CmdError{"incorrect or missing argument"};
     }
     if (solving_) return std::string("go ok!");
@@ -746,8 +777,9 @@ void Upi::register_commands() {
       info_auto_ = true;
       return std::string("set_info_freq ok!");
     }
+    const long long f = arg_int(a, 0, "frequency");  // parse first: a bad argument changes nothing
     info_auto_ = false;
-    info_freq_ = static_cast<int>(std::max<long long>(0, arg_int(a, 0, "frequency")));
+    info_freq_ = static_cast<int>(std::max<long long>(0, f));
     return std::string("set_info_freq ok!");
   };
   H["set_accuracy"] = [this](const Args& a) {
@@ -850,7 +882,8 @@ void Upi::register_commands() {
   H["show_step"] = [this](const Args&) { return pfmt("%f", step_); };
   H["show_iters"] = [this](const Args&) { return std::to_string(tree_ ? tree_->iterations : 0); };
   H["set_first_iteration_player"] = [this](const Args& a) {
-    if (a.empty()) throw CmdError{"incorrect or missing argument"};
+    if (a.empty() || (a[0] != "OOP" && a[0] != "IP" && a[0] != "oop" && a[0] != "ip"))
+      throw CmdError{"incorrect or missing argument"};  // Pio: not "incorrect player" here
     int p = player_arg(a[0]);
     first_player_ = p;
     if (solver_) solver_->first_player = p;

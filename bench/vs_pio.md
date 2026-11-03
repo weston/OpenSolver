@@ -52,3 +52,36 @@ The bench trees above are small (40-307 MB). Two realistic study trees, now in `
 Two fixes: #161 (width-neutral scheduler jobs flooded the pool on trees with many turn decisions:
 32 threads ran 2.6x slower than 16) and #162 (beta 0 -> 0.5 after iteration 50: with beta 0 the
 average oscillated and stalled near 1% of pot on the big tree). Use these trees when tuning.
+
+### Update after #164-#168 (same session, back to back)
+
+The PC ran ~6-15% slower this session than for the table above (Pio too: 74.8 s vs 70.5 s on srp_big),
+so both solvers were re-run back to back. 32 threads, target 0.6 chips; WSolver with the viewer's
+`set_info_freq auto` (#165):
+
+| tree | WSolver main (c893fc8) | PioSOLVER 3.10 | ratio |
+|---|---|---|---|
+| srp_big (13 GB, 16-bit) | **52.1 s** (127 iterations) | 74.8 s | 1.44x |
+| threebet_mono (542 MB) | **3.47-3.78 s** (168 iterations) | 7.66 s | ~2.1x |
+
+What moved since #162: vectorised max reductions in the regret update (#164), adaptive exploitability
+checks (#165), river fold values taken from the showdown kernel for both players (#166, #168).
+Per-iteration convergence is close to Pio's on these trees (threebet_mono, exploitability every 40
+iterations: Pio 20.0 / 3.99 / 1.33 / 0.625 / 0.42 / 0.30 vs ours 11.9 / 3.02 / 1.22 / 0.634 / 0.44 / 0.31),
+so the lead is per-iteration speed.
+
+### Update after #180-#185 (2026-11-03, same session, back to back)
+
+32 threads, target 0.6 chips; WSolver main 0efec0e with `set_info_freq auto`:
+
+| tree | WSolver | PioSOLVER 3.10 | ratio |
+|---|---|---|---|
+| srp_big (13 GB, 16-bit) | **42.3 s** (123 iterations, 0.597 chips) | 70.2 s (0.509) | 1.66x |
+| threebet_mono (542 MB) | **3.08 s** (168 iterations, 0.599) | 6.55 s (0.557) | 2.13x |
+
+New since the previous table: all-in terminals before the river from precomputed outcome tables
+(#185: one dot product per hand instead of ~48 showdown kernels per turn all-in), AVX-512 regret
+matching (#175). Pio's own check schedule overshoots the target a little further (it stops at 0.51
+/ 0.56 chips), so at equal final exploitability the ratio is slightly smaller.
+
+Session start for reference: srp_big took 446 s against Pio's 70.5 s.

@@ -53,9 +53,37 @@ struct DcfrParams {
 #else
 #define PIO_SHOWDOWN_AVX512 0
 #endif
-void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+// compat (optional, hand-indexed, zeroed by the caller): also store each of p's hands' card-removal
+// compatible opponent mass, sum of ro over opponent hands disjoint from h. It is a by-product of the
+// kernel, and exactly what a fold child with the same opponent reach needs (Solver::call_and_fold).
+// fold (optional): an opponent fold sibling of this showdown (opponent decision facing p's bet: fold or
+// call). Its value pay * (compatible mass of xf) is added to out in the same kernel call: the fold mass
+// is accumulated in the kernel's opponent pass and its card-removal lookups ride along in the final
+// pass, instead of a separate pass over both hand lists (Solver::call_with_opp_fold). xf is the fold
+// reach (opponent reach * fold probability), precomputed so the kernels only add: a product inside
+// them could be FMA-contracted differently by the scalar and the AVX-512 code.
+struct SdFold {
+  const float* xf;  // opponent's reach into the fold, by opponent hand
+  float pay;        // p's payoff when the opponent folds
+};
+void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                           float* compat = nullptr, const SdFold* fold = nullptr);
+// One showdown terminal for showdown_batch (#186): out (and compat) start zeroed; compat set: also the
+// compatible mass (call_and_fold); xf set: the opponent's fused fold (call_with_opp_fold).
+struct SdJob {
+  const float* ro;
+  float W, L, T;
+  float* out;
+  float* compat;
+  const float* xf;
+  float pay;
+};
+// Jobs on one board, each bit-identical to its own showdown_board call. On AVX-512 builds up to five
+// share one sweep over the board (at most one with a fused fold).
+void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* jobs);
 #if PIO_SHOWDOWN_AVX512
-void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out);
+void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                           float* compat = nullptr, const SdFold* fold = nullptr);
 #endif
 
 struct RootStats {
@@ -78,8 +106,7 @@ class Solver {
   // strategy sum both saves the accumulation work and leaves a cleaner average. #80 swept this
   // and found nothing, but that predated the alpha/gamma retune (#72) and the prune_period fix
   // (#131), which changed where the time goes. Re-swept at the current defaults, to 0.05% of
-  // pot, 1 thread, iteration counts unchanged (so this is per-iteration saving, not faster
-  // convergence):
+  // pot, 1 thread:
   //
   //   tree          delay 0    delay 32     exploitability
   //   flop_srp_2     12.59 s    10.85 s     (+13.8%)   0.026 vs 0.026
@@ -87,6 +114,11 @@ class Solver {
   //   deep           43.18 s    41.21 s     (+4.6%)    0.020 vs 0.020
   //   flop_3bet       4.26 s     4.20 s     (+1.4%)    0.099 vs 0.089
   //   turn            0.24 s     0.23 s                0.045 vs 0.045
+  //
+  // Those iteration counts looked unchanged, which led me to call this a per-iteration saving
+  // rather than better convergence. That was wrong: they were reported at set_info_freq 5, so
+  // both rounded to 80. At info_freq 1 the exact counts are 79 (delay 0) against 76 (delay 32)
+  // on flop_srp_4, i.e. fewer iterations. See the avg_reset note below for the real mechanism.
   //   preflop         0.09 s     0.08 s                0.007 vs 0.007
   //
   // Better or equal on every tree with exploitability equal or better.
@@ -126,6 +158,23 @@ class Solver {
   // unpruned iteration counts exactly on every bench tree while keeping the per-iteration savings
   // of the long tail (deep to 0.05% pot: 33.1s -> 30.5s).
   // Best-response, evaluate and strategy_only walks are never pruned.
+  // All-in terminals before the river from the precomputed outcome tables (AllinRunouts::e2) when
+  // they exist; false evaluates every runout with the showdown kernel (the reference, for tests).
+  bool allin_tables = true;
+  // Values of p's hands at a showdown terminal against opponent reach ro (public for tests).
+  void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
+  void traverser_update(const GNode& n, uint32_t ni, int p, const float* rp, const float* ro, const float* sigma,
+                        const float* cfv, const uint8_t* pruned, const float* out);
+  // #186 two-phase river walk (CFR mode): top-down reaches and strategies into buffers that live until
+  // the river chance task returns, every showdown of the subtree evaluated in batches, then values and
+  // updates bottom-up. Same operations in the same order as walk_t, so bit-identical.
+  void river_cfr(uint32_t ni, int p, const float* rp, const float* ro, float* out);
+  void river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out);
+  template <class E>
+  void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
+  // #186: Solver::river_cfr for river subtrees in the CFR walk. Only AVX-512 builds batch the kernels;
+  // elsewhere the two-phase walk is overhead (M4: +2-3.5%), so it is off by default there.
+  bool river_batch = PIO_SHOWDOWN_AVX512 != 0;
   bool pruning = true;  // on by default (#51): inactive before t > 2*prune_period, then never
                         // slower and up to ~8% faster on long solves (bench data in the comment)
   // 8, not 32. The period trades activation delay (pruning is inactive until t > 2*period)
@@ -191,8 +240,19 @@ class Solver {
   // response values, both for player p against the opponent's average strategy.
   void walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br);
   void fold_value(const GNode& n, int p, const float* ro, float* out) const;
-  void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
-  void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out) const;
+  void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
+                      float* compat = nullptr, const SdFold* fold = nullptr) const;
+  // River decision of the opponent facing p's bet: the call (showdown, reach xc = ro * sigma_call) and
+  // fold (reach ro * sigma_fold) contributions in one kernel call, summed into out. False if the pair
+  // does not qualify (both terminals at a 5-card board); then nothing is written.
+  // xf: scratch for the fold reach (num_hands(opponent) floats).
+  bool call_with_opp_fold(const GNode& sd, const GNode& fold, int p, const float* xc, const float* ro,
+                          const float* sfold, float* xf, float* out) const;
+  // River decision of the traverser facing a bet: its fold and call (showdown) children see the same
+  // opponent reach, so one showdown kernel call gives both rows (the fold from the kernel's compatible
+  // mass instead of a separate compat_mass pass). Returns false (nothing written) if the pair does not
+  // qualify: both children must be terminals at a 5-card board.
+  bool call_and_fold(const GNode& sd, const GNode& fold, int p, const float* ro, float* sd_out, float* fold_out) const;
 
   GameTree& g_;
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;

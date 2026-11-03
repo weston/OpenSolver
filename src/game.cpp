@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <cstdlib>
 #include <numeric>
 
@@ -450,6 +451,77 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   return true;
 }
 
+namespace {
+template <class E>
+void fill_allin_table(const GameTree& g, const AllinRunouts& ar, const std::vector<uint8_t>& compat, std::vector<E>& e2) {
+  const int H0 = g.num_hands(0), H1 = g.num_hands(1);
+  e2.assign(static_cast<size_t>(H0) * H1, 0);
+  std::vector<int16_t> r0(H0), r1(H1);
+  for (uint32_t bid : ar.boards) {
+    const ShowdownBoard& sb = g.showdowns[bid];
+    std::fill(r0.begin(), r0.end(), int16_t(-1));
+    std::fill(r1.begin(), r1.end(), int16_t(-1));
+    int i0 = 0, j0 = 0;
+    int16_t gi = 0;
+    for (const auto& gr : sb.groups[0]) {  // strength groups ascending: the group index is the rank
+      for (int i = i0; i < gr.first; ++i) r0[sb.ent[0][i].idx] = gi;
+      for (int j = j0; j < gr.second; ++j) r1[sb.ent[1][j].idx] = gi;
+      i0 = gr.first;
+      j0 = gr.second;
+      ++gi;
+    }
+    for (int h = 0; h < H0; ++h) {
+      const int16_t rh = r0[h];
+      if (rh < 0) continue;
+      E* row = e2.data() + static_cast<size_t>(h) * H1;
+      const uint8_t* cr = compat.data() + static_cast<size_t>(h) * H1;
+      for (int o = 0; o < H1; ++o) {
+        const int16_t ro = r1[o];
+        const E v = static_cast<E>(ro < 0 ? 0 : rh > ro ? 2 : rh == ro ? 1 : 0);
+        row[o] = static_cast<E>(row[o] + (cr[o] ? v : 0));
+      }
+    }
+  }
+}
+}  // namespace
+
+uint64_t GameTree::allin_table_plan(std::vector<uint32_t>* todo) const {
+  if (cfg.preflop) return 0;
+  const uint64_t pairs = static_cast<uint64_t>(num_hands(0)) * num_hands(1);
+  uint64_t total = 0;
+  for (uint32_t i = 0; i < allins.size(); ++i) {
+    const AllinRunouts& ar = allins[i];
+    if (ar.exact || ar.boards.empty()) continue;
+    const uint64_t per = pairs * (ar.boards.size() <= 127 ? 1 : 2);
+    if (total + per > (uint64_t(512) << 20)) break;
+    total += per;
+    if (todo) todo->push_back(i);
+  }
+  return total;
+}
+
+void GameTree::build_allin_tables() {
+  const int H0 = num_hands(0), H1 = num_hands(1);
+  std::vector<uint32_t> todo;
+  allin_table_plan(&todo);
+  bool built = false;
+  for (uint32_t i : todo) built |= !(allins[i].e2.empty() && allins[i].e2b.empty());
+  if (todo.empty() || built) return;
+  // Pairs sharing a card never meet: their counts stay 0, so a reach on them contributes nothing.
+  std::vector<uint8_t> compat(static_cast<size_t>(H0) * H1);
+  for (int h = 0; h < H0; ++h) {
+    const uint64_t mh = combo_mask(hands[0][h]);
+    for (int o = 0; o < H1; ++o) compat[static_cast<size_t>(h) * H1 + o] = (combo_mask(hands[1][o]) & mh) == 0;
+  }
+  std::function<void(int)> fn = [&](int k) {
+    AllinRunouts& ar = allins[todo[static_cast<size_t>(k)]];
+    ar.valid = static_cast<int>(std::lround(1.0 / static_cast<double>(ar.scale)));
+    if (ar.boards.size() <= 127) fill_allin_table(*this, ar, compat, ar.e2b);  // 2 * 127 fits uint8
+    else fill_allin_table(*this, ar, compat, ar.e2);
+  };
+  pool().parallel_for(static_cast<int>(todo.size()), fn);
+}
+
 uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
   uint64_t b = compress ? storage_floats * 4 + num_decisions * 8 : storage_floats * sizeof(float) * 2;
   // Predictive CFR's `preds` is never compressed and is allocated after the build, so the
@@ -460,10 +532,16 @@ uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
   for (auto& s : showdowns)
     b += (s.ent[0].size() + s.ent[1].size()) * sizeof(SdEntry) + (s.groups[0].size() + s.groups[1].size()) * 4 +
          sizeof(ShowdownBoard);
+  uint64_t tables = 0;
+  for (auto& a : allins) tables += a.e2.size() * sizeof(uint16_t) + a.e2b.size();
+  b += tables ? tables : allin_table_plan(nullptr);  // before allocate_storage builds them
   return b;
 }
 
 void GameTree::allocate_storage() {
+  // The all-in outcome tables belong with the storage: built only for a tree that will be solved,
+  // not for estimate_tree's throwaway build or a build the memory check rejects (#185 review).
+  build_allin_tables();
   regrets.clear();
   regrets.shrink_to_fit();
   strat.clear();
@@ -482,6 +560,28 @@ void GameTree::allocate_storage() {
     regrets.resize(storage_floats);
     strat.resize(storage_floats);
   }
+}
+
+void GameTree::decompress() {
+  if (!compressed) return;
+  regrets.resize(storage_floats);
+  strat.resize(storage_floats);
+  for (const GNode& n : nodes) {
+    if (n.kind != ANodeKind::Decision) continue;
+    const size_t len = node_size(n);
+    const float rs = rscale[n.aux], ss = sscale[n.aux];
+    const int16_t* rq = regrets_q.data() + n.storage;
+    const uint16_t* sq = strat_q.data() + n.storage;
+    float* r = regrets.data() + n.storage;
+    float* s = strat.data() + n.storage;
+    for (size_t i = 0; i < len; ++i) r[i] = static_cast<float>(rq[i]) * rs;
+    for (size_t i = 0; i < len; ++i) s[i] = static_cast<float>(sq[i]) * ss;
+  }
+  compressed = false;
+  regrets_q.clear();
+  regrets_q.shrink_to_fit();
+  strat_q.clear();
+  strat_q.shrink_to_fit();
 }
 
 void GameTree::clear_storage() {

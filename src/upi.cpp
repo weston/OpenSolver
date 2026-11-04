@@ -282,6 +282,7 @@ std::string Upi::stats_block(const RootStats& st, double running_time) {
 
 void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   require_tree();
+  release_hold();  // every way a solve starts (go, go_partial, ...) drops a pending hold
   if (solving_) return;
   if (solver_thread_.joinable()) solver_thread_.join();
   // Solving touches every node: read a lazily loaded tree completely first (in parallel).

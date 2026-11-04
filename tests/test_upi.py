@@ -9,6 +9,7 @@ By default the multi-street checks run on a small tree (tens of MB) so `make tes
 """
 import os
 import re
+import time
 import subprocess
 import sys
 import tempfile
@@ -576,6 +577,19 @@ def check_go_partial(u):
     check(any(b and b[0].startswith("SOLVER: stopped (required accuracy reached") for b in u.solver_msgs),
           "stopped (required accuracy reached)")
     check(u.cmd("show_strategy r:0") == root_strat, "strategy above the node still untouched")
+
+    # A pending hold (the viewer's browse lease) must not park a subtree solve it never saw start
+    # (#241 review): every way a solve starts drops the hold, as go does.
+    check(u.cmd("hold") == "hold ok!", "hold with no solve running")
+    u.solver_msgs.clear()
+    check(u.cmd("go_partial r:0:c 20 steps") == "go_partial ok!", "go_partial after a hold")
+    stopped = lambda: any(b and b[0].startswith("SOLVER: stopped") for b in list(u.solver_msgs))
+    deadline = time.time() + 20   # no wait_for_solver here: it would drop the hold itself
+    while time.time() < deadline and not stopped():
+        u.cmd("echo")   # the harness collects SOLVER: messages while it reads a response
+        time.sleep(0.02)
+    check(stopped(), "go_partial runs although a hold was pending")
+    u.cmd("wait_for_solver")
 
     check(u.cmd("go_partial").startswith("ERROR"), "go_partial needs an argument")
     check(u.cmd("go_partial r:0:bogus").startswith("ERROR"), "go_partial on a bad node errors")

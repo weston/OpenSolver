@@ -604,9 +604,8 @@ def check_union_hands(u):
 
     # Deep node where OOP has 20 in and faces an all-in: the opponent-only hands have a
     # negative counterfactual value, so Pio's signed -inf rather than a bare inf.
-    # Look at exactly the six 88 combos: other hands can also print +-inf there whenever OOP's
-    # average strategy never reaches the node with them (EV = cfv / 0, as in Pio), which depends
-    # on how far the loose solve got, not on union_hands.
+    # Look at exactly the six 88 combos, the opponent-only hands: OOP's own hands that never
+    # reach the node print their counterfactual EV instead (#247).
     order = u.cmd("show_hand_order").split()
     idx88 = [i for i, c in enumerate(order) if c[0] == "8" and c[2] == "8"]
     n_off = sorted(off["deep"][i] for i in idx88)

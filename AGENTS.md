@@ -201,7 +201,10 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `calc_eq_preflop` prints `nan` for classes with 0 matchups. `compare.py` compares numbers with a
   tolerance, so diff byte-for-byte to see these (#125).
 - `calc_ev`/`calc_eq` matchups are weighted by the hand's own reach (`calc_eq` also times the number of
-  ordered runouts); out-of-range hands print `nan` / `inf`. Pio keeps per-player hand lists as the union of
+  ordered runouts); out-of-range hands print `nan` / `inf`. An in-range hand whose reach at the node is
+  exactly 0 still gets its counterfactual EV (`cfv / compatible mass`, matchups 0), as Pio prints it (#247:
+  Pio's average strategy never quite reaches 0, and its on-the-fly river recalcs give such hands an EV too).
+  Pio keeps per-player hand lists as the union of
   both ranges, so it has a counterfactual value for opponent-only hands and prints a *signed* `inf`; ours does
   that only under `set_union_hands on` (off by default, ~+23% solve time).
 - `calc_ev_pp <player> <node>` is `EV: <x>` plus one `<combo>: <ev>; <matchups>` row per hand of the **union**

@@ -536,12 +536,14 @@ def check_union_hands(u):
             "ev_pp_ip": combos(u.cmd("calc_ev_pp IP r:0")),
             "ev_pp_lines": len(u.cmd("calc_ev_pp OOP r:0").rstrip("\n").split("\n")),  # #125: + a blank line
             "strat_pp": combos(u.cmd("show_strategy_pp r:0")),
+            "strat": u.cmd("show_strategy r:0"),
             "deep": u.cmd("calc_ev OOP r:0:b20:b200").split("\n")[0].split(),
         }
 
     off, on = solve(False), solve(True)
 
     check(u.cmd("set_union_hands maybe").startswith("ERROR"), "set_union_hands rejects a bad argument")
+    check(on["strat"] == off["strat"], "show_strategy prints opponent-only hands as 0 either way, as Pio does (probe 12)")
 
     added = sorted(set(on["ev_pp"]) - set(off["ev_pp"]))
     check(len(off["ev_pp"]) == 142 and len(on["ev_pp"]) == 148,

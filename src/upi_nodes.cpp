@@ -291,12 +291,16 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
   int actor = n.player, A = n.num_children, H = tree_->num_hands(actor);
   std::vector<float> sig(static_cast<size_t>(A) * H);
   solver_->average_strategy(r.node, sig.data());
-  // Hands not in the player's range print 0 (they are not in the hand list).
+  // Hands not in the player's range print 0: not in the hand list, or with set_union_hands the
+  // opponent-only hands, which Pio also prints as 0 here (probe 12) while its _pp lists show them.
   if (!pp) {
     std::string s;
     std::vector<float> line(NUM_COMBOS);
     for (int k = 0; k < A; ++k) {
       to_1326(actor, r.frame, sig.data() + static_cast<size_t>(k) * H, line.data(), 0.0f);
+      if (tree_->cfg.union_hands)
+        for (int c = 0; c < NUM_COMBOS; ++c)
+          if (tree_->cfg.range[actor][PERM_COMBO[PERM_INV[display_perm_]][c]] <= 0) line[c] = 0.0f;
       if (k) s += "\n";
       s += floats_line(line.data(), NUM_COMBOS);
     }

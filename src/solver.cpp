@@ -4,12 +4,16 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 
-#if PIO_SHOWDOWN_AVX512
+#if PIO_SHOWDOWN_AVX512 || PIO_SHOWDOWN_AVX2
 #include <immintrin.h>
 #endif
 
 #include "parallel.hpp"
+#if PIO_SHOWDOWN_NEON
+#include <arm_neon.h>
+#endif
 #include "pfh2h.hpp"
 
 namespace pio {
@@ -415,32 +419,298 @@ void showdown_batch_avx512(const ShowdownBoard& sb, int p, const SdJob* job, int
   }
 }
 
+#endif  // PIO_SHOWDOWN_AVX512
+
+#if PIO_SHOWDOWN_AVX512 || PIO_SHOWDOWN_AVX2
+// Showdown jobs as SIMD lanes (#209): one 256-bit lane per job, plus one per fused fold, for batches
+// of 3-8 lanes. showdown_batch_avx512 keeps a CsRegs set (4 zmm) per job and adds every opponent
+// entry into each with four masked adds; here cs[] is 52 x 8 floats in memory, card-major, so one
+// opponent entry is one row load and three adds for all jobs, and p's queries are plain row loads
+// instead of vpermt2ps. Every lane runs exactly the scalar kernel's operations in the same order
+// (cum and cs[] accumulate the same entries in the same order; lt / le / compat / value use the
+// same expressions as showdown_board_avx512), so the outputs are bit-identical; test_solver's
+// [river batch] check covers it. The reach rows are transposed hand-major first (8x8 register
+// transposes), which replaces gathers: on Zen 5 a 256-bit gather per entry cost more than all of
+// the adds it fed. Microbenchmark on srp_big boards (483 / 315 entries): 0.43-0.68x the time of
+// showdown_batch_avx512 for 4-14 lanes; 1-3 lanes stay on it (0.86-1.45x there).
+// It is plain AVX2 + FMA code (256-bit), so AVX2-only builds use it as well (#225).
+static void showdown_lanes_256(const ShowdownBoard& sb, int p, int n, const SdJob* job, int ho) {
+  const int o = 1 - p;
+  const SdEntry* pe = sb.ent[p].data();
+  const SdEntry* oe = sb.ent[o].data();
+  const int np = static_cast<int>(sb.ent[p].size());
+  const auto* gr = sb.groups[p].data();
+  const int ng = static_cast<int>(sb.groups[p].size());
+  const float* src[8];
+  alignas(32) float va[8] = {}, vb[8] = {}, vl[8] = {}, vpay[8] = {};
+  alignas(32) int32_t fsrc[8];
+  int lanes = n;
+  for (int t = 0; t < 8; ++t) {
+    src[t] = job[0].ro;  // unused lanes: any readable row of length ho
+    fsrc[t] = t;
+  }
+  for (int t = 0; t < n; ++t) {
+    src[t] = job[t].ro;
+    va[t] = job[t].W - job[t].T;
+    vb[t] = job[t].T - job[t].L;
+    vl[t] = job[t].L;
+    if (job[t].xf) {
+      src[lanes] = job[t].xf;
+      fsrc[t] = lanes;
+      vpay[t] = job[t].pay;
+      ++lanes;
+    }
+  }
+  ArenaScope sc;
+  float* buf = sc.a.alloc(static_cast<size_t>(2 * np + ho + 1) * 8 + 8);
+  float* ltT = reinterpret_cast<float*>((reinterpret_cast<uintptr_t>(buf) + 31) & ~uintptr_t(31));
+  float* leT = ltT + static_cast<size_t>(np) * 8;
+  float* roH = leT + static_cast<size_t>(np) * 8;  // (ho + 1) x 8: each lane's reach by opponent hand; row ho = 0
+  int h0 = 0;
+  for (; h0 + 8 <= ho; h0 += 8) {
+    const __m256 r0 = _mm256_loadu_ps(src[0] + h0), r1 = _mm256_loadu_ps(src[1] + h0);
+    const __m256 r2 = _mm256_loadu_ps(src[2] + h0), r3 = _mm256_loadu_ps(src[3] + h0);
+    const __m256 r4 = _mm256_loadu_ps(src[4] + h0), r5 = _mm256_loadu_ps(src[5] + h0);
+    const __m256 r6 = _mm256_loadu_ps(src[6] + h0), r7 = _mm256_loadu_ps(src[7] + h0);
+    const __m256 t0 = _mm256_unpacklo_ps(r0, r1), t1 = _mm256_unpackhi_ps(r0, r1);
+    const __m256 t2 = _mm256_unpacklo_ps(r2, r3), t3 = _mm256_unpackhi_ps(r2, r3);
+    const __m256 t4 = _mm256_unpacklo_ps(r4, r5), t5 = _mm256_unpackhi_ps(r4, r5);
+    const __m256 t6 = _mm256_unpacklo_ps(r6, r7), t7 = _mm256_unpackhi_ps(r6, r7);
+    const __m256 u0 = _mm256_shuffle_ps(t0, t2, 0x44), u1 = _mm256_shuffle_ps(t0, t2, 0xEE);
+    const __m256 u2 = _mm256_shuffle_ps(t1, t3, 0x44), u3 = _mm256_shuffle_ps(t1, t3, 0xEE);
+    const __m256 u4 = _mm256_shuffle_ps(t4, t6, 0x44), u5 = _mm256_shuffle_ps(t4, t6, 0xEE);
+    const __m256 u6 = _mm256_shuffle_ps(t5, t7, 0x44), u7 = _mm256_shuffle_ps(t5, t7, 0xEE);
+    float* d = roH + static_cast<size_t>(8) * h0;
+    _mm256_store_ps(d + 0, _mm256_permute2f128_ps(u0, u4, 0x20));
+    _mm256_store_ps(d + 8, _mm256_permute2f128_ps(u1, u5, 0x20));
+    _mm256_store_ps(d + 16, _mm256_permute2f128_ps(u2, u6, 0x20));
+    _mm256_store_ps(d + 24, _mm256_permute2f128_ps(u3, u7, 0x20));
+    _mm256_store_ps(d + 32, _mm256_permute2f128_ps(u0, u4, 0x31));
+    _mm256_store_ps(d + 40, _mm256_permute2f128_ps(u1, u5, 0x31));
+    _mm256_store_ps(d + 48, _mm256_permute2f128_ps(u2, u6, 0x31));
+    _mm256_store_ps(d + 56, _mm256_permute2f128_ps(u3, u7, 0x31));
+  }
+  for (; h0 < ho; ++h0)
+    for (int t = 0; t < 8; ++t) roH[8 * h0 + t] = src[t][h0];
+  _mm256_store_ps(roH + static_cast<size_t>(8) * ho, _mm256_setzero_ps());
+
+  alignas(32) float cs[NUM_CARDS][8];
+  for (int c = 0; c < NUM_CARDS; ++c) _mm256_store_ps(cs[c], _mm256_setzero_ps());
+  __m256 cum = _mm256_setzero_ps();
+  auto query = [&](const SdEntry& q) {
+    return _mm256_sub_ps(_mm256_sub_ps(cum, _mm256_load_ps(cs[q.c1])), _mm256_load_ps(cs[q.c2]));
+  };
+  int i0 = 0, j0 = 0;
+  for (int g = 0; g < ng; ++g) {
+    const int i1 = gr[g].first, j1 = gr[g].second;
+    for (int i = i0; i < i1; ++i) _mm256_store_ps(ltT + 8 * i, query(pe[i]));
+    for (int j = j0; j < j1; ++j) {
+      const SdEntry q = oe[j];
+      const __m256 v = _mm256_load_ps(roH + 8 * q.idx);
+      cum = _mm256_add_ps(cum, v);
+      _mm256_store_ps(cs[q.c1], _mm256_add_ps(_mm256_load_ps(cs[q.c1]), v));
+      _mm256_store_ps(cs[q.c2], _mm256_add_ps(_mm256_load_ps(cs[q.c2]), v));
+    }
+    for (int i = i0; i < i1; ++i) _mm256_store_ps(leT + 8 * i, query(pe[i]));
+    i0 = i1;
+    j0 = j1;
+  }
+  // Same sequence as showdown_board_avx512: v = fma(L, compat, fma(a, lt, b*le)); out = 0 + v (the jobs'
+  // out rows start zeroed and the kernels add into them); a fused fold then does out = fma(pay, cf, out)
+  // with cf the fold lane's compat. Lanes without a fold get pay 0, and fma(0, x, out) == out exactly
+  // (out is never -0 after the + 0, and compat is finite).
+  const __m256 A = _mm256_load_ps(va), B = _mm256_load_ps(vb), Lv = _mm256_load_ps(vl), PAY = _mm256_load_ps(vpay);
+  const __m256i FS = _mm256_load_si256(reinterpret_cast<const __m256i*>(fsrc));
+  for (int i = 0; i < np; ++i) {
+    const SdEntry q = pe[i];
+    const __m256 sr = _mm256_load_ps(roH + 8 * (q.same >= 0 ? q.same : ho));
+    const __m256 le = _mm256_add_ps(_mm256_load_ps(leT + 8 * i), sr);
+    const __m256 compat = _mm256_add_ps(query(q), sr);
+    __m256 v = _mm256_fmadd_ps(Lv, compat, _mm256_fmadd_ps(A, _mm256_load_ps(ltT + 8 * i), _mm256_mul_ps(B, le)));
+    v = _mm256_add_ps(_mm256_setzero_ps(), v);
+    v = _mm256_fmadd_ps(PAY, _mm256_permutevar8x32_ps(compat, FS), v);
+    _mm256_store_ps(ltT + 8 * i, v);
+    _mm256_store_ps(leT + 8 * i, compat);
+  }
+  for (int t = 0; t < n; ++t) {
+    float* out = job[t].out;
+    for (int i = 0; i < np; ++i) out[pe[i].idx] = ltT[8 * i + t];
+    if (float* cmp = job[t].compat)
+      for (int i = 0; i < np; ++i) cmp[pe[i].idx] = leT[8 * i + t];
+  }
+}
+
 #endif
 
-void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job) {
-#if PIO_SHOWDOWN_AVX512
-  // Greedy batches of up to five jobs, at most one with a fused fold (its CsRegs are four more zmm).
-  SdJob b[5];
-  int k = 0, fi = -1;
-  auto flush = [&] {
-    switch (k) {
-      case 1: showdown_batch_avx512<1>(sb, p, b, fi); break;
-      case 2: showdown_batch_avx512<2>(sb, p, b, fi); break;
-      case 3: showdown_batch_avx512<3>(sb, p, b, fi); break;
-      case 4: showdown_batch_avx512<4>(sb, p, b, fi); break;
-      case 5: showdown_batch_avx512<5>(sb, p, b, fi); break;
-      default: break;
+#if PIO_SHOWDOWN_NEON
+// The x86 lanes kernel (showdown_lanes_256) for AArch64, one lane per job plus one per fused fold.
+// W = 8: two 128-bit halves; W = 4: one, for packs of up to 4 lanes (most river batches: 3-4 lanes
+// is 50-65% of the kernel's work on srp_big and threebet_mono), which halves their vector work.
+// Same operations per lane as showdown_board_scalar, in the same order (clang and GCC contract its
+// value line to fma(L, compat, fma(a, lt, b*le)); the fold is its explicit fma), so the outputs are
+// bit-identical whatever the width; test_solver's [river batch] check covers both.
+template <int W>
+static void showdown_lanes_neon(const ShowdownBoard& sb, int p, int n, const SdJob* job, int ho) {
+  static_assert(W == 4 || W == 8);
+  constexpr int NH = W / 4;  // 128-bit halves
+  const int o = 1 - p;
+  const SdEntry* pe = sb.ent[p].data();
+  const SdEntry* oe = sb.ent[o].data();
+  const int np = static_cast<int>(sb.ent[p].size());
+  const auto* gr = sb.groups[p].data();
+  const int ng = static_cast<int>(sb.groups[p].size());
+  const float* src[W];
+  alignas(16) float va[W] = {}, vb[W] = {}, vl[W] = {};
+  int fl[W];  // fold lane of job t, or -1
+  int lanes = n;
+  for (int t = 0; t < W; ++t) src[t] = job[0].ro;  // unused lanes: any readable row of length ho
+  for (int t = 0; t < n; ++t) {
+    src[t] = job[t].ro;
+    va[t] = job[t].W - job[t].T;
+    vb[t] = job[t].T - job[t].L;
+    vl[t] = job[t].L;
+    fl[t] = -1;
+    if (job[t].xf) {
+      src[lanes] = job[t].xf;
+      fl[t] = lanes++;
     }
-    k = 0;
-    fi = -1;
-  };
-  for (int i = 0; i < n; ++i) {
-    if (k == 5 || (job[i].xf && fi >= 0)) flush();
-    if (job[i].xf) fi = k;
-    b[k++] = job[i];
   }
-  flush();
+  ArenaScope sc;
+  float* buf = sc.a.alloc(static_cast<size_t>(2 * np + ho + 1) * W + 4);
+  float* ltT = reinterpret_cast<float*>((reinterpret_cast<uintptr_t>(buf) + 15) & ~uintptr_t(15));
+  float* leT = ltT + static_cast<size_t>(np) * W;
+  float* roH = leT + static_cast<size_t>(np) * W;  // (ho + 1) x W: each lane's reach by opponent hand; row ho = 0
+  int h0 = 0;
+  for (; h0 + 4 <= ho; h0 += 4) {
+    for (int half = 0; half < NH; ++half) {
+      const float* const* s4 = src + 4 * half;
+      const float32x4_t r0 = vld1q_f32(s4[0] + h0), r1 = vld1q_f32(s4[1] + h0);
+      const float32x4_t r2 = vld1q_f32(s4[2] + h0), r3 = vld1q_f32(s4[3] + h0);
+      const float64x2_t t0 = vreinterpretq_f64_f32(vtrn1q_f32(r0, r1)), t1 = vreinterpretq_f64_f32(vtrn2q_f32(r0, r1));
+      const float64x2_t t2 = vreinterpretq_f64_f32(vtrn1q_f32(r2, r3)), t3 = vreinterpretq_f64_f32(vtrn2q_f32(r2, r3));
+      float* d = roH + static_cast<size_t>(W) * h0 + 4 * half;
+      vst1q_f32(d, vreinterpretq_f32_f64(vtrn1q_f64(t0, t2)));
+      vst1q_f32(d + W, vreinterpretq_f32_f64(vtrn1q_f64(t1, t3)));
+      vst1q_f32(d + 2 * W, vreinterpretq_f32_f64(vtrn2q_f64(t0, t2)));
+      vst1q_f32(d + 3 * W, vreinterpretq_f32_f64(vtrn2q_f64(t1, t3)));
+    }
+  }
+  for (; h0 < ho; ++h0)
+    for (int t = 0; t < W; ++t) roH[W * h0 + t] = src[t][h0];
+  for (int t = 0; t < W; ++t) roH[W * ho + t] = 0.0f;
+
+  alignas(16) float cs[NUM_CARDS][W];
+  std::memset(cs, 0, sizeof(cs));
+  float32x4_t cum[NH];
+  for (int k = 0; k < NH; ++k) cum[k] = vdupq_n_f32(0.0f);
+  auto qh = [&](const SdEntry& q, int k) {
+    return vsubq_f32(vsubq_f32(cum[k], vld1q_f32(cs[q.c1] + 4 * k)), vld1q_f32(cs[q.c2] + 4 * k));
+  };
+  int i0 = 0, j0 = 0;
+  for (int g = 0; g < ng; ++g) {
+    const int i1 = gr[g].first, j1 = gr[g].second;
+    for (int i = i0; i < i1; ++i)
+      for (int k = 0; k < NH; ++k) vst1q_f32(ltT + W * i + 4 * k, qh(pe[i], k));
+    for (int j = j0; j < j1; ++j) {
+      const SdEntry q = oe[j];
+      for (int k = 0; k < NH; ++k) {
+        const float32x4_t v = vld1q_f32(roH + W * q.idx + 4 * k);
+        cum[k] = vaddq_f32(cum[k], v);
+        vst1q_f32(cs[q.c1] + 4 * k, vaddq_f32(vld1q_f32(cs[q.c1] + 4 * k), v));
+        vst1q_f32(cs[q.c2] + 4 * k, vaddq_f32(vld1q_f32(cs[q.c2] + 4 * k), v));
+      }
+    }
+    for (int i = i0; i < i1; ++i)
+      for (int k = 0; k < NH; ++k) vst1q_f32(leT + W * i + 4 * k, qh(pe[i], k));
+    i0 = i1;
+    j0 = j1;
+  }
+  float32x4_t Av[NH], Bv[NH], Lv[NH];
+  for (int k = 0; k < NH; ++k) {
+    Av[k] = vld1q_f32(va + 4 * k);
+    Bv[k] = vld1q_f32(vb + 4 * k);
+    Lv[k] = vld1q_f32(vl + 4 * k);
+  }
+  const float32x4_t Z = vdupq_n_f32(0.0f);
+  for (int i = 0; i < np; ++i) {
+    const SdEntry q = pe[i];
+    const float* sr = roH + W * (q.same >= 0 ? q.same : ho);
+    for (int k = 0; k < NH; ++k) {
+      const float32x4_t srk = vld1q_f32(sr + 4 * k);
+      const float32x4_t le = vaddq_f32(vld1q_f32(leT + W * i + 4 * k), srk);
+      const float32x4_t c = vaddq_f32(qh(q, k), srk);
+      // fma(L, compat, fma(a, lt, b*le)), then 0 + v (the scalar kernel adds into a zeroed row)
+      const float32x4_t v = vfmaq_f32(vfmaq_f32(vmulq_f32(Bv[k], le), Av[k], vld1q_f32(ltT + W * i + 4 * k)), Lv[k], c);
+      vst1q_f32(ltT + W * i + 4 * k, vaddq_f32(Z, v));
+      vst1q_f32(leT + W * i + 4 * k, c);
+    }
+  }
+  for (int t = 0; t < n; ++t) {
+    float* out = job[t].out;
+    if (fl[t] >= 0) {
+      const float pay = job[t].pay;
+      const int f = fl[t];
+      for (int i = 0; i < np; ++i) out[pe[i].idx] = std::fma(pay, leT[W * i + f], ltT[W * i + t]);
+    } else {
+      for (int i = 0; i < np; ++i) out[pe[i].idx] = ltT[W * i + t];
+    }
+    if (float* cmp = job[t].compat)
+      for (int i = 0; i < np; ++i) cmp[pe[i].idx] = leT[W * i + t];
+  }
+}
+#endif
+
+void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int ho) {
+#if PIO_SHOWDOWN_AVX512
+  // Packs of up to 8 lanes (a job, plus one more for a fused fold) go to showdown_lanes_256. Packs of
+  // 1-3 lanes (at most one fused fold), where its fixed cost does not pay, use showdown_batch_avx512 as
+  // before; the small bench trees have nothing else (flop_3bet: 1 job per board; deep, flop_srp_2: 1-2).
+  int k = 0;
+  while (k < n) {
+    int lanes = 0, m = 0, fi = -1;
+    while (k + m < n && lanes + 1 + (job[k + m].xf ? 1 : 0) <= 8) {
+      if (job[k + m].xf) fi = m;
+      lanes += 1 + (job[k + m].xf ? 1 : 0);
+      ++m;
+    }
+    switch (lanes >= 4 ? 0 : m) {
+      case 1: showdown_batch_avx512<1>(sb, p, job + k, fi); break;
+      case 2: showdown_batch_avx512<2>(sb, p, job + k, fi); break;
+      case 3: showdown_batch_avx512<3>(sb, p, job + k, fi); break;
+      default: showdown_lanes_256(sb, p, m, job + k, ho); break;
+    }
+    k += m;
+  }
+#elif PIO_SHOWDOWN_NEON || PIO_SHOWDOWN_AVX2
+  // Packs of up to 8 lanes; a lone job without a fold stays on the scalar kernel (the lanes kernel's
+  // fixed cost is larger than one job's work).
+  int k = 0;
+  while (k < n) {
+    int lanes = 0, m = 0;
+    while (k + m < n && lanes + 1 + (job[k + m].xf ? 1 : 0) <= 8) {
+      lanes += 1 + (job[k + m].xf ? 1 : 0);
+      ++m;
+    }
+    if (lanes >= 2) {
+#if PIO_SHOWDOWN_NEON
+      // Half width for up to 4 lanes. On Zen 5 the same split (a 128-bit showdown_lanes_256) measured
+      // no faster, so the x86 builds keep one width.
+      if (lanes <= 4) showdown_lanes_neon<4>(sb, p, m, job + k, ho);
+      else showdown_lanes_neon<8>(sb, p, m, job + k, ho);
 #else
+      showdown_lanes_256(sb, p, m, job + k, ho);
+#endif
+    } else {
+      for (int i = k; i < k + m; ++i) {
+        const SdFold f{job[i].xf, job[i].pay};
+        showdown_board_scalar(sb, job[i].W, job[i].L, job[i].T, p, job[i].ro, job[i].out, job[i].compat,
+                              job[i].xf ? &f : nullptr);
+      }
+    }
+    k += m;
+  }
+#else
+  (void)ho;
   for (int i = 0; i < n; ++i) {
     const SdFold f{job[i].xf, job[i].pay};
     showdown_board_scalar(sb, job[i].W, job[i].L, job[i].T, p, job[i].ro, job[i].out, job[i].compat,
@@ -753,6 +1023,95 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     }
   } else
 #endif
+#if PIO_SHOWDOWN_AVX2
+  if (!P && A <= 16) {
+    // AVX2 form of the single pass (#175 / NEON #222) for x86 builds without AVX-512: 8 hands at a
+    // time with every action's row in registers. The generic loops' operations in the same order.
+    g_.ensure_loaded(n);
+    const bool q16 = g_.compressed;
+    const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    const __m256 qs = _mm256_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm256_setzero_ps(),
+                 one = _mm256_set1_ps(1.0f), uni = _mm256_set1_ps(1.0f / static_cast<float>(A));
+    __m256 v[16];
+    int h = 0;
+    for (; h + 8 <= H; h += 8) {
+      __m256 sum = z;
+      for (int a = 0; a < A; ++a) {
+        const size_t off = static_cast<size_t>(a) * H + h;
+        __m256 x = q16 ? _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(
+                                           _mm_loadu_si128(reinterpret_cast<const __m128i*>(Q + off)))),
+                                       qs)
+                       : _mm256_loadu_ps(R + off);
+        x = _mm256_add_ps(x, z);  // the generic loop's r + 0 (turns -0 into +0)
+        x = _mm256_max_ps(x, z);  // v > 0 ? v : 0 (maxps returns its second operand, +0, for -0/+0 and 0)
+        v[a] = x;
+        sum = _mm256_add_ps(sum, x);
+      }
+      const __m256 pos = _mm256_cmp_ps(sum, z, _CMP_GT_OQ);
+      const __m256 inv = _mm256_and_ps(pos, _mm256_div_ps(one, sum));
+      const __m256 add = _mm256_andnot_ps(pos, uni);
+      for (int a = 0; a < A; ++a) _mm256_storeu_ps(out + static_cast<size_t>(a) * H + h, _mm256_fmadd_ps(v[a], inv, add));
+    }
+    for (; h < H; ++h) {  // the generic loops' operations, one hand
+      float sum = 0.0f, vv[16];
+      for (int a = 0; a < A; ++a) {
+        const size_t off = static_cast<size_t>(a) * H + h;
+        float x = (q16 ? static_cast<float>(Q[off]) * g_.rscale[n.aux] : R[off]) + 0.0f;
+        x = x > 0.0f ? x : 0.0f;
+        vv[a] = x;
+        sum += x;
+      }
+      const bool pos = sum > 0.0f;
+      const float inv = pos ? 1.0f / sum : 0.0f, add = pos ? 0.0f : 1.0f / static_cast<float>(A);
+      for (int a = 0; a < A; ++a) out[static_cast<size_t>(a) * H + h] = std::fma(vv[a], inv, add);
+    }
+  } else
+#endif
+#if PIO_SHOWDOWN_NEON
+  if (!P && A <= 16) {
+    // NEON form of the AVX-512 single pass above (#175): 4 hands at a time with every action's row in
+    // registers, instead of three passes through arena rows. The generic loops' operations in the same
+    // order (r + 0, max with 0, sum over actions in order, 1/sum, fma(v, inv, add)): identical floats.
+    // M4, 10 threads: -2 to -5% on every bench tree (threebet_mono 6.12 -> 5.95 s).
+    g_.ensure_loaded(n);
+    const bool q16 = g_.compressed;
+    const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    const float qs = q16 ? g_.rscale[n.aux] : 0.0f;
+    const float32x4_t z = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), uni = vdupq_n_f32(1.0f / static_cast<float>(A));
+    float32x4_t v[16];
+    int h = 0;
+    for (; h + 4 <= H; h += 4) {
+      float32x4_t sum = z;
+      for (int a = 0; a < A; ++a) {
+        const size_t off = static_cast<size_t>(a) * H + h;
+        float32x4_t x = q16 ? vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vld1_s16(Q + off))), qs) : vld1q_f32(R + off);
+        x = vaddq_f32(x, z);   // the generic loop's r + 0 (turns -0 into +0)
+        x = vmaxq_f32(x, z);   // v > 0 ? v : 0
+        v[a] = x;
+        sum = vaddq_f32(sum, x);
+      }
+      const uint32x4_t pos = vcgtq_f32(sum, z);
+      const float32x4_t inv = vbslq_f32(pos, vdivq_f32(one, sum), z);
+      const float32x4_t add = vbslq_f32(pos, z, uni);
+      for (int a = 0; a < A; ++a) vst1q_f32(out + static_cast<size_t>(a) * H + h, vfmaq_f32(add, v[a], inv));
+    }
+    for (; h < H; ++h) {  // the generic loops' operations, one hand
+      float sum = 0.0f, vv[16];
+      for (int a = 0; a < A; ++a) {
+        const size_t off = static_cast<size_t>(a) * H + h;
+        float x = (q16 ? static_cast<float>(Q[off]) * qs : R[off]) + 0.0f;
+        x = x > 0.0f ? x : 0.0f;
+        vv[a] = x;
+        sum += x;
+      }
+      const bool pos = sum > 0.0f;
+      const float inv = pos ? 1.0f / sum : 0.0f, add = pos ? 0.0f : 1.0f / static_cast<float>(A);
+      for (int a = 0; a < A; ++a) out[static_cast<size_t>(a) * H + h] = std::fma(vv[a], inv, add);
+    }
+  } else
+#endif
   {
   const float* R = g_.regrets_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
   float* sum = sc.a.alloc_zero(H);
@@ -995,6 +1354,20 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
                       static_cast<float>(g_.terminal_payoff(an, p, 0)), dst, compat, xf, pay});
   };
   if (actor == p) {
+    // Start fetching this node's strategy-sum rows now: traverser_update reads and writes them on the
+    // way back up, after the whole subtree and its showdown batch, and by then they have arrived
+    // instead of stalling the update (threebet_mono, M4: -6% at 1 and 10 threads; Zen 5: -9% at 1
+    // and 8 threads, -7% at 32). The regrets need no hint: current_strategy has just read them.
+    if (accumulate_) {
+      const size_t len = static_cast<size_t>(A) * Hp;
+      if (g_.compressed) {
+        const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + n.storage);
+        for (size_t off = 0; off < len * 2; off += 64) __builtin_prefetch(b + off, 1, 3);
+      } else {
+        const char* b = reinterpret_cast<const char*>(g_.strat.data() + n.storage);
+        for (size_t off = 0; off < len * 4; off += 64) __builtin_prefetch(b + off, 1, 3);
+      }
+    }
     uint8_t* pruned = nullptr;
     if (prune_this_iter_ && !(n.flags & (GF_LOCKED | GF_COMBO_LOCKED | GF_INCENTIVES | GF_ELIMINATED))) {
       pruned = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
@@ -1130,7 +1503,7 @@ void Solver::river_cfr(uint32_t root, int p, const float* rp, const float* ro, f
   w.scale.clear();
   w.sb = nullptr;
   river_down(root, p, rp, ro, out);
-  if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data());
+  if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data(), g_.num_hands(1 - p));
   const int Hp = g_.num_hands(p);
   for (auto& [row, pay] : w.scale)
     for (int h = 0; h < Hp; ++h) row[h] *= pay;
@@ -1692,6 +2065,213 @@ void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r
 // both; they only differ at p's own decisions (mix by the average strategy vs maximize). Carrying
 // both vectors up one traversal halves the cost of an exploitability check. The arithmetic per
 // vector is exactly that of walk_t<Evaluate> / walk_t<BestResponse>, in the same order.
+// ---- two-phase river walk for the exploitability check ----------------------------------------
+// walk_evbr's river subtrees the way river_cfr does CFR's: average strategies and opponent reaches
+// top-down, every showdown of the subtree in one batched kernel call (a terminal's value is the same
+// for the on-policy and the best-response halves), then on-policy values and best responses bottom-up.
+// Same operations in the same order as walk_evbr, so bit-identical; test_solver checks it.
+namespace {
+struct ENode {
+  uint32_t ni;
+  bool own;
+  float* sigma;   // average strategy, A x H[actor]
+  float* cev;     // per action: on-policy value of the child (A x Hp)
+  float* cbr;     // per action: best-response value of the child (A x Hp)
+  uint8_t* kind;  // per action: 0 unused (opponent nodes only), 1 terminal (cbr = cev), 2 subtree
+  float* ev;
+  float* br;
+};
+struct EvbrWork {
+  std::vector<ENode> nodes;
+  std::vector<SdJob> jobs;
+  std::vector<std::pair<float*, float>> scale;
+  const ShowdownBoard* sb = nullptr;
+  bool busy = false;
+};
+thread_local EvbrWork tl_ew;
+}  // namespace
+
+void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br) {
+  EvbrWork& w = tl_ew;
+  Arena& ar = arena();
+  const GNode& n = g_.nodes[ni];
+  const int o = 1 - p;
+  const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
+  const int A = n.num_children;
+  const int actor = n.player;
+  const int Ha = g_.num_hands(actor);
+  float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
+  average_strategy(ni, sigma);
+  float* cev = ar.alloc(static_cast<size_t>(A) * Hp);
+  float* cbr = ar.alloc(static_cast<size_t>(A) * Hp);
+  uint8_t* kind = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
+  w.nodes.push_back({ni, actor == p, sigma, cev, cbr, kind, ev, br});
+  auto showdown_job = [&](const GNode& sd, const float* reach, float* dst, float* compat, const float* xf, float pay) {
+    const ActionNode& an = g_.an(sd);
+    w.sb = &g_.showdowns[sd.aux];
+    w.jobs.push_back({reach, static_cast<float>(g_.terminal_payoff(an, p, 1)), static_cast<float>(g_.terminal_payoff(an, p, -1)),
+                      static_cast<float>(g_.terminal_payoff(an, p, 0)), dst, compat, xf, pay});
+  };
+  int pf = -1, ps = -1;
+  if (A >= 2) {
+    for (int a = 0; a < A; ++a) {
+      const ANodeKind k = g_.nodes[n.first_child + static_cast<uint32_t>(a)].kind;
+      if (k == ANodeKind::Fold) pf = a;
+      else if (k == ANodeKind::Showdown) ps = a;
+    }
+    if (pf < 0 || ps < 0) pf = ps = -1;
+  }
+  if (actor == p) {
+    if (ps >= 0) {  // call_and_fold
+      float* cs = cev + static_cast<size_t>(ps) * Hp;
+      float* cf = cev + static_cast<size_t>(pf) * Hp;
+      std::memset(cs, 0, sizeof(float) * Hp);
+      std::memset(cf, 0, sizeof(float) * Hp);
+      showdown_job(g_.nodes[n.first_child + static_cast<uint32_t>(ps)], ro, cs, cf, nullptr, 0.0f);
+      const ActionNode& fa = g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]);
+      w.scale.push_back({cf, static_cast<float>(g_.terminal_payoff(fa, p, p == fa.player ? -1 : 1))});
+      kind[ps] = kind[pf] = 1;
+    }
+    for (int a = 0; a < A; ++a) {
+      if (a == pf || a == ps) continue;
+      const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
+      float* ea = cev + static_cast<size_t>(a) * Hp;
+      const GNode& child = g_.nodes[ci];
+      if (child.kind == ANodeKind::Fold) {
+        fold_value(child, p, ro, ea);
+        kind[a] = 1;
+      } else if (child.kind == ANodeKind::Showdown) {
+        std::memset(ea, 0, sizeof(float) * Hp);
+        showdown_job(child, ro, ea, nullptr, nullptr, 0.0f);
+        kind[a] = 1;
+      } else {
+        river_evbr_down(ci, p, ro, ea, cbr + static_cast<size_t>(a) * Hp);
+        kind[a] = 2;
+      }
+    }
+    return;
+  }
+  float* ro2s = ar.alloc(static_cast<size_t>(A) * Ho);
+  for (int a = 0; a < A; ++a) {
+    kind[a] = 0;
+    if (a == pf) continue;  // added by the call's kernel below (call_with_opp_fold)
+    const float* sa = sigma + static_cast<size_t>(a) * Ho;
+    const uint32_t ci = n.first_child + static_cast<uint32_t>(a);
+    float* ea = cev + static_cast<size_t>(a) * Hp;
+    const GNode& child = g_.nodes[ci];
+    if (a == ps) {
+      float* ro2 = ro2s + static_cast<size_t>(a) * Ho;
+      for (int k = 0; k < Ho; ++k) ro2[k] = ro[k] * sa[k];
+      float* xf = ro2s + static_cast<size_t>(pf) * Ho;
+      const float* sf = sigma + static_cast<size_t>(pf) * Ho;
+      for (int k = 0; k < Ho; ++k) xf[k] = ro[k] * sf[k];
+      std::memset(ea, 0, sizeof(float) * Hp);
+      showdown_job(child, ro2, ea, nullptr, xf,
+                   static_cast<float>(g_.terminal_payoff(g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]), p, 1)));
+      kind[a] = 1;
+      continue;
+    }
+    if (child.kind == ANodeKind::Fold) {
+      const float pay = static_cast<float>(g_.terminal_payoff(g_.an(child), p, 1));
+      const uint8_t* oc1 = g_.hcard[o][0].data();
+      const uint8_t* oc2 = g_.hcard[o][1].data();
+      float cs[NUM_CARDS] = {0};
+      float total = 0;
+      for (int k = 0; k < Ho; ++k) {
+        const float v = ro[k] * sa[k];
+        total += v;
+        cs[oc1[k]] += v;
+        cs[oc2[k]] += v;
+      }
+      if (total == 0.0f) continue;
+      const uint8_t* pc1 = g_.hcard[p][0].data();
+      const uint8_t* pc2 = g_.hcard[p][1].data();
+      const int32_t* same = g_.same_hand[p].data();
+      for (int h = 0; h < Hp; ++h) {
+        float m = total - cs[pc1[h]] - cs[pc2[h]];
+        if (same[h] >= 0) m += ro[same[h]] * sa[same[h]];
+        ea[h] = pay * m;
+      }
+      kind[a] = 1;
+      continue;
+    }
+    float* ro2 = ro2s + static_cast<size_t>(a) * Ho;
+    bool any = false;
+    for (int k = 0; k < Ho; ++k) {
+      float v = ro[k] * sa[k];
+      ro2[k] = v;
+      any |= v != 0.0f;
+    }
+    if (!any) continue;
+    if (child.kind == ANodeKind::Showdown) {
+      std::memset(ea, 0, sizeof(float) * Hp);
+      showdown_job(child, ro2, ea, nullptr, nullptr, 0.0f);
+      kind[a] = 1;
+    } else {
+      river_evbr_down(ci, p, ro2, ea, cbr + static_cast<size_t>(a) * Hp);
+      kind[a] = 2;
+    }
+  }
+}
+
+void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float* br) {
+  EvbrWork& w = tl_ew;
+  w.busy = true;
+  w.nodes.clear();
+  w.jobs.clear();
+  w.scale.clear();
+  w.sb = nullptr;
+  river_evbr_down(root, p, ro, ev, br);
+  if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data(), g_.num_hands(1 - p));
+  const int Hp = g_.num_hands(p);
+  for (auto& [row, pay] : w.scale)
+    for (int h = 0; h < Hp; ++h) row[h] *= pay;
+  for (size_t i = w.nodes.size(); i-- > 0;) {
+    const ENode& r = w.nodes[i];
+    const GNode& n = g_.nodes[r.ni];
+    const int A = n.num_children;
+    for (int a = 0; a < A; ++a)
+      if (r.kind[a] == 1) std::memcpy(r.cbr + static_cast<size_t>(a) * Hp, r.cev + static_cast<size_t>(a) * Hp, sizeof(float) * Hp);
+    if (r.own) {
+      std::memset(r.ev, 0, sizeof(float) * Hp);
+      for (int a = 0; a < A; ++a) {
+        const float* sa = r.sigma + static_cast<size_t>(a) * Hp;
+        const float* c = r.cev + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) r.ev[h] += sa[h] * c[h];
+      }
+      std::memcpy(r.br, r.cbr, sizeof(float) * Hp);
+      for (int a = 1; a < A; ++a) {
+        const float* c = r.cbr + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) r.br[h] = std::max(r.br[h], c[h]);
+      }
+      if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) {
+        const uint8_t* lockmask = nullptr;
+        if (!(n.flags & GF_LOCKED)) {
+          auto it = g_.combo_lock.find(r.ni);
+          if (it != g_.combo_lock.end()) lockmask = it->second.data();
+        }
+        for (int h = 0; h < Hp; ++h) {
+          if (lockmask && !lockmask[h]) continue;
+          float v = 0.0f;
+          for (int a = 0; a < A; ++a) v += r.sigma[static_cast<size_t>(a) * Hp + h] * r.cbr[static_cast<size_t>(a) * Hp + h];
+          r.br[h] = v;
+        }
+      }
+    } else {
+      std::memset(r.ev, 0, sizeof(float) * Hp);
+      std::memset(r.br, 0, sizeof(float) * Hp);
+      for (int a = 0; a < A; ++a) {
+        if (!r.kind[a]) continue;
+        const float* e = r.cev + static_cast<size_t>(a) * Hp;
+        const float* b = r.cbr + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) r.ev[h] += e[h];
+        for (int h = 0; h < Hp; ++h) r.br[h] += b[h];
+      }
+    }
+  }
+  w.busy = false;
+}
+
 void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br) {
   const GNode& n = g_.nodes[ni];
   const int o = 1 - p;
@@ -1729,7 +2309,11 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
           std::memset(rk, 0, sizeof(float) * 2 * Hp);
           return;
         }
-        walk_evbr(n.first_child + static_cast<uint32_t>(k), p, rp2, ro2, rk, rk + Hp);
+        if (river_batch && n.board_len == 4 && !tl_ew.busy &&
+            g_.nodes[n.first_child + static_cast<uint32_t>(k)].kind == ANodeKind::Decision)
+          river_evbr(n.first_child + static_cast<uint32_t>(k), p, ro2, rk, rk + Hp);
+        else
+          walk_evbr(n.first_child + static_cast<uint32_t>(k), p, rp2, ro2, rk, rk + Hp);
         for (uint16_t h : g_.hands_with_card[p][card]) rk[h] = rk[Hp + h] = 0.0f;
       };
       if (parallel && K > 1) {
@@ -1910,6 +2494,7 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
     for (int h = 0; h < Hp; ++h) br[h] += b[h];
   }
 }
+
 
 RootStats Solver::root_stats() {
   RootStats st;

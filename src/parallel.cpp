@@ -1,5 +1,6 @@
 #include "parallel.hpp"
 
+#include <cstdint>
 #include <algorithm>
 #include <cstring>
 
@@ -72,11 +73,13 @@ void ThreadPool::worker_loop() {
     Job* j = nullptr;
     {
       std::unique_lock<std::mutex> lk(m_);
+      idle_.fetch_add(1, std::memory_order_relaxed);
       cv_.wait(lk, [&] {
         if (quit_) return true;
         j = pick_job(0);
         return j != nullptr;
       });
+      idle_.fetch_sub(1, std::memory_order_relaxed);
       if (quit_ && !j) return;
     }
     run_some(j);
@@ -89,7 +92,11 @@ void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool wid
   // sibling actions): publishing them unconditionally made every turn decision inside a parallel
   // turn fan-out a job of its own, thousands per iteration on big trees, and the scheduler mutex
   // then serialised everything (13 GB tree: 32 threads 2.6x slower than 16).
-  if (n == 1 || parallel_width > nthreads_ / 2) {
+  // ...unless a thread has nothing to run (#236): then publish anyway, so it can help. Without this a
+  // slow core holding one of the last tasks of a wide fan-out finishes it alone while the others wait
+  // at the join (M4 efficiency cores: threebet_mono to 0.6 chips 5.57 -> 5.50 s). Only an idle
+  // thread triggers it, so it cannot flood the scheduler the way publishing everything did.
+  if (n == 1 || (parallel_width > nthreads_ / 2 && idle_.load(std::memory_order_relaxed) == 0)) {
     for (int i = 0; i < n; ++i) f(i);
     return;
   }
@@ -108,6 +115,7 @@ void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool wid
   cv_.notify_all();
   run_some(&job);
   // Wait for stragglers; help with jobs nested above ours meanwhile.
+  bool waiting = false;
   while (job.done.load(std::memory_order_acquire) < n) {
     Job* other = nullptr;
     {
@@ -117,9 +125,15 @@ void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool wid
       other = pick_job(my_index + 1);
       if (!other) other = pick_job(0);
     }
-    if (other) run_some(other);
-    else std::this_thread::yield();
+    if (other) {
+      if (waiting) idle_.fetch_sub(1, std::memory_order_relaxed), waiting = false;
+      run_some(other);
+    } else {
+      if (!waiting) idle_.fetch_add(1, std::memory_order_relaxed), waiting = true;
+      std::this_thread::yield();
+    }
   }
+  if (waiting) idle_.fetch_sub(1, std::memory_order_relaxed);
   {
     std::lock_guard<std::mutex> lk(m_);
     auto it = std::find(jobs_.begin(), jobs_.end(), &job);
@@ -139,7 +153,7 @@ float* Arena::alloc(size_t n) {
     if (cur_ < blocks_.size()) {
       Block& b = blocks_[cur_];
       if (off_ + n <= b.size) {
-        float* p = b.mem.get() + off_;
+        float* p = b.base + off_;
         off_ += n;
         return p;
       }
@@ -149,8 +163,14 @@ float* Arena::alloc(size_t n) {
     }
     size_t sz = std::max(kBlockFloats, n);
     Block b;
-    // over-allocate for 64-byte alignment
-    b.mem.reset(new float[sz + 16]);
+    // Over-allocate so the base can be rounded up to 64 bytes. new float[] only promises
+    // the implementation's alignment for float, so the 64-byte guarantee in the header has
+    // to be established here rather than assumed (#77). With 16 MB blocks the allocator
+    // happens to hand back page-aligned memory, so this was latent rather than visible.
+    b.mem.reset(new float[sz + kAlignFloats]);
+    uintptr_t raw = reinterpret_cast<uintptr_t>(b.mem.get());
+    uintptr_t aligned = (raw + 63) & ~uintptr_t(63);
+    b.base = reinterpret_cast<float*>(aligned);
     b.size = sz;
     blocks_.push_back(std::move(b));
     // Align start of the block.

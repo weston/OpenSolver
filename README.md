@@ -11,24 +11,87 @@ public UPI documentation; it contains no PioSOLVER code.
 - Multi-threaded over turn/river cards with a nested work-stealing pool.
 - Suit **isomorphism** (flop trees on by default, like Pio's `set_isomorphism 1 0`).
 - Optional 16-bit compressed storage (`small_strats`), roughly halving memory.
+- **Regret-based pruning** on by default (`set_pruning off|on [period]`): a traverser action whose current strategy is exactly zero for every hand is skipped — exactly, so results are bit-identical — and revisited every `period`-th iteration (default 8). Worth about 13% on a deep tree.
+
+New here? **[docs/quickstart.md](docs/quickstart.md)** walks through installing, solving a spot and
+reading the output in about five minutes. The rest of this file is reference and internals.
 
 ## Build and run
 
 ```sh
 make            # builds ./solver (-O3, native CPU optimizations)
-make release    # builds ./solver-release: LTO + PGO (profile trained on the bench trees)
+make release    # builds ./solver-release: LTO, native arch (add PGO=1 to also train a profile)
 make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
 make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
+make install    # installs the binary as `wsolver` under /usr/local (see below)
 ./solver        # talk UPI on stdin/stdout
 ```
 
+### Installing
+
+`make install` copies the binary to `$PREFIX/bin/wsolver` and the docs to
+`$PREFIX/share/doc/wsolver`, with `PREFIX` defaulting to `/usr/local`:
+
+```sh
+make install                        # /usr/local/bin/wsolver (may need sudo)
+make install PREFIX=$HOME/.local    # no sudo needed
+make install DESTDIR=/tmp/stage     # staged install, for packaging
+make uninstall                      # removes both
+```
+
+The installed command is `wsolver` rather than `solver`, which is too generic
+for a shared `bin` directory; override it with `BINNAME=`. To install the
+release build instead of the default one, point `INSTALL_BIN` at it:
+
+```sh
+make release && make install INSTALL_BIN=solver-release
+```
+
+### Source distribution
+
+`make dist` writes `dist/wsolver-<version>-src.tar.gz` and a matching `.sha256`
+so a recipient can verify what they downloaded:
+
+```sh
+make dist
+shasum -a 256 -c dist/wsolver-0.1.0-src.tar.gz.sha256
+```
+
+It builds the tarball with `git archive`, so the contents are exactly what is
+committed — no build output and no stray local files — and it warns when
+uncommitted or untracked files are being left out.
+
 `make release` leaves the default build untouched and produces a second binary,
-`./solver-release`, with link-time optimization and profile-guided optimization
-(the profile is trained on `tests/pio_compare/bench_flop.txt` and the bench
-river/turn trees, single- and multi-threaded, by `bench/train_pgo.sh`). Results
-are identical to the default build; solve time is a few percent lower (see the
-benchmark table in the pull request history for #56). Clang needs
-`llvm-profdata` (shipped with the toolchain; on macOS it is found via `xcrun`).
+`./solver-release`, with link-time optimization. Results are identical to the
+default build.
+
+Profile-guided optimization is available but **off by default**, because it
+measures at parity rather than as a win:
+
+```sh
+make release PGO=1
+```
+
+Measured on an M1 Ultra (`flop_srp_2`, 60 steps, 1 thread, interleaved runs,
+8 reps), relative to the default `make` build: LTO alone is -0.2%, LTO plus PGO
+is -0.1%. Since `PGO=1` roughly doubles release build time for no measured gain,
+it stays opt-in. It is worth re-testing on your own hardware and workload, where
+a profile may help more than it does here -- our hot loop is a single
+gather-bound reduction with little branch layout left to improve.
+
+`PGO=1` trains a profile on `tests/pio_compare/bench_flop.txt` and the bench
+river/turn trees, single- and multi-threaded, via `bench/train_pgo.sh`, and
+needs `llvm-profdata` under Clang (shipped with the toolchain; on macOS it is
+found via `xcrun`).
+
+One warning if you change the PGO flags: use **IR-level** instrumentation
+(`-fprofile-generate`), never clang's front-end instrumentation
+(`-fprofile-instr-generate`). The latter counts function entries before
+inlining, so functions the instrumented build inlines record entry count 0;
+clang then treats them as cold and refuses to inline them in the optimised
+build. That cost us 12% by un-inlining the showdown kernel, which is 49-65% of
+runtime. See #199 and the comment in the Makefile.
+
 The native CPU flag (`-mcpu=native` on ARM, `-march=native` on x86) also applies
 to the release build; override `RELEASE_ARCH` for portable binaries, e.g.
 `make release RELEASE_ARCH=-march=x86-64-v3` on Linux or
@@ -371,16 +434,18 @@ estimate_schematic_tree, show_memory, is_tree_present, show_node, show_children,
 show_effective_stack, show_range, show_strategy, show_strategy_pp, calc_ev, calc_ev_pp, calc_eq,
 calc_eq_pp, calc_eq_node, calc_eq_preflop (exact), calc_results, calc_matchups_line,
 calc_line_freq, calc_global_freq, show_all_lines, show_all_freqs, show_win_evs,
-add_info_line, reset_tree_info, show_tree_info, rebuild_tree, estimate_rebuild_tree,
+add_info_line, reset_tree_info, show_tree_info, show_tree_params, set_bet_sizes / set_donk_bet (stored),
+rebuild_tree, estimate_rebuild_tree,
 solve_partial, solve_all_splits, explo_partial, stdoutredi, stdoutredi_append, stdoutback,
 print_all_strats, node_count, clear_cache, show_cpu_info, show_nuts, show_category_names,
 show_categories, show_cats, show_cats_pp, set_display_iso, reset_display_iso, show_board_no_iso,
-set_rake, set_icm, set_icm_point, reset_icm_tables, eliminate_path, lock_node, unlock_node,
+set_rake, set_icm, set_icm_point, reset_icm_tables, eliminate_path, lock_node, unlock_node, unlock_all,
 combo_lock_node, show_locked_combos, set_strategy, set_equal_strats, set_mes, round_up_to,
 lock_line, unlock_line, set_incentives_node, set_incentives_line, show_incentives,
 clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compress / lossless), free_tree,
 show_metadata, show_save_version, load_all_nodes, set_compression_precision,
-set_compression_level, check_tree_health, set_dcfr, set_predictive, set_avg_delay.
+set_compression_level, check_tree_health, set_dcfr, set_predictive, set_avg_delay, set_pruning,
+deactivate.
 
 **Saving and loading.** `dump_tree <file> [no_rivers|no_turns] [lossless]` writes a save for viewing.
 By default it keeps each node's displayed strategy, quantized to `set_compression_precision` bits (11, as
@@ -438,10 +503,17 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   keeps Pio's codes with honest descriptions.
 - **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.
 - `show_all_freqs` prints real frequencies (Pio 3.10 prints `nan`); `estimate_schematic_tree` reports
-  real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `show_nuts` breaks
-  ties in its own order; `node_count` counts every node in preflop trees.
+  real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `node_count`
+  counts every node in preflop trees.
+- Equal values are listed in 1326 order in `show_nuts` and the sorted `_pp` listings (`show_strategy_pp`,
+  `calc_ev_pp`, `calc_eq_pp`); Pio lists ties in an order that changes with the rest of the list. Black-box
+  probes ruled out a stable sort and MSVC `std::sort` / heap orders over the 1326 order, so we keep ours.
 - `_pp` listings omit hands that are only in the opponent's range by default; Pio always lists the union
   of both ranges. `set_union_hands on` (before `build_tree`) gives Pio's exact hand list (#9, #61).
+- `add_line` / `remove_line` / `force_line` are collected and applied at `build_tree`, where Pio edits
+  its line tree command by command. Scripts that add first and then remove or force (the usual shape)
+  build the same tree. Re-adding a removed line, or adding after `force_line`, does not (see AGENTS.md).
+  Bets above the effective stack are rejected at `build_tree`; Pio builds them.
 - Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
   there; results are identical with isomorphism on or off (#12).
 - **Preflop equity** (`calc_eq_preflop`, preflop all-ins) is exact: a 1326x1326 hand-vs-hand
@@ -455,16 +527,44 @@ response-by-response diff): formats, tree shapes (`node_count` matches on postfl
 ranges, equities, rake and ICM payoffs, node locking, truncated saves, and equilibrium EVs. The range
 explorer (`show_categories`, `show_cats`, ...) is byte-identical on 88 boards (`tests/data/pio_categories/`).
 
-## Performance (Apple M4, 10 threads)
+## Performance
+
+Against PioSOLVER 3.10 on the same PC (AMD Zen 5, 16 cores / 32 threads), both driven over UPI and run
+back to back, to the same target (0.6 chips, `set_info_freq auto`), 32 threads:
+
+| Tree | Memory | WSolver | PioSOLVER 3.10 |
+|---|---|---|---|
+| `srp_big`: SRP flop, 710 lines | 13 GB (16-bit) | **41.9 s** (123 iterations) | 71.5 s |
+| `threebet_mono`: 3-bet pot, monotone flop | 542 MB | **2.93 s** (168 iterations) | 6.70 s |
+
+On these two trees Pio's convergence per iteration is close to ours, so the gap comes from how fast
+each iteration runs. On the smaller bench trees (40-307 MB, measured at #147) WSolver was 1.1-2.3x faster
+on one thread; at 32 threads it was about even on `deep` and 1.8x faster on `flop_srp_4` (Pio's sub-second times
+there are only upper bounds). Method, history and per-tree numbers: [bench/vs_pio.md](bench/vs_pio.md);
+where the time goes: [bench/where-the-time-goes.md](bench/where-the-time-goes.md).
+
+On an Apple M4 (10 threads):
 
 | Tree | Memory | Time |
 |---|---|---|
-| Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 1.6 s -> 0.06% pot |
+| Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 0.9 s -> 0.025% pot |
 | Real Pio 25bb HU script, 2 sizes everywhere | 6.4 GB (3.3 GB with `small_strats`) | ~1 s / iteration |
 
+The M4 row above **predates the NEON lanes kernel** (#219, which reports -22% on an M4), so it
+understates current speed and wants re-measuring on an M4. For a figure that is current, the same
+wide-SRP tree on an M1 Ultra at 20 threads runs 100 iterations in **0.63 s** to the same 0.025% of
+pot (0.015 chips on a 60 pot), 163 MB peak. Full per-tree numbers, including the larger `srp_big` and
+`threebet_mono` trees, are in `bench/results.md`; regenerate with `make bench`.
+
 Single-threaded on the same tree (`tests/pio_compare/bench_flop.txt`), PioSOLVER-edge 3.10.1 on a Zen 5
-runs 60 iterations in 4.63 s vs 4.73 s here (Apple M4), and this solver's DCFR reaches lower
-exploitability per iteration (0.119 vs 0.182 chips after 60), so it reaches a given accuracy sooner.
+runs 60 iterations in 4.63 s vs 4.73 s here (Apple M4), and this solver's DCFR reaches **0.042 chips of
+exploitability after 60 iterations against Pio's 0.182** — about 4x closer to equilibrium for the same
+iteration count, so it reaches a given accuracy considerably sooner. (That figure is a convergence
+property, so it does not depend on the machine; it has improved from 0.119 as the DCFR schedule was
+retuned — see `bench/dcfr_sweep.md` and `src/solver.hpp`.)
+
+`bench/results.md` carries the current per-tree timings and is regenerated by `make bench`; prefer it
+over the M4 table, which is a snapshot.
 
 `build_tree` checks free memory and switches to compressed storage automatically when float32
 storage would not fit (`small_strats auto`; force with `on` / `off`).

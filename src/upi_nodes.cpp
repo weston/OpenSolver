@@ -1034,17 +1034,9 @@ void Upi::register_node_commands() {
     solver_->compat_mass(0, r1.data(), m.data());
     double num = 0;
     for (int h = 0; h < H0; ++h) num += static_cast<double>(r0[h]) * m[h];
-    // Root matchups restricted to hands compatible with the node's runout cards.
-    uint64_t dealt = board_mask(r.board) & ~board_mask(std::vector<int>(r.board.begin(), r.board.begin() + tree_->root_board_len()));
-    std::vector<float> q0 = tree_->init_reach[0], q1 = tree_->init_reach[1];
-    for (int p = 0; p < 2; ++p) {
-      auto& q = p == 0 ? q0 : q1;
-      for (size_t h = 0; h < q.size(); ++h)
-        if (combo_mask(PERM_COMBO[display_perm_][tree_->hands[p][h]]) & dealt) q[h] = 0;
-    }
-    solver_->compat_mass(0, q1.data(), m.data());
-    double den = 0;
-    for (int h = 0; h < H0; ++h) den += static_cast<double>(q0[h]) * m[h];
+    // Over all the root's matchups, as Pio: the turn and river cards' card removal counts (probe 13:
+    // after an As turn that blocks AA/AK/AQ/AJ combos, 0.0692 where only the strategies give 1/12).
+    double den = solver_->root_matchups();
     return fmt(den > 0 ? num / den : 0.0);
   };
   H["show_all_lines"] = [this](const Args&) {

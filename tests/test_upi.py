@@ -656,6 +656,22 @@ def check_force_line(u):
     u.cmd("clear_lines")
 
 
+def check_global_freq(u):
+    """calc_global_freq counts the dealt cards' card removal, as Pio (probe 13: an unsolved tree, so both
+    solvers hold the same uniform strategies)."""
+    print("[calc_global_freq: card removal of the dealt cards]")
+    for c in ("set_range OOP AA:0.5,KK,QQ:0.25,JJ,TT,99,AK:0.75,AQ,AJ,KQ,KJ,QJ,JT,T9",
+              "set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ:0.5,KQ,QJ,JT", "set_board Kh9h4h", "set_pot 0 0 60",
+              "set_eff_stack 200", "clear_lines", "add_line 20 20 60 60 200", "add_line 0 20 20 60 60",
+              "add_line 0 0 40", "add_line 20 200", "build_tree"):
+        u.cmd(c)
+    g1 = float(u.cmd("calc_global_freq r:0:c:c:2c:c"))
+    g2 = float(u.cmd("calc_global_freq r:0:b20:c:As:c:c:3d"))
+    check(abs(g1 - 0.0833329931) < 1e-6, f"a 2c turn blocks nothing: 1/12, Pio 0.0833329931 ({g1})")
+    check(abs(g2 - 0.0692357495) < 1e-5, f"an As turn blocks AA/AK/AQ/AJ combos: Pio 0.0692357495 ({g2})")
+    u.cmd("free_tree")
+
+
 def check_scripts(u):
     """load_script(_silent), skip_if_done, LABEL: and stdoutredi as Pio 3.10.1 answers them (#251)."""
     print("[load_script / load_script_silent / skip_if_done / stdoutredi]")
@@ -948,6 +964,7 @@ def main(exe, big=False):
 
         check_force_line(u)
         check_scripts(u)
+        check_global_freq(u)
         check_go_partial(u)
         check_go_limits_and_errors(u)
         check_info_freq_auto(u)

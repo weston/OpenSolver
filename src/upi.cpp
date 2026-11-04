@@ -287,6 +287,9 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   // Solving touches every node: read a lazily loaded tree completely first (in parallel).
   std::string lerr;
   if (!tree_->load_all(lerr)) throw CmdError{"cannot read the tree's file: " + lerr};
+  // Solving the whole tree again makes its own results current (#195); go_partial, like solve_partial,
+  // keeps reporting the saved ones while other streets are still missing.
+  if (!sub) tree_->has_saved_stats = false;
   stop_flag_ = false;
   solving_ = true;
   solver_thread_ = std::thread([this, seconds, steps, sub = std::move(sub)] { solver_thread_main(seconds, steps, std::move(sub)); });

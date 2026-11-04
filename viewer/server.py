@@ -228,9 +228,8 @@ class Solver:
         click makes and let it run again once no request has come for one iteration's time.
         That is the break-even: parked longer, the solve loses more than a request would have
         waited; shorter, the next request of the burst waits an iteration boundary again. The
-        iteration time is measured (refine.py's flop watch sets it at each progress report);
-        before the first report, the wait for the last hold to land (the cost a request just
-        paid) stands in."""
+        iteration time is measured from the progress reports (note_iters); before the first
+        two, the wait for the last hold to land (the cost a request just paid) stands in."""
         if not self.solving:
             return
         self.hold("browse")
@@ -468,10 +467,12 @@ def api(solver, lib, method, path, query, body):
                 _preview = acc
                 data["preview"] = True
                 return status, data
-    if path == "/api/progress" and _refiner is not None and _preview is not None:
+            _preview = None   # any other solve (Resume, no target, preview off): no modal
+    target = _preview         # read once: a concurrent build may clear it
+    if path == "/api/progress" and _refiner is not None and target is not None:
         status, data = _api_main(solver, lib, method, path, query, body)
         import refine as vrefine   # (refine imports this module: not at the top)
-        data["preview"] = vrefine.preview_status(solver, _preview)
+        data["preview"] = vrefine.preview_status(solver, target)
         return status, data
     if method == "POST" and path in ("/api/stop", "/api/solve", "/api/solve_node", "/api/build", "/api/load"):
         # these stop or restart the solve, and the solver drops any hold with it

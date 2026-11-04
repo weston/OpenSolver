@@ -297,6 +297,7 @@ std::string Upi::stats_block(const RootStats& st, double running_time) {
 
 void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   require_tree();
+  release_hold();  // every way a solve starts (go, go_partial, ...) drops a pending hold
   if (solving_) return;
   if (solver_thread_.joinable()) solver_thread_.join();
   // Solving touches every node: read a lazily loaded tree completely first (in parallel).
@@ -446,7 +447,17 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   solving_ = false;
 }
 
+// hold / release: see H["hold"]. Every way a solve ends or restarts drops the hold first, so a
+// forgotten release can never leave a later solve parked.
+void Upi::release_hold() {
+  if (!held_) return;
+  held_ = false;
+  pause_requests_.fetch_sub(1);
+  pause_cv_.notify_all();
+}
+
 void Upi::stop_solver(const char* reason) {
+  release_hold();
   if (solver_thread_.joinable()) {
     if (solving_) {
       stop_reason_ = reason;
@@ -717,6 +728,7 @@ void Upi::register_commands() {
   // ---- Solving ----
   H["go"] = [this](const Args& a) {
     require_tree();
+    release_hold();
     double secs = 0;
     long long steps = 0;
     if (!a.empty()) {
@@ -761,7 +773,25 @@ void Upi::register_commands() {
     stop_solver();
     return std::string("stop ok!");
   };
+  // hold / release (an extension, for the viewer): keep a running solve parked between iterations
+  // across a burst of commands. Each command otherwise waits for an iteration boundary of its own,
+  // and the solve resumes between commands, so a dozen reads cost a dozen iterations (seconds on a
+  // big tree). hold returns once the solver is between iterations, or at once if it is not
+  // running. A parked solve resumes exactly where it was, so results are unaffected.
+  H["hold"] = [this](const Args&) {
+    if (!held_) {
+      held_ = true;
+      pause_requests_.fetch_add(1);
+    }
+    std::lock_guard<std::mutex> lk(tree_mu_);  // iterations run under tree_mu_
+    return std::string("hold ok!");
+  };
+  H["release"] = [this](const Args&) {
+    release_hold();
+    return std::string("release ok!");
+  };
   H["wait_for_solver"] = [this](const Args&) {
+    release_hold();  // waiting on a parked solve would never return
     if (solver_thread_.joinable()) solver_thread_.join();
     return std::string("wait_for_solver ok!");
   };
@@ -860,6 +890,9 @@ void Upi::register_commands() {
     if (solver_) solver_->avg_delay = avg_delay_;
     return std::string("set_avg_delay ok!");
   };
+  // show_avg_delay (extension): the current set_avg_delay. The viewer's fast preview compares
+  // strategy averages across iterations and must not compare across the reset at n + 1.
+  H["show_avg_delay"] = [this](const Args&) { return std::to_string(avg_delay_); };
   // Not a Pio command. Regret-based pruning (#51, see Solver::pruning): from iteration
   // 2*<period>+1 on, an action of the traverser whose current strategy is zero for every one of
   // its hands is not re-measured that iteration; its regret row is frozen (not discounted or

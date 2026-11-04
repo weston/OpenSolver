@@ -181,6 +181,8 @@ class Upi {
   std::string stop_reason_;
   std::mutex tree_mu_;
   std::atomic<int> pause_requests_{0};
+  bool held_ = false;  // `hold` (viewer extension) is keeping a running solve parked
+  void release_hold();
   std::condition_variable pause_cv_;
   std::mutex pause_mu_;
 

@@ -43,6 +43,7 @@
       <div class="node-head">
         <div id="node-title" class="node-title"></div>
         <span id="subgame-tag" class="tag busy hidden" title="Browsing a re-solved subtree (opponent range fixed at the re-solve node)">Re-solved</span>
+        <span id="live-tag" class="tag hidden"></span>
         <button id="btn-resolve" class="btn small hidden" title="Re-solve this subtree with other sizes">Re-solve…</button>
         <button id="btn-further" class="btn small hidden" title="Continue solving the tree from this node down (changes its strategies in memory)">Solve further…</button>
         <div class="seg" id="view-seg">
@@ -160,6 +161,8 @@
             <button id="btn-solve" class="btn primary" title="Rebuild the tree from the form, then solve it">Build &amp; solve</button>
             <button id="btn-stop" class="btn danger hidden">Stop</button>
           </div>
+          <label class="check" title="Open the Study view as soon as the flop strategy settles, keep solving in the background, and re-solve each later street from its first decision when you look at it"><input id="f-preview" type="checkbox" checked> Fast preview</label>
+          <div id="preview-info" class="build-info muted"></div>
           <div id="build-info" class="build-info"></div>
         </div>
         <div class="chart-box">

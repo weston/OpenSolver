@@ -1,18 +1,15 @@
 // Fast preview: hide the solve time.
-//  1. Solve first runs a sketch: the same tree with one bet size and no raises on the turn and
-//     river (viewer/refine.py SketchManager), solved to the build's target. The Study view
-//     opens on it, then the full solve starts.
-//  2. Each flop node comes from the sketch until the full tree's strategy there has caught up
-//     with it (the server decides at each progress report), and the node on screen refreshes
-//     whenever the full solve reports progress.
+//  1. Solve shows a loading modal on the main solve's progress; once it is within 10x the
+//     target (viewer/refine.py PREVIEW_FACTOR) the Study view opens on the still-solving tree.
+//  2. The node on screen refreshes whenever the solve reports progress.
 //  3. On the turn or later, the street's subtree is re-solved from its first decision (full bet
-//     sizes, current ranges) and shown instead, marked "Refined", while the full solve continues.
+//     sizes, current ranges) and shown instead, marked "Refined", while the full solve waits.
 
 import { get, post, prefs, fmt, toast } from "./api.js";
 
 const $ = (id) => document.getElementById(id);
 const P = {
-  watching: false, t0: 0, timer: null,                // after Solve: wait for the sketch
+  watching: false, t0: 0, timer: null,                // after Solve: the loading modal
   solving: false,                                     // main solve running (incl. parked for a refine)
   shown: null, refineRoot: null, refineTimer: null,   // node on screen and its refine
   events: null, refresh: null,                        // last solver event count seen
@@ -20,7 +17,7 @@ const P = {
 
 export const previewOn = () => prefs.get("fast-preview", true) !== false;
 
-/* ------------------------------------------------------------------ 1. open on the sketch */
+/* ------------------------------------------------------------------ 1. the loading modal */
 
 const RING = 326.73;   // 2 * pi * r for the modal's ring (r = 52)
 
@@ -31,7 +28,7 @@ function closeModal() {
   if (m && m.open) m.close();
 }
 
-/** The ring: how far the sketch's exploitability has come from its first report toward the
+/** The ring: how far the solve's exploitability has come from its first report toward the
  *  point where the Study view opens (PREVIEW_FACTOR x the target), on a log scale - the scale
  *  exploitability falls on. Spins until the first report. */
 function drawRing(pg) {
@@ -56,25 +53,22 @@ async function tick() {
   if (!P.watching) return;
   let st;
   try { st = await get("/api/progress"); } catch (e) { P.timer = setTimeout(tick, 600); return; }
-  const sk = st.sketch || { state: "idle" };
+  const pg = st.preview || {};
   const secs = (performance.now() - P.t0) / 1000;
   const status = $("sm-status");
   let ready = null;
-  if (sk.state === "running" && !sk.early) {
-    const pg = sk.progress || {};
+  if (st.solving && !pg.early) {
     const pot = Number($("f-pot").value) || 0;
     drawRing(pg);
     if (status) {
       const now = pg.explo != null && pot ? `${fmt((100 * pg.explo) / pot, 2)}% of the pot` : "Starting";
       status.textContent = `${now} · ${fmt(secs, 0)} s`;
     }
-  } else if (sk.state === "running" || sk.state === "ready") {
-    ready = `Ready in ${fmt(secs, 1)} s · still solving in the background`;
   } else if (st.solving) {
-    ready = "Solving in the background";   // the sketch failed: the full solve runs instead
+    ready = `Ready in ${fmt(secs, 1)} s · still solving in the background`;
   } else {
-    ready = (st.iters || 0) > 0 ? `Solved in ${fmt(secs, 1)} s` : null;
-    if (!ready && sk.state !== "running") { P.watching = false; closeModal(); return; }   // stopped
+    ready = (st.iters || 0) > 0 && /required accuracy/.test(st.solver_status || "") ? `Solved in ${fmt(secs, 1)} s` : null;
+    if (!ready) { P.watching = false; closeModal(); return; }   // stopped
   }
   if (ready) {
     P.watching = false;
@@ -87,12 +81,12 @@ async function tick() {
   P.timer = setTimeout(tick, 300);
 }
 
-/** Called right after a solve starts; sketched: the server is sketching (fast preview). Shows the
- *  solving-period modal and opens the Study view when the sketch is close enough. */
-export function startPreview(sketched) {
+/** Called right after a solve starts; on: the server follows it for fast preview (a fresh solve).
+ *  Shows the solving-period modal and opens the Study view when the solve is close enough. */
+export function startPreview(on) {
   clearTimeout(P.timer);
   P.watching = false;
-  if (!previewOn() || !sketched) return;
+  if (!previewOn() || !on) return;
   Object.assign(P, { watching: true, t0: performance.now() });
   const m = modal();
   if (m) {
@@ -107,12 +101,10 @@ export function startPreview(sketched) {
 
 /** From the status poll: keeps the badge and the live refresh in step with the main solve. */
 export function previewStatus(st) {
-  const sk = (st && st.sketch) || {};
-  P.solving = !!(st && st.solving) || sk.state === "running";
-  // Each progress report (of the full solve, or of the sketch while it still solves) is when the
-  // numbers on screen, the server's choice between sketch and full tree, and refines' freshness
-  // can change: re-read the node on screen then.
-  const ev = st ? `${st.events}:${sk.events ?? ""}` : null;
+  P.solving = !!(st && st.solving);
+  // Each progress report is when the numbers on screen and refines' freshness can change:
+  // re-read the node on screen then.
+  const ev = st ? st.events : null;
   if (P.solving && previewOn() && P.events != null && ev !== P.events) liveRefresh();
   P.events = ev;
   drawBadge();
@@ -128,8 +120,7 @@ function liveRefresh() {
 /** The Study view calls this after every render. cur: the node's /api/strategy payload. */
 export async function nodeShown(id, cur, { inSubgame, refresh }) {
   P.refresh = refresh;
-  P.shown = { id, refined: cur && cur.refined ? cur.refined : null, sketch: cur && cur.sketch ? cur.sketch : null,
-              sub: inSubgame, state: null };
+  P.shown = { id, refined: cur && cur.refined ? cur.refined : null, sub: inSubgame, state: null };
   drawBadge();
   if (!previewOn() || inSubgame) return;
   const hasCard = id.split(":").some((t) => /^[2-9TJQKA][cdhs]$/.test(t));
@@ -174,12 +165,6 @@ function drawBadge() {
       text = `Refined · ${s.refined.street} re-solved to ${fmt(s.refined.accuracy_pct, 2)}%`;
       cls = "ok";
       title = `This street was re-solved from its first decision in ${fmt(s.refined.seconds, 1)} s with the current ranges (opponent range fixed there). The main solve continues in the background.`;
-    } else if (s.sketch) {
-      text = s.sketch.solving ? "Sketch · still solving" : "Sketch · full solve running";
-      cls = "busy";
-      title = s.sketch.solving
-        ? "Flop strategy from a simplified tree (one bet size, no raises on the turn and river), still solving toward your target; the full solve starts when it gets there."
-        : `Flop strategy from a simplified tree (one bet size, no raises on the turn and river), solved to your target (${fmt(s.sketch.accuracy_pct, 2)}% of the pot) in ${fmt(s.sketch.seconds, 1)} s. The full tree takes over this node once its strategy here has caught up with the sketch's.`;
     } else if (s.state === "running") {
       text = "Refining this street…";
       cls = "busy";

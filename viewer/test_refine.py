@@ -127,6 +127,8 @@ class RefineIntegrationTest(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertEqual(p["sketch"]["state"], "ready", p["sketch"])
+        # within PREVIEW_FACTOR x the target before it finished (the modal's hand-off point)
+        self.assertTrue(p["sketch"]["early"])
         # solved to the main target, and the root plus its children are watched
         self.assertLessEqual(p["sketch"]["info"]["explo"], 0.2)
         self.assertGreaterEqual(p["sketch"]["flop_sketch"] + p["sketch"]["flop_main"], 2)

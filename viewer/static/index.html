@@ -267,6 +267,29 @@
   </div>
 </dialog>
 
+<dialog id="card-dialog" class="dialog cards-dlg" aria-labelledby="cd-title">
+  <h2 id="cd-title">Change the flop</h2>
+  <p id="cd-hint" class="hint"></p>
+  <div id="cd-deck" class="mini-deck cd-deck"></div>
+  <div class="btn-row end">
+    <button id="cd-cancel" class="btn ghost">Cancel</button>
+    <button id="cd-apply" class="btn primary">Rebuild &amp; solve</button>
+  </div>
+</dialog>
+
+<dialog id="solve-modal" class="dialog solve-modal" aria-labelledby="sm-title">
+  <button id="sm-close" class="sm-x" title="Close (the solve keeps running)" aria-label="Close">&times;</button>
+  <div class="sm-ring-wrap">
+    <svg class="sm-ring" viewBox="0 0 120 120" aria-hidden="true">
+      <circle class="sm-track" cx="60" cy="60" r="52"></circle>
+      <circle id="sm-arc" class="sm-arc" cx="60" cy="60" r="52"></circle>
+    </svg>
+    <div id="sm-pct" class="sm-pct num"></div>
+  </div>
+  <h2 id="sm-title">Solving…</h2>
+  <div id="sm-status" class="sm-status"></div>
+</dialog>
+
 <dialog id="sf-dialog" class="dialog">
   <h2>Solve further from here</h2>
   <div id="sf-context" class="rs-context"></div>

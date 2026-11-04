@@ -339,9 +339,25 @@ async function solve() {
   const pct = Number($("f-accuracy").value);
   try {
     const r = await post("/api/solve", { accuracy: (pct / 100) * pot, preview: previewOn() });
-    toast(r.sketch ? "Sketching the flop…" : "Solving…");
-    startPreview();
+    if (!r.sketch) toast("Solving…");
+    startPreview(!!r.sketch);
   } catch (e) { fail(e); }
+}
+
+/** The Study view's board picker: the same tree (ranges, sizes, everything in the form) on other
+ *  root cards, rebuilt and solved like Build & solve. False if a build or solve start is busy. */
+export async function rebuildWithBoard(cards) {
+  if (busy) return false;
+  board = [...cards];
+  boardChanged();
+  toast(`Rebuilding on ${cards.join(" ")}…`);
+  if (!(await build())) {   // the Build panel shows why; say it here too (the Study view is open)
+    toast($("build-info").textContent || "The build failed", "err");
+    return true;
+  }
+  rootPotNow = Number($("f-pot").value);
+  await solve();
+  return true;
 }
 
 /** Always rebuild from the form (a fresh tree), then solve it. */

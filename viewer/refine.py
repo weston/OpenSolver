@@ -395,15 +395,17 @@ class SketchManager:
                 self._wait_sketch(gen, acc, ev0)
                 explo = self.solver.series[-1]["explo"] if self.solver.series else None
                 nodes = self.solver.cmd("node_count").split("\n")[0]
+                # The root and the first decision after each root action are watched from the
+                # start: read them before announcing "ready", so anyone who sees it sees them too.
+                first = {"r:0": self._watch_entry("r:0")}
+                for k in vsrv.parse_children(self.solver.cmd("show_children r:0")):
+                    first[k["id"]] = self._watch_entry(k["id"])
                 with self.mu:
                     if gen == self.gen and not self.abort:
+                        self.nodes.update(first)
                         self.state = "ready"
                         self.info = {"accuracy": acc, "accuracy_pct": 100.0 * acc / pot if pot else None,
                                      "explo": explo, "seconds": round(time.time() - t0, 2), "nodes": nodes}
-                if self.state == "ready":
-                    self.track("r:0")    # the root and the first decision after each root action
-                    for k in vsrv.parse_children(self.solver.cmd("show_children r:0")):
-                        self.track(k["id"])
             except Exception as e:
                 with self.mu:
                     if gen == self.gen and not self.abort:
@@ -463,19 +465,24 @@ class SketchManager:
                 return
             gen = self.gen
             self.nodes[node_id] = None   # claimed: concurrent calls return
+        entry = self._watch_entry(node_id)
+        with self.mu:
+            if gen != self.gen:
+                return
+            self.nodes[node_id] = entry
+            if entry["main"]:
+                return
+        if self.main.solving and not self._main_done():
+            self._checkpoint(gen, only=[node_id])
+
+    def _watch_entry(self, node_id):
+        """A flop node's watch record. Its sketch strategy is fixed once the sketch is done, so it
+        is read once; a node that is not a decision is always shown from the main tree."""
         try:
             sk = read_node(self.solver, node_id)
         except vsrv.SolverError:
             sk = None
-        with self.mu:
-            if gen != self.gen:
-                return
-            if sk is None:               # not a decision node: the main tree always shows it
-                self.nodes[node_id] = {"sketch": None, "gaps": [], "main": True}
-                return
-            self.nodes[node_id] = {"sketch": sk, "gaps": [], "main": False}
-        if self.main.solving and not self._main_done():
-            self._checkpoint(gen, only=[node_id])
+        return {"sketch": sk, "gaps": [], "main": sk is None}
 
     def _watch(self, gen):
         """Runs after the main solve starts: one checkpoint per progress report, until the

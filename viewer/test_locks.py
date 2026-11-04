@@ -174,6 +174,37 @@ class LocksTest(unittest.TestCase):
             diff = max(abs((a or 0) - (b or 0)) for ra, rb in zip(want, got) for a, b in zip(ra, rb))
             self.assertLess(diff, tol, f"{mode or 'default'} save: locked strategy kept (max diff {diff:.2e})")
 
+    def test_4_locks_invalidate_fast_preview(self):
+        """A lock changes the tree the refined streets and the flop sketch were solved against."""
+        class Stub:
+            def __init__(self, state="idle"):
+                self.state, self.calls = state, 0
+
+            def invalidate(self):
+                self.calls += 1
+
+            def overlay(self, path, query):
+                return None
+
+            def status(self):
+                return {"state": self.state}
+
+        self.build_and_solve()
+        refiner, sketch = Stub(), Stub()
+        vsrv.set_refiner(refiner, sketch)
+        try:
+            self.ok("/api/lock", "POST", {"id": FACING, "mode": "current", "snapshot": True})
+            self.assertEqual((refiner.calls, sketch.calls), (1, 1), "lock drops refines and the sketch")
+            self.ok("/api/unlock", "POST", {"id": FACING})
+            self.ok("/api/lock/revert", "POST", {})
+            self.assertEqual(refiner.calls, 3)
+            sketch.state = "running"
+            st, r = self.req("/api/lock", "POST", {"id": FACING, "mode": "current"})
+            self.assertEqual(st, 400, r)
+            self.assertIn("running", r["error"])
+        finally:
+            vsrv.set_refiner(None, None)
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

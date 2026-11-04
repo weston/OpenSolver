@@ -47,6 +47,20 @@ class IdHelpersTest(unittest.TestCase):
         self.assertEqual(vrefine.street_root("r:0:b30:c:Kd:c:b60:c:7s"),
                          ("r:0:b30:c:Kd", ["c", "b60", "c", "7s"]))
 
+    def test_one_size_is_the_median(self):
+        self.assertEqual(vrefine._one_size("33,75,150"), "75")
+        self.assertEqual(vrefine._one_size("50, 100"), "100")
+        self.assertEqual(vrefine._one_size("120"), "120")
+        self.assertEqual(vrefine._one_size("x"), "x")
+
+    def test_strategy_gap(self):
+        a = ("OOP", [[1.0, 0.0, 0.5], [0.0, 1.0, 0.5]], [1.0, 1.0, 0.0])
+        b = ("OOP", [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [0.0, 0.0, 0.0])
+        self.assertAlmostEqual(vrefine.strategy_gap(a, b), 0.5)   # one of two reached combos differs
+        self.assertEqual(vrefine.strategy_gap(a, a), 0.0)
+        self.assertIsNone(vrefine.strategy_gap(a, ("IP",) + b[1:]))
+        self.assertIsNone(vrefine.strategy_gap(a, ("OOP", b[1][:1], b[2])))
+
     def test_rewrite_ids(self):
         d = {"node": {"id": "r:0:c", "type": "IP_DEC"},
              "children": [{"id": "r:0:c:b60"}, {"id": "r:0:c:c"}], "other": "r:0:x"}
@@ -96,7 +110,7 @@ class RefineIntegrationTest(unittest.TestCase):
         self.assertEqual(b["flop_bet"], CFG["flop_bet"])        # flop untouched
         self.assertEqual(b["turn_bet"], "75")
         self.assertEqual(b["turn_bet_ip"], "50")
-        self.assertEqual(b["river_bet"], "75")                  # no sizes: the default one
+        self.assertEqual(b["river_bet"], "")                    # no sizes: kept as built
         self.assertEqual(b["turn_raise"], "")
         self.assertEqual(b["river_raise"], "")
         self.assertNotIn("river_bet_ip", b)                     # IP keeps inheriting OOP's
@@ -113,17 +127,63 @@ class RefineIntegrationTest(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertEqual(p["sketch"]["state"], "ready", p["sketch"])
-        # the flop is served from the sketch until the full solve beats it
+        # solved to the main target, and the root plus its children are watched
+        self.assertLessEqual(p["sketch"]["info"]["explo"], 0.2)
+        self.assertGreaterEqual(p["sketch"]["flop_sketch"] + p["sketch"]["flop_main"], 2)
+        # the flop is served from the sketch until the main tree catches up (or meets its target)
         st, d = self.req("/api/strategy?id=r:0")
-        if self.req("/api/progress")[1]["sketch"]["active"]:
+        if "required accuracy" not in self.req("/api/progress")[1]["solver_status"]:
             self.assertIn("sketch", d)
         # the full solve started by itself after the sketch and meets its target
         self.main.cmd("wait_for_solver", timeout=600)
         time.sleep(0.2)
         self.assertTrue(self.main.series, "the main solve never reported")
         self.assertLessEqual(self.main.series[-1]["explo"], 0.2)
-        self.assertFalse(self.req("/api/progress")[1]["sketch"]["active"])
         self.assertNotIn("sketch", self.req("/api/strategy?id=r:0")[1])
+        # Resume on a solved tree does not sketch again
+        st, d = self.req("/api/solve", "POST", {"accuracy": 0.1, "preview": True})
+        self.assertNotIn("sketch", d)
+        self.main.cmd("wait_for_solver", timeout=600)
+        self.assertEqual(self.req("/api/progress")[1]["sketch"]["state"], "ready")
+
+    def test_flop_watch_switches_only_when_the_gap_stops_shrinking(self):
+        self.assertEqual(self.req("/api/build", "POST")[0], 200)
+        # no target: no sketch
+        st, d = self.req("/api/solve", "POST", {"accuracy": 0, "preview": True})
+        self.assertNotIn("sketch", d)
+        self.req("/api/stop", "POST")
+        self.main.cmd("wait_for_solver")
+        self.assertEqual(self.req("/api/build", "POST")[0], 200)
+        st, d = self.req("/api/solve", "POST", {"accuracy": 0.2, "preview": True})
+        self.assertTrue(d["sketch"])
+        deadline = time.time() + 120
+        while time.time() < deadline and self.req("/api/progress")[1]["sketch"]["state"] == "running":
+            time.sleep(0.05)
+        self.main.cmd("wait_for_solver", timeout=600)
+        # Resume without a target (no new sketch; the watch keeps going): several reports past
+        # the averaging delay
+        st, d = self.req("/api/solve", "POST", {"accuracy": 0, "preview": True})
+        self.assertNotIn("sketch", d)
+        deadline = time.time() + 120
+        while time.time() < deadline and (self.req("/api/progress")[1].get("iters") or 0) < 200:
+            time.sleep(0.1)
+        self.req("/api/stop", "POST")
+        self.main.cmd("wait_for_solver")
+        self.assertIsNotNone(self.main.iter_seconds)   # measured: the browse lease uses it
+        self.assertGreater(self.main.iter_seconds, 0)
+        with self.sketch.mu:
+            nodes = {k: dict(v) for k, v in self.sketch.nodes.items() if v and v["sketch"] is not None}
+        self.assertIn("r:0", nodes)
+        for k, v in nodes.items():
+            g = [x[1] for x in v["gaps"]]
+            its = [x[0] for x in v["gaps"]]
+            self.assertEqual(its, sorted(set(its)), k)
+            if v["main"]:   # switched at the first non-decrease, and not before
+                self.assertGreaterEqual(len(g), 2, (k, g))
+                self.assertGreaterEqual(g[-1], g[-2], (k, g))
+                self.assertTrue(all(b < a for a, b in zip(g[:-1], g[1:-1])), (k, g))
+            else:
+                self.assertTrue(all(b < a for a, b in zip(g, g[1:])), (k, g))
 
     def test_stop_during_sketch_does_not_start_main(self):
         self.assertEqual(self.req("/api/build", "POST")[0], 200)

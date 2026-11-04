@@ -1,9 +1,10 @@
-// Fast preview (experiment): hide the solve time.
+// Fast preview: hide the solve time.
 //  1. Solve first runs a sketch: the same tree with one bet size and no raises on the turn and
-//     river (viewer/refine.py SketchManager), a few seconds even on big trees. The Study view
+//     river (viewer/refine.py SketchManager), solved to the build's target. The Study view
 //     opens on it, then the full solve starts.
-//  2. Flop nodes come from the sketch until the full solve's exploitability beats it, and the
-//     node you look at refreshes live as the full solve improves.
+//  2. Each flop node comes from the sketch until the full tree's strategy there has caught up
+//     with it (the server decides at each progress report), and the node on screen refreshes
+//     whenever the full solve reports progress.
 //  3. On the turn or later, the street's subtree is re-solved from its first decision (full bet
 //     sizes, current ranges) and shown instead, marked "Refined", while the full solve continues.
 
@@ -14,7 +15,7 @@ const P = {
   watching: false, t0: 0, timer: null,                // after Solve: wait for the sketch
   solving: false,                                     // main solve running (incl. parked for a refine)
   shown: null, refineRoot: null, refineTimer: null,   // node on screen and its refine
-  liveTimer: null, refresh: null,
+  events: null, refresh: null,                        // last solver event count seen
 };
 
 export const previewOn = () => prefs.get("fast-preview", true) !== false;
@@ -30,12 +31,16 @@ async function tick() {
   const secs = (performance.now() - P.t0) / 1000;
   let ready = null;
   if (sk.state === "running") {
-    if (info) info.textContent = `Fast preview: sketching the flop on a simplified tree… ${fmt(secs, 0)} s`;
+    const pg = sk.progress || {};
+    const pot = Number($("f-pot").value) || 0;
+    const now = pg.explo != null && pot ? ` · ${fmt((100 * pg.explo) / pot, 2)}% of the pot` : "";
+    const goal = pg.target != null && pot ? ` → ${fmt((100 * pg.target) / pot, 2)}%` : "";
+    if (info) info.textContent = `Fast preview: sketching the flop on a simplified tree${now}${goal} · ${fmt(secs, 0)} s`;
   } else if (sk.state === "ready") {
     ready = `Flop ready in ${fmt(secs, 1)} s · full solve running in the background`;
-  } else if (st.solving && (st.iters || 0) >= 10) {
-    ready = `Ready in ${fmt(secs, 1)} s · still solving in the background`;   // no sketch (e.g. not built here)
-  } else if (!st.solving && secs > 1.5) {
+  } else if (st.solving) {
+    ready = "Solving in the background";   // no sketch (a resumed solve, or the sketch failed)
+  } else if ((st.iters || 0) > 0) {
     ready = `Solved in ${fmt(secs, 1)} s`;
   }
   if (ready) {
@@ -61,14 +66,16 @@ export function startPreview() {
 /** From the status poll: keeps the badge and the live refresh in step with the main solve. */
 export function previewStatus(st) {
   P.solving = !!(st && st.solving);
-  if (P.solving && previewOn() && !P.liveTimer) P.liveTimer = setInterval(liveRefresh, 3000);
-  if ((!P.solving || !previewOn()) && P.liveTimer) { clearInterval(P.liveTimer); P.liveTimer = null; }
+  // Each progress report is when the full solve's numbers (and the server's choice between
+  // sketch and full tree, and refines' freshness) can change: re-read the node on screen then.
+  const ev = st ? st.events : null;
+  if (P.solving && previewOn() && P.events != null && ev !== P.events) liveRefresh();
+  P.events = ev;
   drawBadge();
 }
 
 function liveRefresh() {
-  // re-read the node on screen while the main solve improves it (not refined ones: those are done)
-  if (!P.refresh || !P.shown || P.shown.refined || P.shown.sub) return;   // sketch views refresh: the full tree takes over
+  if (!P.refresh || !P.shown || P.shown.sub) return;
   if (document.hidden || document.querySelector("dialog[open]")) return;
   if ($("view-study").classList.contains("hidden")) return;
   P.refresh();
@@ -81,7 +88,6 @@ export async function nodeShown(id, cur, { inSubgame, refresh }) {
               sub: inSubgame, state: null };
   drawBadge();
   if (!previewOn() || inSubgame) return;
-  if (P.shown.refined) return;
   const hasCard = id.split(":").some((t) => /^[2-9TJQKA][cdhs]$/.test(t));
   if (!hasCard) return;
   const build = prefs.get("build", {}) || {};
@@ -97,7 +103,7 @@ export async function nodeShown(id, cur, { inSubgame, refresh }) {
   P.shown.state = r.state;
   P.refineRoot = r.root || null;
   drawBadge();
-  if (r.state === "ready") refresh();       // finished earlier: show it
+  if (r.state === "ready" && !P.shown.refined) refresh();   // finished earlier: show it
   else if (r.state === "running") watchRefine(r.root);
 }
 
@@ -127,7 +133,7 @@ function drawBadge() {
     } else if (s.sketch) {
       text = "Sketch · full solve running";
       cls = "busy";
-      title = `Flop strategy from a simplified tree (one bet size, no raises on the turn and river), solved to ${fmt(s.sketch.accuracy_pct, 1)}% of the pot in ${fmt(s.sketch.seconds, 1)} s. The full tree takes over once its solve is more accurate.`;
+      title = `Flop strategy from a simplified tree (one bet size, no raises on the turn and river), solved to your target (${fmt(s.sketch.accuracy_pct, 2)}% of the pot) in ${fmt(s.sketch.seconds, 1)} s. The full tree takes over this node once its strategy here has caught up with the sketch's.`;
     } else if (s.state === "running") {
       text = "Refining this street…";
       cls = "busy";

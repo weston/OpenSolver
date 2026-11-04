@@ -63,6 +63,7 @@ class Solver:
         self.exe = exe
         self.cmd_lock = threading.RLock()
         self.state_lock = threading.Lock()
+        self.progress_cv = threading.Condition(self.state_lock)  # notified on every SOLVER event
         self.solving = False
         self.progress = []       # last periodic SOLVER: block (list of lines)
         self.solver_status = ""  # "started" / "stopped (<reason>)"
@@ -78,6 +79,8 @@ class Solver:
         self.holds = set()       # who keeps the solve parked (UPI hold): "browse" lease, "refine" (refine.py)
         self._lease_until = 0.0
         self._lease_thread = None
+        self.iter_seconds = None  # measured solver time per iteration of the running solve (refine.py)
+        self._hold_wait = None    # how long the last hold took to land (a stand-in until then)
         self.start()
 
     def start(self):
@@ -117,6 +120,7 @@ class Solver:
                             if point is not None:
                                 self.series.append(point)
                         self.events += 1
+                        self.progress_cv.notify_all()
                 elif line.startswith("SOLVER:"):
                     with self.state_lock:
                         msg = line[len("SOLVER: "):]
@@ -130,6 +134,7 @@ class Solver:
                                 self.partial["done"] = True
                                 self.partial["stopped"] = msg[len("stopped ("):-1] or "requested"
                         self.events += 1
+                        self.progress_cv.notify_all()
                 else:
                     q.put(line)
         finally:
@@ -196,7 +201,9 @@ class Solver:
         unaffected: a parked solve resumes exactly where it was."""
         with self.cmd_lock:
             if not self.holds:
+                t = time.time()
                 self.cmd("hold")
+                self._hold_wait = time.time() - t
             self.holds.add(tag)
 
     def unhold(self, tag):
@@ -215,13 +222,19 @@ class Solver:
         with self.cmd_lock:
             self.holds.clear()
 
-    def lease(self, seconds=2.5):
+    def lease(self):
         """Browsing during a solve: each UPI command would wait for an iteration boundary of its
         own (seconds per click on a big tree), so park the solve for the burst of requests a
-        click makes and let it run again `seconds` after the last one."""
+        click makes and let it run again once no request has come for one iteration's time.
+        That is the break-even: parked longer, the solve loses more than a request would have
+        waited; shorter, the next request of the burst waits an iteration boundary again. The
+        iteration time is measured (refine.py's flop watch sets it at each progress report);
+        before the first report, the wait for the last hold to land (the cost a request just
+        paid) stands in."""
         if not self.solving:
             return
         self.hold("browse")
+        seconds = self.iter_seconds if self.iter_seconds is not None else (self._hold_wait or 0.0)
         with self.state_lock:
             self._lease_until = time.time() + seconds
             if self._lease_thread and self._lease_thread.is_alive():
@@ -231,16 +244,17 @@ class Solver:
 
     def _lease_watch(self):
         while True:
-            time.sleep(0.05)
             with self.state_lock:
-                if time.time() < self._lease_until:
-                    continue
-            self.unhold("browse")
-            return
+                left = self._lease_until - time.time()
+            if left <= 0:
+                self.unhold("browse")
+                return
+            time.sleep(left)
 
     def reset_series(self):
         with self.state_lock:
             self.series = []
+            self.iter_seconds = None
 
     def start_partial(self, node_id, accuracy, pot):
         """Mark the subtree solve in flight, so the pump routes its blocks here (#153)."""
@@ -412,6 +426,8 @@ def api(solver, lib, method, path, query, body):
         if _refiner is None:
             raise SolverError("fast preview not initialized")
         return _refiner.api(method, path, query, body)
+    if method == "GET" and path in BROWSE_PATHS:
+        solver.lease()
     if _refiner is not None:
         if method == "GET":
             served = _refiner.overlay(path, query)
@@ -419,18 +435,25 @@ def api(solver, lib, method, path, query, body):
                 served = _sketch.overlay(path, query)
             if served is not None:
                 return served
-        elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate", "/api/solve"):
-            _refiner.invalidate()  # the main tree (or its solve) is new: old refines don't apply
+        elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate"):
+            _refiner.invalidate()  # the main tree is new: old refines and the sketch don't apply
             if _sketch is not None:
                 _sketch.invalidate()
         elif path == "/api/stop" and _sketch is not None and _sketch.state == "running":
             _sketch.invalidate()   # cancels the sketch, and with it the main solve it would start
         if method == "POST" and path == "/api/solve" and _sketch is not None:
             b = need_body(body)
-            if b.get("preview") and solver.last_generate and solver.tree_present and not solver.loaded_file:
+            # Only a fresh tree gets a sketch: Resume on a stopped solve just continues it.
+            fresh = not solver.series and not solver.solving
+            if b.get("preview") and fresh and solver.last_generate and solver.tree_present \
+                    and not solver.loaded_file:
                 acc = b.get("accuracy", 0.05)
                 if isinstance(acc, bool) or not isinstance(acc, (int, float)) or not math.isfinite(acc) or acc < 0:
                     raise SolverError("bad accuracy")
+            else:
+                acc = 0
+            if acc > 0:   # the sketch solves to the main target: with none (0), there is no sketch
+                _refiner.invalidate()
                 solver.clear_partial()
 
                 def start_main():
@@ -443,10 +466,7 @@ def api(solver, lib, method, path, query, body):
     if path == "/api/progress" and _sketch is not None:
         status, data = _api_main(solver, lib, method, path, query, body)
         data["sketch"] = _sketch.status()
-        data["sketch"]["active"] = _sketch.active()
         return status, data
-    if method == "GET" and path in BROWSE_PATHS:
-        solver.lease()
     if method == "POST" and path in ("/api/stop", "/api/solve", "/api/solve_node", "/api/build", "/api/load"):
         # these stop or restart the solve, and the solver drops any hold with it
         try:

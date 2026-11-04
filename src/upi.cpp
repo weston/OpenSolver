@@ -867,6 +867,9 @@ void Upi::register_commands() {
     if (solver_) solver_->avg_delay = avg_delay_;
     return std::string("set_avg_delay ok!");
   };
+  // show_avg_delay (extension): the current set_avg_delay. The viewer's fast preview compares
+  // strategy averages across iterations and must not compare across the reset at n + 1.
+  H["show_avg_delay"] = [this](const Args&) { return std::to_string(avg_delay_); };
   // Not a Pio command. Regret-based pruning (#51, see Solver::pruning): from iteration
   // 2*<period>+1 on, an action of the traverser whose current strategy is zero for every one of
   // its hands is not re-measured that iteration; its regret row is frozen (not discounted or

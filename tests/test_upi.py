@@ -583,6 +583,47 @@ def check_union_hands(u):
     u.cmd("free_tree")
 
 
+def check_force_line(u):
+    """force_line keeps only the lines the forced one is a prefix of; the line must exist (Pio 3.10.1,
+    probe 11 and the cases below, each run on Pio with the same children)."""
+    print("[force_line]")
+    u.cmd("set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s")
+    u.cmd("set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s")
+    u.cmd("set_board KhQs7d4c2s")
+    u.cmd("set_pot 0 0 100")
+    u.cmd("set_eff_stack 200")
+
+    def kids(node):
+        return " ".join(sorted(i.rsplit(":", 1)[1] for i in re.findall(r"^(r:\S+)$", u.cmd("show_children " + node), re.M)))
+
+    def tree(forces, lines=("0 50", "0 50 150", "75")):
+        u.cmd("free_tree")
+        u.cmd("clear_lines")
+        for l in lines:
+            u.cmd("add_line " + l)
+        out = [u.cmd("force_line " + f) for f in forces]
+        check(u.cmd("build_tree") == "build_tree ok!", f"build_tree after force_line {forces}")
+        return out
+
+    tree([])
+    check(kids("r:0") == "b75 c" and kids("r:0:c:b50") == "b150 c f", "no force: the whole tree")
+    tree(["0 50"])
+    check(kids("r:0") == "c" and kids("r:0:c") == "b50" and kids("r:0:c:b50") == "b150 c f",
+          "force_line 0 50: only that path down to it, everything below it")
+    tree(["0 50 150"])
+    check(kids("r:0:c:b50") == "b150" and kids("r:0:c:b50:b150") == "c f", "force_line 0 50 150")
+    out = tree(["0", "0 50 50"])
+    check(out == ["force_line ok!"] * 2 and kids("r:0:c") == "b50" and kids("r:0:c:b50") == "c",
+          "an implicit call can be forced, and a longer force applies below a shorter one")
+    out = tree(["0 50 150 200", "0 50", "75"])
+    check(out == ["ERROR: force_line Specified line doesn't exists.", "force_line ok!",
+                  "ERROR: force_line Specified line doesn't exists."],
+          f"a line the tree lacks, or one an earlier force removed, is refused ({out})")
+    check(kids("r:0") == "c" and kids("r:0:c:b50") == "b150 c f", "a refused force changes nothing")
+    u.cmd("free_tree")
+    u.cmd("clear_lines")
+
+
 def check_go_partial(u):
     """go_partial (#153): asynchronous subtree solves, like `go` but below a node."""
     print("[go_partial: asynchronous subtree solving]")
@@ -839,6 +880,7 @@ def main(exe, big=False):
         check_union_hands(u)
         check_output_format(u)
 
+        check_force_line(u)
         check_go_partial(u)
         check_go_limits_and_errors(u)
         check_info_freq_auto(u)

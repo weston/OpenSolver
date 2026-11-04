@@ -258,9 +258,25 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - Pio edits a live line tree command by command; ours collects add/remove/force sets and applies them at
   `build_tree`. They agree when a script removes or forces after its adds (the usual shape). They differ
   when a line is re-added after `remove_line` (Pio re-adds it, ours keeps it removed), when `add_line`
-  follows `force_line` (Pio adds it beside the forced line), and for `remove_line` / `force_line` of a
-  line that does not exist (Pio errors, ours accepts). Pio accepts bets above the effective stack; ours
-  rejects them at `build_tree`.
+  follows `force_line` (Pio adds it beside the forced line), and for `remove_line` of a line that does
+  not exist (Pio errors, ours accepts). Pio accepts bets above the effective stack; ours rejects them at
+  `build_tree`.
+- `force_line` (probe 11 and the cases in `check_force_line`): Pio keeps only the tree's lines that the
+  forced line is a prefix of, so it must be a line of the tree *as the lines and earlier forces stand*:
+  `force_line 0 50 50` (the implicit call) is fine after `add_line 0 50`, while after `force_line 0 50`
+  a `force_line 75 200` errors even though `add_line 75 200` was given:
+  `ERROR: force_line Specified line doesn't exists.` Every forced line constrains its own path, so a
+  longer force still applies below a shorter one. Ours does the same, checked against the action tree
+  built from the current lines. Pio quirk not copied (#10): a *rejected* force still restricts the nodes
+  along the part of it that exists (`force_line 0 50 150 200` without a 200 raise leaves `r:0:c:b50`
+  with only `b150`).
+- Pio crashes (access violation) on `show_all_lines` with no tree; ours answers an error.
+- `print_all_strats` in Pio 3.10.1 is not the documented "node id or 1326 numbers" listing: an id tree
+  indented two spaces per level (starting at `r`), and under each decision a `class:value, ` list cut off
+  after 122 pairs whose values come in runs of four that don't follow the classes. Ours prints the
+  documented format.
+- `estimate_rebuild_tree` on a complete small tree: Pio reports a fixed-looking 47 MB "needed", ours the
+  tree's own memory (0 MB there). Both refuse a partially loaded tree with the same error.
 - Legacy commands Pio 3.10 still answers: `set_bet_sizes <n>...` (atoi per token) and `set_donk_bet <n>`
   (true unless atoi is 0) are only stored, `build_tree` ignores them; `show_tree_params` prints
   `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the

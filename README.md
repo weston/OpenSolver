@@ -384,11 +384,12 @@ estimate_schematic_tree, show_memory, is_tree_present, show_node, show_children,
 show_effective_stack, show_range, show_strategy, show_strategy_pp, calc_ev, calc_ev_pp, calc_eq,
 calc_eq_pp, calc_eq_node, calc_eq_preflop (exact), calc_results, calc_matchups_line,
 calc_line_freq, calc_global_freq, show_all_lines, show_all_freqs, show_win_evs,
-add_info_line, reset_tree_info, show_tree_info, rebuild_tree, estimate_rebuild_tree,
+add_info_line, reset_tree_info, show_tree_info, show_tree_params, set_bet_sizes / set_donk_bet (stored),
+rebuild_tree, estimate_rebuild_tree,
 solve_partial, solve_all_splits, explo_partial, stdoutredi, stdoutredi_append, stdoutback,
 print_all_strats, node_count, clear_cache, show_cpu_info, show_nuts, show_category_names,
 show_categories, show_cats, show_cats_pp, set_display_iso, reset_display_iso, show_board_no_iso,
-set_rake, set_icm, set_icm_point, reset_icm_tables, eliminate_path, lock_node, unlock_node,
+set_rake, set_icm, set_icm_point, reset_icm_tables, eliminate_path, lock_node, unlock_node, unlock_all,
 combo_lock_node, show_locked_combos, set_strategy, set_equal_strats, set_mes, round_up_to,
 lock_line, unlock_line, set_incentives_node, set_incentives_line, show_incentives,
 clear_incentives, load_tree, dump_tree (full / no_turns / no_rivers / no_compress / lossless), free_tree,
@@ -456,6 +457,10 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   ties in its own order; `node_count` counts every node in preflop trees.
 - `_pp` listings omit hands that are only in the opponent's range by default; Pio always lists the union
   of both ranges. `set_union_hands on` (before `build_tree`) gives Pio's exact hand list (#9, #61).
+- `add_line` / `remove_line` / `force_line` are collected and applied at `build_tree`, where Pio edits
+  its line tree command by command. Scripts that add first and then remove or force (the usual shape)
+  build the same tree. Re-adding a removed line, or adding after `force_line`, does not (see AGENTS.md).
+  Bets above the effective stack are rejected at `build_tree`; Pio builds them.
 - Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
   there; results are identical with isomorphism on or off (#12).
 - **Preflop equity** (`calc_eq_preflop`, preflop all-ins) is exact: a 1326x1326 hand-vs-hand

@@ -691,6 +691,109 @@ def check_info_freq_auto(u):
     u.cmd("free_tree")
 
 
+def check_legacy_params(u):
+    """Pio 3.10 behavior, probed black-box: show_tree_params, set_bet_sizes/set_donk_bet, unlock_all,
+    atoi-style chip amounts (fractions truncate), partial set_pot, a bad set_board clears the board."""
+    print("[tree params, unlock_all, chip parsing]")
+    u.cmd("free_tree")
+    check(u.cmd("set_board Kh9h4h2c3d") == "set_board ok!", "set_board")
+    check(u.cmd("set_board 2c").startswith("ERROR"), "bad set_board errors")
+    tp = u.cmd("show_tree_params").split("\n")
+    check(tp[0] == "board: not set" and [l.split(":")[0] for l in tp] == ["board", "pot", "bet_sizes", "donk_bet"],
+          "bad set_board clears the board; show_tree_params layout")
+    u.cmd("set_board Kh9h4h2c3d")
+    u.cmd("set_pot 5 6 7")
+    check(u.cmd("set_pot 1 2") == "set_pot ok!", "set_pot with two values")
+    check(u.cmd("set_pot 9").startswith("ERROR"), "set_pot with one value errors")
+    check(u.cmd("set_eff_stack").startswith("ERROR"), "bare set_eff_stack errors")
+    check(u.cmd("set_bet_sizes 33.5,75 x 50") == "set_bet_sizes ok!", "set_bet_sizes")
+    check(u.cmd("set_donk_bet -1") == "set_donk_bet ok!", "set_donk_bet")
+    check(u.cmd("show_tree_params") == "board: Kh 9h 4h 2c 3d \npot: 9 2 7 \nbet_sizes: 33 0 50 \ndonk_bet: TRUE",
+          "show_tree_params: partial set_pot keeps the rest, sizes parse like atoi")
+    check(u.cmd("set_donk_bet 0.5") == "set_donk_bet ok!" and u.cmd("show_tree_params").endswith("donk_bet: FALSE"),
+          "set_donk_bet 0.5 is false")
+    u.cmd("set_bet_sizes")
+    check(u.cmd("unlock_all") == "ERROR: unlock_all missing/incorrect tree", "unlock_all needs a tree")
+    u.cmd("set_range OOP AA,KK,QQ")
+    u.cmd("set_range IP AA,KK,QQ,JJ")
+    u.cmd("set_pot 0 0 61.7")
+    u.cmd("set_eff_stack 200.9")
+    u.cmd("clear_lines")
+    for l in ("30.7", "0 30.2", "0 30.9 80.5", "40"):
+        check(u.cmd("add_line " + l) == "add_line ok!", f"add_line {l} accepted")
+    check(u.cmd("remove_line 40.9") == "remove_line ok!", "remove_line with a fraction")
+    check(u.cmd("add_line abc").startswith("ERROR"), "add_line without a digit still errors")
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree with truncated amounts")
+    lines = u.cmd("show_all_lines").split("\n")
+    check("r:0:b30" in lines and "r:0:c:b30:b80" in lines and "r:0:b40" not in lines,
+          "fractions truncate (30.7 -> b30, 80.5 -> b80) and remove_line 40.9 removed the 40 line")
+    check(u.cmd("show_node r:0").split("\n")[3].split() == ["0", "0", "61"], "set_pot 61.7 is 61")
+    u.cmd("lock_node r:0:c")
+    order = hand_order(u)
+    aa = [i for i, h in enumerate(order) if h[0] == "A" and h[2] == "A"]
+    v = ["0"] * 1326
+    for i in aa:
+        v[i] = "1"
+    check(u.cmd("combo_lock_node r:0 " + " ".join(v)) == "combo_lock_node ok!", "combo_lock_node")
+    check(u.cmd("unlock_all") == "unlock_all ok!", "unlock_all")
+    check(sum(floats(u.cmd("show_locked_combos r:0:c"))) == 0, "unlock_all clears node locks")
+    check(sum(floats(u.cmd("show_locked_combos r:0"))) == len(aa), "unlock_all keeps combo locks (as Pio)")
+    u.cmd("free_tree")
+    for c in ("lock_node", "show_node r:0", "set_rake 0.05 3", "set_icm 100 100", "clear_cache", "go 10 steps"):
+        check(u.cmd(c).endswith(" missing/incorrect tree"), f"{c} without a tree: missing/incorrect tree first")
+
+    print("[over-long lines keep their prefix]")
+    u.cmd("set_board Kh9h4h")
+    u.cmd("set_pot 0 0 100")
+    u.cmd("set_eff_stack 200")
+    u.cmd("clear_lines")
+    long_msg = "ERROR: add_line Specified line is too long. Some actions were not included in the tree."
+    check(u.cmd("add_line 50 50 200 200 0") == long_msg, "a line past an all-in call: Pio's add_line error")
+    check(u.cmd("add_line 50 0") == "add_line ok!", "a fold ends a line exactly")
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree keeps the valid prefix")
+    lines = u.cmd("show_all_lines").split("\n")
+    check("r:0:b50:c:?:b200:c" in lines and not any(l.startswith("r:0:b50:c:?:b200:c:") for l in lines),
+          "the over-long line stops at the all-in call")
+    # add_line checks the line against the current config (probed on Pio 3.10): an amount below
+    # the bet faced is "Incorrect bet size." (0 facing a bet is a fold), and with no stack set
+    # Pio has no all-in root, so nothing is "too long" before the river.
+    bad_size = "ERROR: add_line Incorrect bet size."
+    u.cmd("clear_lines")
+    check(u.cmd("add_line 50 30") == bad_size, "an amount between own investment and the bet faced")
+    check(u.cmd("add_line 50 50 100 0") == bad_size, "an amount below own investment")
+    u.cmd("clear_lines")
+    u.cmd("set_eff_stack 0")
+    check(u.cmd("add_line 75 200") == "add_line ok!", "no stack set: no all-in root at add time (Pio)")
+    check(u.cmd("add_line 50 50 200 200 0") == bad_size, "no stack set: amounts are still checked")
+    check(u.cmd("add_line 0 0 0 0 0 0 0") == long_msg, "no stack set: past the river is too long")
+    u.cmd("clear_lines")
+    u.cmd("set_eff_stack 200")
+
+    print("[rake and ICM belong to the tree]")
+    u.cmd("set_board KhQs7d4c2s")
+    u.cmd("set_pot 0 0 100")
+    u.cmd("set_eff_stack 200")
+    u.cmd("clear_lines")
+    u.cmd("add_line 75 200")
+    u.cmd("build_tree")
+    path = "r:0:b75:b200:c"
+    check(u.cmd(f"show_win_evs OOP {path}") == "300 -200 50", "no rake")
+    u.cmd("set_rake 0.05 3")
+    check(u.cmd(f"show_win_evs OOP {path}") == "297 -200 48.5", "set_rake on the tree")
+    u.cmd("build_tree")
+    check(u.cmd(f"show_win_evs OOP {path}") == "300 -200 50", "build_tree starts without rake (Pio)")
+    for c in ("set_icm_point OOP 0 0", "set_icm_point OOP 200 40", "set_icm_point OOP 400 66",
+              "set_icm_point IP 0 0", "set_icm_point IP 300 52", "set_icm_point IP 500 72", "set_icm 200 300"):
+        u.cmd(c)
+    check(u.cmd(f"show_win_evs OOP {path}") == "39 -40 6.5", "set_icm on the tree")
+    u.cmd("build_tree")
+    check(u.cmd(f"show_win_evs OOP {path}") == "300 -200 50", "build_tree starts without ICM (Pio)")
+    check(u.cmd("set_icm 200 300") == "set_icm ok!" and u.cmd(f"show_win_evs OOP {path}") == "39 -40 6.5",
+          "the ICM points survive build_tree")
+    u.cmd("reset_icm_tables")
+    u.cmd("free_tree")
+
+
 def main(exe, big=False):
     u = Upi(exe)
     try:
@@ -897,6 +1000,8 @@ def main(exe, big=False):
         res = u.cmd("calc_results").split("\n")
         ex = float(res[4].split(": ")[1])
         check(ex < 0.05, f"pure preflop all-in tree converges (explo {ex:.4f})")
+
+        check_legacy_params(u)  # last: it defines ICM points, which (as in Pio) stay defined
     finally:
         u.close()
     print()

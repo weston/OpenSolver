@@ -163,6 +163,10 @@ class Upi {
   std::unique_ptr<GameTree> tree_;
   std::unique_ptr<Solver> solver_;
   std::vector<std::string> tree_info_;
+  // Pio's legacy set_bet_sizes / set_donk_bet: stored and shown by show_tree_params, never used
+  // for building (Pio's build_tree ignores them too; trees come from add_line).
+  std::vector<long long> legacy_bet_sizes_;
+  bool legacy_donk_bet_ = false;
 
   std::string end_string_;
   std::FILE* out_ = stdout;

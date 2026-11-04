@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Fast preview: hide the solve time (viewer "Fast preview" checkbox, on by default).
 
-Nothing here uses a tuned threshold; each step stops or switches when a comparison says so.
+Apart from the modal's hand-off point, nothing here uses a tuned threshold; each step stops or
+switches when a comparison says so.
 1. Build & solve first solves a sketch of the tree (SketchManager: one turn/river size, no
-   turn/river raises) to the build's own target, and the Study view opens on it. Then the main
+   turn/river raises) to the build's own target; a loading modal shows its progress. Once the
+   sketch is within PREVIEW_FACTOR (10, the owner's choice) x the target, the modal closes and
+   the Study view opens on the still-solving sketch. When the sketch reaches the target, the main
    solve starts.
 2. Each flop node is shown from the sketch until the main tree's strategy there has caught up
    with the sketch's (see SketchManager), and from the main tree after; once the main solve
@@ -122,6 +125,8 @@ class RefineManager(vresolve.ResolveManager):
                 src = self.sketch.solver if from_sketch else self.main
                 with self.main.state_lock:
                     points = len(self.main.series)
+                sk_points = len(self.sketch.solver.series) if from_sketch else 0
+                sk_running = from_sketch and self.sketch.state == "running"
                 ctx = vresolve.read_context(src, root, with_ranges=True)
                 phases["context"] = round(time.time() - t0, 2)
                 pot = ctx["pot"]["oop"] + ctx["pot"]["ip"] + ctx["pot"]["dead"]
@@ -140,6 +145,7 @@ class RefineManager(vresolve.ResolveManager):
                                       "accuracy": acc, "accuracy_pct": pct, "pot": pot,
                                       "seconds": round(time.time() - t0, 2),
                                       "source": "sketch" if from_sketch else "main", "main_points": points,
+                                      "sketch_points": sk_points, "sketch_running": sk_running,
                                       "main_paused": paused, "phases": phases}
             finally:
                 if paused:
@@ -192,6 +198,8 @@ class RefineManager(vresolve.ResolveManager):
         progress since (so redone at most once per report, and reports are spaced
         geometrically in iterations)."""
         if r["source"] == "sketch":
+            if r.get("sketch_running") and len(self.sketch.solver.series) > r["sketch_points"]:
+                return True   # made while the sketch was still solving, and it has reported since
             return not (self.sketch is not None and self.sketch.serves_line(r["root"]))
         with self.main.state_lock:
             return len(self.main.series) > r["main_points"]
@@ -250,6 +258,10 @@ class RefineManager(vresolve.ResolveManager):
 
 
 # ---------------------------------------------------------------- the flop sketch
+
+# The owner's choice: the loading modal ends, and the Study view opens on the still-solving sketch,
+# once the sketch is within this factor of the target (3% of the pot for a 0.3% target).
+PREVIEW_FACTOR = 10
 
 
 def _one_size(field):
@@ -340,6 +352,7 @@ class SketchManager:
         self.error = None
         self.abort = False
         self.target = None       # the sketch's accuracy target in chips while it runs
+        self.early = False       # running, and within PREVIEW_FACTOR x the target: browsable
         self.nodes = {}          # flop node id -> {"sketch": read_node(...), "gaps": [...], "main": bool}
         self.avg_delay = None    # the main solver's set_avg_delay: no comparisons up to it
 
@@ -348,7 +361,7 @@ class SketchManager:
             self.gen += 1
             busy = self.state == "running"
             self.state, self.info, self.error, self.abort = "idle", None, None, busy
-            self.nodes, self.target = {}, None
+            self.nodes, self.target, self.early = {}, None, False
         with self.main.progress_cv:
             self.main.progress_cv.notify_all()   # the watch thread notices the new gen and exits
         if busy:
@@ -363,7 +376,7 @@ class SketchManager:
         self.invalidate()
         with self.mu:
             gen = self.gen
-            self.state, self.abort, self.target = "running", False, main_accuracy
+            self.state, self.abort, self.target, self.early = "running", False, main_accuracy, False
 
         def job():
             t0 = time.time()
@@ -376,8 +389,10 @@ class SketchManager:
                 vsrv.op_generate(self.solver, sketch_body(body))
                 self.solver.cmd("build_tree")
                 self.solver.tree_present = True
-                self.solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go"])
-                self.solver.cmd("wait_for_solver", timeout=vresolve.SOLVE_TIMEOUT)
+                self.solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto"])
+                ev0 = self.solver.events
+                self.solver.cmd("go")
+                self._wait_sketch(gen, acc, ev0)
                 explo = self.solver.series[-1]["explo"] if self.solver.series else None
                 nodes = self.solver.cmd("node_count").split("\n")[0]
                 with self.mu:
@@ -408,6 +423,34 @@ class SketchManager:
                     self._watch(gen)
 
         threading.Thread(target=job, daemon=True).start()
+
+    def _wait_sketch(self, gen, acc, ev0):
+        """Wait for the sketch solve to stop, without holding the solver's command lock (so the
+        flop can be browsed meanwhile), and mark it browsable once it is within PREVIEW_FACTOR x
+        the target."""
+        s = self.solver
+        deadline = time.time() + vresolve.SOLVE_TIMEOUT
+        seen = -1
+        with s.progress_cv:
+            while True:
+                with self.mu:
+                    if gen != self.gen or self.abort:
+                        return
+                if s.dead:
+                    raise vsrv.SolverError("sketch solver died")
+                if s.events != seen:
+                    seen = s.events
+                    e = s.series[-1]["explo"] if s.series else None
+                    if e is not None and e <= PREVIEW_FACTOR * acc:
+                        with self.mu:
+                            if gen == self.gen:
+                                self.early = True
+                    if s.events > ev0 and not s.solving and s.solver_status.startswith("stopped"):
+                        return
+                left = deadline - time.time()
+                if left <= 0:
+                    raise vsrv.SolverError("sketch solve timed out")
+                s.progress_cv.wait(min(left, 1.0))
 
     # ---- the flop watch: which tree shows each flop node ----
 
@@ -507,6 +550,8 @@ class SketchManager:
         if street_root(node_id)[0] is not None or self._main_done():
             return False
         with self.mu:
+            if self.state == "running":
+                return self.early     # still solving: shown live, compared once it is done
             if self.state != "ready":
                 return False
         self.track(node_id)
@@ -527,6 +572,7 @@ class SketchManager:
         node_id = query["id"][0]
         if not self.serves(node_id):
             return None
+        self.solver.lease()    # a still-running sketch: park it for the burst of requests
         try:
             status, data = vsrv._api_main(self.solver, None, "GET", path, query, None)
         except vsrv.SolverError:
@@ -535,17 +581,21 @@ class SketchManager:
             return None
         with self.mu:
             info = dict(self.info) if self.info else {}
+            info["solving"] = self.state == "running"
         data["sketch"] = info
         return status, data
 
     def status(self):
         with self.mu:
             st = {"state": self.state, "info": dict(self.info) if self.info else None, "error": self.error,
+                  "early": self.early, "events": self.solver.events,
                   "flop_sketch": sum(1 for v in self.nodes.values() if v and not v["main"]),
                   "flop_main": sum(1 for v in self.nodes.values() if v and v["main"])}
             target = self.target
         if st["state"] == "running":
             with self.solver.state_lock:
                 last = self.solver.series[-1]["explo"] if self.solver.series else None
-            st["progress"] = {"explo": last, "target": target}
+            first = self.solver.series[0]["explo"] if self.solver.series else None
+            st["progress"] = {"explo": last, "first": first, "target": target,
+                              "preview_at": None if target is None else PREVIEW_FACTOR * target}
         return st

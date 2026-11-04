@@ -4,7 +4,8 @@
 
 import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy } from "./cards.js";
 import { nodeShown } from "./preview.js";
-import { get, q, fail, showTip, hideTip, fmt, fmtChips } from "./api.js";
+import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips } from "./api.js";
+import { rebuildWithBoard } from "./build.js";
 import { syncFurther } from "./further.js";
 
 const $ = (id) => document.getElementById(id);
@@ -200,7 +201,15 @@ function renderBoard() {
   const cards = boardOf(S.path[S.path.length - 1]);
   cards.forEach((c, i) => {
     if (i === 3 || i === 4) b.appendChild(el("span", "gap"));
-    b.appendChild(cardEl(c, "lg"));
+    const ce = cardEl(c, "lg");
+    if (!S.sub) {   // click a card to change it (not inside a re-solved subtree)
+      ce.classList.add("pickable");
+      const root = boardOf(S.path[0]).length;
+      ce.title = i < root ? `Change the ${root === 3 ? "flop" : "board"}: rebuild and solve on other cards`
+                          : `Change the ${i === 3 ? "turn" : "river"} card`;
+      ce.onclick = () => openBoardPicker(i);
+    }
+    b.appendChild(ce);
   });
   for (let i = cards.length; i < 5 && cards.length >= 3; i++) {
     if (i === 3 || i === 4) b.appendChild(el("span", "gap"));
@@ -209,6 +218,84 @@ function renderBoard() {
     ph.title = i === 3 ? "turn" : "river";
     b.appendChild(ph);
   }
+}
+
+/* ------------------------------------------------------------------ board picker */
+
+/** Click on board card i. A root card (the flop, on a flop tree): pick new root cards and the same
+ *  tree is rebuilt and solved on them (build.js rebuildWithBoard; fast preview as usual). A dealt
+ *  card (turn / river): pick another card of the same deal; the view moves to that branch, keeping
+ *  the actions after it where the new branch has them. */
+async function openBoardPicker(i) {
+  const dlg = $("card-dialog");
+  if (!dlg || S.sub || !S.path.length) return;
+  const root = boardOf(S.path[0]);
+  const shown = boardOf(S.path[S.path.length - 1]);
+  const deck = $("cd-deck");
+  const apply = $("cd-apply");
+  let pickable = null, picked, onPick;
+  if (i < root.length) {
+    picked = [...root];
+    const n = root.length;
+    $("cd-title").textContent = n === 3 ? "Change the flop" : "Change the board";
+    $("cd-hint").textContent = `Pick ${n} cards. The same tree (ranges, bet sizes, settings) is rebuilt on them and solved again.`;
+    apply.classList.remove("hidden");
+    const same = () => picked.length === n && picked.every((c) => root.includes(c));
+    const sync = () => { apply.disabled = picked.length !== n || same(); };
+    onPick = (card) => {
+      const k = picked.indexOf(card);
+      if (k >= 0) picked.splice(k, 1);
+      else if (picked.length < n) picked.push(card);
+      else { picked.pop(); picked.push(card); }   // full: replace the last pick
+      draw();
+      sync();
+    };
+    apply.onclick = async () => {
+      dlg.close();
+      if (!(await rebuildWithBoard(picked))) toast("Busy: try again in a moment");
+    };
+    sync();
+  } else {
+    const chance = S.path.find((n) => n.type === "SPLIT_NODE" && boardOf(n).length === i);
+    if (!chance) return;
+    let kids;
+    try { kids = (await get(`${S.base}/strategy?id=` + q(chance.id))).children || []; } catch (e) { fail(e); return; }
+    pickable = new Map(kids.map((c) => [lastTok(c.id), c.id]));
+    picked = [shown[i]];
+    $("cd-title").textContent = `Change the ${i === 3 ? "turn" : "river"}`;
+    $("cd-hint").textContent = "Same tree, another card: the view stays on this line where the new branch has it.";
+    apply.classList.add("hidden");
+    onPick = (card) => { dlg.close(); switchDealt(chance, card); };
+  }
+  function draw() {
+    deck.textContent = "";
+    for (const s of SUITS) for (const r of RANKS) {
+      const card = r + s;
+      const b = el("button");
+      b.style.background = `var(--suit-${s})`;
+      b.append(el("span", null, r), el("span", null, GLYPH[s]));
+      b.title = card;
+      b.classList.toggle("picked", picked.includes(card));
+      if (pickable && !pickable.has(card)) b.disabled = true;
+      else b.onclick = () => onPick(card);
+      deck.appendChild(b);
+    }
+  }
+  draw();
+  $("cd-cancel").onclick = () => dlg.close();
+  if (!dlg.open) dlg.showModal();
+}
+
+/** Move to the same line under another card of the deal at `chance`: drop trailing actions the new
+ *  branch does not have (a later card equal to the new one, a size that is not there, ...). */
+async function switchDealt(chance, card) {
+  const base = chance.id.split(":");
+  const rest = S.path[S.path.length - 1].id.split(":").slice(base.length + 1);
+  const toks = [...base, card, ...rest];
+  while (toks.length > base.length + 1) {
+    try { await get(`${S.base}/node?id=` + q(toks.join(":"))); break; } catch (e) { toks.pop(); }
+  }
+  gotoNode(toks.join(":"));
 }
 
 const STREET = ["", "", "", "FLOP", "TURN", "RIVER"];

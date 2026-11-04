@@ -22,53 +22,97 @@ export const previewOn = () => prefs.get("fast-preview", true) !== false;
 
 /* ------------------------------------------------------------------ 1. open on the sketch */
 
+const RING = 326.73;   // 2 * pi * r for the modal's ring (r = 52)
+
+function modal() { return $("solve-modal"); }
+
+function closeModal() {
+  const m = modal();
+  if (m && m.open) m.close();
+}
+
+/** The ring: how far the sketch's exploitability has come from its first report toward the
+ *  point where the Study view opens (PREVIEW_FACTOR x the target), on a log scale - the scale
+ *  exploitability falls on. Spins until the first report. */
+function drawRing(pg) {
+  const ring = document.querySelector("#solve-modal .sm-ring");
+  const arc = $("sm-arc");
+  const pct = $("sm-pct");
+  if (!ring || !arc) return;
+  const { explo, first, preview_at: goal } = pg || {};
+  if (!(explo > 0 && first > 0 && goal > 0)) {
+    ring.classList.add("spin");
+    if (pct) pct.textContent = "";
+    return;
+  }
+  ring.classList.remove("spin");
+  let f = first > goal ? Math.log(first / explo) / Math.log(first / goal) : 1;
+  f = Math.max(0, Math.min(1, f));
+  arc.style.strokeDashoffset = String(RING * (1 - f));
+  if (pct) pct.textContent = `${Math.round(f * 100)}%`;
+}
+
 async function tick() {
   if (!P.watching) return;
   let st;
   try { st = await get("/api/progress"); } catch (e) { P.timer = setTimeout(tick, 600); return; }
   const sk = st.sketch || { state: "idle" };
-  const info = $("preview-info");
   const secs = (performance.now() - P.t0) / 1000;
+  const status = $("sm-status");
   let ready = null;
-  if (sk.state === "running") {
+  if (sk.state === "running" && !sk.early) {
     const pg = sk.progress || {};
     const pot = Number($("f-pot").value) || 0;
-    const now = pg.explo != null && pot ? ` · ${fmt((100 * pg.explo) / pot, 2)}% of the pot` : "";
-    const goal = pg.target != null && pot ? ` → ${fmt((100 * pg.target) / pot, 2)}%` : "";
-    if (info) info.textContent = `Fast preview: sketching the flop on a simplified tree${now}${goal} · ${fmt(secs, 0)} s`;
-  } else if (sk.state === "ready") {
-    ready = `Flop ready in ${fmt(secs, 1)} s · full solve running in the background`;
+    drawRing(pg);
+    if (status) {
+      const now = pg.explo != null && pot ? `${fmt((100 * pg.explo) / pot, 2)}% of the pot` : "Starting";
+      status.textContent = `${now} · ${fmt(secs, 0)} s`;
+    }
+  } else if (sk.state === "running" || sk.state === "ready") {
+    ready = `Ready in ${fmt(secs, 1)} s · still solving in the background`;
   } else if (st.solving) {
-    ready = "Solving in the background";   // no sketch (a resumed solve, or the sketch failed)
-  } else if ((st.iters || 0) > 0) {
-    ready = `Solved in ${fmt(secs, 1)} s`;
+    ready = "Solving in the background";   // the sketch failed: the full solve runs instead
+  } else {
+    ready = (st.iters || 0) > 0 ? `Solved in ${fmt(secs, 1)} s` : null;
+    if (!ready && sk.state !== "running") { P.watching = false; closeModal(); return; }   // stopped
   }
   if (ready) {
     P.watching = false;
-    if (info) info.textContent = "";
+    drawRing({ explo: 1, first: 2, preview_at: 1 });   // full ring for the hand-off
+    closeModal();
     window.dispatchEvent(new CustomEvent("preview-ready"));
     toast(ready);
     return;
   }
-  P.timer = setTimeout(tick, 400);
+  P.timer = setTimeout(tick, 300);
 }
 
-/** Called right after a solve starts. */
-export function startPreview() {
-  if (!previewOn()) return;
+/** Called right after a solve starts; sketched: the server is sketching (fast preview). Shows the
+ *  solving-period modal and opens the Study view when the sketch is close enough. */
+export function startPreview(sketched) {
   clearTimeout(P.timer);
+  P.watching = false;
+  if (!previewOn() || !sketched) return;
   Object.assign(P, { watching: true, t0: performance.now() });
-  P.timer = setTimeout(tick, 300);
+  const m = modal();
+  if (m) {
+    drawRing(null);
+    $("sm-status").textContent = "Starting";
+    if (!m.open) m.showModal();
+  }
+  P.timer = setTimeout(tick, 200);
 }
 
 /* ------------------------------------------------------------------ 2-3. live view and street refines */
 
 /** From the status poll: keeps the badge and the live refresh in step with the main solve. */
 export function previewStatus(st) {
-  P.solving = !!(st && st.solving);
-  // Each progress report is when the full solve's numbers (and the server's choice between
-  // sketch and full tree, and refines' freshness) can change: re-read the node on screen then.
-  const ev = st ? st.events : null;
+  const sk = (st && st.sketch) || {};
+  P.solving = !!(st && st.solving) || sk.state === "running";
+  // Each progress report (of the full solve, or of the sketch while it still solves) is when the
+  // numbers on screen, the server's choice between sketch and full tree, and refines' freshness
+  // can change: re-read the node on screen then.
+  const ev = st ? `${st.events}:${sk.events ?? ""}` : null;
   if (P.solving && previewOn() && P.events != null && ev !== P.events) liveRefresh();
   P.events = ev;
   drawBadge();
@@ -131,9 +175,11 @@ function drawBadge() {
       cls = "ok";
       title = `This street was re-solved from its first decision in ${fmt(s.refined.seconds, 1)} s with the current ranges (opponent range fixed there). The main solve continues in the background.`;
     } else if (s.sketch) {
-      text = "Sketch · full solve running";
+      text = s.sketch.solving ? "Sketch · still solving" : "Sketch · full solve running";
       cls = "busy";
-      title = `Flop strategy from a simplified tree (one bet size, no raises on the turn and river), solved to your target (${fmt(s.sketch.accuracy_pct, 2)}% of the pot) in ${fmt(s.sketch.seconds, 1)} s. The full tree takes over this node once its strategy here has caught up with the sketch's.`;
+      title = s.sketch.solving
+        ? "Flop strategy from a simplified tree (one bet size, no raises on the turn and river), still solving toward your target; the full solve starts when it gets there."
+        : `Flop strategy from a simplified tree (one bet size, no raises on the turn and river), solved to your target (${fmt(s.sketch.accuracy_pct, 2)}% of the pot) in ${fmt(s.sketch.seconds, 1)} s. The full tree takes over this node once its strategy here has caught up with the sketch's.`;
     } else if (s.state === "running") {
       text = "Refining this street…";
       cls = "busy";
@@ -151,6 +197,17 @@ function drawBadge() {
 }
 
 export function initPreview() {
+  const m = modal();
+  if (m) {
+    const dismiss = () => {   // the solve keeps going; stay on this page
+      if (!P.watching) return;
+      P.watching = false;
+      clearTimeout(P.timer);
+      toast("Still solving in the background · open Study any time");
+    };
+    $("sm-close").onclick = () => { dismiss(); closeModal(); };
+    m.addEventListener("cancel", dismiss);   // Esc
+  }
   const cb = $("f-preview");
   if (cb) {
     cb.checked = previewOn();

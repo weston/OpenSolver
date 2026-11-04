@@ -292,7 +292,8 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   As turn that blocks AA/AK/AQ/AJ combos, Pio 0.0692357 where the strategies alone give 1/12. No chance
   probability enters (a single runout's node, not 1/44 of it).
 - Evaluations agree with Pio once the strategies are the same: probe 12 (`set_strategy` everywhere, no
-  solve) and probe 13 (an unsolved tree: both hold uniform strategies) match on every `show_strategy`,
+  solve), probe 13 (an unsolved flop tree: both hold uniform strategies) and probe 14 (an unsolved preflop
+  tree with attached flops: preflop all-in EVs too) match on every `show_strategy`,
   `show_range`, `calc_ev` (signs need union lists), `calc_eq_node`, `calc_line_freq`, `calc_global_freq`,
   `calc_matchups_line`, `calc_results` and `explo_partial`. Use them to test evaluation code apart from
   solve noise.

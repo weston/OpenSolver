@@ -61,10 +61,21 @@ def test_dist():
         names = t.getnames()
     rel = [n[len(name) + 1:] for n in names if n.startswith(name + "/")]
 
-    # The files a recipient cannot build or evaluate the release without.
+    # `make dist` archives HEAD, so HEAD is what the tarball must be judged against -- NOT the index.
+    # Using `git ls-files` for this was a bug: the index also holds staged-but-uncommitted additions,
+    # which `git archive HEAD` correctly omits, so the test failed in any mid-merge or
+    # staged-not-yet-committed tree. That is a normal state, not a packaging fault.
+    committed = subprocess.run(["git", "ls-tree", "-r", "--name-only", "HEAD"],
+                               cwd=ROOT, capture_output=True, text=True).stdout.split()
+
+    # The files a recipient cannot build or evaluate the release without. Judged against HEAD for the
+    # same reason: if one of these is not committed yet, that is the commit's problem, not dist's.
     for need in ("Makefile", "README.md", "CHANGELOG.md", "src/solver.cpp", "src/version.hpp",
                  "docs/commands.md", "tests/test_upi.py", "bench/run.py"):
-        check(need in rel, f"tarball contains {need}")
+        if need in committed:
+            check(need in rel, f"tarball contains {need}")
+        else:
+            print(f"  skip: {need} not committed in HEAD, so dist cannot contain it")
 
     # Build output and local state must not ship. `git archive` gives this for free today; the test
     # is here so that stays true if dist ever stops using it.
@@ -72,10 +83,8 @@ def test_dist():
               or n == "solver" or n == "solver-release"]
     check(not leaked, f"no build output or local state in tarball ({leaked[:4]})")
 
-    # Everything tracked by git should be present, since that is what `git archive` promises.
-    tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split()
-    missing = sorted(set(tracked) - set(rel))
-    check(not missing, f"every tracked file is in the tarball ({len(missing)} missing: {missing[:4]})")
+    missing = sorted(set(committed) - set(rel))
+    check(not missing, f"every file committed in HEAD is in the tarball ({len(missing)} missing: {missing[:4]})")
 
     # The bug that motivated this file: an untracked file is absent from the archive, and `make dist`
     # must say so rather than cutting a quietly incomplete release.

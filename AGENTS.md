@@ -287,6 +287,15 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   file or directory`. `stdoutredi(_append)` answers into the new file. After `stdoutback`, Pio's output is
   lost when its stdout is a pipe (not copied). Pio resolves relative paths from its own directory, so a
   probe can't share a script file with ours.
+- `calc_global_freq <node>` is the node's matchups (reach x compatible opponent reach) over **all** the
+  root's matchups, so the turn and river cards' card removal counts: on probe 13's unsolved tree, after an
+  As turn that blocks AA/AK/AQ/AJ combos, Pio 0.0692357 where the strategies alone give 1/12. No chance
+  probability enters (a single runout's node, not 1/44 of it).
+- Evaluations agree with Pio once the strategies are the same: probe 12 (`set_strategy` everywhere, no
+  solve) and probe 13 (an unsolved tree: both hold uniform strategies) match on every `show_strategy`,
+  `show_range`, `calc_ev` (signs need union lists), `calc_eq_node`, `calc_line_freq`, `calc_global_freq`,
+  `calc_matchups_line`, `calc_results` and `explo_partial`. Use them to test evaluation code apart from
+  solve noise.
 - `show_settings` before any `set_info_freq`: Pio `info_freq: 0` (it reports by time), ours 25 (ours checks
   the accuracy target at reports, so 0 would never stop on accuracy). Not changed.
 - Legacy commands Pio 3.10 still answers: `set_bet_sizes <n>...` (atoi per token) and `set_donk_bet <n>`

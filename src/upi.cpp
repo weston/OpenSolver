@@ -977,8 +977,51 @@ void Upi::register_commands() {
     if (l.empty()) throw CmdError{"incorrect or missing argument"};
     return l;
   };
-  H["add_line"] = [this, parse_line](const Args& a) {
-    cfg_.lines.add.push_back(parse_line(a));  // amounts are validated at build_tree
+  // Pio edits a live line tree command by command; ours keeps add/remove sets that build_tree applies,
+  // and makes each edit act like Pio's when it is given (verified on 3.10.1, AGENTS.md):
+  // remove_line / force_line delete subtrees now (a removal, and the added lines through it go), and
+  // add_line clears the removals on its own path, so a line re-added after either comes back - only
+  // its own path, as in Pio. Lookups use the action tree the current lines build.
+  auto current_tree = [this]() -> std::unique_ptr<ActionNode> {
+    if (cfg_.board.size() < 3) return nullptr;
+    ActionTreeParams ap;
+    ap.board_len = static_cast<int>(cfg_.board.size());
+    ap.eff_stack = cfg_.eff_stack;
+    ap.start_inv[0] = cfg_.pot[0];
+    ap.start_inv[1] = cfg_.pot[1];
+    ap.dead = cfg_.pot[2];
+    std::string err;
+    return build_action_tree(ap, cfg_.lines, err);
+  };
+  // The node a line leads to (through street deals), or nullptr; *parent = the last decision on it.
+  auto walk_line = [](ActionNode* n, const std::vector<int32_t>& l, ActionNode** parent) -> ActionNode* {
+    for (int32_t x : l) {
+      while (n && n->kind == ANodeKind::Chance) n = n->children.empty() ? nullptr : n->children[0].get();
+      if (!n || n->kind != ANodeKind::Decision) return nullptr;
+      size_t i = 0;
+      while (i < n->actions.size() && n->actions[i].total != x) ++i;
+      if (i == n->actions.size()) return nullptr;
+      *parent = n;
+      n = n->children[i].get();
+    }
+    return n;
+  };
+  auto is_prefix = [](const std::vector<int32_t>& p, const std::vector<int32_t>& l) {
+    return p.size() <= l.size() && std::equal(p.begin(), p.end(), l.begin());
+  };
+  auto cut_line = [this, is_prefix](const std::vector<int32_t>& l) {
+    auto& add = cfg_.lines.add;
+    add.erase(std::remove_if(add.begin(), add.end(), [&](const std::vector<int32_t>& x) { return is_prefix(l, x); }),
+              add.end());
+    cfg_.lines.remove.push_back(l);
+  };
+  H["add_line"] = [this, parse_line, is_prefix](const Args& a) {
+    auto line = parse_line(a);
+    // a line given again after remove_line / force_line took it out comes back (Pio re-adds it)
+    auto& rm = cfg_.lines.remove;
+    rm.erase(std::remove_if(rm.begin(), rm.end(), [&](const std::vector<int32_t>& r) { return is_prefix(r, line); }),
+             rm.end());
+    cfg_.lines.add.push_back(line);  // amounts are validated at build_tree
     // Like Pio, the line is checked against the current config here but kept either way:
     // - running past the end of the hand: "too long", and build_tree uses the valid prefix;
     // - an amount below the bet faced or below one's own investment (other than a fold): Pio's
@@ -1004,47 +1047,54 @@ void Upi::register_commands() {
     }
     return std::string("add_line ok!");
   };
-  H["remove_line"] = [this, parse_line](const Args& a) {
-    cfg_.lines.remove.push_back(parse_line(a));
+  H["remove_line"] = [this, parse_line, current_tree, walk_line, cut_line](const Args& a) {
+    // Pio: the line must be in the tree and not its parent's last child, else this error and no
+    // change; removing deletes its subtree, so re-adding the line brings back only its own path.
+    auto l = parse_line(a);
+    if (auto root = current_tree()) {
+      ActionNode* parent = nullptr;
+      if (!walk_line(root.get(), l, &parent) || !parent || parent->actions.size() < 2)
+        throw CmdError{"Can't remove the line (it doesn't exist or is the last child)"};
+    }
+    cut_line(l);
     return std::string("remove_line ok!");
   };
-  H["force_line"] = [this, parse_line](const Args& a) {
-    // Pio keeps only the tree's lines that the forced one is a prefix of, so the forced line must
-    // be a line of the tree as the lines (and the earlier forces) stand now - an implicit call or
-    // fold counts (force_line 0 50 50 after add_line 0 50) - else "Specified line doesn't exists."
-    // and nothing changes. Verified on 3.10.1 (probe 11): after force_line 0 50, force_line 75 200
-    // errors although add_line 75 200 was given. Pio still applies part of a rejected force; ours
-    // does not (#10: not a behaviour to copy). Ours prunes the kept lines at build_tree.
+  H["force_line"] = [this, parse_line, current_tree, walk_line, cut_line](const Args& a) {
+    // Pio keeps only the tree's lines that the forced one is a prefix of: every other action along
+    // its path goes, now (an add_line after it is added beside it again). The line must be a line of
+    // the tree as it stands - an implicit call or fold counts (force_line 0 50 50 after add_line
+    // 0 50), one an earlier force removed does not - else "Specified line doesn't exists." and no
+    // change. Verified on 3.10.1 (probe 11, check_force_line). Pio still applies part of a rejected
+    // force; ours does not (#10: not a behaviour to copy).
     auto f = parse_line(a);
-    bool found = false;
-    std::string err;
-    std::unique_ptr<ActionNode> root;
-    if (cfg_.board.size() >= 3) {
-      ActionTreeParams ap;
-      ap.board_len = static_cast<int>(cfg_.board.size());
-      ap.eff_stack = cfg_.eff_stack;
-      ap.start_inv[0] = cfg_.pot[0];
-      ap.start_inv[1] = cfg_.pot[1];
-      ap.dead = cfg_.pot[2];
-      root = build_action_tree(ap, cfg_.lines, err);
+    auto root = current_tree();
+    if (!root) {
+      // no buildable tree yet (no board or stack): keep it for build_tree, which prunes the same way
+      bool found = false;
+      for (auto& l : cfg_.lines.add)
+        found = found || (f.size() <= l.size() && std::equal(f.begin(), f.end(), l.begin()));
+      if (!found) throw CmdError{"Specified line doesn't exists."};
+      cfg_.lines.force.push_back(f);
+      return std::string("force_line ok!");
     }
-    if (root) {
-      std::vector<ActionNode*> all;
-      index_action_tree(root.get(), all);
-      for (auto* n : all) found = found || n->line == f;
-    } else {
-      // no buildable tree yet (no board or stack): a prefix of an added line the earlier forces kept
-      auto pre = [](const std::vector<int32_t>& p, const std::vector<int32_t>& l) {
-        return p.size() <= l.size() && std::equal(p.begin(), p.end(), l.begin());
-      };
-      for (auto& l : cfg_.lines.add) {
-        bool kept = pre(f, l);
-        for (auto& g : cfg_.lines.force) kept = kept && pre(g, l);
-        found = found || kept;
-      }
+    std::vector<std::vector<int32_t>> cut;
+    std::vector<int32_t> pre;
+    ActionNode* n = root.get();
+    for (int32_t x : f) {
+      while (n && n->kind == ANodeKind::Chance) n = n->children.empty() ? nullptr : n->children[0].get();
+      if (!n || n->kind != ANodeKind::Decision) throw CmdError{"Specified line doesn't exists."};
+      size_t i = 0;
+      while (i < n->actions.size() && n->actions[i].total != x) ++i;
+      if (i == n->actions.size()) throw CmdError{"Specified line doesn't exists."};
+      for (size_t j = 0; j < n->actions.size(); ++j)
+        if (j != i) {
+          cut.push_back(pre);
+          cut.back().push_back(n->actions[j].total);
+        }
+      pre.push_back(x);
+      n = n->children[i].get();
     }
-    if (!found) throw CmdError{"Specified line doesn't exists."};
-    cfg_.lines.force.push_back(f);
+    for (auto& c : cut) cut_line(c);
     return std::string("force_line ok!");
   };
   H["clear_lines"] = [this](const Args&) {

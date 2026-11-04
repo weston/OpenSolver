@@ -2,6 +2,7 @@
 // a card-button board picker, the bet-size form, and the solve panel with the convergence chart.
 
 import { H, RANKS, SUITS, GLYPH, el, cardEl } from "./cards.js";
+import { startPreview, previewOn } from "./preview.js";
 import { parseRange, formatRange, rangeStats } from "./ranges.js";
 import { get, post, toast, fail, prefs, fmt, fmtChips } from "./api.js";
 import { drawChart } from "./chart.js";
@@ -337,9 +338,26 @@ async function solve() {
   const pot = rootPotNow || Number($("f-pot").value);
   const pct = Number($("f-accuracy").value);
   try {
-    await post("/api/solve", { accuracy: (pct / 100) * pot });
-    toast("Solving…");
+    const r = await post("/api/solve", { accuracy: (pct / 100) * pot, preview: previewOn() });
+    if (!r.sketch) toast("Solving…");
+    startPreview(!!r.sketch);
   } catch (e) { fail(e); }
+}
+
+/** The Study view's board picker: the same tree (ranges, sizes, everything in the form) on other
+ *  root cards, rebuilt and solved like Build & solve. False if a build or solve start is busy. */
+export async function rebuildWithBoard(cards) {
+  if (busy) return false;
+  board = [...cards];
+  boardChanged();
+  toast(`Rebuilding on ${cards.join(" ")}…`);
+  if (!(await build())) {   // the Build panel shows why; say it here too (the Study view is open)
+    toast($("build-info").textContent || "The build failed", "err");
+    return true;
+  }
+  rootPotNow = Number($("f-pot").value);
+  await solve();
+  return true;
 }
 
 /** Always rebuild from the form (a fresh tree), then solve it. */

@@ -213,7 +213,10 @@ def markdown(rows: list[dict], targets: tuple[float, ...], meta: dict) -> str:
            f"- times are seconds to the first report at or below the target; "
            f"`set_info_freq {meta['info_freq']}` bounds the overshoot",
            f"- the Pio column is for the maintainer to fill from a licensed PioSOLVER on the "
-           f"same trees (black-box, via `tests/pio_compare`)\n",
+           f"same trees (black-box, via `tests/pio_compare`)",
+           f"- \"not reached\" means the run hit the `--max-seconds {meta.get('max_seconds', '')}` "
+           f"wall-clock cap before the target, not that the solve failed or stalled; raise the cap "
+           f"to measure that row\n",
            "| " + " | ".join(head) + " |",
            "|" + "---|" * len(head)]
     for r in rows:
@@ -275,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         "version": subprocess.run([args.exe], input="show_build_version\nexit\n",
                                   capture_output=True, text=True).stdout.strip().splitlines()[-1],
         "info_freq": args.info_freq,
+        "max_seconds": args.max_seconds,
         "extra": args.extra,
         "pre_build": args.pre_build,
     }

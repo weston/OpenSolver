@@ -5,11 +5,17 @@ Usage:
   python3 tests/pio_compare/compare.py SCRIPT [--out DIR] [--ours ./solver] [--pio-only|--ours-only]
 
 The PioSOLVER side runs over SSH (black-box: only UPI commands are sent). Configure with env vars:
-  PIO_SSH   ssh destination              (required, e.g. user@windows-host)
+  PIO_SSH   ssh destination              (required unless PIO_LOCAL=1, e.g. user@windows-host)
   PIO_KEY   ssh private key              (default: ~/.ssh/pio_pc_ed25519)
   PIO_EXE   solver path on the Windows box (default: C:\\PioSOLVER\\PioSOLVER3-edge-znver5.exe)
+  PIO_LOCAL =1 to run PIO_EXE directly, when this script runs on the Pio machine itself
+            (also from WSL on that machine, with PIO_EXE=/mnt/c/PioSOLVER/PioSOLVER3-edge-znver5.exe)
 
 Each script line that is a command gets one response. "set_end_string END" is prepended automatically.
+
+By default numeric responses match within --tol, which hides pure formatting differences (digits,
+trailing spaces, blank lines). --exact counts only byte-identical responses as equal and labels the
+rest "within tolerance, bytes differ" when they agree within --tol; that is how #125 was found.
 """
 import argparse
 import os
@@ -51,10 +57,15 @@ def run_ours(exe, cmds, timeout):
 
 
 def run_pio(cmds, timeout):
+    exe = os.environ.get("PIO_EXE", r"C:\PioSOLVER\PioSOLVER3-edge-znver5.exe")
+    # A POSIX PIO_EXE (e.g. /mnt/c/PioSOLVER/... under WSL interop) splits on "/"; Pio needs its folder as cwd.
+    folder, name = os.path.split(exe) if "/" in exe else exe.rsplit("\\", 1)
+    if os.environ.get("PIO_LOCAL") == "1":  # running on the Pio machine itself
+        p = subprocess.run([exe], cwd=folder, input="\r\n".join(cmds) + "\r\n", capture_output=True, text=True,
+                           timeout=timeout)
+        return p.stdout.replace("\r", "")
     dest = os.environ["PIO_SSH"]  # e.g. user@windows-host (required)
     key = os.path.expanduser(os.environ.get("PIO_KEY", "~/.ssh/pio_pc_ed25519"))
-    exe = os.environ.get("PIO_EXE", r"C:\PioSOLVER\PioSOLVER3-edge-znver5.exe")
-    folder, name = exe.rsplit("\\", 1)
     remote = f'cd /d {folder} && {name}'
     p = subprocess.run(["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", dest, remote],
                        input="\r\n".join(cmds) + "\r\n", capture_output=True, text=True, timeout=timeout)
@@ -120,6 +131,7 @@ def main():
     ap.add_argument("--tol", type=float, default=1e-3, help="relative tolerance for numeric outputs")
     ap.add_argument("--timeout", type=int, default=3600)
     ap.add_argument("--show", type=int, default=6, help="lines of each side to show per difference")
+    ap.add_argument("--exact", action="store_true", help="report formatting differences too (byte comparison)")
     args = ap.parse_args()
     cmds = script_commands(args.script, args.ours)
     out = args.out or os.path.splitext(args.script)[0] + "_results"
@@ -140,7 +152,16 @@ def main():
             continue
         nc = numeric_close(a, b, args.tol)
         if nc is not None and nc >= 0:
-            same += 1
+            if not args.exact:
+                same += 1
+                continue
+            differ += 1
+            al, bl = a.split("\n"), b.split("\n")
+            k = next((k for k in range(min(len(al), len(bl))) if al[k] != bl[k]), min(len(al), len(bl)))
+            ta = repr(al[k][-40:]) if k < len(al) else "<no line>"
+            tb = repr(bl[k][-40:]) if k < len(bl) else "<no line>"
+            report.append(f"=== [{i}] {cmd[:100]}  -- within tolerance, bytes differ: {len(al)} vs {len(bl)} lines, "
+                          f"first differing line {k}: pio ...{ta}  ours ...{tb}")
             continue
         differ += 1
         tag = f"numeric (max rel diff {-nc:.3g})" if nc is not None else "text"

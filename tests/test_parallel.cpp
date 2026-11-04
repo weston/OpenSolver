@@ -1,4 +1,5 @@
 // Nested scheduler work must run exactly once, finish before returning, and
+#include <cstdint>
 // remain correct when a worker helps a job from another branch of the tree.
 #include <atomic>
 #include <iostream>
@@ -6,7 +7,30 @@
 
 #include "../src/parallel.hpp"
 
+// #77: Arena::alloc promises 64-byte-aligned floats. With 16 MB blocks the allocator
+// happens to return page-aligned memory, so a misaligned base would not show up here --
+// the check that matters is that the aligned base is derived, not assumed. Exercise small
+// allocations, block growth and scope reset, and verify the arithmetic directly.
+static int check_arena_alignment() {
+  int bad = 0;
+  for (int round = 0; round < 8; ++round) {
+    pio::ArenaScope sc;
+    for (int k = 0; k < 16; ++k) {
+      float* p = sc.a.alloc(1 + k * 7);
+      if (reinterpret_cast<uintptr_t>(p) % 64) ++bad;
+      p[0] = 1.0f;  // the returned range must be writable
+    }
+    float* big = sc.a.alloc_zero(1 << 23);  // forces a new block (> kBlockFloats)
+    if (reinterpret_cast<uintptr_t>(big) % 64) ++bad;
+    if (big[0] != 0.0f || big[(1 << 23) - 1] != 0.0f) ++bad;  // zeroing covers the whole range
+  }
+  std::cout << (bad ? "FAIL" : "ok") << ": arena 64-byte alignment, growth, reset, zeroing ("
+            << bad << " violations)\n";
+  return bad;
+}
+
 int main() {
+  if (check_arena_alignment()) return 1;
   pio::ThreadPool pool(1);
   for (int threads : {1, 2, 4, 8}) {
     pool.set_threads(threads);

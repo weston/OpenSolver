@@ -47,6 +47,7 @@ class ThreadPool {
   std::vector<Job*> jobs_;
   bool quit_ = false;
   int nthreads_ = 1;
+  std::atomic<int> idle_{0};  // threads with nothing to run (blocked workers, or callers waiting on a join)
 };
 
 ThreadPool& pool();
@@ -68,9 +69,11 @@ class Arena {
  private:
   static constexpr size_t kBlockFloats = size_t(1) << 22;  // 16 MB blocks
   struct Block {
-    std::unique_ptr<float[]> mem;
+    std::unique_ptr<float[]> mem;  // owns the storage, over-allocated by kAlignFloats
+    float* base;                   // mem.get() rounded up to a 64-byte boundary
     size_t size;
   };
+  static constexpr size_t kAlignFloats = 16;  // 64 bytes
   std::vector<Block> blocks_;
   size_t cur_ = 0, off_ = 0;
 };

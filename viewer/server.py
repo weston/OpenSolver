@@ -418,6 +418,14 @@ def set_resolver(resolver):
     _resolver = resolver
 
 
+_nl = None  # nl_lock.NLService (#200 part 2): plain-English locks via Sail; set by main()/tests
+
+
+def set_nl(service):
+    global _nl
+    _nl = service
+
+
 def set_refiner(refiner, sketch=None):
     global _refiner, _sketch
     _refiner = refiner
@@ -435,6 +443,10 @@ def api(solver, lib, method, path, query, body):
         if _resolver is None:
             raise SolverError("re-solve support not initialized")
         return _resolver.api(method, path, query, body)
+    if path.startswith("/api/nl/"):
+        if _nl is None:
+            raise SolverError("plain-English locks not initialized")
+        return _nl.api(sys.modules[__name__], solver, method, path, body)
     if path == "/api/refine" or path.startswith("/api/refine/"):
         if _refiner is None:
             raise SolverError("fast preview not initialized")
@@ -1274,6 +1286,8 @@ def main(argv=None):
     solver = Solver(os.path.abspath(args.solver))
     import resolve as vresolve  # local import: server/main <-> resolve module cycle
     set_resolver(vresolve.ResolveManager(solver, Solver, os.path.abspath(args.solver)))
+    import nl_lock
+    set_nl(nl_lock.NLService())   # reads the Sail key, if any; it never leaves this process
     import refine as vrefine
     sketch = vrefine.SketchManager(solver, Solver, os.path.abspath(args.solver))
     set_refiner(vrefine.RefineManager(solver, Solver, os.path.abspath(args.solver), sketch), sketch)

@@ -670,6 +670,7 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
 .lock-nl textarea { width: 100%; resize: vertical; min-height: 44px; font: inherit; font-size: 13px; padding: 6px 8px; }
 .lock-nl .btn-row { align-items: center; }
 .lock-nl #lk-nl-cost { font-size: 11px; }
+.lock-nl #lk-nl-model { text-transform: none; letter-spacing: 0; font-style: normal; font-weight: 400; }
 @media (max-width: 900px) { .lock-body { grid-template-columns: minmax(0, 1fr); } }
 /* fast preview (viewer/static/preview.js) */
 label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); margin: 10px 0 2px; cursor: pointer; }

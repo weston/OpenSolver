@@ -314,6 +314,17 @@ its HTTP API without a solver.
 - **Spots:** *Save spot…* on a tree built from the form stores its locks in the spot (`locks` in the config JSON, from `GET /api/lock/export`), and the save preview lists them. Building that spot again with the form unchanged sets them again before the solve (`POST /api/lock/apply`). A lock whose node is gone or has other actions is skipped and reported. An edited form builds without the spot's locks, since they belong to the saved tree.
 - **Fast preview:** a lock, unlock or revert drops the refined streets and the flop sketch, which were solved against the old strategies, and is refused while a sketch runs.
 
+**Plain-English locks** (*Describe it*, at the top of the lock dialog). Type what the player does, for example "IP folds 60% to this bet, the weakest hands first" or "OOP bets about 25%, mostly sets, two pair and flush draws", and press *Propose*.
+- **What the model sees:** the server (`viewer/nl_lock.py`) sends a compact summary of the node to Kimi K3 (`moonshotai/Kimi-K3` on Sail, `asap` window): street, board, actions, and the acting range by hand class and category with reach weights and solved mixes. It never sees the tree.
+- **What it answers:** a JSON lock spec. The rules are either:
+  - a *mix* for some hands;
+  - an *overall target* for one action, with an order: `strongest` or `weakest` by equity against the opponent's range at the node, the solver's `current` preference, or `proportional` (no hand goes pure).
+- **Never solver commands:** the model writes no UPI commands. The server checks the spec and does the threshold step itself, reach-weighted over groups of equal-equity combos within a class, so suit-isomorphic combos stay together and the target is hit exactly.
+- **Errors:** unreachable targets and unknown actions, classes or categories are reported, as is the model's own explanation when it declines.
+- **Nothing is locked yet:** the proposal lands in the editor as edits, next to the solved frequencies, with the model's explanation and the request's token cost (an estimate is shown while typing). Adjust it by hand if needed, then *Lock*.
+- **The key:** it comes from `$SAIL_API_KEY` or `~/.config/sailresearch/api_key` (chmod 600) and is only ever sent, as a request header, to `api.sailresearch.com`. It is never returned to the browser, logged, or saved. Without a key the box is disabled with a message, and everything else works as before.
+- **Tests:** `viewer/test_nl_lock.py` uses a fake model and needs no network.
+
 ### Viewer: subgame re-solve and size search
 
 The server runs a **second solver process** (`viewer/resolve.py`) so a subtree can be

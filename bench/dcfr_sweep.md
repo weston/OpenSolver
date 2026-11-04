@@ -1,9 +1,16 @@
 # DCFR parameter sweep (#52)
 
-Why the default is α=1.5, β=0, **γ=3** rather than DCFR's published 1.5/0/2.
+Why the default is not DCFR's published 1.5/0/2.
+
+> **The current default is α=1.3, β=0 then 0.5 after iteration 50, γ=4** — see
+> `src/solver.hpp`, which is the source of truth. This page is the sweep that got there, read in
+> order: the first sections below chose **γ=3** at α=1.5 (#70), then *Follow-up: lower alpha* retuned
+> to **1.3 / 0 / 4** (#72), then *beta schedule* added the β switch (#162). Sections before those
+> describe superseded defaults and are kept because the surrounding data is still the evidence.
 
 Positive regrets are scaled by `t^α/(t^α+1)`, negative by `t^β/(t^β+1)`, the strategy sum by
-`(t/(t+1))^γ`. Override at runtime with `set_dcfr <alpha> <beta> <gamma>`.
+`(t/(t+1))^γ`. Override at runtime with `set_dcfr <alpha> <beta> <gamma>` (and
+`set_dcfr <alpha> <beta> <gamma> <beta_late> <t>` for the switch).
 
 ## Method
 

@@ -47,6 +47,7 @@ class ThreadPool {
   std::vector<Job*> jobs_;
   bool quit_ = false;
   int nthreads_ = 1;
+  std::atomic<int> idle_{0};  // threads with nothing to run (blocked workers, or callers waiting on a join)
 };
 
 ThreadPool& pool();

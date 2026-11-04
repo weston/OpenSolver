@@ -402,7 +402,13 @@ static bool river_batch_matches() {
   const bool same = g1.regrets == g2.regrets && g1.strat == g2.strat;
   std::printf("[river batch] two-phase river walk vs walk_t after 60 iterations: %s (%zu floats)\n",
               same ? "identical" : "DIFFER", g1.regrets.size());
-  return same && !g1.regrets.empty();
+  // The exploitability check's river walk (river_evbr) against walk_evbr, on the same strategies.
+  const RootStats a = s1.root_stats(), b = s2.root_stats();
+  const bool same_stats = a.ev[0] == b.ev[0] && a.ev[1] == b.ev[1] && a.mes[0] == b.mes[0] && a.mes[1] == b.mes[1] &&
+                          a.exploitability == b.exploitability && a.exploitability > 0;
+  std::printf("[river batch] exploitability check river walk vs walk_evbr: %s (%.9g vs %.9g)\n",
+              same_stats ? "identical" : "DIFFER", a.exploitability, b.exploitability);
+  return same && same_stats && !g1.regrets.empty();
 }
 
 int main(int argc, char** argv) {

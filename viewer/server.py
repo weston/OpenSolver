@@ -26,6 +26,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -62,6 +63,7 @@ class Solver:
         self.exe = exe
         self.cmd_lock = threading.RLock()
         self.state_lock = threading.Lock()
+        self.progress_cv = threading.Condition(self.state_lock)  # notified on every SOLVER event
         self.solving = False
         self.progress = []       # last periodic SOLVER: block (list of lines)
         self.solver_status = ""  # "started" / "stopped (<reason>)"
@@ -73,6 +75,12 @@ class Solver:
         self.series = []         # convergence points of the current tree: {t, explo, ev_oop, ev_ip}
         self.partial = None      # live/last subtree solve (#153): {node, pot, accuracy, done, ...}
         self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
+        self.last_generate = None  # the /api/generate body of the tree in memory (fast preview)
+        self.holds = set()       # who keeps the solve parked (UPI hold): "browse" lease, "refine" (refine.py)
+        self._lease_until = 0.0
+        self._lease_thread = None
+        self.iter_seconds = None  # measured solver time per iteration of the running solve (refine.py)
+        self._hold_wait = None    # how long the last hold took to land (a stand-in until then)
         self.locks = {}          # node id -> "node" | "combos": locks set from the viewer (#200)
         self.undo = None         # {"path", "time"}: lossless save of the tree before its first lock
         self.start()
@@ -114,6 +122,7 @@ class Solver:
                             if point is not None:
                                 self.series.append(point)
                         self.events += 1
+                        self.progress_cv.notify_all()
                 elif line.startswith("SOLVER:"):
                     with self.state_lock:
                         msg = line[len("SOLVER: "):]
@@ -127,6 +136,7 @@ class Solver:
                                 self.partial["done"] = True
                                 self.partial["stopped"] = msg[len("stopped ("):-1] or "requested"
                         self.events += 1
+                        self.progress_cv.notify_all()
                 else:
                     q.put(line)
         finally:
@@ -176,14 +186,77 @@ class Solver:
             partial = dict(self.partial) if self.partial else None
             if partial:
                 partial["progress"] = list(partial["progress"])
-            return {"solving": self.solving, "dead": self.dead, "progress": list(self.progress),
+            return {"solving": self.solving, "suspended": "refine" in self.holds,
+                    "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
                     "tree": self.tree_present, "version": self.version,
                     "partial": partial, "loaded_file": self.loaded_file}
 
+    # ---- parking a running solve (UPI hold / release, an extension) ----
+
+    @property
+    def suspended(self):
+        return "refine" in self.holds
+
+    def hold(self, tag):
+        """Park the running solve between iterations until every tag is released. Results are
+        unaffected: a parked solve resumes exactly where it was."""
+        with self.cmd_lock:
+            if not self.holds:
+                t = time.time()
+                self.cmd("hold")
+                self._hold_wait = time.time() - t
+            self.holds.add(tag)
+
+    def unhold(self, tag):
+        with self.cmd_lock:
+            if tag not in self.holds:
+                return
+            self.holds.discard(tag)
+            if not self.holds:
+                try:
+                    self.cmd("release")
+                except SolverError:
+                    pass
+
+    def drop_holds(self):
+        """After stop / go / build: the solver has dropped its hold itself."""
+        with self.cmd_lock:
+            self.holds.clear()
+
+    def lease(self):
+        """Browsing during a solve: each UPI command would wait for an iteration boundary of its
+        own (seconds per click on a big tree), so park the solve for the burst of requests a
+        click makes and let it run again once no request has come for one iteration's time.
+        That is the break-even: parked longer, the solve loses more than a request would have
+        waited; shorter, the next request of the burst waits an iteration boundary again. The
+        iteration time is measured (refine.py's flop watch sets it at each progress report);
+        before the first report, the wait for the last hold to land (the cost a request just
+        paid) stands in."""
+        if not self.solving:
+            return
+        self.hold("browse")
+        seconds = self.iter_seconds if self.iter_seconds is not None else (self._hold_wait or 0.0)
+        with self.state_lock:
+            self._lease_until = time.time() + seconds
+            if self._lease_thread and self._lease_thread.is_alive():
+                return
+            self._lease_thread = threading.Thread(target=self._lease_watch, daemon=True)
+            self._lease_thread.start()
+
+    def _lease_watch(self):
+        while True:
+            with self.state_lock:
+                left = self._lease_until - time.time()
+            if left <= 0:
+                self.unhold("browse")
+                return
+            time.sleep(left)
+
     def reset_series(self):
         with self.state_lock:
             self.series = []
+            self.iter_seconds = None
 
     def start_partial(self, node_id, accuracy, pot):
         """Mark the subtree solve in flight, so the pump routes its blocks here (#153)."""
@@ -214,6 +287,8 @@ class Solver:
                 self.solver_status = ""
                 self.partial = None
                 self.loaded_file = False
+            self.holds.clear()
+            self.last_generate = None
             self.forget_locks()
 
     def forget_locks(self):
@@ -334,11 +409,19 @@ def node_id_arg(query, name="id", default="r:0"):
 # ---------------------------------------------------------------- the API
 
 _resolver = None  # resolve.ResolveManager, set by main()/tests; owns the 2nd solver
+_refiner = None   # refine.RefineManager (fast preview), set by main()/tests; owns the 3rd
+_sketch = None    # refine.SketchManager (fast preview's flop sketch); owns the 4th
 
 
 def set_resolver(resolver):
     global _resolver
     _resolver = resolver
+
+
+def set_refiner(refiner, sketch=None):
+    global _refiner, _sketch
+    _refiner = refiner
+    _sketch = sketch
 
 
 def lib_query(query, name="name"):
@@ -352,6 +435,76 @@ def api(solver, lib, method, path, query, body):
         if _resolver is None:
             raise SolverError("re-solve support not initialized")
         return _resolver.api(method, path, query, body)
+    if path == "/api/refine" or path.startswith("/api/refine/"):
+        if _refiner is None:
+            raise SolverError("fast preview not initialized")
+        return _refiner.api(method, path, query, body)
+    if method == "GET" and path in BROWSE_PATHS:
+        solver.lease()
+    if _refiner is not None:
+        if method == "GET":
+            served = _refiner.overlay(path, query)
+            if served is None and _sketch is not None:
+                served = _sketch.overlay(path, query)
+            if served is not None:
+                return served
+        elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate"):
+            _refiner.invalidate()  # the main tree is new: old refines and the sketch don't apply
+            if _sketch is not None:
+                _sketch.invalidate()
+        elif path == "/api/stop" and _sketch is not None and _sketch.state == "running":
+            _sketch.invalidate()   # cancels the sketch, and with it the main solve it would start
+        elif path in LOCK_PATHS:
+            # A lock, unlock or revert changes the main tree's strategies: a refined street was
+            # solved against the old ones. A running sketch would start the main solve under the
+            # lock, so it counts as solving.
+            if _sketch is not None and _sketch.state == "running":
+                raise SolverError("the solver is running (stop it first)")
+            _refiner.invalidate()
+            if _sketch is not None:
+                _sketch.invalidate()
+        if method == "POST" and path == "/api/solve" and _sketch is not None:
+            b = need_body(body)
+            # Only a fresh tree gets a sketch: Resume on a stopped solve just continues it.
+            fresh = not solver.series and not solver.solving
+            if b.get("preview") and fresh and solver.last_generate and solver.tree_present \
+                    and not solver.loaded_file:
+                acc = b.get("accuracy", 0.05)
+                if isinstance(acc, bool) or not isinstance(acc, (int, float)) or not math.isfinite(acc) or acc < 0:
+                    raise SolverError("bad accuracy")
+            else:
+                acc = 0
+            if acc > 0:   # the sketch solves to the main target: with none (0), there is no sketch
+                _refiner.invalidate()
+                solver.clear_partial()
+
+                def start_main():
+                    try:
+                        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go"])
+                    except SolverError:
+                        pass
+                _sketch.start(solver.last_generate, acc, start_main)
+                return 200, {"ok": True, "sketch": True}
+    if path == "/api/progress" and _sketch is not None:
+        status, data = _api_main(solver, lib, method, path, query, body)
+        data["sketch"] = _sketch.status()
+        return status, data
+    if method == "POST" and path in ("/api/stop", "/api/solve", "/api/solve_node", "/api/build", "/api/load",
+                                    "/api/lock/revert"):
+        # these stop or restart the solve, and the solver drops any hold with it
+        try:
+            return _api_main(solver, lib, method, path, query, body)
+        finally:
+            solver.drop_holds()
+    return _api_main(solver, lib, method, path, query, body)
+
+
+LOCK_PATHS = ("/api/lock", "/api/unlock", "/api/lock/revert")
+BROWSE_PATHS = ("/api/node", "/api/strategy", "/api/path", "/api/range", "/api/categories", "/api/ev",
+                "/api/calc_results", "/api/hand_order")
+
+
+def _api_main(solver, lib, method, path, query, body):
     if path == "/api/status":
         return 200, solver.state()
     if path == "/api/hand_order":
@@ -455,7 +608,9 @@ def api(solver, lib, method, path, query, body):
 
     if path == "/api/generate":
         b = need_body(body)
-        return 200, op_generate(solver, b)
+        out = op_generate(solver, b)
+        solver.last_generate = dict(b)   # fast preview builds its flop sketch from the same config
+        return 200, out
 
     if path == "/api/build":
         solver.cmd("build_tree")
@@ -1051,6 +1206,9 @@ def main(argv=None):
     solver = Solver(os.path.abspath(args.solver))
     import resolve as vresolve  # local import: server/main <-> resolve module cycle
     set_resolver(vresolve.ResolveManager(solver, Solver, os.path.abspath(args.solver)))
+    import refine as vrefine
+    sketch = vrefine.SketchManager(solver, Solver, os.path.abspath(args.solver))
+    set_refiner(vrefine.RefineManager(solver, Solver, os.path.abspath(args.solver), sketch), sketch)
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     srv.solver = solver
@@ -1063,7 +1221,7 @@ def main(argv=None):
         pass
     finally:
         srv.server_close()
-        for s in ([solver] + ([_resolver.rsolver] if _resolver else [])):
+        for s in ([solver] + ([_resolver.rsolver] if _resolver else []) + ([_refiner.rsolver] if _refiner else []) + ([_sketch.solver] if _sketch else [])):
             try:
                 s.proc.kill()
             except Exception:

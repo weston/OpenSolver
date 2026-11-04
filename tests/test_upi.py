@@ -9,6 +9,7 @@ By default the multi-street checks run on a small tree (tens of MB) so `make tes
 """
 import os
 import re
+import time
 import subprocess
 import sys
 import tempfile
@@ -230,6 +231,74 @@ def check_locking(u):
     check(all(abs(st2[1][i] - 1) < 1e-4 for i in in_range), "set_strategy round-trips (in-range hands)")
 
 
+def check_lock_save_load(u):
+    """Locks must survive dump_tree / load_tree (#200 part 1, persistence).
+
+    The flags live in the node records and the combo mask in its own section, so a lock can be lost
+    in three distinct ways: the flag, the mask, or the locked strategy itself. A lost flag is the
+    dangerous one -- nothing looks wrong until the next solve quietly moves a strategy the user
+    pinned, so this also re-solves after the reload and checks the locked combos did not budge.
+    """
+    print("[locks survive save / load]")
+    u.cmd("unlock_node r:0")
+    weights = floats(u.cmd("show_range OOP r:0"))
+    in_range = [i for i, w in enumerate(weights) if w > 0]
+    check(len(in_range) > 30, f"enough in-range combos to lock ({len(in_range)})")
+    picked = in_range[::3]
+    vec = ["0"] * 1326
+    for i in picked:
+        vec[i] = "1"
+    check(u.cmd("combo_lock_node r:0 " + " ".join(vec)) == "combo_lock_node ok!", "combo_lock_node")
+    check("COMBO_LOCKED" in u.cmd("show_node r:0"), "COMBO_LOCKED flag set")
+    # Out-of-range combos cannot be locked (they have no local hand), so the readback is exactly the
+    # in-range subset we asked for. Checking this before saving separates a mask bug from a save bug.
+    got = [i for i, v in enumerate(floats(u.cmd("show_locked_combos r:0"))) if v > 0]
+    check(got == picked, f"show_locked_combos returns the combos we locked ({len(got)} vs {len(picked)})")
+    combos_before = u.cmd("show_locked_combos r:0")
+    rows_before = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "locked.cfr")
+        check(u.cmd(f'dump_tree "{path}" lossless') == "dump_tree ok!", "dump_tree with a combo lock")
+        u.cmd("free_tree")
+        check(u.cmd(f'load_tree "{path}" full') == "load_tree ok!", "load_tree with a combo lock")
+        check("COMBO_LOCKED" in u.cmd("show_node r:0"), "COMBO_LOCKED flag survives reload")
+        check(u.cmd("show_locked_combos r:0") == combos_before, "locked combo set survives reload")
+        rows_mid = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+        dev = max(abs(a - b) for ra, rb in zip(rows_before, rows_mid) for a, b in zip(ra, rb))
+        check(dev < 1e-6, f"strategy exact after lossless reload (max dev {dev:.2e})")
+        u.cmd("go 30 steps")
+        u.cmd("wait_for_solver")
+        rows_after = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+        dev_locked = max(abs(rows_before[k][i] - rows_after[k][i])
+                         for k in range(len(rows_before)) for i in picked)
+        check(dev_locked < 1e-4, f"reloaded lock still holds under solving (max dev {dev_locked:.2e})")
+        # Guard against the above becoming vacuous: if those 30 iterations ever stop moving anything
+        # (a no-op `go` after a reload, say), the lock check would pass no matter how broken the lock
+        # is. The unlocked combos at the same node are the control and must move.
+        rest = sorted(set(in_range) - set(picked))
+        dev_free = max(abs(rows_before[k][i] - rows_after[k][i])
+                       for k in range(len(rows_before)) for i in rest)
+        # 3e-4 sits ~3x above the 1e-4 lock tolerance it guards and ~4x below the movement actually
+        # observed here (1.3e-3): the tree is well converged by this point, so the control is small.
+        check(dev_free > 3e-4,
+              f"control: unlocked combos at the same node did move ({dev_free:.2e}), so the lock "
+              f"check above is not vacuous")
+        # A whole-node lock through the default (quantised) save: the flag is exact, the strategy is
+        # only within the compression precision, like every other default-save strategy.
+        u.cmd("unlock_node r:0")
+        u.cmd("lock_node r:0")
+        rows_before = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+        q = os.path.join(td, "locked_q.cfr")
+        check(u.cmd(f'dump_tree "{q}"') == "dump_tree ok!", "dump_tree (default) with a node lock")
+        u.cmd("free_tree")
+        u.cmd(f'load_tree "{q}" full')
+        check("LOCKED" in u.cmd("show_node r:0"), "LOCKED flag survives a default (quantised) save")
+        rows_after = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+        dev = max(abs(a - b) for ra, rb in zip(rows_before, rows_after) for a, b in zip(ra, rb))
+        check(dev < 1.0 / 2047 + 1e-6, f"locked strategy within 11-bit precision (max dev {dev:.2e})")
+        u.cmd("unlock_node r:0")
+
+
 def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
     print("[save / load]")
     with tempfile.TemporaryDirectory() as td:
@@ -280,6 +349,7 @@ def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
         check(sizes["default"] * 2 < sizes["lossless"] and sizes["no_turns"] * 10 < sizes["default"],
               f"save sizes: lossless {sizes['lossless'] >> 10} KB > default {sizes['default'] >> 10} KB > no_turns {sizes['no_turns'] >> 10} KB")
         small = os.path.join(td, "small.cfr")
+        res_before = u.cmd("calc_results")
         u.cmd(f'dump_tree "{small}" no_rivers lossless')
         check(os.path.getsize(small) < os.path.getsize(path), "no_rivers save is smaller")
         if deep_paths:
@@ -289,6 +359,14 @@ def check_save_load(u, strat_path, deep_paths=(), whole_tree=False):
             check("INCOMPLETE_TREE" in flags and "FAST_LOAD" in flags, "no_rivers: incomplete + fast-load flags")
             check(u.cmd("show_strategy " + strat_path) == s_before, "no_rivers: lazily loaded strategy exact")
             check(u.cmd("rebuild_tree").startswith("ERROR"), "rebuild_tree needs load_all_nodes")
+            # The rivers are unsolved until browsed: calc_results reports the solve behind the save, as
+            # Pio does, also after re-saving the truncated tree (#195).
+            check(u.cmd("calc_results") == res_before, "no_rivers: calc_results is the saved solve's")
+            again = os.path.join(td, "again.cfr")
+            u.cmd(f'dump_tree "{again}" no_rivers')
+            u.cmd("free_tree")
+            u.cmd(f'load_tree "{again}"')
+            check(u.cmd("calc_results") == res_before, "re-saved no_rivers: calc_results carried over")
             u.cmd("free_tree")
             u.cmd(f'load_tree "{path}"')
             u.cmd("set_equal_strats")  # must not be undone by later lazy reads of the file
@@ -349,6 +427,7 @@ def run_big_tree(u, order):
     check_isomorphism(u, order)
     check_locking(u)
     check_save_load(u, "r:0:c:b24")
+    check_lock_save_load(u)
     check_lines(u, 100)
 
 
@@ -368,6 +447,7 @@ def run_small_tree(u, order):
     check_locking(u)
     check_save_load(u, "r:0:c:b12", deep_paths=("r:0:c:c:3d", "r:0:c:b12:c:Ad:c", "r:0:c:c:Ks:c:c:3h", "r:0:b12:c:7d:c:c:9s"),
                     whole_tree=True)
+    check_lock_save_load(u)
     check_lines(u, 10)
 
 
@@ -383,6 +463,41 @@ def check_calc_eq_preflop_exact(u):
     ok8 = all(abs(a - b) < 1e-6 for a, b in zip(eq[:8], want))
     check(len(eq) == 169 and ok8, f"first 8 class equities match Pio to 1e-6 ({eq[:8]})")
     check(abs(float(r[2]) - 0.550421774) < 1e-6, f"total equity matches Pio ({r[2]})")
+    # #125: Pio prints nan, not 0, for classes with no matchups (probe4: all 169 classes).
+    toks, mu = r[0].split(), floats(r[1])
+    check(all((t == "nan") == (m == 0) for t, m in zip(toks, mu)) and "nan" in toks,
+          "classes with 0 matchups print nan, like Pio")
+    check(r[0] == " ".join(toks) + " " and r[1].endswith(" "), "equity and matchup lines end in a space, like Pio")
+    check(len(r[2].lstrip("0.")) == 9, f"total printed with 9 significant digits like Pio's 0.550421774 ({r[2]})")
+
+
+def check_output_format(u):
+    """Byte-level format details matched against PioSOLVER 3.10.1 (#125)."""
+    print("[output format: trailing spaces, %.9g, blank lines (#125)]")
+    for c in ("free_tree", "set_board KhQs7d4c2s", "set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s",
+              "set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s", "set_pot 0 0 100", "set_eff_stack 200",
+              "clear_lines", "add_line 75 200", "add_line 0 75 200", "add_line 0 50", "build_tree",
+              "set_accuracy 5", "go", "wait_for_solver"):
+        u.cmd(c)
+    ho = u.cmd("show_hand_order")
+    check(ho.endswith("AsAh ") and len(ho.split()) == 1326, "show_hand_order ends in a space")
+    ev = u.cmd("calc_ev OOP r:0").split("\n")
+    check(len(ev) == 2 and all(l.endswith(" ") and len(l.split()) == 1326 for l in ev),
+          "calc_ev: both 1326-value lines end in a space")
+    st = u.cmd("show_strategy r:0").split("\n")
+    check(all(l.endswith(" ") for l in st), "show_strategy lines end in a space")
+    # %.9g of the float: the nearest float to 0.3 prints as 0.300000012 (we used to print 0.3).
+    u.cmd("set_range OOP AA:0.3")
+    rng = u.cmd("show_range OOP")
+    check("0.300000012 " in rng and rng.endswith(" ") and len(rng.split()) == 1326,
+          "floats print as %.9g of the float32, like Pio (0.3 -> 0.300000012)")
+    for c in ("show_strategy_pp r:0", "calc_ev_pp OOP r:0", "calc_eq_pp OOP", "show_locked_combos r:0"):
+        out = u.cmd(c)
+        check(out.endswith("\n") and not out.endswith("\n\n"), f"{c.split()[0]} ends with one blank line, like Pio")
+    check(u.cmd("set_incentives_node r:0 1 2") == "set_incentives_node ok!", "set_incentives_node")
+    inc = u.cmd("show_incentives r:0")
+    check(inc == "1.000000 2.000000 ", f"show_incentives prints '%f ' per action like Pio ({inc!r})")
+    u.cmd("clear_incentives r:0")
 
 
 def check_union_hands(u):
@@ -419,7 +534,7 @@ def check_union_hands(u):
             "evs": (res[0], res[1], res[4]),
             "ev_pp": combos(u.cmd("calc_ev_pp OOP r:0")),
             "ev_pp_ip": combos(u.cmd("calc_ev_pp IP r:0")),
-            "ev_pp_lines": len(u.cmd("calc_ev_pp OOP r:0").split("\n")),
+            "ev_pp_lines": len(u.cmd("calc_ev_pp OOP r:0").rstrip("\n").split("\n")),  # #125: + a blank line
             "strat_pp": combos(u.cmd("show_strategy_pp r:0")),
             "deep": u.cmd("calc_ev OOP r:0:b20:b200").split("\n")[0].split(),
         }
@@ -437,8 +552,8 @@ def check_union_hands(u):
           "show_strategy_pp lists the same opponent-only hands")
 
     # #61: recorded PioSOLVER 3.10.1 output on this exact tree. Pio always lists the union, for
-    # both players: an "EV: <x>" header plus 148 rows (the "150 lines" in #9 counted more than the
-    # response). With set_union_hands on we list the same hands; only the order among equal-EV
+    # both players: an "EV: <x>" header plus 148 rows, then a blank line (#125) - the "150 lines" of
+    # #9. With set_union_hands on we list the same hands; only the order among equal-EV
     # (suit-isomorphic) combos may differ, which depends on last-bit float noise.
     with open(os.path.join(HERE, "data", "pio_probe2_calc_ev_pp.txt")) as f:
         blocks = [b for b in f.read().split("END\n") if b.strip()]
@@ -447,7 +562,7 @@ def check_union_hands(u):
     check(len(pio) == 2 and len(pio[0]) == 148 and len(pio[1]) == 148, "recorded Pio calc_ev_pp: 148 rows per player")
     check(sorted(on["ev_pp"]) == sorted(pio[0]), "calc_ev_pp OOP with union_hands lists exactly Pio's hands")
     check(sorted(on["ev_pp_ip"]) == sorted(pio[1]), "calc_ev_pp IP with union_hands lists exactly Pio's hands")
-    check(on["ev_pp_lines"] == 149, f"calc_ev_pp response is EV header + 148 rows like Pio ({on['ev_pp_lines']} lines)")
+    check(on["ev_pp_lines"] == 149, f"calc_ev_pp is an EV header + 148 rows like Pio ({on['ev_pp_lines']} non-blank lines)")
 
     # Equilibrium must not move: the extra hands enter with reach 0.
     check(off["evs"] == on["evs"], f"equilibrium unchanged by union_hands ({off['evs']} vs {on['evs']})")
@@ -506,6 +621,19 @@ def check_go_partial(u):
     check(any(b and b[0].startswith("SOLVER: stopped (required accuracy reached") for b in u.solver_msgs),
           "stopped (required accuracy reached)")
     check(u.cmd("show_strategy r:0") == root_strat, "strategy above the node still untouched")
+
+    # A pending hold (the viewer's browse lease) must not park a subtree solve it never saw start
+    # (#241 review): every way a solve starts drops the hold, as go does.
+    check(u.cmd("hold") == "hold ok!", "hold with no solve running")
+    u.solver_msgs.clear()
+    check(u.cmd("go_partial r:0:c 20 steps") == "go_partial ok!", "go_partial after a hold")
+    stopped = lambda: any(b and b[0].startswith("SOLVER: stopped") for b in list(u.solver_msgs))
+    deadline = time.time() + 20   # no wait_for_solver here: it would drop the hold itself
+    while time.time() < deadline and not stopped():
+        u.cmd("echo")   # the harness collects SOLVER: messages while it reads a response
+        time.sleep(0.02)
+    check(stopped(), "go_partial runs although a hold was pending")
+    u.cmd("wait_for_solver")
 
     check(u.cmd("go_partial").startswith("ERROR"), "go_partial needs an argument")
     check(u.cmd("go_partial r:0:bogus").startswith("ERROR"), "go_partial on a bad node errors")
@@ -577,6 +705,109 @@ def check_info_freq_auto(u):
     u.cmd("free_tree")
 
 
+def check_legacy_params(u):
+    """Pio 3.10 behavior, probed black-box: show_tree_params, set_bet_sizes/set_donk_bet, unlock_all,
+    atoi-style chip amounts (fractions truncate), partial set_pot, a bad set_board clears the board."""
+    print("[tree params, unlock_all, chip parsing]")
+    u.cmd("free_tree")
+    check(u.cmd("set_board Kh9h4h2c3d") == "set_board ok!", "set_board")
+    check(u.cmd("set_board 2c").startswith("ERROR"), "bad set_board errors")
+    tp = u.cmd("show_tree_params").split("\n")
+    check(tp[0] == "board: not set" and [l.split(":")[0] for l in tp] == ["board", "pot", "bet_sizes", "donk_bet"],
+          "bad set_board clears the board; show_tree_params layout")
+    u.cmd("set_board Kh9h4h2c3d")
+    u.cmd("set_pot 5 6 7")
+    check(u.cmd("set_pot 1 2") == "set_pot ok!", "set_pot with two values")
+    check(u.cmd("set_pot 9").startswith("ERROR"), "set_pot with one value errors")
+    check(u.cmd("set_eff_stack").startswith("ERROR"), "bare set_eff_stack errors")
+    check(u.cmd("set_bet_sizes 33.5,75 x 50") == "set_bet_sizes ok!", "set_bet_sizes")
+    check(u.cmd("set_donk_bet -1") == "set_donk_bet ok!", "set_donk_bet")
+    check(u.cmd("show_tree_params") == "board: Kh 9h 4h 2c 3d \npot: 9 2 7 \nbet_sizes: 33 0 50 \ndonk_bet: TRUE",
+          "show_tree_params: partial set_pot keeps the rest, sizes parse like atoi")
+    check(u.cmd("set_donk_bet 0.5") == "set_donk_bet ok!" and u.cmd("show_tree_params").endswith("donk_bet: FALSE"),
+          "set_donk_bet 0.5 is false")
+    u.cmd("set_bet_sizes")
+    check(u.cmd("unlock_all") == "ERROR: unlock_all missing/incorrect tree", "unlock_all needs a tree")
+    u.cmd("set_range OOP AA,KK,QQ")
+    u.cmd("set_range IP AA,KK,QQ,JJ")
+    u.cmd("set_pot 0 0 61.7")
+    u.cmd("set_eff_stack 200.9")
+    u.cmd("clear_lines")
+    for l in ("30.7", "0 30.2", "0 30.9 80.5", "40"):
+        check(u.cmd("add_line " + l) == "add_line ok!", f"add_line {l} accepted")
+    check(u.cmd("remove_line 40.9") == "remove_line ok!", "remove_line with a fraction")
+    check(u.cmd("add_line abc").startswith("ERROR"), "add_line without a digit still errors")
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree with truncated amounts")
+    lines = u.cmd("show_all_lines").split("\n")
+    check("r:0:b30" in lines and "r:0:c:b30:b80" in lines and "r:0:b40" not in lines,
+          "fractions truncate (30.7 -> b30, 80.5 -> b80) and remove_line 40.9 removed the 40 line")
+    check(u.cmd("show_node r:0").split("\n")[3].split() == ["0", "0", "61"], "set_pot 61.7 is 61")
+    u.cmd("lock_node r:0:c")
+    order = hand_order(u)
+    aa = [i for i, h in enumerate(order) if h[0] == "A" and h[2] == "A"]
+    v = ["0"] * 1326
+    for i in aa:
+        v[i] = "1"
+    check(u.cmd("combo_lock_node r:0 " + " ".join(v)) == "combo_lock_node ok!", "combo_lock_node")
+    check(u.cmd("unlock_all") == "unlock_all ok!", "unlock_all")
+    check(sum(floats(u.cmd("show_locked_combos r:0:c"))) == 0, "unlock_all clears node locks")
+    check(sum(floats(u.cmd("show_locked_combos r:0"))) == len(aa), "unlock_all keeps combo locks (as Pio)")
+    u.cmd("free_tree")
+    for c in ("lock_node", "show_node r:0", "set_rake 0.05 3", "set_icm 100 100", "clear_cache", "go 10 steps"):
+        check(u.cmd(c).endswith(" missing/incorrect tree"), f"{c} without a tree: missing/incorrect tree first")
+
+    print("[over-long lines keep their prefix]")
+    u.cmd("set_board Kh9h4h")
+    u.cmd("set_pot 0 0 100")
+    u.cmd("set_eff_stack 200")
+    u.cmd("clear_lines")
+    long_msg = "ERROR: add_line Specified line is too long. Some actions were not included in the tree."
+    check(u.cmd("add_line 50 50 200 200 0") == long_msg, "a line past an all-in call: Pio's add_line error")
+    check(u.cmd("add_line 50 0") == "add_line ok!", "a fold ends a line exactly")
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree keeps the valid prefix")
+    lines = u.cmd("show_all_lines").split("\n")
+    check("r:0:b50:c:?:b200:c" in lines and not any(l.startswith("r:0:b50:c:?:b200:c:") for l in lines),
+          "the over-long line stops at the all-in call")
+    # add_line checks the line against the current config (probed on Pio 3.10): an amount below
+    # the bet faced is "Incorrect bet size." (0 facing a bet is a fold), and with no stack set
+    # Pio has no all-in root, so nothing is "too long" before the river.
+    bad_size = "ERROR: add_line Incorrect bet size."
+    u.cmd("clear_lines")
+    check(u.cmd("add_line 50 30") == bad_size, "an amount between own investment and the bet faced")
+    check(u.cmd("add_line 50 50 100 0") == bad_size, "an amount below own investment")
+    u.cmd("clear_lines")
+    u.cmd("set_eff_stack 0")
+    check(u.cmd("add_line 75 200") == "add_line ok!", "no stack set: no all-in root at add time (Pio)")
+    check(u.cmd("add_line 50 50 200 200 0") == bad_size, "no stack set: amounts are still checked")
+    check(u.cmd("add_line 0 0 0 0 0 0 0") == long_msg, "no stack set: past the river is too long")
+    u.cmd("clear_lines")
+    u.cmd("set_eff_stack 200")
+
+    print("[rake and ICM belong to the tree]")
+    u.cmd("set_board KhQs7d4c2s")
+    u.cmd("set_pot 0 0 100")
+    u.cmd("set_eff_stack 200")
+    u.cmd("clear_lines")
+    u.cmd("add_line 75 200")
+    u.cmd("build_tree")
+    path = "r:0:b75:b200:c"
+    check(u.cmd(f"show_win_evs OOP {path}") == "300 -200 50", "no rake")
+    u.cmd("set_rake 0.05 3")
+    check(u.cmd(f"show_win_evs OOP {path}") == "297 -200 48.5", "set_rake on the tree")
+    u.cmd("build_tree")
+    check(u.cmd(f"show_win_evs OOP {path}") == "300 -200 50", "build_tree starts without rake (Pio)")
+    for c in ("set_icm_point OOP 0 0", "set_icm_point OOP 200 40", "set_icm_point OOP 400 66",
+              "set_icm_point IP 0 0", "set_icm_point IP 300 52", "set_icm_point IP 500 72", "set_icm 200 300"):
+        u.cmd(c)
+    check(u.cmd(f"show_win_evs OOP {path}") == "39 -40 6.5", "set_icm on the tree")
+    u.cmd("build_tree")
+    check(u.cmd(f"show_win_evs OOP {path}") == "300 -200 50", "build_tree starts without ICM (Pio)")
+    check(u.cmd("set_icm 200 300") == "set_icm ok!" and u.cmd(f"show_win_evs OOP {path}") == "39 -40 6.5",
+          "the ICM points survive build_tree")
+    u.cmd("reset_icm_tables")
+    u.cmd("free_tree")
+
+
 def main(exe, big=False):
     u = Upi(exe)
     try:
@@ -606,6 +837,7 @@ def main(exe, big=False):
         check_calc_eq_preflop_exact(u)
 
         check_union_hands(u)
+        check_output_format(u)
 
         check_go_partial(u)
         check_go_limits_and_errors(u)
@@ -782,6 +1014,8 @@ def main(exe, big=False):
         res = u.cmd("calc_results").split("\n")
         ex = float(res[4].split(": ")[1])
         check(ex < 0.05, f"pure preflop all-in tree converges (explo {ex:.4f})")
+
+        check_legacy_params(u)  # last: it defines ICM points, which (as in Pio) stay defined
     finally:
         u.close()
     print()

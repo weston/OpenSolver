@@ -538,7 +538,7 @@ class ResolveManager:
                     raise vsrv.SolverError("no subgame tree (run a re-solve first)")
                 if self.busy:
                     raise vsrv.SolverError("re-solve in progress")
-            return vsrv.api(self.rsolver, None, "GET", BROWSE_MAP[sub], query, None)
+            return vsrv._api_main(self.rsolver, None, "GET", BROWSE_MAP[sub], query, None)
         if method != "POST":
             raise vsrv.SolverError("POST required")
         b = vsrv.need_body(body)

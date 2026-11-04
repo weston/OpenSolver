@@ -35,6 +35,15 @@ struct ActionNode {
   std::vector<Action> actions;       // Decision only; same order as children
   std::vector<std::unique_ptr<ActionNode>> children;  // Decision: per action. Chance: exactly 1.
   int32_t id = -1;                   // dense index assigned after building
+
+  // Out-of-line, defined once in action_tree.cpp (#216). The node is recursive through `children`,
+  // so an implicit destructor is instantiated in every TU that destroys one, and under PGO those
+  // per-TU instantiations can disagree on their control-flow hash -- which discards the profile
+  // counts for them and warns. Declaring it here keeps the instantiation to a single TU.
+  ActionNode() = default;
+  ~ActionNode();
+  ActionNode(const ActionNode&) = delete;
+  ActionNode& operator=(const ActionNode&) = delete;
 };
 
 struct LineSet {

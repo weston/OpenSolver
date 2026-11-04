@@ -11,12 +11,15 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <sstream>
 
 #include "parallel.hpp"
@@ -167,27 +170,31 @@ std::string Upi::pfmt(const char* f, double v) const {
   return buf;
 }
 
-std::string Upi::fmt(double v) const {
-  char buf[64];
-  if (std::isnan(v)) return "nan";
-  float f = static_cast<float>(v);
-  auto r = std::to_chars(buf, buf + sizeof(buf), f);
-  return std::string(buf, r.ptr);
+// Pio prints computed values as the float rounded to 9 significant digits (printf "%.9g": "0.570510685",
+// "2821.31494", "1.05068034e-06", "60"), which round-trips a float exactly; verified on every vector
+// and scalar in tests/pio_compare/probe*.txt against PioSOLVER 3.10.1 (#125).
+static char* put_float(char* buf, char* end, float f) {
+  if (std::isnan(f)) {
+    std::memcpy(buf, "nan", 3);
+    return buf + 3;
+  }
+  return std::to_chars(buf, end, f, std::chars_format::general, 9).ptr;
 }
 
+std::string Upi::fmt(double v) const {
+  char buf[64];
+  return std::string(buf, put_float(buf, buf + sizeof(buf), static_cast<float>(v)));
+}
+
+// One value per hand (or class) as Pio prints it: "%.9g " each, so the line ends in a space.
 std::string Upi::floats_line(const float* v, int n) const {
   std::string s;
-  s.reserve(static_cast<size_t>(n) * 8);
+  s.reserve(static_cast<size_t>(n) * 10);
   char buf[32];
   for (int i = 0; i < n; ++i) {
-    if (i) s += ' ';
-    float f = v[i];
-    if (std::isnan(f)) {
-      s += "nan";
-      continue;
-    }
-    auto r = std::to_chars(buf, buf + sizeof(buf), f);
-    s.append(buf, r.ptr);
+    char* e = put_float(buf, buf + sizeof(buf), v[i]);
+    *e++ = ' ';
+    s.append(buf, e);
   }
   return s;
 }
@@ -265,6 +272,15 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
   }
   auto it = handlers_.find(cmd);
   if (it == handlers_.end()) throw CmdError{"Command " + cmd + " not recognized", true};
+  // Pio 3.10 answers these with "missing/incorrect tree" when no tree exists, before looking at
+  // the arguments (probed with each one bare and with valid arguments).
+  static const std::set<std::string> needs_tree = {
+      "calc_ev", "calc_ev_pp", "calc_global_freq", "calc_line_freq", "calc_results", "clear_cache",
+      "combo_lock_node", "dump_tree", "eliminate_path", "estimate_rebuild_tree", "explo_partial", "go",
+      "load_all_nodes", "lock_node", "node_count", "rebuild_tree", "set_strategy", "show_children",
+      "show_effective_stack", "show_incentives", "show_locked_combos", "show_node", "show_strategy",
+      "show_strategy_pp", "show_win_evs", "solve_all_splits", "solve_partial", "unlock_all", "unlock_node"};
+  if (!tree_ && needs_tree.count(cmd)) require_tree();
   return it->second(args);
 }
 
@@ -281,11 +297,15 @@ std::string Upi::stats_block(const RootStats& st, double running_time) {
 
 void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   require_tree();
+  release_hold();  // every way a solve starts (go, go_partial, ...) drops a pending hold
   if (solving_) return;
   if (solver_thread_.joinable()) solver_thread_.join();
   // Solving touches every node: read a lazily loaded tree completely first (in parallel).
   std::string lerr;
   if (!tree_->load_all(lerr)) throw CmdError{"cannot read the tree's file: " + lerr};
+  // Solving the whole tree again makes its own results current (#195); go_partial, like solve_partial,
+  // keeps reporting the saved ones while other streets are still missing.
+  if (!sub) tree_->has_saved_stats = false;
   stop_flag_ = false;
   solving_ = true;
   solver_thread_ = std::thread([this, seconds, steps, sub = std::move(sub)] { solver_thread_main(seconds, steps, std::move(sub)); });
@@ -427,7 +447,17 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   solving_ = false;
 }
 
+// hold / release: see H["hold"]. Every way a solve ends or restarts drops the hold first, so a
+// forgotten release can never leave a later solve parked.
+void Upi::release_hold() {
+  if (!held_) return;
+  held_ = false;
+  pause_requests_.fetch_sub(1);
+  pause_cv_.notify_all();
+}
+
 void Upi::stop_solver(const char* reason) {
+  release_hold();
   if (solver_thread_.joinable()) {
     if (solving_) {
       stop_reason_ = reason;
@@ -460,7 +490,13 @@ std::string Upi::cmd_build_tree(const Args& a) {
 std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, const char* okmsg) {
   stop_solver();
   auto t = std::make_unique<GameTree>();
-  t->payoff = payoff_;
+  // Rake and ICM belong to a tree in Pio (probed): a new tree starts with both off, while the ICM
+  // points stay defined. set_rake / set_icm need a tree, so a script sets them after build_tree.
+  PayoffModel pm = payoff_;
+  pm.rake_frac = 0;
+  pm.rake_cap = 0;
+  pm.icm.enabled = false;
+  t->payoff = pm;
   std::string err;
   if (!t->build(c, err, false)) throw CmdError{err};
   // Old tree memory is released before allocating the new one, so count it as available.
@@ -497,7 +533,9 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   solver_.reset();
   t->allocate_storage();
   tree_ = std::move(t);
+  payoff_ = pm;
   solver_ = std::make_unique<Solver>(*tree_);
+  solver_->river_batch = Solver::river_batch_for(*tree_);
   solver_->first_player = first_player_;
   solver_->params = dcfr_;
   apply_pcfr_settings();
@@ -644,10 +682,7 @@ void Upi::register_commands() {
   };
   H["show_hand_order"] = [](const Args&) {
     std::string s;
-    for (int i = 0; i < NUM_COMBOS; ++i) {
-      if (i) s += ' ';
-      s += combo_str(i);
-    }
+    for (int i = 0; i < NUM_COMBOS; ++i) s += combo_str(i) + " ";  // trailing space, like Pio
     return s;
   };
   H["show_preflop_order"] = [](const Args&) { return std::string(kPreflopOrder); };
@@ -693,6 +728,7 @@ void Upi::register_commands() {
   // ---- Solving ----
   H["go"] = [this](const Args& a) {
     require_tree();
+    release_hold();
     double secs = 0;
     long long steps = 0;
     if (!a.empty()) {
@@ -737,7 +773,25 @@ void Upi::register_commands() {
     stop_solver();
     return std::string("stop ok!");
   };
+  // hold / release (an extension, for the viewer): keep a running solve parked between iterations
+  // across a burst of commands. Each command otherwise waits for an iteration boundary of its own,
+  // and the solve resumes between commands, so a dozen reads cost a dozen iterations (seconds on a
+  // big tree). hold returns once the solver is between iterations, or at once if it is not
+  // running. A parked solve resumes exactly where it was, so results are unaffected.
+  H["hold"] = [this](const Args&) {
+    if (!held_) {
+      held_ = true;
+      pause_requests_.fetch_add(1);
+    }
+    std::lock_guard<std::mutex> lk(tree_mu_);  // iterations run under tree_mu_
+    return std::string("hold ok!");
+  };
+  H["release"] = [this](const Args&) {
+    release_hold();
+    return std::string("release ok!");
+  };
   H["wait_for_solver"] = [this](const Args&) {
+    release_hold();  // waiting on a parked solve would never return
     if (solver_thread_.joinable()) solver_thread_.join();
     return std::string("wait_for_solver ok!");
   };
@@ -836,6 +890,9 @@ void Upi::register_commands() {
     if (solver_) solver_->avg_delay = avg_delay_;
     return std::string("set_avg_delay ok!");
   };
+  // show_avg_delay (extension): the current set_avg_delay. The viewer's fast preview compares
+  // strategy averages across iterations and must not compare across the reset at n + 1.
+  H["show_avg_delay"] = [this](const Args&) { return std::to_string(avg_delay_); };
   // Not a Pio command. Regret-based pruning (#51, see Solver::pruning): from iteration
   // 2*<period>+1 on, an action of the traverser whose current strategy is zero for every one of
   // its hands is not re-measured that iteration; its regret row is frozen (not discounted or
@@ -885,29 +942,66 @@ void Upi::register_commands() {
     for (int i = 0; i < NUM_COMBOS; ++i) cfg_.range[p][i] = w[i];
     return std::string("set_range ok!");
   };
+  // Chip amounts are whole numbers parsed like C's atoi, as in Pio 3.10 (probed): "61.7" is 61,
+  // "1e1" is 1. set_eff_stack and set_pot take anything; add_line and friends need a leading digit.
   H["set_eff_stack"] = [this](const Args& a) {
-    cfg_.eff_stack = a.empty() ? 0 : static_cast<int32_t>(std::atoll(a[0].c_str()));
+    if (a.empty()) throw CmdError{"incorrect or missing argument"};
+    cfg_.eff_stack = static_cast<int32_t>(std::atoll(a[0].c_str()));
     return std::string("set_eff_stack ok!");
   };
   H["set_board"] = [this](const Args& a) {
-    if (a.size() != 1) throw CmdError{"incorrect or missing argument"};
+    // Pio clears the board on a bad set_board (show_tree_params then says "board: not set").
     std::vector<int> b;
-    if (!parse_cards(a[0], b) || b.size() < 3 || b.size() > 5) throw CmdError{"incorrect or missing argument"};
+    if (a.size() != 1 || !parse_cards(a[0], b) || b.size() < 3 || b.size() > 5) {
+      cfg_.board.clear();
+      throw CmdError{"incorrect or missing argument"};
+    }
     cfg_.board = b;
     return std::string("set_board ok!");
   };
   H["set_pot"] = [this](const Args& a) {
-    for (int i = 0; i < 3; ++i) cfg_.pot[i] = i < static_cast<int>(a.size()) ? static_cast<int32_t>(std::atoll(a[i].c_str())) : 0;
+    // Pio: only the given values change; fewer than two is an error, but they are still applied.
+    for (size_t i = 0; i < 3 && i < a.size(); ++i) cfg_.pot[i] = static_cast<int32_t>(std::atoll(a[i].c_str()));
+    if (a.size() < 2) throw CmdError{"incorrect or missing argument"};
     return std::string("set_pot ok!");
   };
   auto parse_line = [](const Args& a) {
     std::vector<int32_t> l;
-    for (size_t i = 0; i < a.size(); ++i) l.push_back(static_cast<int32_t>(arg_int(a, i, "amount")));
+    for (const auto& s : a) {
+      // Pio truncates fractional amounts ("30.7" builds a 30 bet). A token with no leading digit
+      // stays an error here: Pio accepts it but builds something arbitrary (probed: "abc" -> b200).
+      size_t i = s[0] == '+' || s[0] == '-' ? 1 : 0;
+      if (i >= s.size() || !std::isdigit(static_cast<unsigned char>(s[i]))) throw CmdError{"incorrect or missing argument"};
+      l.push_back(static_cast<int32_t>(std::atoll(s.c_str())));
+    }
     if (l.empty()) throw CmdError{"incorrect or missing argument"};
     return l;
   };
   H["add_line"] = [this, parse_line](const Args& a) {
-    cfg_.lines.add.push_back(parse_line(a));  // validated at build_tree, like Pio
+    cfg_.lines.add.push_back(parse_line(a));  // amounts are validated at build_tree
+    // Like Pio, the line is checked against the current config here but kept either way:
+    // - running past the end of the hand: "too long", and build_tree uses the valid prefix;
+    // - an amount below the bet faced or below one's own investment (other than a fold): Pio's
+    //   "Incorrect bet size." (Pio's build_tree then crashes; ours reports the amount).
+    // Pio checks neither the stack nor an all-in root here: with no stack set (or one the
+    // start investment already covers) every line it can classify is accepted, so we drop
+    // the stack for the check in that case.
+    if (cfg_.board.size() >= 3) {
+      ActionTreeParams ap;
+      ap.board_len = static_cast<int>(cfg_.board.size());
+      ap.start_inv[0] = cfg_.pot[0];
+      ap.start_inv[1] = cfg_.pot[1];
+      ap.eff_stack = cfg_.eff_stack > std::max(cfg_.pot[0], cfg_.pot[1])
+                         ? cfg_.eff_stack
+                         : std::numeric_limits<int32_t>::max();
+      std::string err;
+      if (!validate_line(ap, cfg_.lines.add.back(), err)) {
+        if (err.rfind("Specified line is too long", 0) == 0) throw CmdError{err};
+        if (err.find(" is between current investment") != std::string::npos ||
+            err.find(" is below current investment") != std::string::npos)
+          throw CmdError{"Incorrect bet size."};
+      }
+    }
     return std::string("add_line ok!");
   };
   H["remove_line"] = [this, parse_line](const Args& a) {
@@ -972,6 +1066,29 @@ void Upi::register_commands() {
     tree_info_.clear();
     return std::string("reset_tree_info ok!");
   };
+  // Pio 3.10 still answers these legacy commands. The sizes and the donk flag are only stored and
+  // echoed by show_tree_params; build_tree ignores them in Pio as well (it needs add_line).
+  H["set_bet_sizes"] = [this](const Args& a) {
+    legacy_bet_sizes_.clear();
+    for (const auto& s : a) legacy_bet_sizes_.push_back(std::atoll(s.c_str()));  // atoi: "33.5,75" is 33
+    return std::string("set_bet_sizes ok!");
+  };
+  H["set_donk_bet"] = [this](const Args& a) {
+    if (a.empty()) throw CmdError{"incorrect or missing argument"};
+    legacy_donk_bet_ = std::atoll(a[0].c_str()) != 0;  // "true" and "0.5" are false, "-1" is true
+    return std::string("set_donk_bet ok!");
+  };
+  H["show_tree_params"] = [this](const Args&) {
+    std::string s = "board: ";
+    if (cfg_.board.empty()) s += "not set";
+    for (int c : cfg_.board) s += card_str(c) + " ";
+    s += "\npot: ";
+    for (int i = 0; i < 3; ++i) s += std::to_string(cfg_.pot[i]) + " ";
+    s += "\nbet_sizes: ";
+    for (long long v : legacy_bet_sizes_) s += std::to_string(v) + " ";
+    s += std::string("\ndonk_bet: ") + (legacy_donk_bet_ ? "TRUE" : "FALSE");
+    return s;
+  };
   H["show_tree_info"] = [this](const Args&) {
     std::string s;
     for (size_t i = 0; i < tree_info_.size(); ++i) s += tree_info_[i] + (i + 1 < tree_info_.size() ? "\n" : "");
@@ -980,6 +1097,7 @@ void Upi::register_commands() {
 
   // ---- Alternative EV models ----
   H["set_rake"] = [this](const Args& a) {
+    require_tree();  // Pio checks the tree first, even before the arguments
     payoff_.rake_frac = arg_double(a, 0, "fraction");
     payoff_.rake_cap = arg_double(a, 1, "cap");
     // Rake and ICM are exclusive; like Pio, the last one set wins (setting rake turns ICM off).
@@ -992,6 +1110,7 @@ void Upi::register_commands() {
     return std::string("set_rake ok!");
   };
   H["set_icm"] = [this](const Args& a) {
+    require_tree();
     payoff_.icm.stacks[0] = static_cast<int32_t>(arg_int(a, 0, "oop stack"));
     payoff_.icm.stacks[1] = static_cast<int32_t>(arg_int(a, 1, "ip stack"));
     // Pio: without ICM points it reports an error line, still answers ok, and leaves ICM off.

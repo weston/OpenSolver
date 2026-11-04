@@ -288,6 +288,10 @@ class GameTree {
   bool fast_loaded = false;   // loaded without `full` (Pio: some commands need load_all_nodes)
   bool loaded_compressed = false;
   std::unordered_set<uint32_t> recalced;  // street roots re-solved on demand  // a truncated save was loaded (later streets unsolved)
+  // Root results (EV OOP, EV IP, MES OOP, MES IP, exploitability) of the solve that produced a truncated
+  // save. While its streets are missing, calc_results reports these, as Pio does (#195).
+  bool has_saved_stats = false;
+  double saved_stats[5] = {0, 0, 0, 0, 0};
 
   int num_hands(int p) const { return static_cast<int>(hands[p].size()); }
   int root_board_len() const { return static_cast<int>(cfg.board.size()); }
@@ -304,6 +308,9 @@ class GameTree {
 
   // Payoff for player p at a terminal given outcome (1 win, 0 tie, -1 lose).
   double terminal_payoff(const ActionNode& an, int p, int outcome) const;
+  // Mean number of showdown terminals per river subtree of the action tree (river decision nodes
+  // entered from a chance node), i.e. how many jobs Solver::river_cfr can batch per board. 0 if none.
+  double river_showdowns_per_root() const;
   std::vector<std::unique_ptr<ActionNode>> schematic_roots;  // owned postflop trees (preflop mode)
   std::vector<uint8_t> perm_all;  // suit permutations valid for both ranges (flop-deal symmetrization)
   std::vector<float> flop_compat[2];  // per hand: compatible share of the subset flop weight

@@ -8,27 +8,52 @@ Measure with wall time or `make bench`. Not `solver_time` — see the warning in
 
 ## Self time by function, 1 thread
 
+Re-sampled after the lanes kernels (#209, #219) and the fused fold (#168). `sample` for 8-10 s at
+1 thread, 2.5K-7.4K working samples per tree, waiting threads excluded and frames under 5 samples
+truncated by the tool. Pre-#209 figures in brackets for comparison:
+
 | tree | showdown | fold | walk_t | strategy (cur+avg) | compat_mass |
 |---|---|---|---|---|---|
-| turn | 48.8% | 0.0% | 25.5% | 10.8% | 13.0% |
-| flop_srp_2 | 58.9% | 0.0% | 21.0% | 10.9% | 7.7% |
-| flop_srp_4 | 58.8% | 0.0% | 21.6% | 10.7% | 8.2% |
-| deep | 64.5% | 0.0% | 19.2% | 10.2% | 4.4% |
-| flop_3bet | 64.8% | 0.0% | 18.5% | 10.0% | 0.5% |
-| preflop | 98.2% | 0.0% | 0.9% | 0.4% | 0.4% |
+| turn | **66.0%** (48.8) | 0.0% | **8.8%** (25.5) | **14.4%** (10.8) | **0.0%** (13.0) |
+| flop_srp_2 | **63.3%** (58.9) | 0.0% | **9.9%** (21.0) | **16.7%** (10.9) | **0.3%** (7.7) |
+| flop_srp_4 | **65.1%** (58.8) | 0.0% | **10.4%** (21.6) | **14.4%** (10.7) | **0.3%** (8.2) |
+| deep | **61.2%** (64.5) | 0.0% | **11.8%** (19.2) | **14.2%** (10.2) | **0.2%** (4.4) |
+| flop_3bet | **51.8%** (64.8) | 0.0% | **17.7%** (18.5) | **13.8%** (10.0) | **0.7%** (0.5) |
+| preflop | not re-sampled — see below | | | | |
 
-`fold_value` is 0.0% everywhere. It is not a target, despite being a natural-sounding one.
+`fold_value` is 0.0% everywhere, still. It is not a target, despite being a natural-sounding one.
+
+The structural change is **`compat_mass` has essentially vanished** — 4.4-13.0% down to 0.0-0.7% —
+because #168 folds the opponent's fold mass into the same showdown kernel call rather than a
+separate pass. `walk_t` roughly halved on every tree but `flop_3bet`. `strategy` rising is relative:
+the same work against a smaller total.
+
+`preflop` cannot be sampled this way: it converges so fast that 20,000 steps complete in **0.03 s**,
+so the process exits before `sample` can attach. Its old 98.2% showdown row is left out rather than
+carried forward unverified — and per the share-is-not-amount rule below, a tree that solves in 0.03 s
+is not a target whatever its profile says.
+
+**One caveat on comparing these to the bracketed numbers.** Pruning is inactive until
+`t > 2 * prune_period` = 16, so a long sampling run is mostly pruned iterations while a short one is
+not, and that changes the mix as well as the absolute cost. These runs are 400-4,000 iterations; the
+original window is unrecorded. Treat large shifts (`compat_mass`, `walk_t`) as real and single-digit
+ones as possibly just the window.
 
 ## The dominant cost, characterised
 
-`showdown_board`, on `flop_srp_2` at 0.126 s/iteration single-threaded:
+`showdown_board`, on `flop_srp_2` single-threaded. Re-measured with a two-point slope (0 vs 40
+iterations, best of 3) at **0.0915 s/iteration**, down from 0.126 s when this was first written:
 
 ```
 54,730 calls/iteration        754 entries per call
 41,265,447 entry-visits/iteration
-1.36 us per call              1.80 ns per entry-visit  (~5.8 cycles at 3.2 GHz)
-556M entry-visits/s
+                              1.40 ns per entry-visit  (~4.5 cycles at 3.2 GHz)
+713M entry-visits/s
 ```
+
+(Entry-visits counts every structural entry, so it is unchanged by #151's zero-reach skipping; the
+throughput figure is per structural entry, the same basis as the 556M it replaces. The per-entry cost
+is 22% better than the 1.80 ns recorded before the lanes kernels.)
 
 This path is close to its CPU ceiling, and the reasons are all measured rather than assumed:
 
@@ -52,23 +77,57 @@ This path is close to its CPU ceiling, and the reasons are all measured rather t
   a route to wide execution. (#92)
 - **The strength orderings are already shared** — 799 `ShowdownBoard`s serve 25,906 terminal nodes
   on a flop tree, 48 serve 773 on a turn. Nothing left to amortise there. (#57)
-- **5.8 cycles per entry-visit** for a gather, two adds and a store is already tight.
+- **4.5 cycles per entry-visit** for a gather, two adds and a store is already tight (5.8 before the lanes kernels).
 
 ## What is actually left, in order of size
 
-1. **Thread scaling (#53) — worth ~2-3x, the largest available win.** Measured 6-8x on 20 cores,
-   and a net *loss* on the smallest trees (the preflop tree is slower on 20 threads than on 1).
-   Platform-independent and costs no bit-stability.
+1. **Thread scaling (#53) — now ~1.4x left on postflop trees, no longer the largest win.** The
+   "6-8x on 20 cores, 2-3x available" figure this list used to carry is **stale**; the work since
+   (#144-#146, #161, #111) has largely spent it. Re-measured with a two-point slope (0 vs **40**
+   iterations, best of 3, so startup and tree build cancel):
+
+   | tree | 1 thread s/iter | 20 threads s/iter | speedup |
+   |---|---|---|---|
+   | `deep` | 0.15006 | 0.01044 | **14.38x** |
+   | `flop_srp_2` | 0.09168 | 0.00655 | **13.99x** |
+   | `flop_3bet` | 0.02865 | 0.00233 | **12.30x** |
+   | `turn` | 0.00149 | 0.00072 | 2.05x |
+
+   **State the iteration window when you quote a per-iteration cost.** It is not a constant: pruning
+   is inactive until `t > 2 * prune_period` = 16, so a 20-iteration slope is mostly unpruned and a
+   40-iteration slope is half pruned. `flop_srp_2` measures 0.110 s/iter over 20 iterations and
+   0.0917 over 40 — a 20% spread from the window alone, with nothing else changed. The *speedups*
+   are stable (14.1x vs 14.0x) because both sides shift together, which is why ratios survive this
+   and absolute numbers do not.
+
+   So on the trees that cost real time, 20 cores already return 12.3-14.3x and the remaining
+   headroom is about **1.4x**, not 2-3x. Small trees still scale badly (`turn` at 2.01x), but they
+   are cheap in absolute terms — the share-is-not-amount rule applies. Note also that the old claim
+   of a net *loss* on the smallest trees no longer holds: `turn` is a 2x gain.
 2. **x86 gather (#89) — unknown, needs x86 hardware.** AVX2 `vgatherdps` / AVX-512 gather might
    vectorize the two `cs[]` lookup loops that NEON cannot. AVX2 gathers are microcoded and often no
    better than scalar, so this is empirical.
-3. **GPU (#87) — no-go for now.** Unified memory removes the usual blocker on Apple Silicon and the
-   parallelism is there, but arithmetic intensity is ~3 flops per 3 memory touches, each board
-   carries a serial scan, bit-stability is lost, and it means two permanent backends. Revisit once
-   (1) is done.
-4. **Convergence — already taken.** γ 2→3 gave -11% wall time and 455 iterations against 500
-   (#52, `dcfr_sweep.md`). γ=5 is faster still in total but regresses a low-SPR 3-bet pot at tight
-   targets, so it is available via `set_dcfr` rather than default.
+3. **GPU (#58) — no-go, and the bar went up.** Unified memory removes the usual blocker on Apple
+   Silicon and the parallelism is there, but arithmetic intensity is ~3 flops per 3 memory touches,
+   each board carries a serial scan, bit-stability is lost, and it means two permanent backends.
+   This entry used to say "revisit once (1) is done"; (1) is now largely done, and the measurements
+   in `gpu_feasibility.md` (#217) make the answer *more* negative, not less:
+   - the CPU target is now **~10 G entry-visits/s** at 20 threads, not the 556 M single-thread figure
+     the case was originally argued against;
+   - Metal has **no float atomics in `threadgroup` address space** (`device` only), so the mapping
+     that document recommends — `cs[52]` in threadgroup memory with threads cooperating — cannot be
+     written as specified;
+   - the atomics-free alternative compiles but reads every opponent entry from all 52 threads, ~52x
+     the CPU's memory traffic, on a kernel that is already throughput-bound on memory.
+
+   It was never blocked on tooling, though: a shader compiles at runtime via `newLibraryWithSource`
+   with only Command Line Tools.
+4. **Convergence — already taken.** The current defaults are **α=1.3, γ=4** after the #72 retune.
+   The earlier γ 2→3 step gave -11% wall time and 455 iterations against 500 (#52,
+   `dcfr_sweep.md`), and #72 then moved past it; γ=5 is faster still in total but regresses a low-SPR
+   3-bet pot at tight targets, so it is available via `set_dcfr` rather than default. Re-sweeping is
+   cheap and has paid before — see the `avg_delay` entry below — so do it after anything that moves
+   where the time goes, rather than trusting a sweep from an older default.
 
 ## Check the defaults before optimising the code
 
@@ -195,6 +254,70 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
   an iteration; inside it the batched showdown kernel is 47%, regret updates 17%, `current_strategy`
   12%, and the rest of the river walk (reach products, fold rows, job setup, the value sums on the
   way up) about 18%.
+- **After #209** (showdown jobs as SIMD lanes; the PC, 2026-11-03). Profile, threebet_mono, 1 thread:
+  an iteration is 21% cheaper than after #189 (the batched kernel's cycles per river batch 6,650 ->
+  3,730); the kernel is now 32% of an iteration, regret updates 21%, `current_strategy` 14%, the
+  river walk's value sums 3.7%, the traverser's node setup 3.0%, reach products ~3%, and allocation,
+  recursion and job setup ~10%. Things tried on top of it, none kept:
+  - **Decoding 16-bit rows inside the regret update** (one pass instead of decode-R, decode-S, update):
+    bit-identical, but threebet_mono 3.20 vs 3.20 s at 32 threads, srp_big 42.8 vs 42.8 s, 1 thread
+    6.150 vs 6.128 s. The decode passes are short vectorized loops, and the row update itself is the cost.
+  - **Thread pinning** (worker i on logical CPU i+1): now 10% *slower* on threebet_mono at 32 threads
+    (2.60 -> 2.86 s); it was -6% before #189.
+  - **Prefetching the traverser's strategy-sum rows** on the way down the two-phase river walk (the
+    update reads them on the way up, a whole subtree later): threebet_mono 2.644 / 2.614 (T0) / 2.589 s
+    (T1), srp_big 39.6 vs 39.3 s: within noise. *Superseded by #238*: re-measured on main after #237,
+    prefetching every line of the node's rows (write intent) is -6% on the M4 at 1 and 10 threads and
+    -7 to -10% on Zen 5 from 1 to 32 threads on threebet_mono; only srp_big at 32 threads, which is
+    bandwidth-bound, is unchanged. Prefetching the children's regret rows as well is slower (+4-10%).
+  - **Terminal payoffs from a per-action-node table** instead of `terminal_payoff` per showdown job:
+    no gain (within noise; if anything slower).
+  - **Exploitability checks** cost 1.2 iterations each on threebet_mono (19.6 vs 16.2 ms at 32 threads)
+    and 1.0 on srp_big (0.31 s); `set_info_freq auto` runs 10 and 8 of them, 6-8% of a solve. The
+    check walk (`walk_evbr`) still evaluates showdowns one terminal at a time; giving it the
+    two-phase river walk and the lanes kernel would save an estimated 1-2%, not worth a third copy of
+    the river semantics. Separately, the auto schedule's check at iteration 33 lands right after the
+    avg_delay reset (threebet_mono: 25.1 -> 40.4 chips), so it is uninformative.
+- **The PC is memory-bound from 8 threads up, even at 16-bit** (2026-11-03, threebet_mono, 60 iterations,
+  after #226). 1 / 4 / 8 / 16 / 32 threads: 9.58 / 2.65 / 1.45 / 1.02 / 0.90 s (10.6x at 32). float32
+  takes 1.46 s at both 16 and 32 threads, against 0.99 / 0.88 s for 16-bit, and two 8-thread solves run
+  side by side take 1.83 s each (1.45 s alone), so 16 cores of independent work add only ~10% over one
+  32-thread solve. Per element and iteration the walk moves ~10 bytes at 16-bit (the owner's pass reads
+  and writes R and S, the other pass reads R); that is ~48 GB/s at 32 threads against ~58 GB/s for
+  float32. Compute savings therefore show at 1 thread and on the Mac, and only partly on the PC at 32.
+  Neither zero-reach shortcut is available at cache-line granularity: 54-55% of reach entries at river
+  nodes are exactly zero, but only 6-7% of 32-hand lines are.
+- **Half-width lanes for packs of up to 4 lanes** (#234). 3-4 lanes are 50-65% of the lanes kernel's
+  work on srp_big and threebet_mono, so the NEON kernel now has a 4-lane width: M4, 10 threads,
+  threebet_mono to 0.6 chips 5.89 -> 5.54 s (-6%), srp_big 12 iterations 8.21 -> 7.78 s (-5%),
+  bit-identical. The same split on x86 (a 128-bit `showdown_lanes_256`) is no faster on Zen 5, even at
+  1 thread (3.13 vs 3.11 s), so the x86 builds keep one width. Also measured: 47% (threebet_mono) and
+  60% (srp_big) of the opponent entries the kernel adds are zero in every lane, but the opponent loop
+  is the smaller half of the kernel (~64 entries per call against 128 hero entries done three times).
+- **More NEON kernel variants after #234, none kept** (M4, threebet_mono, 1 thread, 30 iterations, all
+  bit-identical). Inside the kernel the strength-group loop is 46-57% of its time, the final pass 14-18%,
+  the output scatter 15-25%, the reach transpose 6-16% (54-64 groups per call, about 2 hero and 2.5
+  opponent hands each).
+  - Output in hand order (4 hands' rows transposed in registers, vector stores into each job's row,
+    instead of one scalar scatter per job): 4.62 -> 4.68 s.
+  - Skipping opponent entries whose reach is zero in every lane (47% of them): 4.71 -> 4.74 s.
+  - Hero queries in fixed chunks of 1 / 2 / 4 per group (one loop trip for most groups instead of a
+    data-dependent 0-3): +3% / +5% / +9%. Branch mispredictions are not what the group loop costs.
+- **Walking the tree in reverse on alternate passes**, so the next pass starts on what the last one
+  left in L3: PC, threebet_mono at 32 threads, float32 1.497 vs 1.491 s, 16-bit within noise.
+- **After #237 / #238** (M4, threebet_mono, 1 and 10 threads; bit-identical, none kept). Profile at 1 thread
+  with #238 in: the river walk is 91% of an iteration; inside it the lanes kernel 41%, `current_strategy`
+  17.5%, `traverser_update` 9.2% (was 19.5% before #238's prefetch), the value sums ~7%.
+  - **More prefetching**: the next traverser node's regret rows during the bottom-up pass (they are still
+    cached from `current_strategy`): within noise. Regret rows a fixed 2 / 8 / 32 KB ahead in storage
+    order at each node (river subtrees are stored in visit order): +5% / +7% / +10%. With #238's child-row
+    result, software prefetch of regrets only gets in the hardware prefetcher's way.
+  - **Regret-matching fallback for only the hands that need it** in `average_strategy` (every river node
+    has some, the board-blocked hands with zero sums, so the whole `current_strategy` ran there): check
+    cost +10%, or unchanged when restricted to nodes where at most 1/8 of the hands need it. The full
+    vectorised call is cheaper than a scalar per-hand loop.
+  - **Board-blocked hands are 8.05% of river storage** on every tree (river rows are 98-99% of all
+    storage; turn rows 1-3%, 4% of them blocked), so 8% of the bytes streamed per iteration are dead. Compacting them is #239.
 - **Pio's per-iteration convergence matches ours** on threebet_mono (see bench/vs_pio.md), so no
   algorithmic gap was found there; the lead is per-iteration speed.
 
@@ -205,3 +328,99 @@ exactly zero at showdown terminals (#151, verified at +4.3% bit-identical on `de
 per-hand regret pruning on the traverser's side took `deep` from 180 to 425 iterations (#151), and
 sampling the strategy average took `flop_srp_2` from 75 to 970 (#135). Cheapening a per-iteration
 update by dropping contributions costs more in convergence than it saves in work.
+
+## Showdown terminals per river subtree, measured on arm64 (#186)
+
+#186 wants a river subtree's showdown terminals evaluated in one sweep over the board's strength
+groups, and estimates 15-20% per iteration from roughly 6.2 kernels per river subtree visit. That
+6.2 came from the owner's x86 PC. Measured here by instrumenting `showdown_batch` with `river_batch`
+forced on (1 thread, 8 iterations; **T** is jobs per call, all sharing one `ShowdownBoard`):
+
+| tree | mean T | biggest T buckets (calls) |
+|---|---|---|
+| `srp_big` | **5.76** | T=3: 1.17M, T=1: 437K, T=7: 608K, T=9: 260K, T=16: 109K |
+| `threebet_mono` | **4.67** | T=3: 198K, T=1: 81K, T=7: 79K, T=11: 32K |
+| `flop_srp_2` | 1.39 | only T=1 (130K) and T=2 (84K) |
+| `deep` | 1.15 | only T=1 (528K) and T=2 (96K) |
+
+**The premise holds, but only on the realistic trees.** `srp_big` at 5.76 is close to the 6.2
+reported on x86, so the batching opportunity is real on arm64 too.
+
+**The trap: do not measure #186 on the default bench trees.** `flop_srp_2` and `deep` have T of 1.15
+to 1.39 — there is essentially nothing to batch there, so a correct implementation will measure as
+*no change or slightly worse* on exactly the trees people reach for first. It has to be measured on
+`srp_big` and `threebet_mono`.
+
+Also note T=1 is 14% of calls on `srp_big` and T=3 is the single largest bucket, so a multi-terminal
+sweep has to stay fast at small T rather than only winning at T=8+.
+
+### What the two-phase walk costs on arm64
+
+`river_batch` (the two-phase walk `river_cfr` / `river_down`) is compiled on arm64 but **off by
+default**, because without a batched kernel it is pure overhead. Re-measured on this machine
+(M1 Ultra, 20 threads, interleaved, alternating order):
+
+```
+threebet_mono   +3.4%   (T = 4.67)
+srp_big         +1.1%   (T = 5.76)
+```
+
+Consistent with the +2-3.5% recorded on an M4, and the overhead is smaller on the higher-T tree, as
+expected. So the ARM half of #186 has a low bar: a scalar multi-terminal sweep needs to beat about
+1-3.5% of total runtime to break even, against showdown being ~60% of it. That is a favourable
+ratio, and it means #186 is worth doing on arm64 and not only on AVX-512 builds.
+
+### Ruled out: a *scalar* multi-terminal sweep (#186 on arm64) -- but SIMD lanes win (#219)
+
+I implemented the multi-terminal sweep for the **scalar** kernel — one pass over the board's entries
+for all T jobs, each job keeping its own `cs[]`/`cum`/`ltv`/`lev` and accumulating in exactly the
+order its standalone call would. It is **bit-identical** and it **buys nothing**.
+
+Measured on `threebet_mono` (T=4.67), 9 interleaved reps with alternating order:
+
+```
+river_batch off (current default)        min 0.209  median 0.215   --
+river_batch on + batched scalar sweep    min 0.217  median 0.222   +3.2 to +3.5%
+batched sweep vs standalone loop,
+  same two-phase walk                                              -0.7% to +2.1% (noise)
+```
+
+The whole +3.4% two-phase walk overhead survives, because the kernel change saved ~0%.
+
+**Why, and this is the part worth keeping:** #186's estimate comes from sharing "the opponent entry
+load and **mask construction**" across terminals. Mask construction is an **AVX-512 concept** — it is
+the `bit(c1)|bit(c2)` build plus 4 shifts and a `kmov` feeding four masked adds. The scalar kernel
+has no mask construction at all; it does `cs[q.c1] += r` directly. So the shared work the estimate
+is built on **does not exist in the scalar formulation**. What is left to amortise is one 6-byte
+`SdEntry` load that is already in L1, while the per-job `ro[q.idx]` gather and the three adds are
+irreducibly per-job. Batching also costs locality: `cs + j*52` and `ltv + j*np` are strided where the
+standalone kernel has one contiguous `cs[52]`.
+
+**Correction.** I first wrote here that this made #186 "genuinely AVX-512-specific". That is wrong,
+and #219 proves it: a **NEON lanes** kernel batches the same terminals on ARM and is a large win.
+Re-measured on this machine (`threebet_mono`, 20 threads, interleaved, best 10 of 14 reps, sd 0.002):
+
+```
+NEON lanes (current default)   min 0.185  median 0.190
+-DPIO_NO_NEON_LANES            min 0.214  median 0.220
+                                          -13.5% to -13.7%
+```
+
+(#219 reports -22% on an M4.) My measurements above were taken against a pre-#219 tree, where
+`river_batch` still read `PIO_SHOWDOWN_AVX512 != 0`.
+
+So the useful conclusion is narrower than "AVX-512 only", and sharper than the original estimate:
+
+> The batching win comes from **SIMD lane parallelism across terminals**, not from amortising shared
+> scalar work.
+
+The negative result above is what isolates that. Amortising the shared scalar part — the `SdEntry`
+load and decode — buys **zero**, which is why a scalar sweep fails. The win is in executing several
+terminals' adds *simultaneously* as lanes, which is why both AVX-512 (#209) and NEON (#219) succeed.
+Anyone extending this should be chasing lanes, not shared loads.
+
+The implementation is not committed. A note on validating any future attempt: `test_solver`'s
+`[river batch]` check passes **vacuously** for this kernel, because its tree only ever has T=1, so
+the batched path is never entered. I confirmed that with a call counter before trusting it. Validate
+instead by A/B-ing the two kernels under the same two-phase walk on `threebet_mono` or `srp_big` and
+comparing solver output byte for byte.

@@ -651,6 +651,40 @@ def check_force_line(u):
     u.cmd("clear_lines")
 
 
+def check_scripts(u):
+    """load_script(_silent), skip_if_done, LABEL: and stdoutredi as Pio 3.10.1 answers them (#251)."""
+    print("[load_script / load_script_silent / skip_if_done / stdoutredi]")
+    td = tempfile.mkdtemp(prefix="wsolver-scripts-")
+    s2 = os.path.join(td, "s2.txt")
+    with open(s2, "w") as f:
+        f.write("is_ready\nset_eff_stack 11\nLABEL: a\nshow_node r\nset_eff_stack 22\nis_ready\n")
+    u.cmd("free_tree")
+    u.send_raw("load_script " + s2)
+    got = [u.read_response() for _ in range(5)]
+    check(got == ["is_ready ok!", "set_eff_stack ok!", "", "ERROR: show_node missing/incorrect tree", "load_script ok!"],
+          f"load_script: each line answers, LABEL: answers empty, the first ERROR ends it, then its ok ({got})")
+    got = u.cmd("load_script_silent " + s2)
+    check(got == "is_ready ok!\nset_eff_stack ok!\nERROR: show_node missing/incorrect tree\nload_script_silent ok!",
+          f"load_script_silent: the same answers without end strings, in one response ({got!r})")
+    s4 = os.path.join(td, "s4.txt")
+    with open(s4, "w") as f:
+        f.write(f"skip_if_done {s4} here\nis_ready\nLABEL: here\nset_eff_stack 5\n")
+    u.send_raw("load_script " + s4)
+    got = [u.read_response() for _ in range(4)]
+    check(got == ["skip_if_done ok!", "", "set_eff_stack ok!", "load_script ok!"],
+          f"skip_if_done skips to the label, which answers empty ({got})")
+    nope = os.path.join(td, "nope.txt")
+    check(u.cmd("load_script " + nope) == f"ERROR: load_script couldn't open {nope}: No such file or directory",
+          "a missing script: Pio's message")
+    out = os.path.join(td, "out.txt")
+    u.send_raw("stdoutredi " + out)
+    u.send_raw("is_ready")
+    check(u.cmd("stdoutback") == "stdoutback ok!", "stdoutback answers on stdout")
+    with open(out) as f:
+        text = f.read()
+    check(text == "stdoutredi ok!\nEND\nis_ready ok!\nEND\n", f"stdoutredi answers into the file, like Pio ({text!r})")
+
+
 def check_go_partial(u):
     """go_partial (#153): asynchronous subtree solves, like `go` but below a node."""
     print("[go_partial: asynchronous subtree solving]")
@@ -908,6 +942,7 @@ def main(exe, big=False):
         check_output_format(u)
 
         check_force_line(u)
+        check_scripts(u)
         check_go_partial(u)
         check_go_limits_and_errors(u)
         check_info_freq_auto(u)

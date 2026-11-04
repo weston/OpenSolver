@@ -667,7 +667,7 @@ def check_global_freq(u):
         u.cmd(c)
     g1 = float(u.cmd("calc_global_freq r:0:c:c:2c:c"))
     g2 = float(u.cmd("calc_global_freq r:0:b20:c:As:c:c:3d"))
-    check(abs(g1 - 0.0833329931) < 1e-6, f"a 2c turn blocks nothing: 1/12, Pio 0.0833329931 ({g1})")
+    check(abs(g1 - 0.125) < 1e-6, f"a 2c turn blocks nothing: 1/8 from the strategies, Pio 0.125 ({g1})")
     check(abs(g2 - 0.0692357495) < 1e-5, f"an As turn blocks AA/AK/AQ/AJ combos: Pio 0.0692357495 ({g2})")
     u.cmd("free_tree")
 

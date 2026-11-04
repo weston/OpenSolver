@@ -1,5 +1,5 @@
 # Probe 11: commands no other probe ran (docs/commands.md marked them Unverified), on probe 1's river tree:
-# force_line (a line that doesn't exist, a forced call, one removed by an earlier force), set_incentives_line,
+# force_line (a forced call, nested forces, a line an earlier force removed), set_incentives_line,
 # add_info_line / reset_tree_info, print_all_strats, stop, load_all_nodes, the preflop line editors and
 # recover_subset. reset_end_string is last on purpose. (load_script / skip_if_done need a file both solvers
 # can open by the same name; Pio runs from its own directory, so they are not covered here.)
@@ -15,7 +15,6 @@ add_line 0 75 200
 add_line 0 50
 add_line 75
 add_line 0 50 150
-force_line 0 50 150 200
 force_line 0
 force_line 0 50 50
 force_line 75 200

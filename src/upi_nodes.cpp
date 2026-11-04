@@ -347,8 +347,7 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
     for (int k = 0; k < A; ++k) s += pfmt("%f", sig[static_cast<size_t>(k) * H + h]) + "  ";
     s += "\n";
   }
-  if (!s.empty()) s.pop_back();
-  return s;
+  return s + "\n";  // rows end in a newline; one more is the blank line Pio prints before END (#125)
 }
 
 std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
@@ -400,7 +399,7 @@ std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
   std::stable_sort(rows.begin(), rows.end(), [](auto& x, auto& y) { return x.first > y.first; });
   std::string s = "EV: " + pfmt("%f", den > 0 ? num / den : 0.0);
   for (auto& [e, c] : rows) s += "\n" + combo_str(c) + ": " + pfmt("%.2f", e) + "; " + pfmt("%.2f", m1326[c]);
-  return s;
+  return s + "\n\n";  // blank line before END, like Pio (#125)
 }
 
 std::string Upi::cmd_calc_eq(const Args& a, bool pp, bool node) {
@@ -452,7 +451,7 @@ std::string Upi::cmd_calc_eq(const Args& a, bool pp, bool node) {
     std::stable_sort(rows.begin(), rows.end(), [](auto& x, auto& y) { return x.first > y.first; });
     std::string s = "EV: " + pfmt("%f", tot.total * 100.0);
     for (auto& [e, c] : rows) s += "\n" + combo_str(c) + ": " + pfmt("%.2f", e * 100.0) + "; " + pfmt("%.2f", mu[c]);
-    return s;
+    return s + "\n\n";  // blank line before END, like Pio (#125)
   }
   std::string s = floats_line(eq.data(), NUM_COMBOS) + "\n" + floats_line(mu.data(), NUM_COMBOS);
   if (node) s += "\n" + fmt(tot.total);
@@ -475,7 +474,7 @@ std::string Upi::cmd_calc_eq_preflop(const Args& a) {
   std::string name;
   while (names >> name) {
     int k = preflop_class_of_name(name);
-    eq.push_back(pe.eq[k]);
+    eq.push_back(pe.matchups[k] > 0 ? pe.eq[k] : std::numeric_limits<float>::quiet_NaN());  // Pio: nan, not 0
     mu.push_back(pe.matchups[k]);
   }
   return floats_line(eq.data(), static_cast<int>(eq.size())) + "\n" + floats_line(mu.data(), static_cast<int>(mu.size())) +
@@ -1217,7 +1216,7 @@ void Upi::register_node_commands() {
       for (int h = 0; h < Hn; ++h) local[h] = m[h];
     }
     to_1326(n.player, r.frame, local.data(), out.data());
-    return floats_line(out.data(), NUM_COMBOS);
+    return floats_line(out.data(), NUM_COMBOS) + "\n\n";  // Pio: blank line before END (#125)
   };
   H["set_strategy"] = [this](const Args& a) { return cmd_set_strategy(a); };
   H["set_equal_strats"] = [this](const Args&) {
@@ -1291,7 +1290,9 @@ void Upi::register_node_commands() {
     auto it = tree_->incentives.find(r.node);
     if (it == tree_->incentives.end()) return std::string("Incentives are not used in this node!");
     (void)n;
-    return floats_line(it->second.data(), static_cast<int>(it->second.size()));
+    std::string s;  // Pio: "%f " per action ("1.000000 2.000000 ")
+    for (float x : it->second) s += pfmt("%f", x) + " ";
+    return s;
   };
   H["clear_incentives"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};

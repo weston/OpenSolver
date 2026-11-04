@@ -462,6 +462,41 @@ def check_calc_eq_preflop_exact(u):
     ok8 = all(abs(a - b) < 1e-6 for a, b in zip(eq[:8], want))
     check(len(eq) == 169 and ok8, f"first 8 class equities match Pio to 1e-6 ({eq[:8]})")
     check(abs(float(r[2]) - 0.550421774) < 1e-6, f"total equity matches Pio ({r[2]})")
+    # #125: Pio prints nan, not 0, for classes with no matchups (probe4: all 169 classes).
+    toks, mu = r[0].split(), floats(r[1])
+    check(all((t == "nan") == (m == 0) for t, m in zip(toks, mu)) and "nan" in toks,
+          "classes with 0 matchups print nan, like Pio")
+    check(r[0] == " ".join(toks) + " " and r[1].endswith(" "), "equity and matchup lines end in a space, like Pio")
+    check(len(r[2].lstrip("0.")) == 9, f"total printed with 9 significant digits like Pio's 0.550421774 ({r[2]})")
+
+
+def check_output_format(u):
+    """Byte-level format details matched against PioSOLVER 3.10.1 (#125)."""
+    print("[output format: trailing spaces, %.9g, blank lines (#125)]")
+    for c in ("free_tree", "set_board KhQs7d4c2s", "set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s",
+              "set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s", "set_pot 0 0 100", "set_eff_stack 200",
+              "clear_lines", "add_line 75 200", "add_line 0 75 200", "add_line 0 50", "build_tree",
+              "set_accuracy 5", "go", "wait_for_solver"):
+        u.cmd(c)
+    ho = u.cmd("show_hand_order")
+    check(ho.endswith("AsAh ") and len(ho.split()) == 1326, "show_hand_order ends in a space")
+    ev = u.cmd("calc_ev OOP r:0").split("\n")
+    check(len(ev) == 2 and all(l.endswith(" ") and len(l.split()) == 1326 for l in ev),
+          "calc_ev: both 1326-value lines end in a space")
+    st = u.cmd("show_strategy r:0").split("\n")
+    check(all(l.endswith(" ") for l in st), "show_strategy lines end in a space")
+    # %.9g of the float: the nearest float to 0.3 prints as 0.300000012 (we used to print 0.3).
+    u.cmd("set_range OOP AA:0.3")
+    rng = u.cmd("show_range OOP")
+    check("0.300000012 " in rng and rng.endswith(" ") and len(rng.split()) == 1326,
+          "floats print as %.9g of the float32, like Pio (0.3 -> 0.300000012)")
+    for c in ("show_strategy_pp r:0", "calc_ev_pp OOP r:0", "calc_eq_pp OOP", "show_locked_combos r:0"):
+        out = u.cmd(c)
+        check(out.endswith("\n") and not out.endswith("\n\n"), f"{c.split()[0]} ends with one blank line, like Pio")
+    check(u.cmd("set_incentives_node r:0 1 2") == "set_incentives_node ok!", "set_incentives_node")
+    inc = u.cmd("show_incentives r:0")
+    check(inc == "1.000000 2.000000 ", f"show_incentives prints '%f ' per action like Pio ({inc!r})")
+    u.cmd("clear_incentives r:0")
 
 
 def check_union_hands(u):
@@ -498,7 +533,7 @@ def check_union_hands(u):
             "evs": (res[0], res[1], res[4]),
             "ev_pp": combos(u.cmd("calc_ev_pp OOP r:0")),
             "ev_pp_ip": combos(u.cmd("calc_ev_pp IP r:0")),
-            "ev_pp_lines": len(u.cmd("calc_ev_pp OOP r:0").split("\n")),
+            "ev_pp_lines": len(u.cmd("calc_ev_pp OOP r:0").rstrip("\n").split("\n")),  # #125: + a blank line
             "strat_pp": combos(u.cmd("show_strategy_pp r:0")),
             "deep": u.cmd("calc_ev OOP r:0:b20:b200").split("\n")[0].split(),
         }
@@ -516,8 +551,8 @@ def check_union_hands(u):
           "show_strategy_pp lists the same opponent-only hands")
 
     # #61: recorded PioSOLVER 3.10.1 output on this exact tree. Pio always lists the union, for
-    # both players: an "EV: <x>" header plus 148 rows (the "150 lines" in #9 counted more than the
-    # response). With set_union_hands on we list the same hands; only the order among equal-EV
+    # both players: an "EV: <x>" header plus 148 rows, then a blank line (#125) - the "150 lines" of
+    # #9. With set_union_hands on we list the same hands; only the order among equal-EV
     # (suit-isomorphic) combos may differ, which depends on last-bit float noise.
     with open(os.path.join(HERE, "data", "pio_probe2_calc_ev_pp.txt")) as f:
         blocks = [b for b in f.read().split("END\n") if b.strip()]
@@ -526,7 +561,7 @@ def check_union_hands(u):
     check(len(pio) == 2 and len(pio[0]) == 148 and len(pio[1]) == 148, "recorded Pio calc_ev_pp: 148 rows per player")
     check(sorted(on["ev_pp"]) == sorted(pio[0]), "calc_ev_pp OOP with union_hands lists exactly Pio's hands")
     check(sorted(on["ev_pp_ip"]) == sorted(pio[1]), "calc_ev_pp IP with union_hands lists exactly Pio's hands")
-    check(on["ev_pp_lines"] == 149, f"calc_ev_pp response is EV header + 148 rows like Pio ({on['ev_pp_lines']} lines)")
+    check(on["ev_pp_lines"] == 149, f"calc_ev_pp is an EV header + 148 rows like Pio ({on['ev_pp_lines']} non-blank lines)")
 
     # Equilibrium must not move: the extra hands enter with reach 0.
     check(off["evs"] == on["evs"], f"equilibrium unchanged by union_hands ({off['evs']} vs {on['evs']})")
@@ -685,6 +720,7 @@ def main(exe, big=False):
         check_calc_eq_preflop_exact(u)
 
         check_union_hands(u)
+        check_output_format(u)
 
         check_go_partial(u)
         check_go_limits_and_errors(u)

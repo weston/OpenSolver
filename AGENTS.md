@@ -190,13 +190,18 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - An all-in before the river is an `END_NODE` (no chance nodes); its value averages all runouts.
 - Node blocks: `id`, type, board (trailing space; `---` preflop), pot `oop ip dead ` (trailing space),
   `<n> children`, `flags: <f> ` and a blank line. `show_children` concatenates `child i:` + block.
+- Computed floats print as `%.9g` of the float32 (`0.570510685`, `1.05068034e-06`, `60`); every 1326- or
+  169-value line is `"%.9g "` per value, so it **ends in a space** (`show_hand_order` too). `_pp` listings
+  and `show_locked_combos` end with a blank line before `END`; `show_incentives` is `"%f "` per action;
+  `calc_eq_preflop` prints `nan` for classes with 0 matchups. `compare.py` compares numbers with a
+  tolerance, so diff byte-for-byte to see these (#125).
 - `calc_ev`/`calc_eq` matchups are weighted by the hand's own reach (`calc_eq` also times the number of
   ordered runouts); out-of-range hands print `nan` / `inf`. Pio keeps per-player hand lists as the union of
   both ranges, so it has a counterfactual value for opponent-only hands and prints a *signed* `inf`; ours does
   that only under `set_union_hands on` (off by default, ~+23% solve time).
 - `calc_ev_pp <player> <node>` is `EV: <x>` plus one `<combo>: <ev>; <matchups>` row per hand of the **union**
-  of both ranges, for either player, sorted by EV descending (probe2: 149 lines = header + 148 for OOP and
-  IP alike; recorded in `tests/data/pio_probe2_calc_ev_pp.txt`, #61). Opponent-only hands show matchups
+  of both ranges, for either player, sorted by EV descending (probe2: header + 148 rows for OOP and IP
+  alike, then a blank line, which is the "150 lines" of #9; recorded in `tests/data/pio_probe2_calc_ev_pp.txt`, #61). Opponent-only hands show matchups
   `0.00`. Tie order among equal-EV combos is not reproducible. `set_union_hands` is ours: Pio answers
   `ERROR: Command set_union_hands not recognized`.
 - `go` (probed #177): the unit is required (`go 3` errors); `go 0 steps`, `go -5 steps`, `go 1.7 steps` and `go 0 seconds`

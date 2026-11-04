@@ -293,13 +293,8 @@ async function saveSpot() {
       if (r.locks && r.locks.length) content.locks = r.locks;
     } catch (e) { toast(`The node locks could not be read, so the spot is saved without them: ${e.message || e}`, "err"); }
   }
-  openLibrary({
-    kind: "config", mode: "save", content, suggest,
-    onLoad: (_, name) => {
-      setSpot(name);
-      if (content.locks) toast(`Saved “${name}” with ${plural(content.locks.length, "node lock")}`);
-    },
-  });
+  // the dialog's preview lists the locks that go with the spot
+  openLibrary({ kind: "config", mode: "save", content, suggest, onLoad: (_, name) => setSpot(name) });
 }
 
 /** The saved spot's node locks when the form is that spot, unchanged; else null. */

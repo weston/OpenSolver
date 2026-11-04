@@ -480,8 +480,16 @@ void write_record(GzOut& out, const GameTree& g, const GNode& n) {
   if (g.compressed) {
     out.put(g.rscale[n.aux]);
     out.put(g.sscale[n.aux]);
-    out.write(g.regrets_q.data() + n.storage, len * sizeof(int16_t));
-    out.write(g.strat_q.data() + n.storage, len * sizeof(uint16_t));
+    if (g.keep_of(n)) {   // compact river rows (#239): the file keeps full A*H rows, blocked hands 0
+      std::vector<int16_t> r(len);
+      std::vector<uint16_t> q(len);
+      g.q_get(n, r.data(), q.data());
+      out.write(r.data(), len * sizeof(int16_t));
+      out.write(q.data(), len * sizeof(uint16_t));
+      return;
+    }
+    out.write(g.regrets_q.data() + g.qoff[n.aux], len * sizeof(int16_t));
+    out.write(g.strat_q.data() + g.qoff[n.aux], len * sizeof(uint16_t));
   } else {
     out.write(g.regrets.data() + n.storage, len * sizeof(float));
     out.write(g.strat.data() + n.storage, len * sizeof(float));
@@ -546,8 +554,16 @@ void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int pre
   if ((file_mode & 1) && t.compressed) {
     t.rscale[n.aux] = in.template get<float>();
     t.sscale[n.aux] = in.template get<float>();
-    in.read(t.regrets_q.data() + n.storage, len * sizeof(int16_t));
-    in.read(t.strat_q.data() + n.storage, len * sizeof(uint16_t));
+    if (t.keep_of(n)) {   // full rows in the file, compact river rows in memory (#239)
+      std::vector<int16_t> r(len);
+      std::vector<uint16_t> q(len);
+      in.read(r.data(), len * sizeof(int16_t));
+      in.read(q.data(), len * sizeof(uint16_t));
+      t.q_put(n, r.data(), q.data());
+      return;
+    }
+    in.read(t.regrets_q.data() + t.qoff[n.aux], len * sizeof(int16_t));
+    in.read(t.strat_q.data() + t.qoff[n.aux], len * sizeof(uint16_t));
     return;
   }
   if (!(file_mode & 1) && !t.compressed) {

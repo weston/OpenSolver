@@ -247,6 +247,30 @@ class GameTree {
   std::vector<float> rscale, sscale;
   uint64_t storage_floats = 0;
   uint64_t num_decisions = 0;
+  // 16-bit storage keeps a river decision node's rows for the hands the turn and river cards do not
+  // block (#239): the others can never reach it (their reach is zeroed at the deal), yet they were 8%
+  // of all regret / strategy-sum storage and of the bytes streamed per iteration. Per decision (by
+  // GNode::aux): qoff = offset into regrets_q / strat_q, qkeep = index into keeps (UINT32_MAX: the
+  // full row). keeps[k] = the kept local hand indices, ascending. The float32 layout is unchanged.
+  // Every accessor still hands out full A*H rows (blocked hands read as 0 and are not stored), so only
+  // code that touches regrets_q / strat_q directly needs to know.
+  std::vector<uint64_t> qoff;
+  std::vector<uint32_t> qkeep;
+  std::vector<std::vector<uint16_t>> keeps;
+  uint64_t q_floats = 0;
+  const std::vector<uint16_t>* keep_of(const GNode& n) const {
+    const uint32_t k = qkeep.empty() ? UINT32_MAX : qkeep[n.aux];
+    return k == UINT32_MAX ? nullptr : &keeps[k];
+  }
+  size_t q_size(const GNode& n) const {
+    const auto* k = keep_of(n);
+    return static_cast<size_t>(n.num_children) * (k ? k->size() : hands[n.player].size());
+  }
+  // The node's 16-bit regrets as a full A*H row: a direct pointer, or expanded into scratch (A*H).
+  const int16_t* regrets_q_full(const GNode& n, int16_t* scratch) const;
+  // Full-row 16-bit records (saves): write / read the node's quantised rows as A*H values.
+  void q_get(const GNode& n, int16_t* r, uint16_t* s) const;
+  void q_put(const GNode& n, const int16_t* r, const uint16_t* s);
 
   size_t node_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * hands[n.player].size(); }
   // Read access: returns the node's A*H values (direct pointer, or decoded into scratch).

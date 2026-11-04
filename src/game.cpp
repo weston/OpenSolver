@@ -6,6 +6,8 @@
 #include <cmath>
 #include <functional>
 #include <cstdlib>
+#include <cstring>
+#include <unordered_map>
 #include <numeric>
 
 #include "eval.hpp"
@@ -195,6 +197,32 @@ namespace {
 struct Filler {
   GameTree& g;
   bool iso;
+  uint64_t root_mask = 0;
+  std::unordered_map<uint64_t, uint32_t> keep_ids;  // (river board mask, player) -> keeps index
+
+  // The kept-hands list of a river node (16-bit layout, #239), or UINT32_MAX for a full row: when the
+  // root is the river (nothing dealt), for full preflop trees (too many distinct boards), and when no
+  // hand is blocked.
+  uint32_t keep_id(int player, const std::vector<int>& board) {
+    if (g.cfg.preflop) return UINT32_MAX;
+    const uint64_t dealt = board_mask(board) & ~root_mask;
+    if (!dealt) return UINT32_MAX;
+    const uint64_t key = (board_mask(board) << 1) | static_cast<uint64_t>(player);
+    auto it = keep_ids.find(key);
+    if (it != keep_ids.end()) return it->second;
+    std::vector<uint16_t> keep;
+    const int H = static_cast<int>(g.hands[player].size());
+    for (int h = 0; h < H; ++h)
+      if (!((card_bit(g.hcard[player][0][h]) | card_bit(g.hcard[player][1][h])) & dealt))
+        keep.push_back(static_cast<uint16_t>(h));
+    uint32_t id = UINT32_MAX;
+    if (static_cast<int>(keep.size()) < H) {
+      id = static_cast<uint32_t>(g.keeps.size());
+      g.keeps.push_back(std::move(keep));
+    }
+    keep_ids.emplace(key, id);
+    return id;
+  }
 
   void fill(uint32_t idx, const ActionNode* an, std::vector<int>& board) {
     GNode n{};
@@ -207,6 +235,12 @@ struct Filler {
         n.aux = static_cast<uint32_t>(g.num_decisions++);
         n.storage = g.storage_floats;
         g.storage_floats += an->children.size() * g.hands[an->player].size();
+        {
+          const uint32_t k = board.size() == 5 ? keep_id(an->player, board) : UINT32_MAX;
+          g.qkeep.push_back(k);
+          g.qoff.push_back(g.q_floats);
+          g.q_floats += an->children.size() * (k == UINT32_MAX ? g.hands[an->player].size() : g.keeps[k].size());
+        }
         n.num_children = static_cast<uint16_t>(an->children.size());
         n.first_child = static_cast<uint32_t>(g.nodes.size());
         g.nodes.resize(g.nodes.size() + an->children.size());
@@ -342,6 +376,10 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   incentives.clear();
   storage_floats = 0;
   num_decisions = 0;
+  qoff.clear();
+  qkeep.clear();
+  keeps.clear();
+  q_floats = 0;
   incomplete = false;
 
   int bl = static_cast<int>(cfg.board.size());
@@ -466,7 +504,8 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   nodes.reserve(1024);
   nodes.resize(1);
   std::vector<int> board = cfg.board;
-  Filler f{*this, iso};
+  Filler f{*this, iso, 0, {}};
+  f.root_mask = board_mask(cfg.board);
   f.fill(0, aroot.get(), board);
   if (allocate) allocate_storage();
   return true;
@@ -544,7 +583,9 @@ void GameTree::build_allin_tables() {
 }
 
 uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
-  uint64_t b = compress ? storage_floats * 4 + num_decisions * 8 : storage_floats * sizeof(float) * 2;
+  uint64_t b = compress ? q_floats * 4 + num_decisions * 8 : storage_floats * sizeof(float) * 2;
+  b += num_decisions * (sizeof(uint64_t) + sizeof(uint32_t));  // qoff, qkeep
+  for (auto& k : keeps) b += k.size() * sizeof(uint16_t);
   // Predictive CFR's `preds` is never compressed and is allocated after the build, so the
   // pre-allocation check has to be told about it (#98).
   if (with_preds || !preds.empty()) b += storage_floats * sizeof(float);
@@ -573,8 +614,8 @@ void GameTree::allocate_storage() {
   strat_q.shrink_to_fit();
   // resize() on an empty ZVec is a fresh calloc: zero pages, committed only when touched.
   if (compressed) {
-    regrets_q.resize(storage_floats);
-    strat_q.resize(storage_floats);
+    regrets_q.resize(q_floats);
+    strat_q.resize(q_floats);
     rscale.assign(num_decisions, 0.0f);
     sscale.assign(num_decisions, 0.0f);
   } else {
@@ -589,14 +630,8 @@ void GameTree::decompress() {
   strat.resize(storage_floats);
   for (const GNode& n : nodes) {
     if (n.kind != ANodeKind::Decision) continue;
-    const size_t len = node_size(n);
-    const float rs = rscale[n.aux], ss = sscale[n.aux];
-    const int16_t* rq = regrets_q.data() + n.storage;
-    const uint16_t* sq = strat_q.data() + n.storage;
-    float* r = regrets.data() + n.storage;
-    float* s = strat.data() + n.storage;
-    for (size_t i = 0; i < len; ++i) r[i] = static_cast<float>(rq[i]) * rs;
-    for (size_t i = 0; i < len; ++i) s[i] = static_cast<float>(sq[i]) * ss;
+    regrets_ro(n, regrets.data() + n.storage);   // compressed is still set: decodes into the float rows
+    strat_ro(n, strat.data() + n.storage);
   }
   compressed = false;
   regrets_q.clear();
@@ -616,24 +651,91 @@ void GameTree::clear_storage() {
   std::fill(sscale.begin(), sscale.end(), 0.0f);
 }
 
+namespace {
+// Decode a node's 16-bit rows into A*H floats: kept hands from the compact rows, the rest 0.
+template <class Q>
+void decode_rows(const Q* q, float s, int A, int H, const std::vector<uint16_t>* keep, float* out) {
+  if (!keep) {
+    const size_t len = static_cast<size_t>(A) * H;
+    for (size_t i = 0; i < len; ++i) out[i] = static_cast<float>(q[i]) * s;
+    return;
+  }
+  const uint16_t* k = keep->data();
+  const int K = static_cast<int>(keep->size());
+  for (int a = 0; a < A; ++a) {
+    float* o = out + static_cast<size_t>(a) * H;
+    const Q* r = q + static_cast<size_t>(a) * K;
+    std::memset(o, 0, sizeof(float) * H);
+    for (int j = 0; j < K; ++j) o[k[j]] = static_cast<float>(r[j]) * s;
+  }
+}
+}  // namespace
+
 const float* GameTree::regrets_ro(const GNode& n, float* scratch) const {
   ensure_loaded(n);
   if (!compressed) return regrets.data() + n.storage;
-  const size_t len = node_size(n);
-  const int16_t* q = regrets_q.data() + n.storage;
-  const float s = rscale[n.aux];
-  for (size_t i = 0; i < len; ++i) scratch[i] = static_cast<float>(q[i]) * s;
+  decode_rows(regrets_q.data() + qoff[n.aux], rscale[n.aux], n.num_children, num_hands(n.player), keep_of(n), scratch);
   return scratch;
 }
 
 const float* GameTree::strat_ro(const GNode& n, float* scratch) const {
   ensure_loaded(n);
   if (!compressed) return strat.data() + n.storage;
-  const size_t len = node_size(n);
-  const uint16_t* q = strat_q.data() + n.storage;
-  const float s = sscale[n.aux];
-  for (size_t i = 0; i < len; ++i) scratch[i] = static_cast<float>(q[i]) * s;
+  decode_rows(strat_q.data() + qoff[n.aux], sscale[n.aux], n.num_children, num_hands(n.player), keep_of(n), scratch);
   return scratch;
+}
+
+const int16_t* GameTree::regrets_q_full(const GNode& n, int16_t* scratch) const {
+  const int16_t* q = regrets_q.data() + qoff[n.aux];
+  const auto* keep = keep_of(n);
+  if (!keep) return q;
+  const int A = n.num_children, H = num_hands(n.player), K = static_cast<int>(keep->size());
+  const uint16_t* k = keep->data();
+  for (int a = 0; a < A; ++a) {
+    int16_t* o = scratch + static_cast<size_t>(a) * H;
+    const int16_t* r = q + static_cast<size_t>(a) * K;
+    std::memset(o, 0, sizeof(int16_t) * H);
+    for (int j = 0; j < K; ++j) o[k[j]] = r[j];
+  }
+  return scratch;
+}
+
+void GameTree::q_get(const GNode& n, int16_t* r, uint16_t* s) const {
+  const auto* keep = keep_of(n);
+  const int16_t* qr = regrets_q.data() + qoff[n.aux];
+  const uint16_t* qs = strat_q.data() + qoff[n.aux];
+  const int A = n.num_children, H = num_hands(n.player);
+  if (!keep) {
+    std::memcpy(r, qr, sizeof(int16_t) * A * H);
+    std::memcpy(s, qs, sizeof(uint16_t) * A * H);
+    return;
+  }
+  const int K = static_cast<int>(keep->size());
+  std::memset(r, 0, sizeof(int16_t) * A * H);
+  std::memset(s, 0, sizeof(uint16_t) * A * H);
+  for (int a = 0; a < A; ++a)
+    for (int j = 0; j < K; ++j) {
+      r[static_cast<size_t>(a) * H + (*keep)[j]] = qr[static_cast<size_t>(a) * K + j];
+      s[static_cast<size_t>(a) * H + (*keep)[j]] = qs[static_cast<size_t>(a) * K + j];
+    }
+}
+
+void GameTree::q_put(const GNode& n, const int16_t* r, const uint16_t* s) {
+  const auto* keep = keep_of(n);
+  int16_t* qr = regrets_q.data() + qoff[n.aux];
+  uint16_t* qs = strat_q.data() + qoff[n.aux];
+  const int A = n.num_children, H = num_hands(n.player);
+  if (!keep) {
+    std::memcpy(qr, r, sizeof(int16_t) * A * H);
+    std::memcpy(qs, s, sizeof(uint16_t) * A * H);
+    return;
+  }
+  const int K = static_cast<int>(keep->size());
+  for (int a = 0; a < A; ++a)
+    for (int j = 0; j < K; ++j) {
+      qr[static_cast<size_t>(a) * K + j] = r[static_cast<size_t>(a) * H + (*keep)[j]];
+      qs[static_cast<size_t>(a) * K + j] = s[static_cast<size_t>(a) * H + (*keep)[j]];
+    }
 }
 
 float* GameTree::regrets_rw(const GNode& n, float* scratch) {
@@ -657,14 +759,21 @@ void GameTree::regrets_commit(const GNode& n, const float* data, float maxabs) {
 }
 
 void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
-  const size_t len = node_size(n);
+  const auto* keep = keep_of(n);
+  const size_t len = q_size(n);
+  const int A = n.num_children, H = num_hands(n.player);
   float m = maxabs;
-  if (m < 0) {
+  if (m < 0) {  // a caller's maxabs may include blocked hands' junk: a valid, slightly coarser scale
     uint32_t mb = 0;
-    for (size_t i = 0; i < len; ++i) mb = std::max(mb, abs_bits(data[i]));
+    if (keep) {
+      for (int a = 0; a < A; ++a)
+        for (uint16_t h : *keep) mb = std::max(mb, abs_bits(data[static_cast<size_t>(a) * H + h]));
+    } else {
+      for (size_t i = 0; i < len; ++i) mb = std::max(mb, abs_bits(data[i]));
+    }
     m = std::bit_cast<float>(mb);
   }
-  int16_t* q = regrets_q.data() + n.storage;
+  int16_t* q = regrets_q.data() + qoff[n.aux];
   if (!(m > 0) || !std::isfinite(m)) {
     rscale[n.aux] = 0;
     std::fill(q, q + len, int16_t(0));
@@ -672,9 +781,16 @@ void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
   }
   rscale[n.aux] = m / 32767.0f;
   const float inv = 32767.0f / m;
-  for (size_t i = 0; i < len; ++i) {
-    float x = data[i] * inv;
-    q[i] = static_cast<int16_t>(x + (x >= 0.0f ? 0.5f : -0.5f));
+  auto put = [&](size_t dst, float v) {
+    float x = v * inv;
+    q[dst] = static_cast<int16_t>(x + (x >= 0.0f ? 0.5f : -0.5f));
+  };
+  if (keep) {
+    const size_t K = keep->size();
+    for (int a = 0; a < A; ++a)
+      for (size_t j = 0; j < K; ++j) put(a * K + j, data[static_cast<size_t>(a) * H + (*keep)[j]]);
+  } else {
+    for (size_t i = 0; i < len; ++i) put(i, data[i]);
   }
 }
 
@@ -685,14 +801,21 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
 }
 
 void GameTree::strat_store(const GNode& n, const float* data, float maxval) {
-  const size_t len = node_size(n);
+  const auto* keep = keep_of(n);
+  const size_t len = q_size(n);
+  const int A = n.num_children, H = num_hands(n.player);
   float m = maxval;
   if (m < 0) {
     uint32_t mb = 0;
-    for (size_t i = 0; i < len; ++i) mb = std::max(mb, nonneg_bits(data[i]));
+    if (keep) {
+      for (int a = 0; a < A; ++a)
+        for (uint16_t h : *keep) mb = std::max(mb, nonneg_bits(data[static_cast<size_t>(a) * H + h]));
+    } else {
+      for (size_t i = 0; i < len; ++i) mb = std::max(mb, nonneg_bits(data[i]));
+    }
     m = std::bit_cast<float>(mb);
   }
-  uint16_t* q = strat_q.data() + n.storage;
+  uint16_t* q = strat_q.data() + qoff[n.aux];
   if (!(m > 0) || !std::isfinite(m)) {
     sscale[n.aux] = 0;
     std::fill(q, q + len, uint16_t(0));
@@ -700,7 +823,14 @@ void GameTree::strat_store(const GNode& n, const float* data, float maxval) {
   }
   sscale[n.aux] = m / 65535.0f;
   const float inv = 65535.0f / m;
-  for (size_t i = 0; i < len; ++i) q[i] = static_cast<uint16_t>(std::max(0.0f, data[i]) * inv + 0.5f);
+  if (keep) {
+    const size_t K = keep->size();
+    for (int a = 0; a < A; ++a)
+      for (size_t j = 0; j < K; ++j)
+        q[a * K + j] = static_cast<uint16_t>(std::max(0.0f, data[static_cast<size_t>(a) * H + (*keep)[j]]) * inv + 0.5f);
+  } else {
+    for (size_t i = 0; i < len; ++i) q[i] = static_cast<uint16_t>(std::max(0.0f, data[i]) * inv + 0.5f);
+  }
 }
 
 StreetSegments GameTree::street_segments() const {

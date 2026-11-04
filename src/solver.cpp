@@ -997,7 +997,8 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     g_.ensure_loaded(n);
     const bool q16 = g_.compressed;
     const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
-    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    const int16_t* Q = q16 ? g_.regrets_q_full(n, g_.keep_of(n) ? reinterpret_cast<int16_t*>(sc.a.alloc((static_cast<size_t>(A) * H + 1) / 2)) : nullptr)
+                            : nullptr;  // compact river rows (#239) expand into scratch
     const __m512 qs = _mm512_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm512_setzero_ps(),
                  one = _mm512_set1_ps(1.0f), uni = _mm512_set1_ps(1.0f / static_cast<float>(A));
     __m512 v[16];
@@ -1030,7 +1031,8 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     g_.ensure_loaded(n);
     const bool q16 = g_.compressed;
     const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
-    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    const int16_t* Q = q16 ? g_.regrets_q_full(n, g_.keep_of(n) ? reinterpret_cast<int16_t*>(sc.a.alloc((static_cast<size_t>(A) * H + 1) / 2)) : nullptr)
+                            : nullptr;  // compact river rows (#239) expand into scratch
     const __m256 qs = _mm256_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm256_setzero_ps(),
                  one = _mm256_set1_ps(1.0f), uni = _mm256_set1_ps(1.0f / static_cast<float>(A));
     __m256 v[16];
@@ -1077,7 +1079,8 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     g_.ensure_loaded(n);
     const bool q16 = g_.compressed;
     const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
-    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    const int16_t* Q = q16 ? g_.regrets_q_full(n, g_.keep_of(n) ? reinterpret_cast<int16_t*>(sc.a.alloc((static_cast<size_t>(A) * H + 1) / 2)) : nullptr)
+                            : nullptr;  // compact river rows (#239) expand into scratch
     const float qs = q16 ? g_.rscale[n.aux] : 0.0f;
     const float32x4_t z = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), uni = vdupq_n_f32(1.0f / static_cast<float>(A));
     float32x4_t v[16];
@@ -1361,8 +1364,9 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
     if (accumulate_) {
       const size_t len = static_cast<size_t>(A) * Hp;
       if (g_.compressed) {
-        const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + n.storage);
-        for (size_t off = 0; off < len * 2; off += 64) __builtin_prefetch(b + off, 1, 3);
+        const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + g_.qoff[n.aux]);
+        const size_t qlen = g_.q_size(n);
+        for (size_t off = 0; off < qlen * 2; off += 64) __builtin_prefetch(b + off, 1, 3);
       } else {
         const char* b = reinterpret_cast<const char*>(g_.strat.data() + n.storage);
         for (size_t off = 0; off < len * 4; off += 64) __builtin_prefetch(b + off, 1, 3);

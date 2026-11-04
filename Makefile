@@ -39,11 +39,13 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	./build/test_pfh2h
 	./build/test_parallel
 	python3 tests/test_tree_builder.py
+	python3 tests/test_packaging.py
 	python3 tests/test_jobs.py ./solver
 	python3 tests/test_upi.py ./solver
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py
 	python3 viewer/test_resolve.py ./solver
+	python3 viewer/test_refine.py ./solver
 
 test-big: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel
 	./build/test_eval
@@ -53,11 +55,13 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	./build/test_pfh2h
 	./build/test_parallel
 	python3 tests/test_tree_builder.py
+	python3 tests/test_packaging.py
 	python3 tests/test_jobs.py ./solver
 	python3 tests/test_upi.py ./solver --big
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py
 	python3 viewer/test_resolve.py ./solver
+	python3 viewer/test_refine.py ./solver
 
 # Cross-compile a static Windows binary (solver.exe) from macOS/Linux with mingw-w64. ZLIB_DIR must
 # contain zlib.h and a MinGW libz.a (e.g. zlib's own: make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32-).
@@ -76,13 +80,14 @@ windows: $(WIN_OBJ)
 bench: solver
 	python3 bench/run.py --out bench/results
 
-# ----- release build: LTO + PGO -----------------------------------------------
+# ----- release build: LTO, and optionally PGO ---------------------------------
 # `make release` produces ./solver-release without touching the default ./solver
-# or the default build flags:
-#   1. compile an instrumented binary into build/pgo/gen/,
-#   2. run bench/train_pgo.sh (tests/pio_compare/bench_flop.txt plus the bench
+# or the default build flags. By default it compiles with LTO and the arch flags
+# below. With PGO=1 it additionally:
+#   1. compiles an instrumented binary into build/pgo/gen/,
+#   2. runs bench/train_pgo.sh (tests/pio_compare/bench_flop.txt plus the bench
 #      river/turn trees, 1 thread and all threads) to collect a profile,
-#   3. compile the final binary with LTO, the profile, and the arch flags below.
+#   3. compiles the final binary with that profile as well.
 # RELEASE_ARCH defaults to native on both platforms (ARM: -mcpu, x86: -march),
 # like the default build. Override it for portable binaries, e.g. on Linux:
 #   make release RELEASE_ARCH=-march=x86-64-v3
@@ -100,13 +105,42 @@ CXX_IS_CLANG := $(shell $(CXX) --version 2>/dev/null | head -n1 | grep -qi clang
 ifeq ($(CXX_IS_CLANG),1)
 # Xcode does not put llvm-profdata on PATH; xcrun finds it when it is there.
 LLVM_PROFDATA ?= $(shell command -v llvm-profdata 2>/dev/null || xcrun -f llvm-profdata 2>/dev/null)
-PGO_GEN  := -fprofile-instr-generate
-PGO_USE  := -fprofile-instr-use=$(CURDIR)/$(PGO_DIR)/merged.profdata
+# IR-level instrumentation (-fprofile-generate), NOT front-end (-fprofile-instr-generate).
+# Front-end instrumentation counts function entries before inlining, so a function that the
+# instrumented build inlines records entry count 0. Clang then reads 0 at optimise time, calls the
+# function cold, drops its inline threshold to 45, and refuses to inline it. That hit the hottest
+# path we have: showdown_batch (cost 155) stopped being inlined into Solver::river_cfr, and the
+# profile claimed showdown_batch and river_cfr were entered 0 times while the kernel they call,
+# showdown_board_scalar, was entered 2,646,970 times. Net effect was a binary 11.7% SLOWER than
+# using no profile at all. IR-level instrumentation counts after inlining and does not invert like
+# this. See #199; don't switch back without re-measuring.
+PGO_GEN  := -fprofile-generate=$(CURDIR)/$(PGO_DIR)
+PGO_USE  := -fprofile-use=$(CURDIR)/$(PGO_DIR)/merged.profdata
 LTO_FLAG := -flto=thin
 else
 PGO_GEN  := -fprofile-generate=$(CURDIR)/$(PGO_DIR)/gcc
 PGO_USE  := -fprofile-use=$(CURDIR)/$(PGO_DIR)/gcc -fprofile-correction
 LTO_FLAG := -flto=auto
+endif
+
+# PGO is opt-in (#199). Measured on arm64 (M1 Ultra, flop_srp_2, 60 steps,
+# 1 thread, interleaved with alternating order, 8 reps), relative to the default
+# `make` build:
+#     LTO only       -0.2%
+#     LTO + PGO      -0.1%
+# PGO is at parity, not a win -- an isolated 12-rep run put it at -1.65%, but
+# that is only 1.2x sd and does not clear the 2x bar this repo uses. Since it
+# roughly doubles release build time for no measured gain, it stays off by
+# default. It is worth re-testing per machine and workload.
+# (Before the IR-instrumentation fix, PGO was +12.1% SLOWER here; see the
+# PGO_GEN comment above for why, and do not switch those flags back.)
+# To build with PGO:  make release PGO=1
+PGO ?= 0
+ifeq ($(PGO),1)
+PGO_TRAIN_DEP := $(PGO_DIR)/trained.stamp
+else
+PGO_USE       :=
+PGO_TRAIN_DEP :=
 endif
 
 release: solver-release
@@ -125,13 +159,60 @@ $(PGO_DIR)/trained.stamp: $(PGO_DIR)/instrumented bench/train_pgo.sh
 	    bench/train_pgo.sh $(PGO_DIR)/instrumented $(CURDIR)/$(PGO_DIR) "$(LLVM_PROFDATA)"
 	touch $@
 
-$(PGO_DIR)/opt/%.o: src/%.cpp $(PGO_DEPS) $(PGO_DIR)/trained.stamp | $(PGO_DIR)/opt
+$(PGO_DIR)/opt/%.o: src/%.cpp $(PGO_DEPS) $(PGO_TRAIN_DEP) | $(PGO_DIR)/opt
 	$(CXX) $(RELEASE_CXXFLAGS) $(LTO_FLAG) $(PGO_USE) -c $< -o $@
 
 solver-release: $(OPT_OBJ)
 	$(CXX) $(RELEASE_CXXFLAGS) $(LTO_FLAG) $(PGO_USE) $^ -o $@ $(LDLIBS)
 
-clean:
-	rm -rf build solver solver-release
+# ----- install ----------------------------------------------------------------
+# Standard PREFIX/DESTDIR install, so there is a supported way to put the solver
+# on a machine instead of running it out of the build tree.
+#   make install                      -> /usr/local/bin/wsolver
+#   make install PREFIX=$HOME/.local  -> ~/.local/bin/wsolver
+#   make install DESTDIR=/tmp/stage   -> staged, for packaging
+# INSTALL_BIN picks which binary to install; point it at solver-release to ship
+# the LTO build (see the release section above):
+#   make release && make install INSTALL_BIN=solver-release
+# BINNAME is the installed command name. It is deliberately not "solver", which
+# is too generic for a shared bin directory.
+PREFIX      ?= /usr/local
+DESTDIR     ?=
+BINNAME     ?= wsolver
+INSTALL_BIN ?= solver
+DOCDIR      ?= $(PREFIX)/share/doc/$(BINNAME)
 
-.PHONY: all test test-big windows bench release clean
+install: $(INSTALL_BIN)
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(DOCDIR)
+	install -m 755 $(INSTALL_BIN) $(DESTDIR)$(PREFIX)/bin/$(BINNAME)
+	install -m 644 README.md docs/commands.md $(DESTDIR)$(DOCDIR)/
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINNAME)
+	rm -rf $(DESTDIR)$(DOCDIR)
+
+# ----- source distribution -----------------------------------------------------
+# `make dist` writes dist/wsolver-<version>-src.tar.gz plus a .sha256 next to it,
+# so a recipient can verify what they got. VERSION is read from src/version.hpp
+# rather than duplicated here, and `git archive` means the tarball contains
+# exactly what is committed -- no build output, no stray local files.
+# NB: no '#' in this sed script -- make strips from '#' to end of line even
+# inside $(shell ...), which silently truncates the call.
+VERSION  := $(shell sed -n 's/.*SOLVER_VERSION "\(.*\)".*/\1/p' src/version.hpp)
+DISTNAME := $(BINNAME)-$(VERSION)-src
+
+dist:
+	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
+	@git diff-index --quiet HEAD -- || echo "WARNING: uncommitted changes to tracked files are NOT in the tarball"
+	@u=$$(git ls-files --others --exclude-standard | head -5); \
+	  test -z "$$u" || { echo "WARNING: untracked files are NOT in the tarball:"; echo "$$u" | sed 's/^/  /'; }
+	mkdir -p dist
+	git archive --format=tar.gz --prefix=$(DISTNAME)/ -o dist/$(DISTNAME).tar.gz HEAD
+	cd dist && shasum -a 256 $(DISTNAME).tar.gz > $(DISTNAME).tar.gz.sha256
+	@echo "dist/$(DISTNAME).tar.gz"
+	@cat dist/$(DISTNAME).tar.gz.sha256
+
+clean:
+	rm -rf build solver solver-release dist
+
+.PHONY: all test test-big windows bench release install uninstall dist clean

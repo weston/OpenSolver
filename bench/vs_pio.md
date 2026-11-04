@@ -85,3 +85,33 @@ matching (#175). Pio's own check schedule overshoots the target a little further
 / 0.56 chips), so at equal final exploitability the ratio is slightly smaller.
 
 Session start for reference: srp_big took 446 s against Pio's 70.5 s.
+
+### Update after #189 (2026-11-03, same session, back to back)
+
+32 threads, target 0.6 chips; WSolver main 1894178 (#189, two-phase river walk) with `set_info_freq auto`,
+each solver run twice (srp_big: Pio once), interleaved:
+
+| tree | WSolver | PioSOLVER 3.10 | ratio |
+|---|---|---|---|
+| srp_big (13 GB, 16-bit) | **41.9 s** (123 iterations, 0.597 chips; 41.95 / 41.85) | 71.5 s (0.509) | 1.71x |
+| threebet_mono (542 MB) | **2.93 s** (168 iterations, 0.599; 2.925 / 2.941) | 6.70 s (0.557; 6.686 / 6.720) | 2.29x |
+
+Times are the solver's own `running time` at the report that met the target (process wall time adds
+0.1-0.8 s for WSolver and 0.9-3.2 s for Pio). At 32 threads srp_big now leans on memory bandwidth
+(bench/where-the-time-goes.md).
+
+
+### Update after #209 (2026-11-03, same session, back to back)
+
+32 threads, target 0.6 chips; WSolver main 084fab7 with `set_info_freq auto`, each solver run twice,
+interleaved. On this AVX-512 build the change since the previous table is #209 (showdown jobs as SIMD
+lanes); #219-#226 and #234 speed up the NEON and AVX2-only builds.
+
+| tree | WSolver | PioSOLVER 3.10 | ratio |
+|---|---|---|---|
+| srp_big (13 GB, 16-bit) | **39.3 s** (123 iterations, 0.597 chips; 39.10 / 39.49) | 70.9 s (0.509; 70.76 / 71.10) | 1.81x |
+| threebet_mono (542 MB) | **2.59 s** (168 iterations, 0.599; 2.594 / 2.594) | 6.62 s (0.557; 6.615 / 6.619) | 2.55x |
+
+Process wall time: WSolver 2.67 / 39.8-40.3 s, Pio 7.52 / 74.0-74.5 s. Both trees are now limited by
+memory bandwidth on this PC from 8 threads up (bench/where-the-time-goes.md), so kernel speedups show
+less here than at 1 thread or on the M4.

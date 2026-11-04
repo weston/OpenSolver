@@ -122,6 +122,17 @@ both of which have already produced wrong numbers in issue comments:
   that as solve time and you can be off by a factor of hundreds.
 - A tree's *share* of runtime is not its *amount*. The preflop betting tree is 98% showdown, and
   also solves in 0.4 s, so optimizing it buys nothing. Check the absolute number before optimizing.
+- A compiler feature can make things **slower** while every diagnostic says it is working. `make
+  release` shipped a 12% slower binary for a while (#199) because clang's front-end PGO
+  (`-fprofile-instr-generate`) counts function entries *before* inlining: functions the instrumented
+  build inlined recorded entry count 0, clang called them cold, dropped their inline threshold to 45,
+  and stopped inlining the showdown kernel that is 49-65% of runtime. The profile was fresh,
+  complete, trained on byte-for-byte the benchmarked workload, and
+  `-Wprofile-instr-out-of-date`/`-unprofiled`/`-missing` all reported zero warnings. Only
+  `llvm-profdata show --all-functions` revealed it, showing the hot kernel at 2,646,970 entries and
+  both of its callers at 0. If a build mode is meant to be faster, **time it**; and if a profile
+  looks wrong, read the counts rather than trusting the mismatch warnings. Use IR-level
+  `-fprofile-generate`, never `-fprofile-instr-generate`.
 
 When sanity-checking `.github/workflows/ci.yml` locally, note that Ruby's `YAML.safe_load` and
 Python's `yaml.safe_load` both silently keep the **last** of two duplicate mapping keys. A workflow
@@ -162,6 +173,11 @@ machine with a licensed PioSOLVER, reachable over SSH) and optionally `PIO_KEY`,
 Piping a whole script over SSH to Windows can stall when it contains very long lines (e.g.
 `set_strategy` with 2x1326 numbers); use `pio_session.PioSession` (one command at a time) for those.
 `PIO_EXE` can point at our own `solver.exe` to compare the Windows build with the local one.
+On the Pio machine itself, `PIO_LOCAL=1` runs `PIO_EXE` directly instead of over SSH (compare.py and
+pio_session.py). `compare.py --exact` also reports responses whose values agree but whose bytes differ
+(digits, trailing spaces, blank lines); the default numeric tolerance hides those (#125).
+Timing Pio: `go`/`wait_for_solver` resolve to about 0.5 s (even `go 1 steps` takes ~0.56 s), so time
+one long run, or count iterations to a target and multiply by seconds per iteration.
 `tests/pio_compare/remote_exe.py` makes a remote solver look like a local executable (it converts
 range text for Pio and starts it in its own folder). Use it with `bench/run.py --exe` to benchmark
 PioSOLVER and our `solver.exe` on the same machine. Compare there, never across machines. Pio prints
@@ -179,13 +195,18 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - An all-in before the river is an `END_NODE` (no chance nodes); its value averages all runouts.
 - Node blocks: `id`, type, board (trailing space; `---` preflop), pot `oop ip dead ` (trailing space),
   `<n> children`, `flags: <f> ` and a blank line. `show_children` concatenates `child i:` + block.
+- Computed floats print as `%.9g` of the float32 (`0.570510685`, `1.05068034e-06`, `60`); every 1326- or
+  169-value line is `"%.9g "` per value, so it **ends in a space** (`show_hand_order` too). `_pp` listings
+  and `show_locked_combos` end with a blank line before `END`; `show_incentives` is `"%f "` per action;
+  `calc_eq_preflop` prints `nan` for classes with 0 matchups. `compare.py` compares numbers with a
+  tolerance, so diff byte-for-byte to see these (#125).
 - `calc_ev`/`calc_eq` matchups are weighted by the hand's own reach (`calc_eq` also times the number of
   ordered runouts); out-of-range hands print `nan` / `inf`. Pio keeps per-player hand lists as the union of
   both ranges, so it has a counterfactual value for opponent-only hands and prints a *signed* `inf`; ours does
   that only under `set_union_hands on` (off by default, ~+23% solve time).
 - `calc_ev_pp <player> <node>` is `EV: <x>` plus one `<combo>: <ev>; <matchups>` row per hand of the **union**
-  of both ranges, for either player, sorted by EV descending (probe2: 149 lines = header + 148 for OOP and
-  IP alike; recorded in `tests/data/pio_probe2_calc_ev_pp.txt`, #61). Opponent-only hands show matchups
+  of both ranges, for either player, sorted by EV descending (probe2: header + 148 rows for OOP and IP
+  alike, then a blank line, which is the "150 lines" of #9; recorded in `tests/data/pio_probe2_calc_ev_pp.txt`, #61). Opponent-only hands show matchups
   `0.00`. Tie order among equal-EV combos is not reproducible. `set_union_hands` is ours: Pio answers
   `ERROR: Command set_union_hands not recognized`.
 - `go` (probed #177): the unit is required (`go 3` errors); `go 0 steps`, `go -5 steps`, `go 1.7 steps` and `go 0 seconds`
@@ -217,6 +238,33 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - Rake (`set_rake frac cap`) and ICM payoffs match Pio exactly (probe8). Rake and ICM are last-one-wins;
   `set_icm` before any `set_icm_point` prints `ERROR: set_icm ICM points not defined.` then `set_icm ok!`
   and leaves ICM off; `reset_icm_tables` leaves rake alone and counts as defined tables.
+- Rake and ICM belong to the tree: `set_rake` / `set_icm` without a tree answer `missing/incorrect tree`,
+  and `build_tree` starts the new tree with both off (ICM points stay defined). Saves carry the rake;
+  `load_tree` takes it from the file. Before this was matched, ours carried rake into the next tree.
+- With no tree, Pio checks for the tree before the arguments: `lock_node`, `show_node`, `go`, `calc_ev`,
+  `clear_cache`, `load_all_nodes`, ... answer `missing/incorrect tree` even when bare (list in
+  `Upi::dispatch`).
+- Chip amounts parse like C `atoi`: `set_pot 0 0 61.7` and `add_line 30.7` give 61 and 30 (also
+  `remove_line`, `force_line`). `set_pot` changes only the values given and errors (after applying them)
+  with fewer than two; bare `set_eff_stack` errors. A bad `set_board` errors and clears the board.
+  Pio accepts `add_line abc` (it built `b200`); ours still rejects a token without a leading digit.
+- A line that runs past the end of the hand (fold, all-in call, river close) answers `ERROR: add_line
+  Specified line is too long. Some actions were not included in the tree.`, but its valid prefix is kept
+  and `build_tree` succeeds.
+  `add_line` checks against the *current* board, pot and stack (set them first). An amount below the bet
+  faced or below one's own investment (other than a fold) answers `ERROR: add_line Incorrect bet size.`; the
+  line is kept and `build_tree` then names the amount (Pio crashes there). With no stack set, Pio has no
+  all-in root at add time, and neither do we; a stack-0 *tree* still differs (Pio bets, ours is all-in).
+- Pio edits a live line tree command by command; ours collects add/remove/force sets and applies them at
+  `build_tree`. They agree when a script removes or forces after its adds (the usual shape). They differ
+  when a line is re-added after `remove_line` (Pio re-adds it, ours keeps it removed), when `add_line`
+  follows `force_line` (Pio adds it beside the forced line), and for `remove_line` / `force_line` of a
+  line that does not exist (Pio errors, ours accepts). Pio accepts bets above the effective stack; ours
+  rejects them at `build_tree`.
+- Legacy commands Pio 3.10 still answers: `set_bet_sizes <n>...` (atoi per token) and `set_donk_bet <n>`
+  (true unless atoi is 0) are only stored, `build_tree` ignores them; `show_tree_params` prints
+  `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the
+  `set_*` state (not from a loaded tree). `unlock_all` clears every whole-node lock, not combo locks.
 - Displayed strategies for hands that never reach a node come from regrets (v4 algorithm).
 - Preflop: SB is `IP` and acts first; `set_pot <bb> <sb> 0`; preflop and postflop line amounts are
   absolute; subset flops are node tokens exactly as added (`r:0:b25:c:7c7d2h`); postflop subtrees show

@@ -9,6 +9,7 @@ import { drawSpark } from "./chart.js";
 import { initLibrary } from "./library.js";
 import { initResolve, openResolve } from "./resolve.js";
 import { initFurther, pollFurther } from "./further.js";
+import { initPreview, previewStatus } from "./preview.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -62,6 +63,8 @@ async function poll() {
   const pt = st.partial && st.partial.point, ppot = st.partial && st.partial.pot;
   const ppct = pt && ppot ? (pt.explo / ppot) * 100 : null;
   if (st.dead) setPill("err", "Solver stopped working — restart from Open");
+  else if (st.sketch && st.sketch.state === "running") setPill("solving", "Sketching the flop…");
+  else if (st.suspended) setPill("solving", `Refining a street · ${pct != null ? fmt(pct, 2) + "% · " : ""}main solve paused`);
   else if (st.solving && st.partial) setPill("solving", `Solving further · ${ppct != null ? fmt(ppct, 2) + "%" : "…"} · ${pt ? fmt(pt.t, 0) + "s" : "0s"}`);
   else if (st.solving) setPill("solving", `Solving · ${pct != null ? fmt(pct, 2) + "%" : "…"} · ${last ? fmt(last.t, 0) + "s" : "0s"}`);
   else if (last) setPill("done", `Solved · ${fmt(pct, 2)}% pot`);
@@ -69,6 +72,7 @@ async function poll() {
   drawSpark($("pill-spark"), app.series, app.rootPot);
   updateProgress(st, app.series, app.rootPot);
   pollFurther(st, app.series);
+  previewStatus(st);
 
   if (wasSolving && !st.solving) {
     toast(st.partial && st.partial.done && ppct != null
@@ -139,6 +143,13 @@ async function boot() {
   initLibrary();
   initResolve();
   initFurther();
+  initPreview();
+  // Fast preview: the flop strategy has settled, so show it (the solve carries on).
+  window.addEventListener("preview-ready", () => {
+    app.tree = true;
+    setView("study");
+    study.reset();
+  });
   $("btn-resolve").onclick = () => openResolve(study.id);
   initBuild({ built: async () => { app.tree = true; await refreshRootPot(); study.reset(); } });
 

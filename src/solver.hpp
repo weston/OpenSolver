@@ -53,6 +53,21 @@ struct DcfrParams {
 #else
 #define PIO_SHOWDOWN_AVX512 0
 #endif
+// AArch64 (Apple silicon, Linux ARM): showdown_batch runs its jobs as NEON lanes (#219), the same
+// design as the AVX-512 lanes kernel. -DPIO_NO_NEON_LANES opts out.
+#if !PIO_SHOWDOWN_AVX512 && defined(__aarch64__) && defined(__ARM_NEON) && !defined(PIO_NO_NEON_LANES)
+#define PIO_SHOWDOWN_NEON 1
+#else
+#define PIO_SHOWDOWN_NEON 0
+#endif
+// x86 with AVX2 + FMA but not the AVX-512 set above (most Intel desktops, Zen 2/3, -march=x86-64-v3
+// builds): the lanes kernel is plain 256-bit code, so it runs there too (#225). -DPIO_NO_AVX2_LANES
+// opts out.
+#if !PIO_SHOWDOWN_AVX512 && defined(__AVX2__) && defined(__FMA__) && !defined(PIO_NO_AVX2_LANES)
+#define PIO_SHOWDOWN_AVX2 1
+#else
+#define PIO_SHOWDOWN_AVX2 0
+#endif
 // compat (optional, hand-indexed, zeroed by the caller): also store each of p's hands' card-removal
 // compatible opponent mass, sum of ro over opponent hands disjoint from h. It is a by-product of the
 // kernel, and exactly what a fold child with the same opponent reach needs (Solver::call_and_fold).
@@ -78,9 +93,10 @@ struct SdJob {
   const float* xf;
   float pay;
 };
-// Jobs on one board, each bit-identical to its own showdown_board call. On AVX-512 builds up to five
-// share one sweep over the board (at most one with a fused fold).
-void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* jobs);
+// Jobs on one board, each bit-identical to its own showdown_board call. ho = the opponent's hand count
+// (the length of every ro / xf row). On AVX-512, AVX2 and NEON builds the jobs run as SIMD lanes, up to
+// eight lanes per sweep over the board (showdown_lanes_256 in solver.cpp; NEON: showdown_lanes_neon).
+void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* jobs, int ho);
 #if PIO_SHOWDOWN_AVX512
 void showdown_board_avx512(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
                            float* compat = nullptr, const SdFold* fold = nullptr);
@@ -170,11 +186,31 @@ class Solver {
   // updates bottom-up. Same operations in the same order as walk_t, so bit-identical.
   void river_cfr(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   void river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out);
+  // The same for the exploitability check's fused walk (walk_evbr): on-policy values and best responses.
+  void river_evbr(uint32_t ni, int p, const float* ro, float* ev, float* br);
+  void river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br);
   template <class E>
   void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
-  // #186: Solver::river_cfr for river subtrees in the CFR walk. Only AVX-512 builds batch the kernels;
-  // elsewhere the two-phase walk is overhead (M4: +2-3.5%), so it is off by default there.
-  bool river_batch = PIO_SHOWDOWN_AVX512 != 0;
+  // #186: Solver::river_cfr for river subtrees in the CFR walk. AVX-512, AVX2 and NEON builds batch the
+  // kernels; elsewhere the two-phase walk is overhead (M4 before the NEON kernel: +2-3.5%), so it is
+  // off by default there.
+  bool river_batch = PIO_SHOWDOWN_AVX512 != 0 || PIO_SHOWDOWN_NEON != 0 || PIO_SHOWDOWN_AVX2 != 0;
+  // The default for a tree (Upi sets it when it creates the solver). AVX-512: always. NEON and AVX2: when the
+  // action tree has at least 2.5 showdown terminals per river subtree (GameTree::river_showdowns_per_root),
+  // since below that the batches are 1-2 jobs, the lanes kernel does not run, and only the two-phase
+  // walk's overhead is left (M4, 10 threads: threebet_mono, 5.16 per river, -21%; flop_srp_2 1.40,
+  // flop_srp_4 1.32, deep 1.17, flop_3bet 1.00, turn 1.83: +1.5-2.5% with it on).
+  static bool river_batch_for(const GameTree& g) {
+#if PIO_SHOWDOWN_AVX512
+    (void)g;
+    return true;
+#elif PIO_SHOWDOWN_NEON || PIO_SHOWDOWN_AVX2
+    return g.river_showdowns_per_root() >= 2.5;
+#else
+    (void)g;
+    return false;
+#endif
+  }
   bool pruning = true;  // on by default (#51): inactive before t > 2*prune_period, then never
                         // slower and up to ~8% faster on long solves (bench data in the comment)
   // 8, not 32. The period trades activation delay (pruning is inactive until t > 2*period)

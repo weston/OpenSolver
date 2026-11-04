@@ -637,3 +637,33 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
 }
 .path-back:hover:not(:disabled) { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
 .path-back:disabled { opacity: .35; cursor: default; }
+
+/* fast preview (viewer/static/preview.js) */
+label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); margin: 10px 0 2px; cursor: pointer; }
+label.check input { accent-color: var(--accent); }
+#preview-info:empty { display: none; }
+#live-tag { margin-left: 6px; }
+
+/* Fast preview: the solving-period modal (preview.js) */
+.dialog.solve-modal { width: 320px; text-align: center; padding: 28px 24px 24px; position: relative; }
+.dialog.solve-modal h2 { margin: 16px 0 6px; }
+.sm-x { position: absolute; top: 10px; right: 12px; border: 0; background: none; color: var(--text-3); font-size: 22px; line-height: 1; cursor: pointer; padding: 4px 6px; border-radius: var(--radius-sm); }
+.sm-x:hover { background: var(--hover); color: var(--text); }
+.sm-ring-wrap { position: relative; width: 120px; height: 120px; margin: 0 auto; }
+.sm-ring { width: 120px; height: 120px; transform: rotate(-90deg); }
+.sm-track { fill: none; stroke: var(--border); stroke-width: 8; }
+.sm-arc { fill: none; stroke: var(--accent); stroke-width: 8; stroke-linecap: round; stroke-dasharray: 326.73; stroke-dashoffset: 326.73; transition: stroke-dashoffset .45s ease; }
+.sm-ring.spin { animation: sm-spin 1.1s linear infinite; }
+.sm-ring.spin .sm-arc { stroke-dashoffset: 245; transition: none; }
+@keyframes sm-spin { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }
+.sm-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 600; }
+.sm-status { color: var(--text-2); font-size: 12.5px; min-height: 1.3em; }
+@media (prefers-reduced-motion: reduce) { .sm-ring.spin { animation: none; } .sm-arc { transition: none; } }
+
+/* Study: click the board to change it (study.js openBoardPicker) */
+.board .pc.pickable { cursor: pointer; transition: transform .1s, filter .15s; }
+.board .pc.pickable:hover { transform: translateY(-2px); filter: brightness(1.12); }
+.dialog.cards-dlg { width: min(640px, calc(100vw - 32px)); }
+.cd-deck { height: 210px; margin: 4px 0 18px; }
+.cd-deck button { font-size: 13px; }
+.cd-deck button.picked { outline: 3px solid var(--text); outline-offset: 1px; transform: scale(1.06); z-index: 1; }

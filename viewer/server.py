@@ -499,7 +499,7 @@ def api(solver, lib, method, path, query, body):
     return _api_main(solver, lib, method, path, query, body)
 
 
-LOCK_PATHS = ("/api/lock", "/api/unlock", "/api/lock/revert")
+LOCK_PATHS = ("/api/lock", "/api/unlock", "/api/lock/revert", "/api/lock/apply")
 BROWSE_PATHS = ("/api/node", "/api/strategy", "/api/path", "/api/range", "/api/categories", "/api/ev",
                 "/api/calc_results", "/api/hand_order")
 
@@ -541,6 +541,8 @@ def _api_main(solver, lib, method, path, query, body):
 
     if path == "/api/lock_state":
         return 200, lock_state(solver, node_id_arg(query))
+    if path == "/api/lock/export":
+        return 200, op_lock_export(solver)
 
     if path == "/api/path":
         # Every node from the root to `id`, in one call, so the UI can draw the action line (#112).
@@ -662,6 +664,8 @@ def _api_main(solver, lib, method, path, query, body):
         return 200, op_unlock(solver, need_body(body))
     if path == "/api/lock/revert":
         return 200, op_lock_revert(solver)
+    if path == "/api/lock/apply":
+        return 200, op_lock_apply(solver, need_body(body))
 
     if path == "/api/restart":
         solver.restart()
@@ -1020,6 +1024,70 @@ def op_unlock(solver, b):
         solver.cmds([f"unlock_node {node_id}", f"combo_lock_node {node_id} {zeros}"])
         solver.locks.pop(node_id, None)
         return lock_state(solver, node_id)
+
+
+def _actions(kids):
+    return [k["id"].rsplit(":", 1)[-1] for k in kids]
+
+
+def op_lock_export(solver):
+    """GET /api/lock/export (#200): the locks set in this session, in the form a library spot
+    keeps them (`locks` in a config) and /api/lock/apply takes back after a build of the same tree.
+
+    Each is {id, mode "node"|"combos", actions, freq, combos?}: `actions` the child tokens (so a
+    different tree is noticed), `freq` one space-separated row of 1326 per action (the
+    show_strategy layout, as solved now: for a whole-node lock, exactly what was locked), and for
+    "combos" a 1326-character 0/1 string of the locked combos."""
+    out = []
+    with solver.cmd_lock:
+        for node_id, mode in solver.locks.items():
+            _, kids = _decision(solver, node_id)
+            rows = [l for l in solver.cmd("show_strategy " + node_id).split("\n") if l.strip()]
+            freq = [" ".join(f"{(v or 0):.6g}" for v in parse_floats(r, NUM_COMBOS)) for r in rows]
+            item = {"id": node_id, "mode": mode, "actions": _actions(kids), "freq": freq}
+            if mode == "combos":
+                mask = parse_floats(solver.cmd("show_locked_combos " + node_id), NUM_COMBOS)
+                item["combos"] = "".join("1" if (c or 0) > 0 else "0" for c in mask)
+            out.append(item)
+    return {"locks": out}
+
+
+def op_lock_apply(solver, b):
+    """POST /api/lock/apply {locks: [...]} (#200): set the locks /api/lock/export gave, on a tree
+    just built from the same spot. A lock whose node is missing or has other actions (the tree
+    changed since) is skipped and reported; the others are set. No undo copy is made."""
+    locks = b.get("locks")
+    if not isinstance(locks, list):
+        raise SolverError("locks must be a list")
+    applied, skipped = [], []
+    for item in locks:
+        if not isinstance(item, dict):
+            raise SolverError("each lock must be an object")
+        node_id = str(item.get("id", ""))
+        try:
+            node_id = node_id_arg({"id": [node_id]})
+            _, kids = _decision(solver, node_id)
+            if item.get("actions") is not None and item.get("actions") != _actions(kids):
+                raise SolverError("the node has other actions now")
+            freq = item.get("freq")
+            if not isinstance(freq, list) or not all(isinstance(r, str) for r in freq):
+                raise SolverError("freq must be one string row per action")
+            body = {"id": node_id, "mode": item.get("mode"),
+                    "freq": [[float(t) for t in r.split()] for r in freq]}
+            if item.get("mode") == "combos":
+                c = item.get("combos")
+                if not isinstance(c, str) or len(c) != NUM_COMBOS or set(c) - {"0", "1"}:
+                    raise SolverError(f"combos must be {NUM_COMBOS} 0/1 characters")
+                body["combos"] = [1 if ch == "1" else 0 for ch in c]
+            elif item.get("mode") != "node":
+                raise SolverError("mode must be node or combos")
+            op_lock(solver, body)
+            applied.append(node_id)
+        except (SolverError, ValueError) as e:
+            if solver.state()["solving"]:
+                raise
+            skipped.append({"id": node_id, "error": str(e)})
+    return {"applied": applied, "skipped": skipped, "locks": dict(solver.locks)}
 
 
 def op_lock_revert(solver):

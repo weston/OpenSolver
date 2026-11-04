@@ -205,6 +205,51 @@ class LocksTest(unittest.TestCase):
         finally:
             vsrv.set_refiner(None, None)
 
+    def test_5_spot_locks_export_apply(self):
+        """A library spot keeps its locks (/api/lock/export) and sets them again on a fresh build
+        of the same tree (/api/lock/apply)."""
+        self.build_and_solve()
+        d = self.strategy(FACING)
+        kids = [c["id"].rsplit(":", 1)[1] for c in d["children"]]
+        mix = [[0.8 if k == "f" else 0.2 / (len(kids) - 1)] * NUM for k in kids]
+        self.ok("/api/lock", "POST", {"id": FACING, "mode": "node", "freq": mix})
+        order = self.ok("/api/hand_order")["order"]
+        aa = [1 if h[0] == "A" and h[2] == "A" else 0 for h in order]
+        self.ok("/api/lock", "POST", {"id": "r:0", "mode": "combos", "freq": self.strategy("r:0")["freq"],
+                                      "combos": aa})
+        want = {i: self.strategy(i)["freq"] for i in (FACING, "r:0")}
+        exp = self.ok("/api/lock/export")["locks"]
+        self.assertEqual({l["id"]: l["mode"] for l in exp}, {FACING: "node", "r:0": "combos"})
+        self.assertEqual(next(l for l in exp if l["id"] == "r:0")["combos"], "".join(map(str, aa)))
+
+        # into the library with the spot and back, as the Build tab does
+        spot = dict(CFG, schema=1, locks=exp)
+        self.ok("/api/library/save", "POST", {"kind": "config", "name": "Locked/spot", "content": spot})
+        back = self.ok("/api/library/get?kind=config&name=Locked/spot")["content"]["locks"]
+        self.assertEqual(back, exp)
+        st, r = self.req("/api/library/save", "POST", {"kind": "config", "name": "Bad", "content": dict(spot, locks=[1])})
+        self.assertEqual(st, 400, r)
+
+        self.ok("/api/generate", "POST", CFG)
+        self.ok("/api/build", "POST", {})
+        self.assertEqual(self.ok("/api/lock_state?id=r:0")["locks"], {}, "a new build has no locks")
+        bad = dict(back[0], id="r:0:b24:c")                 # a chance node now: skipped
+        other = dict(back[0], actions=["x", "y"])           # different actions: skipped
+        r = self.ok("/api/lock/apply", "POST", {"locks": back + [bad, other]})
+        self.assertEqual(sorted(r["applied"]), sorted([FACING, "r:0"]))
+        self.assertEqual(len(r["skipped"]), 2, r["skipped"])
+        self.assertIn("LOCKED", self.flags(FACING))
+        self.assertIn("COMBO_LOCKED", self.flags("r:0"))
+        for i, w in want.items():
+            got = self.strategy(i)["freq"]
+            rows = range(NUM) if i == FACING else [j for j in range(NUM) if aa[j]]
+            diff = max(abs((w[k][j] or 0) - (got[k][j] or 0)) for k in range(len(w)) for j in rows)
+            self.assertLess(diff, 1e-5, f"{i}: the locked strategy comes back (max diff {diff:.2e})")
+        self.solve(0.2)
+        got = self.strategy(FACING)["freq"]
+        self.assertLess(max(abs((a or 0) - (b or 0)) for ra, rb in zip(want[FACING], got) for a, b in zip(ra, rb)),
+                        1e-5, "and holds through the solve")
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

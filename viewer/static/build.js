@@ -274,14 +274,42 @@ function openSpot() {
       prefs.set("build", readForm());
       setSpot(name);
       markDirty();
-      toast(`Opened spot “${name}”`);
+      const n = Array.isArray(c.locks) ? c.locks.length : 0;
+      toast(`Opened spot “${name}”${n ? ` · ${plural(n, "node lock")}, set again when you build it` : ""}`);
     },
   });
 }
 
-function saveSpot() {
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+/** Save the form as a spot. The node locks set on the tree built from this very form go with it
+ *  (#200); building the spot again sets them again. */
+async function saveSpot() {
   const suggest = spot.name || (board.length ? `Spots/${board.join("")}` : "");
-  openLibrary({ kind: "config", mode: "save", content: spotContent(), suggest, onLoad: (_, name) => setSpot(name) });
+  const content = spotContent();
+  if (treeReady && builtSig === sig(readForm())) {
+    try {
+      const r = await get("/api/lock/export");
+      if (r.locks && r.locks.length) content.locks = r.locks;
+    } catch (e) { toast(`The node locks could not be read, so the spot is saved without them: ${e.message || e}`, "err"); }
+  }
+  openLibrary({
+    kind: "config", mode: "save", content, suggest,
+    onLoad: (_, name) => {
+      setSpot(name);
+      if (content.locks) toast(`Saved “${name}” with ${plural(content.locks.length, "node lock")}`);
+    },
+  });
+}
+
+/** The saved spot's node locks when the form is that spot, unchanged; else null. */
+async function savedSpotLocks() {
+  if (!spot.name || spot.sig !== sig(spotForm())) return null;
+  try {
+    const r = await get(`/api/library/get?kind=config&name=${encodeURIComponent(spot.name)}`);
+    const locks = r.content && r.content.locks;
+    return Array.isArray(locks) && locks.length ? locks : null;
+  } catch (e) { return null; }  // renamed or deleted since: build without
 }
 function markDirty() {
   const tag = $("build-state");
@@ -323,7 +351,17 @@ async function build() {
     builtSig = sig(f);
     treeReady = true;
     const total = /TOTAL\D*(\d+)/.exec(b.node_count);
-    info(`Built: ${total ? Number(total[1]).toLocaleString() + " nodes" : "ok"}${est ? ` · ${est}` : ""}`);
+    let locked = "";
+    const locks = await savedSpotLocks();
+    if (locks) {
+      const r = await post("/api/lock/apply", { locks });
+      locked = ` · ${plural(r.applied.length, "node lock")} from the spot`;
+      if (r.skipped.length) {
+        locked += `, ${r.skipped.length} skipped`;
+        toast(`${plural(r.skipped.length, "lock")} of the spot did not fit the tree: ${r.skipped.map((x) => `${x.id} (${x.error})`).join("; ")}`, "err");
+      }
+    }
+    info(`Built: ${total ? Number(total[1]).toLocaleString() + " nodes" : "ok"}${est ? ` · ${est}` : ""}${locked}`);
     markDirty();
     onBuilt();
     return true;

@@ -139,6 +139,10 @@ function previewConfig(pv, c) {
     t.appendChild(tr);
   }
   pv.appendChild(t);
+  if (Array.isArray(c.locks) && c.locks.length) {   // #200: set again when the spot is built
+    const n = c.locks.length;
+    pv.appendChild(el("div", "pv-stats", `${n} node lock${n === 1 ? "" : "s"}: ${c.locks.map((l) => l.id).join(", ")}`));
+  }
 }
 
 /* ------------------------------------------------------------------ actions */

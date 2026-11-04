@@ -186,6 +186,29 @@ def integration(solver):
         with open(os.path.join(td, "r.csv")) as f:
             lines = f.read().strip().splitlines()
         check(len(lines) == 5 and lines[-1].startswith("weighted"), "report CSV")
+        check(lines[0].endswith("high,suits,pairing,straight"), f"report CSV has the texture columns ({lines[0]})")
+
+        print("[report: flop textures]")
+        T = jobs.TEXTURES
+        cases = {"Kh9h4h": ("K", "monotone", "unpaired", "no straight"),
+                 "As2d3c": ("A", "rainbow", "unpaired", "straight possible"),       # the ace plays low
+                 "QsJsTd": ("Q", "two-tone", "unpaired", "straight possible"),
+                 "8c8d2h": ("9 or lower", "rainbow", "paired", "paired (no 3-card straight)"),
+                 "7h7d7c": ("9 or lower", "rainbow", "trips", "paired (no 3-card straight)"),
+                 "Ah9c5d": ("A", "rainbow", "unpaired", "no straight"),
+                 "Td7c6s": ("T", "rainbow", "unpaired", "straight possible")}
+        for b, want in cases.items():
+            got = tuple(T[k][1](b) for k in ("high", "suits", "pairing", "straight"))
+            check(got == want, f"{b}: {got}")
+        g = rep["groups"]["suits"]
+        check(sum(x["flops"] for x in g) == 3 and abs(sum(x["weight"] for x in g) - rep["total"]["weight"]) < 1e-9,
+              "the texture groups cover every flop once")
+        for x in g:
+            mine = [r for r in rep["rows"] if jobs.texture_suits(r["board"]) == x["key"]]
+            want = sum(r["weight"] * r["freqs"][0] for r in mine) / sum(r["weight"] for r in mine)
+            check(abs(x["freqs"][0] - want) < 1e-9, f"group {x['key']}: weighted average of its {len(mine)} flops")
+        rc, out = cli("report", "srp", "--solver", solver, "--by", "suits")
+        check(rc == 0 and "by suits:" in out, "report --by suits")
         rc, out = cli("list")
         check(rc == 0 and "3 done" in out and "1 queued" in out, out.strip().splitlines()[-1])
         rc, out = cli("show", "00001")

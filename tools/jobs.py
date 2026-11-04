@@ -360,6 +360,79 @@ def action_label(a: str, pot: float) -> str:
     return a
 
 
+RANK_ORDER = "23456789TJQKA"
+# Flop textures the report can group by: key -> (title, function of a board like "Kh9h4c")
+TEXTURES = {}
+
+
+def _ranks(board: str) -> list[int]:
+    return sorted((RANK_ORDER.index(board[i]) for i in range(0, 6, 2)), reverse=True)
+
+
+def texture_high(board: str) -> str:
+    """The top card: A, K, Q, J, T, then 9-or-lower boards together."""
+    top = RANK_ORDER[_ranks(board)[0]]
+    return top if top in "AKQJT" else "9 or lower"
+
+
+def texture_suits(board: str) -> str:
+    n = len({board[i + 1] for i in range(0, 6, 2)})
+    return {1: "monotone", 2: "two-tone", 3: "rainbow"}[n]
+
+
+def texture_pairing(board: str) -> str:
+    n = len(set(_ranks(board)))
+    return {3: "unpaired", 2: "paired", 1: "trips"}[n]
+
+
+def texture_straight(board: str) -> str:
+    """Unpaired boards whose three ranks fit in a five-rank window (the ace also counts low)
+    make straights possible with two cards; the others do not."""
+    r = set(_ranks(board))
+    if len(r) < 3:
+        return "paired (no 3-card straight)"
+    lows = [r, {x if x != 12 else -1 for x in r}]
+    return "straight possible" if any(max(s) - min(s) <= 4 for s in lows) else "no straight"
+
+
+TEXTURES.update({"high": ("High card", texture_high), "suits": ("Suits", texture_suits),
+                 "pairing": ("Pairing", texture_pairing), "straight": ("Straights", texture_straight)})
+GROUP_ORDER = {"high": ["A", "K", "Q", "J", "T", "9 or lower"], "suits": ["rainbow", "two-tone", "monotone"],
+               "pairing": ["unpaired", "paired", "trips"],
+               "straight": ["straight possible", "no straight", "paired (no 3-card straight)"]}
+
+
+def _weighted(rows: list, n_actions: int) -> dict:
+    """Weight-averaged root frequencies and EVs of report rows that have a root summary."""
+    have = [x for x in rows if x["freqs"] is not None]
+    wsum = sum(x["weight"] for x in have)
+    if not have or wsum <= 0:
+        return {}
+    out = {"freqs": [sum(x["weight"] * x["freqs"][a] for x in have) / wsum for a in range(n_actions)],
+           "weight": wsum, "flops": len(have)}
+    for k in ("ev_oop", "ev_ip"):
+        if all(x[k] is not None for x in have):
+            out[k] = sum(x["weight"] * x[k] for x in have) / wsum
+    return out
+
+
+def group_rows(rows: list, by: str, n_actions: int) -> list:
+    """Report rows grouped by a flop texture, each group weight-averaged like the total."""
+    if by not in TEXTURES:
+        raise JobError(f"group by one of {', '.join(TEXTURES)}")
+    fn = TEXTURES[by][1]
+    groups = {}
+    for x in rows:
+        groups.setdefault(fn(x["board"]), []).append(x)
+    order = GROUP_ORDER[by]
+    out = []
+    for key in sorted(groups, key=lambda k: order.index(k) if k in order else len(order)):
+        w = _weighted(groups[key], n_actions)
+        if w:
+            out.append({"key": key, **w, "boards": [x["board"] for x in groups[key]]})
+    return out
+
+
 def report(q: Queue, name: str, solver_exe: str | None = None) -> dict:
     """Per-flop root strategy, EVs and exploitability of a batch, plus the weighted average.
 
@@ -389,19 +462,15 @@ def report(q: Queue, name: str, solver_exe: str | None = None) -> dict:
         rows.append({"id": j["id"], "board": j["board"], "weight": j["weight"], "ev_oop": r.get("ev_oop"),
                      "ev_ip": r.get("ev_ip"), "exploitability": r.get("exploitability"),
                      "freqs": root.get("freqs") if root.get("actions") == actions else None})
-    total = {}
-    have = [x for x in rows if x["freqs"] is not None]
-    wsum = sum(x["weight"] for x in have)
-    if have and wsum > 0:
-        total["freqs"] = [sum(x["weight"] * x["freqs"][a] for x in have) / wsum for a in range(len(actions))]
-        for k in ("ev_oop", "ev_ip"):
-            if all(x[k] is not None for x in have):
-                total[k] = sum(x["weight"] * x[k] for x in have) / wsum
-        total["weight"] = wsum
-        total["flops"] = len(have)
+    n = len(actions or [])
+    for x in rows:
+        x["texture"] = {k: fn(x["board"]) for k, (_, fn) in TEXTURES.items()}
     return {"batch": name, "pot": pot, "player": player,
             "actions": actions or [], "labels": [action_label(a, pot) for a in actions or []],
-            "rows": rows, "total": total, "pending": sum(j["status"] != "done" for j in q.jobs(name))}
+            "rows": rows, "total": _weighted(rows, n),
+            "groups": {k: group_rows(rows, k, n) for k in TEXTURES} if n else {},
+            "group_titles": {k: t for k, (t, _) in TEXTURES.items()},
+            "pending": sum(j["status"] != "done" for j in q.jobs(name))}
 
 
 def close_solver(s) -> None:
@@ -643,6 +712,8 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("report", help="aggregate report: root strategy per flop and weighted average")
     rp.add_argument("name")
     rp.add_argument("--csv", help="also write it as CSV")
+    rp.add_argument("--by", choices=sorted(TEXTURES), help="also group the flops by texture: "
+                    "high (top card), suits, pairing, straight")
     rp.add_argument("--solver", default=default_solver(), help="reads older saves without a root summary")
 
     args = ap.parse_args(argv)
@@ -740,17 +811,25 @@ def main(argv: list[str] | None = None) -> int:
                 fr = "  ".join(f"{100 * f:>13.1f}%" for f in t["freqs"])
                 ev = f"{t['ev_oop']:.2f}" if "ev_oop" in t else "-"
                 print(f"{'weighted':<10} {t['weight']:>7g} {ev:>8} {'':>7}  {fr}   ({t['flops']} flops)")
+            if args.by and rep["groups"].get(args.by):
+                print(f"\nby {rep['group_titles'][args.by].lower()}:")
+                for g in rep["groups"][args.by]:
+                    fr = "  ".join(f"{100 * f:>13.1f}%" for f in g["freqs"])
+                    ev = f"{g['ev_oop']:.2f}" if "ev_oop" in g else "-"
+                    print(f"{g['key'][:18]:<18} {g['weight']:>7g} {ev:>8}  {fr}   ({g['flops']} flops)")
             if rep["pending"]:
                 print(f"({rep['pending']} job(s) not done yet are left out)")
             if args.csv:
                 with open(args.csv, "w", newline="") as f:
                     w = csv.writer(f)
-                    w.writerow(["board", "weight", "ev_oop", "ev_ip", "exploitability"] + labels)
+                    tex = list(TEXTURES)
+                    w.writerow(["board", "weight", "ev_oop", "ev_ip", "exploitability"] + labels + tex)
                     for x in rep["rows"]:
                         w.writerow([x["board"], x["weight"], x["ev_oop"], x["ev_ip"], x["exploitability"]] +
-                                   (x["freqs"] or [""] * len(labels)))
+                                   (x["freqs"] or [""] * len(labels)) + [x["texture"][k] for k in tex])
                     if t:
-                        w.writerow(["weighted", t["weight"], t.get("ev_oop"), t.get("ev_ip"), ""] + t["freqs"])
+                        w.writerow(["weighted", t["weight"], t.get("ev_oop"), t.get("ev_ip"), ""] + t["freqs"] +
+                                   [""] * len(tex))
     except JobError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

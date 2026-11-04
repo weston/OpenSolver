@@ -1,0 +1,64 @@
+# Probe 11: commands no other probe ran (docs/commands.md marked them Unverified), on probe 1's river tree:
+# force_line, set_incentives_line, add_info_line / reset_tree_info, print_all_strats, load_script +
+# skip_if_done (with probe11_script.upi, a path relative to the repo root, which both solvers run from),
+# stop, load_all_nodes, the preflop line editors and recover_subset. reset_end_string is last on purpose.
+is_ready
+set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s
+set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s
+set_board KhQs7d4c2s
+set_pot 0 0 100
+set_eff_stack 200
+set_isomorphism 1 0
+add_line 75 200
+add_line 0 75 200
+add_line 0 50
+add_line 75
+force_line 0 50 150
+build_tree
+node_count
+show_children r:0:c
+show_children r:0:c:b50
+show_all_lines
+set_info_freq 1000
+go 50 steps
+wait_for_solver
+stop
+set_incentives_line r:0:b75 1 2
+show_incentives r:0
+show_incentives r:0:b75
+clear_incentives r:0:b75
+show_incentives r:0:b75
+add_info_line first note
+add_info_line second note
+show_tree_info
+reset_tree_info
+show_tree_info
+print_all_strats
+load_script tests/pio_compare/probe11_script.upi
+dump_tree "C:\Users\Owner\AppData\Local\Temp\oupi_p11.cfr"
+free_tree
+load_tree "C:\Users\Owner\AppData\Local\Temp\oupi_p11.cfr"
+show_node r
+load_all_nodes
+show_node r
+show_strategy r:0
+free_tree
+set_range OOP 22+,A2s+,K9s+,Q9s+,J9s+,T9s,ATo+,KJo+
+set_range IP 22+,A2s+,K5s+,Q8s+,J8s+,T8s+,97s+,87s,76s,A2o+,K9o+,QTo+,JTo
+set_pot 10 5 0
+set_eff_stack 1000
+add_preflop_line 25 100 220
+add_preflop_line 25 100 1000
+add_preflop_line 25 25
+add_preflop_line 25 100 100
+remove_preflop_line 25 100 100
+build_preflop_tree
+show_children r:0:b25:b100
+recover_subset
+free_tree
+clear_preflop_lines
+add_preflop_line 25 25
+build_preflop_tree
+show_children r:0:b25
+free_tree
+reset_end_string

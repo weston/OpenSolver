@@ -1,0 +1,4 @@
+skip_if_done tests/pio_compare/probe11_script.upi already
+show_effective_stack
+LABEL: already
+is_tree_present

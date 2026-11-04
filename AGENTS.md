@@ -255,11 +255,13 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   faced or below one's own investment (other than a fold) answers `ERROR: add_line Incorrect bet size.`; the
   line is kept and `build_tree` then names the amount (Pio crashes there). With no stack set, Pio has no
   all-in root at add time, and neither do we; a stack-0 *tree* still differs (Pio bets, ours is all-in).
-- Pio edits a live line tree command by command; ours collects add/remove/force sets and applies them at
-  `build_tree`. They agree when a script removes or forces after its adds (the usual shape). They differ
-  when a line is re-added after `remove_line` (Pio re-adds it, ours keeps it removed), when `add_line`
-  follows `force_line` (Pio adds it beside the forced line), and for `remove_line` of a line that does
-  not exist (Pio errors, ours accepts). Pio accepts bets above the effective stack; ours rejects them at
+- Pio edits a live line tree command by command. Ours keeps add/remove sets that `build_tree` applies,
+  but each edit acts like Pio's when it is given (#251, `check_force_line`): `remove_line` of a line that
+  isn't in the tree, or is its parent's last child, is `ERROR: remove_line Can't remove the line (it
+  doesn't exist or is the last child)`; removing deletes the subtree, so `add_line` of the same line brings
+  back only its own path (`0 50` comes back, the `0 50 150` raise removed with it does not); a line added
+  after `force_line` goes in beside the forced one. The checks need the board, pot and stack set (with no
+  board, edits are kept as given). Pio accepts bets above the effective stack; ours rejects them at
   `build_tree`.
 - `force_line` (probe 11 and the cases in `check_force_line`): Pio keeps only the tree's lines that the
   forced line is a prefix of, so it must be a line of the tree *as the lines and earlier forces stand*:

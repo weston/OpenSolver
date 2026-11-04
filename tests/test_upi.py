@@ -620,6 +620,33 @@ def check_force_line(u):
                   "ERROR: force_line Specified line doesn't exists."],
           f"a line the tree lacks, or one an earlier force removed, is refused ({out})")
     check(kids("r:0") == "c" and kids("r:0:c:b50") == "b150 c f", "a refused force changes nothing")
+
+    # remove_line acts at once on the live tree, like Pio (same responses and children on 3.10.1)
+    u.cmd("free_tree")
+    u.cmd("clear_lines")
+    for l in ("0 50", "0 50 150", "75"):
+        u.cmd("add_line " + l)
+    err = "ERROR: remove_line Can't remove the line (it doesn't exist or is the last child)"
+    out = [u.cmd("remove_line " + l) for l in ("0 60", "0 50 0", "0 50 0", "0 50 150", "0 50 150")]
+    check(out == [err, "remove_line ok!", err, "remove_line ok!", err],
+          f"remove_line: a missing line, or one already removed, is refused ({out})")
+    u.cmd("build_tree")
+    check(kids("r:0:c") == "b50 c" and kids("r:0:c:b50") == "c", "the fold and the raise are gone")
+    check(u.cmd("remove_line 0 50 50").startswith("ERROR"), "the last child can't be removed")
+    # removing deletes the subtree: re-adding the line brings back only its own path
+    u.cmd("free_tree")
+    u.cmd("clear_lines")
+    for c in ("add_line 0 50", "add_line 0 50 150", "remove_line 0 50", "add_line 0 50"):
+        u.cmd(c)
+    u.cmd("build_tree")
+    check(kids("r:0:c") == "b50 c" and kids("r:0:c:b50") == "c f", "re-added after remove_line: its path, not 0 50 150")
+    # a line added after force_line goes in beside the forced one
+    u.cmd("free_tree")
+    u.cmd("clear_lines")
+    for c in ("add_line 0 50", "force_line 0 50", "add_line 75"):
+        u.cmd(c)
+    u.cmd("build_tree")
+    check(kids("r:0") == "b75 c" and kids("r:0:c") == "b50", "add_line after force_line is added beside it")
     u.cmd("free_tree")
     u.cmd("clear_lines")
 

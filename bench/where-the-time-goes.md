@@ -169,6 +169,24 @@ nothing.
 
 Recorded so they are not re-attempted:
 
+- **Cheapening the scheduler's spin at a join.** A 20-thread profile of `flop_srp_2` puts **25.1% of
+  all samples in synchronisation waits** (`__psynch_mutexwait` 9.8%, `__psynch_cvwait` 7.6%,
+  `__ulock_wait` 4.8% — that last one is the main thread in `wait_for_solver` — `__psynch_mutexdrop`
+  2.8%). The mechanism is real: a thread waiting at a join takes the one scheduler mutex, finds
+  nothing in `pick_job`, drops it, yields, and repeats, so every waiting thread hammers `m_`.
+
+  Fixing it does **not** help. A `publish_epoch_` atomic bumped on each job publish lets the spin
+  skip the mutex entirely until something new is published (sound, because a job's `next` only ever
+  increases, so an empty `pick_job` stays empty until a publish). Bit-identical, suite green, and
+  worth **-0.95% at 0.6x sd** — not significant; per-iteration it was -1.2% on `flop_srp_2` and
+  **+1.4%** on `deep`, signs disagreeing.
+
+  **The lesson: that 25% is threads with nothing to do, not throughput lost to lock traffic.** Wall
+  clock at a join is bounded by the straggler finishing its chunk, and making the other threads idle
+  more cheaply does not shorten it. A profile showing a quarter of samples in mutex wait reads as a
+  quarter recoverable, and it is not. So the remaining ~1.4x of scaling (#53) is a **load-balance /
+  critical-path** problem — fewer threads sitting at the join — not a scheduler-contention one.
+
 - **Reach-based subtree pruning** never fires (**subtree level only** - per-*entry* skipping is a real 4.3% win, see #151 below). At ε=1e-3, a million times looser than useful,
   exploitability stayed bit-identical — proof that nothing was being skipped. Mixed strategies keep
   reach strictly positive, and folds are terminal nodes rather than subtrees. (#51)

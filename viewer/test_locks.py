@@ -299,6 +299,9 @@ class LocksTest(unittest.TestCase):
             mgr.stop()
             try:
                 mgr.rsolver.proc.kill()
+                mgr.rsolver.proc.wait(timeout=10)
+                for f in (mgr.rsolver.proc.stdin, mgr.rsolver.proc.stdout):
+                    f.close()
             except Exception:
                 pass
 

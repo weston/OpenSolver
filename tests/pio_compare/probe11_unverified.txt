@@ -1,7 +1,8 @@
 # Probe 11: commands no other probe ran (docs/commands.md marked them Unverified), on probe 1's river tree:
-# force_line, set_incentives_line, add_info_line / reset_tree_info, print_all_strats, load_script +
-# skip_if_done (with probe11_script.upi, a path relative to the repo root, which both solvers run from),
-# stop, load_all_nodes, the preflop line editors and recover_subset. reset_end_string is last on purpose.
+# force_line (a line that doesn't exist, a forced call, one removed by an earlier force), set_incentives_line,
+# add_info_line / reset_tree_info, print_all_strats, stop, load_all_nodes, the preflop line editors and
+# recover_subset. reset_end_string is last on purpose. (load_script / skip_if_done need a file both solvers
+# can open by the same name; Pio runs from its own directory, so they are not covered here.)
 is_ready
 set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s
 set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s
@@ -13,12 +14,24 @@ add_line 75 200
 add_line 0 75 200
 add_line 0 50
 add_line 75
-force_line 0 50 150
+add_line 0 50 150
+force_line 0 50 150 200
+force_line 0
+force_line 0 50 50
+force_line 75 200
 build_tree
 node_count
+show_children r:0
 show_children r:0:c
 show_children r:0:c:b50
 show_all_lines
+free_tree
+clear_lines
+add_line 75 200
+add_line 0 75 200
+add_line 0 50
+add_line 75
+build_tree
 set_info_freq 1000
 go 50 steps
 wait_for_solver
@@ -34,7 +47,6 @@ show_tree_info
 reset_tree_info
 show_tree_info
 print_all_strats
-load_script tests/pio_compare/probe11_script.upi
 dump_tree "C:\Users\Owner\AppData\Local\Temp\oupi_p11.cfr"
 free_tree
 load_tree "C:\Users\Owner\AppData\Local\Temp\oupi_p11.cfr"

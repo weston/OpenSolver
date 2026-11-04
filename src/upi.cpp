@@ -1009,7 +1009,42 @@ void Upi::register_commands() {
     return std::string("remove_line ok!");
   };
   H["force_line"] = [this, parse_line](const Args& a) {
-    cfg_.lines.force.push_back(parse_line(a));
+    // Pio keeps only the tree's lines that the forced one is a prefix of, so the forced line must
+    // be a line of the tree as the lines (and the earlier forces) stand now - an implicit call or
+    // fold counts (force_line 0 50 50 after add_line 0 50) - else "Specified line doesn't exists."
+    // and nothing changes. Verified on 3.10.1 (probe 11): after force_line 0 50, force_line 75 200
+    // errors although add_line 75 200 was given. Pio still applies part of a rejected force; ours
+    // does not (#10: not a behaviour to copy). Ours prunes the kept lines at build_tree.
+    auto f = parse_line(a);
+    bool found = false;
+    std::string err;
+    std::unique_ptr<ActionNode> root;
+    if (cfg_.board.size() >= 3) {
+      ActionTreeParams ap;
+      ap.board_len = static_cast<int>(cfg_.board.size());
+      ap.eff_stack = cfg_.eff_stack;
+      ap.start_inv[0] = cfg_.pot[0];
+      ap.start_inv[1] = cfg_.pot[1];
+      ap.dead = cfg_.pot[2];
+      root = build_action_tree(ap, cfg_.lines, err);
+    }
+    if (root) {
+      std::vector<ActionNode*> all;
+      index_action_tree(root.get(), all);
+      for (auto* n : all) found = found || n->line == f;
+    } else {
+      // no buildable tree yet (no board or stack): a prefix of an added line the earlier forces kept
+      auto pre = [](const std::vector<int32_t>& p, const std::vector<int32_t>& l) {
+        return p.size() <= l.size() && std::equal(p.begin(), p.end(), l.begin());
+      };
+      for (auto& l : cfg_.lines.add) {
+        bool kept = pre(f, l);
+        for (auto& g : cfg_.lines.force) kept = kept && pre(g, l);
+        found = found || kept;
+      }
+    }
+    if (!found) throw CmdError{"Specified line doesn't exists."};
+    cfg_.lines.force.push_back(f);
     return std::string("force_line ok!");
   };
   H["clear_lines"] = [this](const Args&) {

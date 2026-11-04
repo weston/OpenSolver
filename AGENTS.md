@@ -279,6 +279,16 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   documented format.
 - `estimate_rebuild_tree` on a complete small tree: Pio reports a fixed-looking 47 MB "needed", ours the
   tree's own memory (0 MB there). Both refuse a partially loaded tree with the same error.
+- Scripts (paired runs on the same files, `check_scripts`): `load_script` runs the lines, each answering
+  as it runs, and **stops at the first `ERROR`**; a `LABEL:` line answers empty; then `load_script ok!`,
+  which Pio prints *without* its end string (it merges into the next command's answer; ours ends it).
+  `load_script_silent` is not silent: the same answers without end strings, then `load_script_silent ok!`
+  with one. `skip_if_done` stops at the label, which runs. A missing file is `couldn't open <path>: No such
+  file or directory`. `stdoutredi(_append)` answers into the new file. After `stdoutback`, Pio's output is
+  lost when its stdout is a pipe (not copied). Pio resolves relative paths from its own directory, so a
+  probe can't share a script file with ours.
+- `show_settings` before any `set_info_freq`: Pio `info_freq: 0` (it reports by time), ours 25 (ours checks
+  the accuracy target at reports, so 0 would never stop on accuracy). Not changed.
 - Legacy commands Pio 3.10 still answers: `set_bet_sizes <n>...` (atoi per token) and `set_donk_bet <n>`
   (true unless atoi is 0) are only stored, `build_tree` ignores them; `show_tree_params` prints
   `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the

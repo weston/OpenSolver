@@ -72,6 +72,7 @@ class SailClient:
     def __init__(self, key, timeout=180):
         self._key = key
         self.timeout = timeout
+        self.opener = urllib.request.urlopen   # tests swap in a fake
 
     def complete(self, messages):
         body = json.dumps({"model": MODEL, "messages": messages, "max_tokens": MAX_TOKENS,
@@ -81,7 +82,7 @@ class SailClient:
             "X-Sail-Completion-Window": WINDOW})
         assert urllib.parse.urlsplit(req.full_url).hostname == HOST
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as f:
+            with self.opener(req, timeout=self.timeout) as f:
                 data = json.load(f)
         except urllib.error.HTTPError as e:
             detail = ""

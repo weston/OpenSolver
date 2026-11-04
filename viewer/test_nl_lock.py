@@ -274,8 +274,8 @@ class NLTest(unittest.TestCase):
         self.assertIsInstance(svc.client, nl_lock.SailClient)
         vsrv.set_nl(svc)
         try:
-            with mock.patch.object(nl_lock.urllib.request, "urlopen", fake_urlopen):
-                st, r = self.req_s("/api/nl/propose", "POST", {"id": FACING, "text": "IP always folds"})
+            svc.client.opener = fake_urlopen
+            st, r = self.req_s("/api/nl/propose", "POST", {"id": FACING, "text": "IP always folds"})
             self.assertEqual(st, 200, r)
             self.assertTrue(r["ok"])
             self.assertEqual(seen["host"], "api.sailresearch.com")
@@ -291,8 +291,8 @@ class NLTest(unittest.TestCase):
             def http_error(req, timeout=None):
                 raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, io.BytesIO(
                     json.dumps({"error": {"message": "model_capacity_unavailable"}}).encode()))
-            with mock.patch.object(nl_lock.urllib.request, "urlopen", http_error):
-                st, r = self.req_s("/api/nl/propose", "POST", {"id": FACING, "text": "IP always folds"})
+            svc.client.opener = http_error
+            st, r = self.req_s("/api/nl/propose", "POST", {"id": FACING, "text": "IP always folds"})
             self.assertEqual(st, 400)
             self.assertIn("503", r["error"])
             self.assertIn("model_capacity_unavailable", r["error"])

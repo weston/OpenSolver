@@ -317,7 +317,7 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
     cost +10%, or unchanged when restricted to nodes where at most 1/8 of the hands need it. The full
     vectorised call is cheaper than a scalar per-hand loop.
   - **Board-blocked hands are 8.05% of river storage** on every tree (river rows are 98-99% of all
-    storage; turn rows 4%), so 8% of the bytes streamed per iteration are dead. Compacting them is #239.
+    storage; turn rows 1-3%, 4% of them blocked), so 8% of the bytes streamed per iteration are dead. Compacting them is #239.
 - **Pio's per-iteration convergence matches ours** on threebet_mono (see bench/vs_pio.md), so no
   algorithmic gap was found there; the lead is per-iteration speed.
 

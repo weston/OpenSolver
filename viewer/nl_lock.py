@@ -155,7 +155,8 @@ def node_context(srv, solver, node_id):
         made = [int(t) for t in cats[0].split()]
         draw = [int(t) for t in cats[1].split()]
         order = srv.hand_order(solver)
-    pot = sum(node["pot"][:2]) if node.get("pot") else 0
+    # the pot line is (OOP's chips in, IP's chips in, dead money): all of it is the pot
+    pot = sum(node["pot"]) if node.get("pot") else 0
     toks = [k["id"].rsplit(":", 1)[-1] for k in kids]
     facing = "f" in toks
     acts = [{"key": t, "label": action_label(t, facing, pot)} for t in toks]

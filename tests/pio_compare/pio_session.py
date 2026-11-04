@@ -4,12 +4,16 @@ import os, queue, subprocess, threading, time
 
 class PioSession:
     def __init__(self, dest=None, key=None, exe=None):
-        dest = dest or os.environ["PIO_SSH"]  # e.g. user@windows-host (required)
-        key = os.path.expanduser(key or os.environ.get("PIO_KEY", "~/.ssh/pio_pc_ed25519"))
         exe = exe or os.environ.get("PIO_EXE", r"C:\PioSOLVER\PioSOLVER3-edge-znver5.exe")
         folder, name = exe.rsplit("\\", 1)
-        self.p = subprocess.Popen(["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", dest,
-                                   f"cd /d {folder} && {name}"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        if os.environ.get("PIO_LOCAL") == "1":  # on the Pio machine itself (see compare.py)
+            argv, cwd = [exe], folder
+        else:
+            dest = dest or os.environ["PIO_SSH"]  # e.g. user@windows-host (required)
+            key = os.path.expanduser(key or os.environ.get("PIO_KEY", "~/.ssh/pio_pc_ed25519"))
+            argv, cwd = ["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", dest,
+                         f"cd /d {folder} && {name}"], None
+        self.p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, bufsize=1)
         self.q = queue.Queue()
         self.solver = []

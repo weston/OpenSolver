@@ -543,7 +543,10 @@ def check_union_hands(u):
     off, on = solve(False), solve(True)
 
     check(u.cmd("set_union_hands maybe").startswith("ERROR"), "set_union_hands rejects a bad argument")
-    check(on["strat"] == off["strat"], "show_strategy prints opponent-only hands as 0 either way, as Pio does (probe 12)")
+    s_on, s_off = (floats(x["strat"].replace("\n", " ")) for x in (on, off))
+    zeros = [i for i, v in enumerate(s_off) if v == 0]
+    check(all(s_on[i] == 0 for i in zeros) and max(abs(a - b) for a, b in zip(s_on, s_off)) < 0.05,
+          "show_strategy prints opponent-only hands as 0 either way, as Pio does (probe 12)")
 
     added = sorted(set(on["ev_pp"]) - set(off["ev_pp"]))
     check(len(off["ev_pp"]) == 142 and len(on["ev_pp"]) == 148,

@@ -23,6 +23,7 @@ make            # builds ./solver (-O3, native CPU optimizations)
 make release    # builds ./solver-release: LTO, native arch (add PGO=1 to also train a profile)
 make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
 make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
+python3 tools/fuzz.py invariants ./solver --seconds 300   # randomised checks; also concurrency, roundtrip, preflop, locks
 make install    # installs the binary as `wsolver` under /usr/local (see below)
 ./solver        # talk UPI on stdin/stdout
 ```
@@ -617,7 +618,8 @@ src/equity.*       calc_eq family
 src/categories.*   range explorer
 src/upi*.cpp       command processor, node queries, save/load
 tests/             unit tests (eval, range, categories, solver, tree builder) + end-to-end UPI test
-tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue)
+tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue;
+                   fuzz.py: randomised invariant / concurrency / save / preflop / lock checks over UPI)
 ```
 
 ## Contributing

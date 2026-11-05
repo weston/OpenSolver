@@ -442,7 +442,7 @@ class ResolveManager:
         subgame (X -> its subgame root). Bet tokens are absolute amounts and the subgame starts
         from X's investments, so a node keeps its id whenever the edited sizes still make it."""
         x = ctx["id"]
-        if not any(i == x or i.startswith(x + ":") for i in self.main.locks):
+        if not any(i == x or i.startswith(x + ":") for i in list(self.main.locks)):  # a lock may land meanwhile
             return []
         out = []
         for lock in vsrv.op_lock_export(self.main)["locks"]:

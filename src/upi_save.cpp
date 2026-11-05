@@ -338,10 +338,17 @@ void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const s
     }
   }
   // Only truncated saves carry the root-results block (#195); other saves stay byte-identical.
-  if (stats) {
-    w.put(static_cast<uint8_t>(1));
-    for (int i = 0; i < 5; ++i) w.put(stats[i]);
+  // A union-hands tree (#302) then adds a flags byte, so its stats byte is written either way (0 = none).
+  if (stats || c.union_hands) {
+    w.put(static_cast<uint8_t>(stats ? 1 : 0));
+    if (stats)
+      for (int i = 0; i < 5; ++i) w.put(stats[i]);
   }
+  // Optional trailing flags (#302): bit 0 = set_union_hands on. The hand lists, and so the storage
+  // layout, depend on it: without it a union-hands save rebuilt with own-range lists and failed to load
+  // ("tree shape mismatch"). Written only when set, so every other save stays byte-identical; older
+  // readers stop before it.
+  if (c.union_hands) w.put(static_cast<uint8_t>(1));
 }
 
 void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::string>& info, long long& iters,
@@ -389,6 +396,7 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
   c.preflop = false;
   c.subset.clear();
   c.schematics.clear();
+  c.union_hands = false;
   if (r.p == r.end) return;  // version 2 save
   c.preflop = r.get<uint8_t>() != 0;
   uint32_t ns = r.get<uint32_t>();
@@ -422,6 +430,8 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
   has_stats = r.get<uint8_t>() != 0;
   if (has_stats)
     for (int i = 0; i < 5; ++i) stats[i] = r.get<double>();
+  if (r.p == r.end) return;
+  c.union_hands = (r.get<uint8_t>() & 1) != 0;  // #302
 }
 
 struct LoadedConfig {

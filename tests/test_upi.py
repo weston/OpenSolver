@@ -651,6 +651,21 @@ def check_union_hands(u):
     check(n_off == ["inf"] * 6, f"without union_hands the six hands print unsigned inf ({n_off[:2]}...)")
     check(n_on == ["-inf"] * 6, f"with union_hands they print -inf, the sign of their cfv ({n_on[:2]}...)")
 
+    # #302: a save of a union-hands tree records the setting, so it loads (the hand lists, and the storage,
+    # depend on it), even with the session's setting off; it used to fail with "tree shape mismatch".
+    res = u.cmd("calc_results")
+    strat = u.cmd("show_strategy r:0")
+    with tempfile.TemporaryDirectory() as td:
+        for mode in ("lossless", ""):
+            path = os.path.join(td, f"union{mode}.cfr")
+            check(u.cmd(f'dump_tree "{path}" {mode}'.strip()) == "dump_tree ok!", f"dump_tree {mode or 'default'} of a union-hands tree")
+            u.cmd("set_union_hands off")
+            check(u.cmd(f'load_tree "{path}"') == "load_tree ok!", f"a {mode or 'default'} union-hands save loads (#302)")
+            if mode == "lossless":
+                check(u.cmd("calc_results") == res and u.cmd("show_strategy r:0") == strat,
+                      "lossless union-hands round trip: identical results and strategy")
+            u.cmd("set_union_hands on")
+
     u.cmd("set_union_hands off")
     u.cmd("free_tree")
 

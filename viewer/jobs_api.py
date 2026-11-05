@@ -71,11 +71,22 @@ class JobsService:
         try:
             counts = jobs.run(self.q, ids, batch, None, self.solver_exe, 0, self._log, self._progress)
             self._log(f"finished: {counts['done']} done, {counts['failed']} failed")
-        except jobs.JobError as e:
+        except Exception as e:   # JobError, or anything unexpected: show it rather than lose it
             with self.mu:
                 self.last_error = str(e)
             self._log(f"error: {e}")
         finally:
+            # However the run ended, no job of this process is running any more: one still marked
+            # running under our pid would otherwise stay stuck (recover() skips live pids, and
+            # Retry / remove refuse a running job), so it goes back to the queue.
+            me = os.getpid()
+            try:
+                for j in self.q.jobs():
+                    if j["status"] == "running" and j.get("runner_pid") == me:
+                        self.q.update(j["id"], expect=lambda x: x["status"] == "running" and x.get("runner_pid") == me,
+                                      status="queued", started=None, runner_pid=None)
+            except Exception as e:
+                self._log(f"error: could not re-queue the interrupted job: {e}")
             with self.mu:
                 self.current = None
                 self.point = None
@@ -85,10 +96,16 @@ class JobsService:
 
     # ---- operations
     def state(self):
-        js = self.q.jobs()
         # a runner started from the CLI (tools/jobs.py run) works on the same queue: show it as running
         external = 0 if self.running() else self.q.runner()
         running = self.running() or bool(external)
+        js = self.q.jobs()
+        if not running and any(j["status"] == "running" for j in js):
+            # Jobs a dead runner left "running" (the viewer restarted or crashed mid-job, a CLI
+            # runner was killed) go back to the queue now, as the next run would do: otherwise
+            # the tab shows them running forever, with no Retry or remove on their row.
+            self.q.recover()
+            js = self.q.jobs()
         with self.mu:
             cur = self.current
             if running and cur is None:  # between progress reports: the job marked running

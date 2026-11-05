@@ -19,6 +19,7 @@ const L = {
   state: null,    // /api/lock_state
   blocked: null,
   drag: null,     // {on: bool} while painting a selection
+  mixTyped: false, // the Selected column was typed into since it last showed the selection's mix
 };
 let onChanged = async () => {};
 
@@ -149,6 +150,7 @@ function renderSel(force = false) {
     const { f } = freqs(L.edit, selCombos());
     document.querySelectorAll("#lk-acts input.mix").forEach((inp, j) => { inp.value = fmt(100 * f[j], 0); });
   }
+  L.mixTyped = false;   // the Selected column shows the selection's mix again
 }
 
 function renderActs() {
@@ -163,6 +165,7 @@ function renderActs() {
     name.append(sw, el("span", null, a.label));
     if (a.sub) name.appendChild(el("small", "muted", " " + a.sub));
     const mix = el("input", "mix"); mix.type = "number"; mix.min = "0"; mix.max = "100"; mix.step = "5";
+    mix.addEventListener("input", () => { L.mixTyped = true; });
     mix.value = fmt(100 * now[j], 0);
     const tdm = el("td", "num"); tdm.append(mix, el("span", "muted", "%"));
     const sc = el("input", "scale"); sc.type = "number"; sc.min = "0"; sc.max = "100"; sc.step = "1";
@@ -202,15 +205,17 @@ function info(html, err) { $("lk-info").innerHTML = err ? `<span class="err">${h
 
 /* ------------------------------------------------------------------ actions */
 
+/** Give the selected hands the Selected column's mix; false (with a message) if it can't. */
 function setSelected() {
-  if (!L.sel.size) { info("Select some hands first.", true); return; }
+  if (!L.sel.size) { info("Select some hands first.", true); return false; }
   const mix = [...document.querySelectorAll("#lk-acts input.mix")].map((x) => Math.max(0, Number(x.value) || 0));
   const s = mix.reduce((a, b) => a + b, 0);
-  if (s <= 0) { info("The mix is all zeros.", true); return; }
+  if (s <= 0) { info("The mix is all zeros.", true); return false; }
   for (const i of selCombos()) L.ctx.acts.forEach((a, j) => { L.edit[a.k][i] = mix[j] / s; });
   for (const cls of L.sel) L.edited.add(cls);
   info(s !== 100 ? `Mix normalised to 100% (it added up to ${fmt(s, 0)}%).` : "");
   refresh();
+  return true;
 }
 
 function editedMask() {
@@ -220,6 +225,9 @@ function editedMask() {
 }
 
 async function doLock(mode) {
+  // A mix typed into the Selected column but not applied with "Set selected hands" would be
+  // lost: Lock sends the edited strategy, so apply it first (what typing it then locking means).
+  if (mode !== "current" && L.mixTyped && L.sel.size && !setSelected()) return;
   const body = { id: L.ctx.id, mode, snapshot: $("lk-snap").checked && !$("lk-snap").disabled };
   if (mode !== "current") {
     body.freq = L.edit;

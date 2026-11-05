@@ -91,7 +91,7 @@ async function go() {
   } catch (e) { fail(e); }
 }
 
-/** Largest first (owner, #141). Percentages by value; geometric/multiple/all-in after them. */
+/** Largest first (owner, #141): the all-in, raise multiples, percentages by value, then geometric. */
 function largestFirst(sizes) {
   const key = (s) => (/^a$/i.test(s) ? 1e9 : /x$/i.test(s) ? 1e6 + parseFloat(s) : /e$/i.test(s) ? 1e3 - (parseFloat(s) || 0) : parseFloat(s));
   return [...sizes].sort((a, b) => key(b) - key(a));
@@ -101,9 +101,9 @@ function sizeLabel(s) {
   return /^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s.toLowerCase() === "a" ? "all-in" : s;
 }
 
-/** A search's sizes, plus the all-in it offered beside every subset (st.allin). */
+/** A search's sizes, plus the all-in it offered beside every subset (st.allin), largest first. */
 function withAllin(sizes, allin) {
-  return largestFirst(sizes).concat(allin ? ["a"] : []);
+  return largestFirst(allin ? sizes.concat(["a"]) : sizes);
 }
 
 function sizeChips(sizes, allin) {

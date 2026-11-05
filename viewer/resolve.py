@@ -27,7 +27,8 @@ subgame, not r:0 ("subgame_root" in the API tells the two apart).
 
 Size search: given a candidate size list and N, evaluate N-size subsets (all of them
 below BRUTE_FORCE_LIMIT combinations, greedy forward selection above it), solving each
-to a loose accuracy, and report the acting player's EV at X for each candidate.
+to a loose accuracy, and report the acting player's EV at X for each candidate. With
+"allin", every subset also offers the all-in, on top of its N sizes.
 
 THIS IS UNSAFE RE-SOLVING. The opponent's range at X is frozen at its solved reach;
 there is no gadget game grafting the opponent's counterfactual values, so the subgame
@@ -493,7 +494,8 @@ class ResolveManager:
         def sizes(sub):
             return ",".join(tuple(sub) + extra)
         if len(candidates) < 2:
-            raise vsrv.SolverError("need at least 2 candidate sizes")
+            raise vsrv.SolverError("need at least 2 candidate sizes" +
+                                   (" besides the all-in" if allin else ""))
         try:
             n = int(body["n"])
         except (KeyError, TypeError, ValueError):

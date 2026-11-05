@@ -499,6 +499,10 @@ class ResolveIntegrationTest(unittest.TestCase):
                          {"id": "r:0", "candidates": "50", "n": 1})
         self.assertEqual(st, 400)  # need >= 2 candidates
         st, d = self.req("/api/resolve/search", "POST",
+                         {"id": "r:0", "candidates": "50,a", "n": 1, "allin": True})
+        self.assertEqual(st, 400)  # with allin, "a" is not a candidate: one left
+        self.assertIn("besides the all-in", d["error"])
+        st, d = self.req("/api/resolve/search", "POST",
                          {"id": "r:0", "candidates": "50,80", "n": 5})
         self.assertEqual(st, 400)  # n > len(candidates)
         st, d = self.req("/api/resolve/search", "POST",

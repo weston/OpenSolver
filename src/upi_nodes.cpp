@@ -291,12 +291,16 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
   int actor = n.player, A = n.num_children, H = tree_->num_hands(actor);
   std::vector<float> sig(static_cast<size_t>(A) * H);
   solver_->average_strategy(r.node, sig.data());
-  // Hands not in the player's range print 0 (they are not in the hand list).
+  // Hands not in the player's range print 0: not in the hand list, or with set_union_hands the
+  // opponent-only hands, which Pio also prints as 0 here (probe 12) while its _pp lists show them.
   if (!pp) {
     std::string s;
     std::vector<float> line(NUM_COMBOS);
     for (int k = 0; k < A; ++k) {
       to_1326(actor, r.frame, sig.data() + static_cast<size_t>(k) * H, line.data(), 0.0f);
+      if (tree_->cfg.union_hands)
+        for (int c = 0; c < NUM_COMBOS; ++c)
+          if (tree_->cfg.range[actor][PERM_COMBO[PERM_INV[display_perm_]][c]] <= 0) line[c] = 0.0f;
       if (k) s += "\n";
       s += floats_line(line.data(), NUM_COMBOS);
     }
@@ -365,8 +369,11 @@ std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
   std::vector<float> cfv(Hp), mass(Hp);
   solver_->walk(Walk::Evaluate, r.node, p, rp, ro, cfv.data());
   solver_->compat_mass(p, ro, mass.data());
-  // Pio semantics: matchups = own reach * compatible opponent mass; EV = cfv / matchups-without-weight
-  // for hands that reach the node, +-inf/nan (cfv / 0) for hands that do not, nan for untracked hands.
+  // Pio semantics: matchups = own reach * compatible opponent mass; EV = cfv / compatible mass, the
+  // hand's counterfactual value, for every hand of the player's own range - also one whose reach
+  // here is exactly 0 (Pio prints a finite EV there, #247: its average strategy never quite reaches
+  // 0, and its on-the-fly river recalcs give 0-reach hands their EV too). Hands outside the own
+  // range print +-inf/nan (cfv / 0), untracked hands nan.
   const float nanv = std::numeric_limits<float>::quiet_NaN(), infv = std::numeric_limits<float>::infinity();
   std::vector<float> ev1326(NUM_COMBOS, nanv), m1326(NUM_COMBOS, 0.0f);
   uint64_t bm = board_mask(r.board);
@@ -383,7 +390,8 @@ std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
     int c = PERM_COMBO[r.frame][tree_->hands[p][h]];
     if (combo_mask(c) & bm) continue;
     m1326[c] = rp[h] * mass[h];
-    if (rp[h] > 0 && mass[h] > 0) ev1326[c] = cfv[h] / mass[h];
+    const bool in_range = tree_->cfg.range[p][PERM_COMBO[PERM_INV[display_perm_]][c]] > 0;
+    if ((rp[h] > 0 || in_range) && mass[h] > 0) ev1326[c] = cfv[h] / mass[h];
     else ev1326[c] = cfv[h] > 0 ? infv : cfv[h] < 0 ? -infv : nanv;
   }
   if (!pp) return floats_line(ev1326.data(), NUM_COMBOS) + "\n" + floats_line(m1326.data(), NUM_COMBOS);
@@ -1030,17 +1038,9 @@ void Upi::register_node_commands() {
     solver_->compat_mass(0, r1.data(), m.data());
     double num = 0;
     for (int h = 0; h < H0; ++h) num += static_cast<double>(r0[h]) * m[h];
-    // Root matchups restricted to hands compatible with the node's runout cards.
-    uint64_t dealt = board_mask(r.board) & ~board_mask(std::vector<int>(r.board.begin(), r.board.begin() + tree_->root_board_len()));
-    std::vector<float> q0 = tree_->init_reach[0], q1 = tree_->init_reach[1];
-    for (int p = 0; p < 2; ++p) {
-      auto& q = p == 0 ? q0 : q1;
-      for (size_t h = 0; h < q.size(); ++h)
-        if (combo_mask(PERM_COMBO[display_perm_][tree_->hands[p][h]]) & dealt) q[h] = 0;
-    }
-    solver_->compat_mass(0, q1.data(), m.data());
-    double den = 0;
-    for (int h = 0; h < H0; ++h) den += static_cast<double>(q0[h]) * m[h];
+    // Over all the root's matchups, as Pio: the turn and river cards' card removal counts (probe 13:
+    // after an As turn that blocks AA/AK/AQ/AJ combos, 0.0692 where only the strategies give 1/12).
+    double den = solver_->root_matchups();
     return fmt(den > 0 ? num / den : 0.0);
   };
   H["show_all_lines"] = [this](const Args&) {

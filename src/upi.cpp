@@ -212,7 +212,8 @@ void Upi::require_tree() const {
 }
 
 bool Upi::next_line(std::string& line) {
-  if (!script_lines_.empty()) {
+  from_script_ = !script_lines_.empty();
+  if (from_script_) {
     line = script_lines_.front();
     script_lines_.pop_front();
     return true;
@@ -233,6 +234,21 @@ int Upi::run() {
 }
 
 bool Upi::execute_line(const std::string& raw, bool silent) {
+  // Script lines (load_script, Pio 3.10.1): each answers as usual, or without the end string in
+  // load_script_silent; a LABEL: line answers empty; the first ERROR ends the script; then the
+  // load_script itself answers (Pio prints that "ok!" without its end string, merged into the next
+  // command's answer; ours ends it like any other).
+  const bool quiet = from_script_ && !script_silent_.empty() && script_silent_.back();
+  auto answer = [&](const std::string& body) {
+    if (quiet) out_raw(body.empty() || body.back() == '\n' ? body : body + "\n");
+    else respond(body);
+  };
+  if (!raw.empty() && raw[0] == '\x02') {
+    bool was_silent = !script_silent_.empty() && script_silent_.back();
+    if (!script_silent_.empty()) script_silent_.pop_back();
+    respond(was_silent ? "load_script_silent ok!" : "load_script ok!");
+    return true;
+  }
   std::string line = raw;
   while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
   size_t first = line.find_first_not_of(" \t");
@@ -242,7 +258,10 @@ bool Upi::execute_line(const std::string& raw, bool silent) {
   if (toks.empty()) return true;
   std::string cmd = toks[0];
   Args args(toks.begin() + 1, toks.end());
-  if (cmd == "LABEL:") return true;
+  if (cmd == "LABEL:") {
+    if (from_script_) answer("");
+    return true;
+  }
   bool is_exit = false;
   std::string body;
   if (silent) ++silent_depth_;
@@ -260,7 +279,10 @@ bool Upi::execute_line(const std::string& raw, bool silent) {
   std::string lerr;
   if (tree_ && !solving_ && tree_->take_lazy_error(lerr)) body = "ERROR: " + cmd + " cannot read tree data: " + lerr;
   if (is_exit) return false;
-  if (!silent && body != "\x01") respond(body);
+  if (!silent && body != "\x01") answer(body);
+  if (from_script_ && body.rfind("ERROR", 0) == 0)
+    while (!script_lines_.empty() && (script_lines_.front().empty() || script_lines_.front()[0] != '\x02'))
+      script_lines_.pop_front();
   return true;
 }
 
@@ -611,45 +633,30 @@ void Upi::register_commands() {
     return std::string(buf);
   };
   H["bench"] = [this](const Args&) { return cmd_bench(); };
-  H["load_script"] = [this](const Args& a) {
+  auto load_script = [this](const Args& a, bool silent) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
     std::ifstream f(a[0]);
-    if (!f) throw CmdError{"cannot open " + a[0]};
+    if (!f) throw CmdError{"couldn't open " + a[0] + ": " + std::strerror(errno)};
     std::vector<std::string> lines;
     std::string l;
     while (std::getline(f, l)) lines.push_back(l);
+    script_lines_.push_front("\x02");  // answers for the load_script once its lines have run
     for (auto it = lines.rbegin(); it != lines.rend(); ++it) script_lines_.push_front(*it);
-    return std::string("load_script ok!");
+    script_silent_.push_back(silent);
+    return std::string("\x01");
   };
-  H["load_script_silent"] = [this](const Args& a) {
-    if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    std::ifstream f(a[0]);
-    if (!f) throw CmdError{"cannot open " + a[0]};
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(f, l)) lines.push_back(l);
-    std::string skip_label;
-    for (size_t i = 0; i < lines.size(); ++i) {
-      auto toks = tokenize(lines[i]);
-      if (!skip_label.empty()) {
-        if (toks.size() >= 2 && toks[0] == "LABEL:" && toks[1] == skip_label) skip_label.clear();
-        continue;
-      }
-      if (toks.size() >= 3 && toks[0] == "skip_if_done") {
-        if (std::ifstream(toks[1]).good()) skip_label = toks[2];
-        continue;
-      }
-      if (!execute_line(lines[i], true)) break;
-    }
-    return std::string("load_script_silent ok!");
-  };
+  H["load_script"] = [load_script](const Args& a) { return load_script(a, false); };
+  H["load_script_silent"] = [load_script](const Args& a) { return load_script(a, true); };
   H["skip_if_done"] = [this](const Args& a) {
+    // In a script: if the file exists, skip to the LABEL: line, which then runs (an empty answer).
     if (a.size() < 2) throw CmdError{"incorrect or missing argument"};
     if (std::ifstream(a[0]).good()) {
       while (!script_lines_.empty()) {
-        auto toks = tokenize(script_lines_.front());
-        script_lines_.pop_front();
+        const std::string& next = script_lines_.front();
+        if (!next.empty() && next[0] == '\x02') break;  // the end of this script
+        auto toks = tokenize(next);
         if (toks.size() >= 2 && toks[0] == "LABEL:" && toks[1] == a[1]) break;
+        script_lines_.pop_front();
       }
     }
     return std::string("skip_if_done ok!");
@@ -684,7 +691,7 @@ void Upi::register_commands() {
     if (redirected_) std::fclose(out_);
     out_ = f;
     redirected_ = true;
-    return std::string("\x01");
+    return std::string("stdoutredi ok!");  // after the switch: into the file, as Pio
   };
   H["stdoutredi_append"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
@@ -694,7 +701,7 @@ void Upi::register_commands() {
     if (redirected_) std::fclose(out_);
     out_ = f;
     redirected_ = true;
-    return std::string("\x01");
+    return std::string("stdoutredi_append ok!");  // after the switch: into the file, as Pio
   };
   H["stdoutback"] = [this](const Args&) {
     {
@@ -958,8 +965,51 @@ void Upi::register_commands() {
     if (l.empty()) throw CmdError{"incorrect or missing argument"};
     return l;
   };
-  H["add_line"] = [this, parse_line](const Args& a) {
-    cfg_.lines.add.push_back(parse_line(a));  // amounts are validated at build_tree
+  // Pio edits a live line tree command by command; ours keeps add/remove sets that build_tree applies,
+  // and makes each edit act like Pio's when it is given (verified on 3.10.1, AGENTS.md):
+  // remove_line / force_line delete subtrees now (a removal, and the added lines through it go), and
+  // add_line clears the removals on its own path, so a line re-added after either comes back - only
+  // its own path, as in Pio. Lookups use the action tree the current lines build.
+  auto current_tree = [this]() -> std::unique_ptr<ActionNode> {
+    if (cfg_.board.size() < 3) return nullptr;
+    ActionTreeParams ap;
+    ap.board_len = static_cast<int>(cfg_.board.size());
+    ap.eff_stack = cfg_.eff_stack;
+    ap.start_inv[0] = cfg_.pot[0];
+    ap.start_inv[1] = cfg_.pot[1];
+    ap.dead = cfg_.pot[2];
+    std::string err;
+    return build_action_tree(ap, cfg_.lines, err);
+  };
+  // The node a line leads to (through street deals), or nullptr; *parent = the last decision on it.
+  auto walk_line = [](ActionNode* n, const std::vector<int32_t>& l, ActionNode** parent) -> ActionNode* {
+    for (int32_t x : l) {
+      while (n && n->kind == ANodeKind::Chance) n = n->children.empty() ? nullptr : n->children[0].get();
+      if (!n || n->kind != ANodeKind::Decision) return nullptr;
+      size_t i = 0;
+      while (i < n->actions.size() && n->actions[i].total != x) ++i;
+      if (i == n->actions.size()) return nullptr;
+      *parent = n;
+      n = n->children[i].get();
+    }
+    return n;
+  };
+  auto is_prefix = [](const std::vector<int32_t>& p, const std::vector<int32_t>& l) {
+    return p.size() <= l.size() && std::equal(p.begin(), p.end(), l.begin());
+  };
+  auto cut_line = [this, is_prefix](const std::vector<int32_t>& l) {
+    auto& add = cfg_.lines.add;
+    add.erase(std::remove_if(add.begin(), add.end(), [&](const std::vector<int32_t>& x) { return is_prefix(l, x); }),
+              add.end());
+    cfg_.lines.remove.push_back(l);
+  };
+  H["add_line"] = [this, parse_line, is_prefix](const Args& a) {
+    auto line = parse_line(a);
+    // a line given again after remove_line / force_line took it out comes back (Pio re-adds it)
+    auto& rm = cfg_.lines.remove;
+    rm.erase(std::remove_if(rm.begin(), rm.end(), [&](const std::vector<int32_t>& r) { return is_prefix(r, line); }),
+             rm.end());
+    cfg_.lines.add.push_back(line);  // amounts are validated at build_tree
     // Like Pio, the line is checked against the current config here but kept either way:
     // - running past the end of the hand: "too long", and build_tree uses the valid prefix;
     // - an amount below the bet faced or below one's own investment (other than a fold): Pio's
@@ -985,12 +1035,54 @@ void Upi::register_commands() {
     }
     return std::string("add_line ok!");
   };
-  H["remove_line"] = [this, parse_line](const Args& a) {
-    cfg_.lines.remove.push_back(parse_line(a));
+  H["remove_line"] = [this, parse_line, current_tree, walk_line, cut_line](const Args& a) {
+    // Pio: the line must be in the tree and not its parent's last child, else this error and no
+    // change; removing deletes its subtree, so re-adding the line brings back only its own path.
+    auto l = parse_line(a);
+    if (auto root = current_tree()) {
+      ActionNode* parent = nullptr;
+      if (!walk_line(root.get(), l, &parent) || !parent || parent->actions.size() < 2)
+        throw CmdError{"Can't remove the line (it doesn't exist or is the last child)"};
+    }
+    cut_line(l);
     return std::string("remove_line ok!");
   };
-  H["force_line"] = [this, parse_line](const Args& a) {
-    cfg_.lines.force.push_back(parse_line(a));
+  H["force_line"] = [this, parse_line, current_tree, walk_line, cut_line](const Args& a) {
+    // Pio keeps only the tree's lines that the forced one is a prefix of: every other action along
+    // its path goes, now (an add_line after it is added beside it again). The line must be a line of
+    // the tree as it stands - an implicit call or fold counts (force_line 0 50 50 after add_line
+    // 0 50), one an earlier force removed does not - else "Specified line doesn't exists." and no
+    // change. Verified on 3.10.1 (probe 11, check_force_line). Pio still applies part of a rejected
+    // force; ours does not (#10: not a behaviour to copy).
+    auto f = parse_line(a);
+    auto root = current_tree();
+    if (!root) {
+      // no buildable tree yet (no board or stack): keep it for build_tree, which prunes the same way
+      bool found = false;
+      for (auto& l : cfg_.lines.add)
+        found = found || (f.size() <= l.size() && std::equal(f.begin(), f.end(), l.begin()));
+      if (!found) throw CmdError{"Specified line doesn't exists."};
+      cfg_.lines.force.push_back(f);
+      return std::string("force_line ok!");
+    }
+    std::vector<std::vector<int32_t>> cut;
+    std::vector<int32_t> pre;
+    ActionNode* n = root.get();
+    for (int32_t x : f) {
+      while (n && n->kind == ANodeKind::Chance) n = n->children.empty() ? nullptr : n->children[0].get();
+      if (!n || n->kind != ANodeKind::Decision) throw CmdError{"Specified line doesn't exists."};
+      size_t i = 0;
+      while (i < n->actions.size() && n->actions[i].total != x) ++i;
+      if (i == n->actions.size()) throw CmdError{"Specified line doesn't exists."};
+      for (size_t j = 0; j < n->actions.size(); ++j)
+        if (j != i) {
+          cut.push_back(pre);
+          cut.back().push_back(n->actions[j].total);
+        }
+      pre.push_back(x);
+      n = n->children[i].get();
+    }
+    for (auto& c : cut) cut_line(c);
     return std::string("force_line ok!");
   };
   H["clear_lines"] = [this](const Args&) {

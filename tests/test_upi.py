@@ -1060,8 +1060,25 @@ def check_framing(exe):
     check(out == "set_end_string ok!\nEND\n" and rc == 0, f"quit exits like exit ({out!r}, rc {rc})")
 
 
+def check_exit_while_parked(exe):
+    """The input ending while a solve is parked by hold must end the process (#293). run() set the stop
+    flag without waking the parked solver thread, then joined it forever: a viewer that died mid-burst
+    left its solver, and the whole tree's memory, behind. exit itself was fine (stop_solver releases)."""
+    print("[input ends while a solve is parked]")
+    setup = ["set_range OOP AA,KK,QQ,AK", "set_range IP AA,KK,JJ,AQ", "set_board KhQs7d4c2s", "set_pot 0 0 100",
+             "set_eff_stack 100", "add_line 50 100", "add_line 0 50 100", "build_tree", "set_accuracy 0", "go", "hold"]
+    for tail, what in ((["exit"], "exit"), ([], "end of input")):
+        try:
+            p = subprocess.run([exe], input="".join(l + "\n" for l in setup + tail), capture_output=True,
+                               text=True, timeout=30)
+            check(p.returncode == 0 and "hold ok!" in p.stdout, f"{what} after hold during a solve ends the process")
+        except subprocess.TimeoutExpired:
+            check(False, f"{what} after hold during a solve ends the process (hung for 30 s)")
+
+
 def main(exe, big=False):
     check_framing(exe)
+    check_exit_while_parked(exe)
     u = Upi(exe)
     try:
         print("[basics]")

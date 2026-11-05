@@ -34,14 +34,21 @@ struct CmdError {
 struct TreePause {
   std::atomic<int>& req;
   std::condition_variable& cv;
+  std::mutex& pm;  // the mutex the solver thread waits under (pause_mu_)
   std::unique_lock<std::mutex> lk;
-  TreePause(std::atomic<int>& r, std::mutex& m, std::condition_variable& c) : req(r), cv(c), lk(m, std::defer_lock) {
+  TreePause(std::atomic<int>& r, std::mutex& m, std::condition_variable& c, std::mutex& p)
+      : req(r), cv(c), pm(p), lk(m, std::defer_lock) {
     req.fetch_add(1);
     lk.lock();
   }
   ~TreePause() {
     lk.unlock();
-    req.fetch_sub(1);
+    // Lowered under pm, or the notify can land between the solver thread's check of req and its
+    // wait, and be lost: the solve then stays parked for good (a lost wake-up; #293).
+    {
+      std::lock_guard<std::mutex> g(pm);
+      req.fetch_sub(1);
+    }
     cv.notify_all();
   }
 };
@@ -220,6 +227,7 @@ class Upi {
   std::atomic<int> pause_requests_{0};
   bool held_ = false;  // `hold` (viewer extension) is keeping a running solve parked
   void release_hold();
+  void signal_stop();
   std::condition_variable pause_cv_;
   std::mutex pause_mu_;
 

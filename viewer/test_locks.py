@@ -165,12 +165,18 @@ class LocksTest(unittest.TestCase):
             {"id": FACING, "mode": "node", "freq": [[-1] * NUM] * len(d["children"])},
             {"id": FACING, "mode": "combos", "freq": d["freq"], "combos": [0] * NUM},
             {"id": FACING, "mode": "nope"},
+            # rows for other actions (a refined street built from other sizes, #261)
+            {"id": FACING, "mode": "node", "freq": d["freq"],
+             "actions": ["b999"] + [c["id"].rsplit(":", 1)[1] for c in d["children"]][1:]},
         ]
         for b in bad:
             st, r = self.req("/api/lock", "POST", b)
             self.assertEqual(st, 400, (b, r))
         st, r = self.req("/api/lock/revert", "POST", {})
         self.assertEqual(st, 400, "no undo copy for this tree")
+        st = self.ok("/api/lock", "POST", {"id": FACING, "mode": "node", "freq": d["freq"],
+                                           "actions": [c["id"].rsplit(":", 1)[1] for c in d["children"]]})
+        self.assertTrue(st["locked"], "the node's own actions: locked")
 
     def test_3_locks_survive_save_load(self):
         self.build_and_solve()

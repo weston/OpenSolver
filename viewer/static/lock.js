@@ -234,8 +234,10 @@ async function doLock(mode) {
     // main tree's own (less solved) one. Lock what is shown (#255).
     body.mode = "node";
     body.freq = L.ctx.freq.map((r) => r.map((v) => v || 0));
+    body.actions = L.ctx.actions;
   } else if (mode !== "current") {
     body.freq = L.edit;
+    body.actions = L.ctx.actions;  // the server checks the rows are for its node's actions
     const scope = document.querySelector('input[name="lk-scope"]:checked').value;
     if (scope === "combos") {
       if (!L.edited.size) { info("Edit some hands first (or lock every hand).", true); return; }

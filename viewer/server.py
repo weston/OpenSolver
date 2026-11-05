@@ -1003,6 +1003,12 @@ def op_lock(solver, b):
         raise SolverError("mode must be current, node or combos")
     _, kids = _decision(solver, node_id)
     cmds = []
+    shown = b.get("actions")
+    if mode != "current" and shown is not None and list(shown) != _actions(kids):
+        # rows for other actions: e.g. a refined street (fast preview) built from other sizes
+        # than this tree's, with the same number of actions (#261)
+        raise SolverError(f"the strategy shown is for actions {' '.join(map(str, shown))}, "
+                          f"this node has {' '.join(_actions(kids))}")
     if mode != "current":
         freq = b.get("freq")
         if not isinstance(freq, list) or len(freq) != len(kids) or any(

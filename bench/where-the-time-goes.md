@@ -476,7 +476,9 @@ signal; the seconds are interleaved runs on a quiet machine.
   bandwidth-bound. Rounding to nearest is what makes full 16-bit stall at tight targets (threebet_mono
   never reaches 0.05% of pot), so x86 builds now round the sums stochastically: threebet_mono
   reaches 0.05% in 9.0-9.3 s, against 13.9 s with float32 and 48 s under main's `auto`.
-  ARM builds keep rounding to nearest (see bench/bandwidth.md).
+  **And on ARM (#291):** with the uniforms read from a fixed table instead of hashed per slot, the M4
+  pays ~2% per iteration (the hash was ~9%), and 16-bit threebet_mono reaches 0.05% of pot in 16.7 s
+  against 17.0 s for float32 (nearest rounding never gets there). All builds round stochastically now.
 - **Thread scaling on the M4** (4 performance + 6 efficiency cores, same tree, after the first 20
   iterations): 1 -> 4 threads gives 3.57x, 4 -> 10 threads gives 1.6x more, 5.7x in all, about 89%
   of what this core mix can deliver.

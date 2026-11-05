@@ -329,7 +329,11 @@ static bool stochastic_sums() {
   parse_cards("KhQs7d", cfg.board);
   std::string err;
   RangeWeights w;
-  if (!parse_range("AA,KK,QQ", w, err)) return false;
+  // A wide range, so the mean is over ~1,200 slots: with 2000 draws each slot's count has a standard
+  // deviation of ~13 steps, which a 12-slot node (AA,KK,QQ) only averages down to ~4.
+  if (!parse_range("22+,A2s+,K2s+,Q2s+,J2s+,T2s+,92s+,82s+,72s+,62s+,52s+,42s+,32s,A2o+,K2o+,Q2o+,J2o+,T2o+,"
+                   "92o+,82o+,72o+,62o+,52o+,42o+,32o", w, err))
+    return false;
   for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = cfg.range[1][i] = w[i];
   cfg.pot[2] = 100;
   cfg.eff_stack = 150;
@@ -356,16 +360,12 @@ static bool stochastic_sums() {
     const float* cur = g.strat_ro(n, buf.data());
     return std::vector<float>(cur, cur + len);
   };
-  if (!GameTree::kStochasticSums) {
-    std::printf("[stochastic sums] skipped: this build rounds 16-bit strategy sums to nearest (ARM)\n");
-    return true;
-  }
   const auto a = run(2000), b = run(2000);
   double mean = 0;
   for (size_t i = 1; i < len; ++i) mean += a[i];
   mean /= static_cast<double>(len - 1);
   // Expected 200 steps; the spread per slot is ~sqrt(2000 * 0.09) = 13, far less on the mean.
-  const bool ok = a == b && len > 2 && std::fabs(mean - 200.0) < 5.0;
+  const bool ok = a == b && len > 2 && std::fabs(mean - 200.0) < 2.0;
   std::printf("[stochastic sums] 2000 increments of 0.1 step: mean %.2f steps (expect 200, nearest rounding: 0), "
               "replay %s\n", mean, a == b ? "identical" : "DIFFERS");
   return ok;

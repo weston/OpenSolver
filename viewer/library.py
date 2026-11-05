@@ -38,7 +38,7 @@ class Library:
     # ------------------------------------------------------------- paths
 
     def _section(self, kind):
-        if kind not in KINDS:
+        if not isinstance(kind, str) or kind not in KINDS:  # a list or dict kind is unhashable: a 500, not a 400
             raise LibraryError(f"kind must be one of {sorted(KINDS)}")
         return os.path.realpath(os.path.join(self.root, KINDS[kind]))
 

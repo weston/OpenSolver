@@ -182,10 +182,12 @@ class LibraryUnitTest(unittest.TestCase):
             self.lib.get("range", "missing")
 
     def test_unknown_kind(self):
-        for op in (lambda: self.lib.list("trees"), lambda: self.lib.get("trees", "x"),
-                   lambda: self.lib.save("trees", "x", "y"), lambda: self.lib.delete("trees", "x")):
-            with self.assertRaises(libm.LibraryError):
-                op()
+        for kind in ("trees", [1, 2], {"a": 1}, None, 3):  # unhashable kinds too (a 500 before, found by fuzzing)
+            for op in (lambda: self.lib.list(kind), lambda: self.lib.get(kind, "x"),
+                       lambda: self.lib.save(kind, "x", "y"), lambda: self.lib.delete(kind, "x"),
+                       lambda: self.lib.rename(kind, "x", "y")):
+                with self.assertRaises(libm.LibraryError):
+                    op()
 
 
 class LibraryHttpTest(unittest.TestCase):

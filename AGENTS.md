@@ -201,7 +201,10 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `calc_eq_preflop` prints `nan` for classes with 0 matchups. `compare.py` compares numbers with a
   tolerance, so diff byte-for-byte to see these (#125).
 - `calc_ev`/`calc_eq` matchups are weighted by the hand's own reach (`calc_eq` also times the number of
-  ordered runouts); out-of-range hands print `nan` / `inf`. Pio keeps per-player hand lists as the union of
+  ordered runouts); out-of-range hands print `nan` / `inf`. An in-range hand whose reach at the node is
+  exactly 0 still gets its counterfactual EV (`cfv / compatible mass`, matchups 0), as Pio prints it (#247:
+  Pio's average strategy never quite reaches 0, and its on-the-fly river recalcs give such hands an EV too).
+  Pio keeps per-player hand lists as the union of
   both ranges, so it has a counterfactual value for opponent-only hands and prints a *signed* `inf`; ours does
   that only under `set_union_hands on` (off by default, ~+23% solve time).
 - `calc_ev_pp <player> <node>` is `EV: <x>` plus one `<combo>: <ev>; <matchups>` row per hand of the **union**
@@ -255,12 +258,50 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   faced or below one's own investment (other than a fold) answers `ERROR: add_line Incorrect bet size.`; the
   line is kept and `build_tree` then names the amount (Pio crashes there). With no stack set, Pio has no
   all-in root at add time, and neither do we; a stack-0 *tree* still differs (Pio bets, ours is all-in).
-- Pio edits a live line tree command by command; ours collects add/remove/force sets and applies them at
-  `build_tree`. They agree when a script removes or forces after its adds (the usual shape). They differ
-  when a line is re-added after `remove_line` (Pio re-adds it, ours keeps it removed), when `add_line`
-  follows `force_line` (Pio adds it beside the forced line), and for `remove_line` / `force_line` of a
-  line that does not exist (Pio errors, ours accepts). Pio accepts bets above the effective stack; ours
-  rejects them at `build_tree`.
+- Pio edits a live line tree command by command. Ours keeps add/remove sets that `build_tree` applies,
+  but each edit acts like Pio's when it is given (#251, `check_force_line`): `remove_line` of a line that
+  isn't in the tree, or is its parent's last child, is `ERROR: remove_line Can't remove the line (it
+  doesn't exist or is the last child)`; removing deletes the subtree, so `add_line` of the same line brings
+  back only its own path (`0 50` comes back, the `0 50 150` raise removed with it does not); a line added
+  after `force_line` goes in beside the forced one. The checks need the board, pot and stack set (with no
+  board, edits are kept as given). Pio accepts bets above the effective stack; ours rejects them at
+  `build_tree`.
+- `force_line` (probe 11 and the cases in `check_force_line`): Pio keeps only the tree's lines that the
+  forced line is a prefix of, so it must be a line of the tree *as the lines and earlier forces stand*:
+  `force_line 0 50 50` (the implicit call) is fine after `add_line 0 50`, while after `force_line 0 50`
+  a `force_line 75 200` errors even though `add_line 75 200` was given:
+  `ERROR: force_line Specified line doesn't exists.` Every forced line constrains its own path, so a
+  longer force still applies below a shorter one. Ours does the same, checked against the action tree
+  built from the current lines. Pio quirk not copied (#10): a *rejected* force still restricts the nodes
+  along the part of it that exists (`force_line 0 50 150 200` without a 200 raise leaves `r:0:c:b50`
+  with only `b150`).
+- Pio crashes (access violation) on `show_all_lines` with no tree; ours answers an error.
+- `print_all_strats` in Pio 3.10.1 is not the documented "node id or 1326 numbers" listing: an id tree
+  indented two spaces per level (starting at `r`), and under each decision a `class:value, ` list cut off
+  after 122 pairs whose values come in runs of four that don't follow the classes. Ours prints the
+  documented format.
+- `estimate_rebuild_tree` on a complete small tree: Pio reports a fixed-looking 47 MB "needed", ours the
+  tree's own memory (0 MB there). Both refuse a partially loaded tree with the same error.
+- Scripts (paired runs on the same files, `check_scripts`): `load_script` runs the lines, each answering
+  as it runs, and **stops at the first `ERROR`**; a `LABEL:` line answers empty; then `load_script ok!`,
+  which Pio prints *without* its end string (it merges into the next command's answer; ours ends it).
+  `load_script_silent` is not silent: the same answers without end strings, then `load_script_silent ok!`
+  with one. `skip_if_done` stops at the label, which runs. A missing file is `couldn't open <path>: No such
+  file or directory`. `stdoutredi(_append)` answers into the new file. After `stdoutback`, Pio's output is
+  lost when its stdout is a pipe (not copied). Pio resolves relative paths from its own directory, so a
+  probe can't share a script file with ours.
+- `calc_global_freq <node>` is the node's matchups (reach x compatible opponent reach) over **all** the
+  root's matchups, so the turn and river cards' card removal counts: on probe 13's unsolved tree, after an
+  As turn that blocks AA/AK/AQ/AJ combos, Pio 0.0692357 where the strategies alone give 1/12. No chance
+  probability enters (a single runout's node, not 1/44 of it).
+- Evaluations agree with Pio once the strategies are the same: probe 12 (`set_strategy` everywhere, no
+  solve), probe 13 (an unsolved flop tree: both hold uniform strategies) and probe 14 (an unsolved preflop
+  tree with attached flops: preflop all-in EVs too) and probe 15 (ICM, then ICM plus rake) match on every `show_strategy`,
+  `show_range`, `calc_ev` (signs need union lists), `calc_eq_node`, `calc_line_freq`, `calc_global_freq`,
+  `calc_matchups_line`, `calc_results` and `explo_partial`. Use them to test evaluation code apart from
+  solve noise.
+- `show_settings` before any `set_info_freq`: Pio `info_freq: 0` (it reports by time), ours 25 (ours checks
+  the accuracy target at reports, so 0 would never stop on accuracy). Not changed.
 - Legacy commands Pio 3.10 still answers: `set_bet_sizes <n>...` (atoi per token) and `set_donk_bet <n>`
   (true unless atoi is 0) are only stored, `build_tree` ignores them; `show_tree_params` prints
   `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the

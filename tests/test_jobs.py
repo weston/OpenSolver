@@ -313,6 +313,11 @@ def integration(solver):
             mine = [r for r in rep["rows"] if jobs.texture_suits(r["board"]) == x["key"]]
             want = sum(r["weight"] * r["freqs"][0] for r in mine) / sum(r["weight"] for r in mine)
             check(abs(x["freqs"][0] - want) < 1e-9, f"group {x['key']}: weighted average of its {len(mine)} flops")
+        rows = [{"board": "Kh9h4h", "weight": 1, "freqs": [1, 0], "ev_oop": 1, "ev_ip": 0},
+                {"board": "Qh8h3h", "weight": 1, "freqs": None, "ev_oop": None, "ev_ip": None}]
+        g1 = jobs.group_rows(rows, "suits", 2)
+        check(g1 == [{"key": "monotone", "freqs": [1.0, 0.0], "weight": 1, "flops": 1, "ev_oop": 1.0, "ev_ip": 0.0,
+                      "boards": ["Kh9h4h"]}], f"a group lists only the flops in its average ({g1})")
         rc, out = cli("report", "srp", "--solver", solver, "--by", "suits")
         check(rc == 0 and "by suits:" in out, "report --by suits")
         rc, out = cli("list")

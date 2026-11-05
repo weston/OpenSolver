@@ -517,7 +517,8 @@ def _weighted(rows: list, n_actions: int) -> dict:
 
 
 def group_rows(rows: list, by: str, n_actions: int) -> list:
-    """Report rows grouped by a flop texture, each group weight-averaged like the total."""
+    """Report rows grouped by a flop texture, each group weight-averaged like the total. The texture
+    is the flop's (the first three cards), also for a batch of turn or river boards."""
     if by not in TEXTURES:
         raise JobError(f"group by one of {', '.join(TEXTURES)}")
     fn = TEXTURES[by][1]
@@ -529,7 +530,8 @@ def group_rows(rows: list, by: str, n_actions: int) -> list:
     for key in sorted(groups, key=lambda k: order.index(k) if k in order else len(order)):
         w = _weighted(groups[key], n_actions)
         if w:
-            out.append({"key": key, **w, "boards": [x["board"] for x in groups[key]]})
+            # only the flops that went into the average (a row without a root summary didn't)
+            out.append({"key": key, **w, "boards": [x["board"] for x in groups[key] if x["freqs"] is not None]})
     return out
 
 

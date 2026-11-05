@@ -661,6 +661,8 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
   color: var(--text-2); white-space: pre-wrap; }
 .jobs .hint a { color: var(--accent); }
 @media (max-width: 900px) { .build.jobs { grid-template-columns: minmax(0, 1fr); } }
+.dialog.wide { width: min(1100px, calc(100vw - 32px)); max-width: none; }
+.jobs-table tr.total td { font-weight: 700; border-top: 2px solid var(--border-strong); }
 /* fast preview (viewer/static/preview.js) */
 label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); margin: 10px 0 2px; cursor: pointer; }
 label.check input { accent-color: var(--accent); }

@@ -142,6 +142,16 @@ class JobsApiTest(unittest.TestCase):
         b = next(x for x in d["batches"] if x["name"] == "srp")
         self.assertEqual((b["total"], b["done"], b["save"]), (3, 3, "no_rivers"))
 
+        # aggregate report
+        st, rep = self.req("/api/jobs/report?batch=srp")
+        self.assertEqual(st, 200, rep)
+        self.assertEqual(len(rep["rows"]), 3)
+        self.assertEqual(rep["player"], "OOP")
+        self.assertTrue(rep["labels"] and len(rep["total"]["freqs"]) == len(rep["labels"]), rep)
+        self.assertAlmostEqual(sum(rep["total"]["freqs"]), 1.0, places=4)
+        st, d = self.req("/api/jobs/report?batch=nope")
+        self.assertEqual(st, 400)
+
         # open a finished save in the viewer's own solver
         st, d = self.req("/api/jobs/open", "POST", {"id": "00003"})
         self.assertEqual(st, 200, d)

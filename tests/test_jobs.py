@@ -229,6 +229,69 @@ def integration(solver):
         rc, out = cli("export", "srp")
         rows = out.strip().splitlines()
         check(len(rows) == 4 and rows[0].startswith("id,board,weight") and "Kh9h4h" in out, "export CSV")
+        check(rows[0].endswith("freq_b50,freq_c"), f"export has the root action columns ({rows[0]})")
+
+        print("[report]")
+        rep = jobs.report(q, "srp", solver)
+        check(rep["actions"] == ["b50", "c"] and rep["labels"] == ["bet 50 (50%)", "check"] and rep["player"] == "OOP",
+              f"root actions {rep['labels']}")
+        check(len(rep["rows"]) == 3 and all(abs(sum(x["freqs"]) - 1) < 1e-4 for x in rep["rows"]),
+              "each flop's root frequencies sum to 1")
+        w = [x["weight"] for x in rep["rows"]]
+        want = sum(x["weight"] * x["freqs"][0] for x in rep["rows"]) / sum(w)
+        check(abs(rep["total"]["freqs"][0] - want) < 1e-9 and rep["total"]["flops"] == 3, "weighted average")
+        # a job finished before root summaries existed: the report reads it from the save
+        j = q.job("00001")
+        before = j["result"].pop("root")
+        q.save(j)
+        rep2 = jobs.report(q, "srp", solver)
+        got = q.job("00001")["result"].get("root")
+        check(got and got["actions"] == before["actions"] and
+              max(abs(a - b) for a, b in zip(got["freqs"], before["freqs"])) < 1e-3,
+              f"root summary recomputed from the save ({before['freqs']} vs {got and got['freqs']})")
+        # a save that can't be read: the failure is kept, so the next report doesn't load it again
+        j = q.job("00002")
+        j["result"].pop("root")
+        good_out, j["out"] = j["out"], os.path.join(td, "broken.cfr")
+        with open(j["out"], "w") as f:
+            f.write("not a save")
+        q.save(j)
+        jobs.report(q, "srp", solver)
+        err = q.job("00002")["result"].get("root_error")
+        check(bool(err) and "root" not in q.job("00002")["result"], f"a failed read is recorded ({err!r})")
+        os.remove(j["out"])
+        with open(j["out"], "w") as f:
+            f.write("still not a save")
+        os.chmod(j["out"], 0)  # a second load attempt would now fail differently
+        jobs.report(q, "srp", solver)
+        check(q.job("00002")["result"].get("root_error") == err, "a recorded failure isn't retried")
+        os.chmod(j["out"], 0o644)
+        j = q.job("00002")
+        j["out"] = good_out
+        j["result"].pop("root_error")
+        q.save(j)
+        # retried while the report reads its save: the report must not write the old result back
+        done = q.job("00002")
+        done["result"].pop("root", None)
+        q.save(done)
+        real = jobs.root_summary
+
+        def retried_meanwhile(s):
+            q.retry(["00002"])
+            return real(s)
+        jobs.root_summary = retried_meanwhile
+        try:
+            jobs.report(q, "srp", solver)
+        finally:
+            jobs.root_summary = real
+        j = q.job("00002")
+        check(j["status"] == "queued" and j["result"] is None, f"a job retried during the read stays queued ({j['status']})")
+        q.save(done)  # done again, for the checks below (they re-read its root from the save)
+        rc, out = cli("report", "srp", "--solver", solver, "--csv", os.path.join(td, "r.csv"))
+        check(rc == 0 and "weighted" in out and "bet 50 (50%)" in out, "report CLI")
+        with open(os.path.join(td, "r.csv")) as f:
+            lines = f.read().strip().splitlines()
+        check(len(lines) == 5 and lines[-1].startswith("weighted"), "report CSV")
         rc, out = cli("list")
         check(rc == 0 and "3 done" in out and "1 queued" in out, out.strip().splitlines()[-1])
         rc, out = cli("show", "00001")

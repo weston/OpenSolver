@@ -62,6 +62,7 @@ function render(st) {
     bar.firstChild.style.width = pct + "%";
     chip.appendChild(bar);
     const tools = el("span", "jobs-batch-tools");
+    if (b.done) tools.appendChild(btn("Report", "", "Root strategy per flop and the weighted average", () => showReport(b.name)));
     if (!running && b.queued) tools.appendChild(btn("Run", "", "Run this batch's queued jobs", () => post("/api/jobs/run", { batch: b.name })));
     tools.appendChild(btn("Remove", "ghost", "Remove the batch's jobs (saves are kept)", async () => {
       if (!confirm(`Remove all ${b.total} jobs of ${b.name}? Saved files are kept.`)) return;
@@ -166,6 +167,38 @@ async function addBatch() {
   $("jb-add").disabled = false;
 }
 
+async function showReport(name) {
+  const rep = await get("/api/jobs/report?batch=" + encodeURIComponent(name));
+  $("jr-title").textContent = `Report · ${rep.batch}`;
+  $("jr-sub").textContent = `${rep.player || "?"} acts first · starting pot ${rep.pot} · ${rep.rows.length} flops done` +
+    (rep.pending ? ` · ${rep.pending} not done yet (left out)` : "");
+  const t = $("jr-table");
+  t.replaceChildren();
+  const head = el("tr");
+  for (const h of ["Board", "Weight", "EV OOP", "Exploitable"]) head.appendChild(el("th", h === "Board" ? "" : "num", h));
+  for (const l of rep.labels) head.appendChild(el("th", "num", l));
+  const thead = el("thead"); thead.appendChild(head); t.appendChild(thead);
+  const tb = el("tbody");
+  const pct = (v) => (v == null ? "—" : fmt(100 * v, 1) + "%");
+  const addRow = (cells, cls) => {
+    const tr = el("tr", cls || "");
+    cells.forEach((c, i) => { const td = el("td", i ? "num" : ""); if (c instanceof Node) td.appendChild(c); else td.textContent = c; tr.appendChild(td); });
+    tb.appendChild(tr);
+  };
+  for (const x of rep.rows) {
+    addRow([boardEl(x.board), fmt(x.weight, 2), fmt(x.ev_oop, 2),
+      x.exploitability != null && rep.pot ? fmt((100 * x.exploitability) / rep.pot, 2) + "%" : "—",
+      ...(x.freqs ? x.freqs.map(pct) : rep.labels.map(() => "—"))]);
+  }
+  if (rep.total && rep.total.freqs) {
+    addRow([`Weighted (${rep.total.flops})`, fmt(rep.total.weight, 2), fmt(rep.total.ev_oop, 2), "", ...rep.total.freqs.map(pct)], "total");
+  }
+  t.appendChild(tb);
+  $("jr-note").textContent = "Frequencies are over the acting player's whole range at the first decision. " +
+    "Command line: python3 tools/jobs.py report " + JSON.stringify(rep.batch) + " --csv FILE";
+  $("jobs-report").showModal();
+}
+
 export function showJobs(on) {
   visible = on;
   if (on) refresh(); else clearTimeout(timer);
@@ -179,6 +212,7 @@ export function initJobs({ opened }) {
   $("jobs-retry-failed").onclick = async () => { try { await post("/api/jobs/retry", { failed: true }); refresh(); } catch (e) { fail(e); } };
   $("jb-file").onchange = () => { prefs.set("jobs-file", $("jb-file").value); $("jb-list-field").classList.toggle("hidden", !!$("jb-file").value); };
   $("jb-add").onclick = addBatch;
+  $("jr-close").onclick = () => $("jobs-report").close();
   $("jb-acc").value = prefs.get("jobs-acc", "0.5");
   $("jb-acc").oninput = () => prefs.set("jobs-acc", $("jb-acc").value);
   loadFlopFiles();

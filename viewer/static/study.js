@@ -39,6 +39,15 @@ const S = {
 const COL = { fold: "#5b8def", check: "#4cc38a", call: "#4cc38a", allin: "#9b51e0" };
 const BET_STOPS = [[0.15, [246, 196, 69]], [0.5, [243, 146, 55]], [1.0, [232, 83, 74]], [2.0, [194, 54, 110]]];
 
+/** The Study colour of a root action token (f, c, b<amount>) in a pot of `pot` chips; for
+ *  the job report (jobs.js), which has no tree to ask. */
+export function tokenColor(tok, pot) {
+  if (tok === "f") return COL.fold;
+  if (tok === "c") return COL.check;
+  const m = /^[br](\d+)$/.exec(tok);
+  return m && pot > 0 ? betColor(Number(m[1]) / pot) : "#8892a6";
+}
+
 function betColor(f) {
   if (f <= BET_STOPS[0][0]) return rgb(BET_STOPS[0][1]);
   for (let i = 1; i < BET_STOPS.length; i++) {

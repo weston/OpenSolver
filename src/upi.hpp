@@ -255,6 +255,10 @@ class Upi {
 
   // input
   std::deque<std::string> script_lines_;
+  // load_script(_silent) queues a file's lines, then a "\x02" sentinel that answers for it;
+  // one entry per script being run (true = silent), and whether the current line is a script's.
+  std::vector<bool> script_silent_;
+  bool from_script_ = false;
   std::unordered_map<std::string, Handler> handlers_;
 };
 

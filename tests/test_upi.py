@@ -7,6 +7,7 @@ By default the multi-street checks run on a small tree (tens of MB) so `make tes
 < 4 GB of RAM. With --big they run on the real 25bb fixture tree instead (~6.4 GB float32,
 ~3.3 GB with small_strats) — use that on a large-RAM machine.
 """
+import math
 import os
 import re
 import time
@@ -500,6 +501,40 @@ def check_output_format(u):
     u.cmd("clear_incentives r:0")
 
 
+def check_calc_ev_zero_reach(u):
+    """calc_ev for an in-range hand that never reaches the node: its counterfactual EV, finite (#247)."""
+    print("[calc_ev: in-range hands with zero reach]")
+    set_small_tree(u)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree")
+    u.cmd("set_accuracy 0")
+    u.cmd("go 60 steps")
+    u.cmd("wait_for_solver")
+    order = u.cmd("show_hand_order").split()
+    kids = re.findall(r"^r:0:(\w+)$", u.cmd("show_children r:0"), re.M)
+    check("c" in kids and len(kids) >= 2, f"root actions {kids}")
+    rows = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+    aa = [i for i, h in enumerate(order) if h[0] == "A" and h[2] == "A"]
+    for i in aa:   # OOP checks AA always: AA reaches every bet node with exactly 0
+        for k, tok in enumerate(kids):
+            rows[k][i] = 1.0 if tok == "c" else 0.0
+    u.cmd("set_strategy r:0 " + " ".join(" ".join(f"{x:.6g}" for x in r) for r in rows))
+    u.cmd("unlock_node r:0")
+    u.cmd("lock_node r:0")
+    u.cmd("go 30 steps")
+    u.cmd("wait_for_solver")
+    bet = "r:0:" + next(t for t in kids if t != "c")
+    reach = floats(u.cmd(f"show_range OOP {bet}"))
+    ev, mu = (floats(l) for l in u.cmd(f"calc_ev OOP {bet}").split("\n"))
+    check(all(reach[i] == 0 and mu[i] == 0 for i in aa), "AA never reaches the bet node (reach and matchups 0)")
+    check(all(math.isfinite(ev[i]) and -300 < ev[i] < 300 for i in aa),
+          f"AA still gets a finite EV there, like Pio (#247): {[round(ev[i], 2) for i in aa[:3]]}")
+    # out of OOP's range (22 without the board's deuce): still cfv / 0 or nan
+    out = [i for i, h in enumerate(order) if h[0] == "2" and h[2] == "2" and "2c" not in h]
+    check(out and all(not math.isfinite(ev[i]) for i in out), "hands outside the range stay inf / nan")
+    u.cmd("unlock_node r:0")
+    u.cmd("free_tree")
+
+
 def check_union_hands(u):
     """set_union_hands: opponent-only hands get a slot, a signed inf and _pp rows (#9)."""
     print("[set_union_hands: hands of either range]")
@@ -536,12 +571,17 @@ def check_union_hands(u):
             "ev_pp_ip": combos(u.cmd("calc_ev_pp IP r:0")),
             "ev_pp_lines": len(u.cmd("calc_ev_pp OOP r:0").rstrip("\n").split("\n")),  # #125: + a blank line
             "strat_pp": combos(u.cmd("show_strategy_pp r:0")),
+            "strat": u.cmd("show_strategy r:0"),
             "deep": u.cmd("calc_ev OOP r:0:b20:b200").split("\n")[0].split(),
         }
 
     off, on = solve(False), solve(True)
 
     check(u.cmd("set_union_hands maybe").startswith("ERROR"), "set_union_hands rejects a bad argument")
+    s_on, s_off = (floats(x["strat"].replace("\n", " ")) for x in (on, off))
+    zeros = [i for i, v in enumerate(s_off) if v == 0]
+    check(all(s_on[i] == 0 for i in zeros) and max(abs(a - b) for a, b in zip(s_on, s_off)) < 0.05,
+          "show_strategy prints opponent-only hands as 0 either way, as Pio does (probe 12)")
 
     added = sorted(set(on["ev_pp"]) - set(off["ev_pp"]))
     check(len(off["ev_pp"]) == 142 and len(on["ev_pp"]) == 148,
@@ -569,9 +609,8 @@ def check_union_hands(u):
 
     # Deep node where OOP has 20 in and faces an all-in: the opponent-only hands have a
     # negative counterfactual value, so Pio's signed -inf rather than a bare inf.
-    # Look at exactly the six 88 combos: other hands can also print +-inf there whenever OOP's
-    # average strategy never reaches the node with them (EV = cfv / 0, as in Pio), which depends
-    # on how far the loose solve got, not on union_hands.
+    # Look at exactly the six 88 combos, the opponent-only hands: OOP's own hands that never
+    # reach the node print their counterfactual EV instead (#247).
     order = u.cmd("show_hand_order").split()
     idx88 = [i for i, c in enumerate(order) if c[0] == "8" and c[2] == "8"]
     n_off = sorted(off["deep"][i] for i in idx88)
@@ -581,6 +620,124 @@ def check_union_hands(u):
 
     u.cmd("set_union_hands off")
     u.cmd("free_tree")
+
+
+def check_force_line(u):
+    """force_line keeps only the lines the forced one is a prefix of; the line must exist (Pio 3.10.1,
+    probe 11 and the cases below, each run on Pio with the same children)."""
+    print("[force_line]")
+    u.cmd("set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s")
+    u.cmd("set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s")
+    u.cmd("set_board KhQs7d4c2s")
+    u.cmd("set_pot 0 0 100")
+    u.cmd("set_eff_stack 200")
+
+    def kids(node):
+        return " ".join(sorted(i.rsplit(":", 1)[1] for i in re.findall(r"^(r:\S+)$", u.cmd("show_children " + node), re.M)))
+
+    def tree(forces, lines=("0 50", "0 50 150", "75")):
+        u.cmd("free_tree")
+        u.cmd("clear_lines")
+        for l in lines:
+            u.cmd("add_line " + l)
+        out = [u.cmd("force_line " + f) for f in forces]
+        check(u.cmd("build_tree") == "build_tree ok!", f"build_tree after force_line {forces}")
+        return out
+
+    tree([])
+    check(kids("r:0") == "b75 c" and kids("r:0:c:b50") == "b150 c f", "no force: the whole tree")
+    tree(["0 50"])
+    check(kids("r:0") == "c" and kids("r:0:c") == "b50" and kids("r:0:c:b50") == "b150 c f",
+          "force_line 0 50: only that path down to it, everything below it")
+    tree(["0 50 150"])
+    check(kids("r:0:c:b50") == "b150" and kids("r:0:c:b50:b150") == "c f", "force_line 0 50 150")
+    out = tree(["0", "0 50 50"])
+    check(out == ["force_line ok!"] * 2 and kids("r:0:c") == "b50" and kids("r:0:c:b50") == "c",
+          "an implicit call can be forced, and a longer force applies below a shorter one")
+    out = tree(["0 50 150 200", "0 50", "75"])
+    check(out == ["ERROR: force_line Specified line doesn't exists.", "force_line ok!",
+                  "ERROR: force_line Specified line doesn't exists."],
+          f"a line the tree lacks, or one an earlier force removed, is refused ({out})")
+    check(kids("r:0") == "c" and kids("r:0:c:b50") == "b150 c f", "a refused force changes nothing")
+
+    # remove_line acts at once on the live tree, like Pio (same responses and children on 3.10.1)
+    u.cmd("free_tree")
+    u.cmd("clear_lines")
+    for l in ("0 50", "0 50 150", "75"):
+        u.cmd("add_line " + l)
+    err = "ERROR: remove_line Can't remove the line (it doesn't exist or is the last child)"
+    out = [u.cmd("remove_line " + l) for l in ("0 60", "0 50 0", "0 50 0", "0 50 150", "0 50 150")]
+    check(out == [err, "remove_line ok!", err, "remove_line ok!", err],
+          f"remove_line: a missing line, or one already removed, is refused ({out})")
+    u.cmd("build_tree")
+    check(kids("r:0:c") == "b50 c" and kids("r:0:c:b50") == "c", "the fold and the raise are gone")
+    check(u.cmd("remove_line 0 50 50").startswith("ERROR"), "the last child can't be removed")
+    # removing deletes the subtree: re-adding the line brings back only its own path
+    u.cmd("free_tree")
+    u.cmd("clear_lines")
+    for c in ("add_line 0 50", "add_line 0 50 150", "remove_line 0 50", "add_line 0 50"):
+        u.cmd(c)
+    u.cmd("build_tree")
+    check(kids("r:0:c") == "b50 c" and kids("r:0:c:b50") == "c f", "re-added after remove_line: its path, not 0 50 150")
+    # a line added after force_line goes in beside the forced one
+    u.cmd("free_tree")
+    u.cmd("clear_lines")
+    for c in ("add_line 0 50", "force_line 0 50", "add_line 75"):
+        u.cmd(c)
+    u.cmd("build_tree")
+    check(kids("r:0") == "b75 c" and kids("r:0:c") == "b50", "add_line after force_line is added beside it")
+    u.cmd("free_tree")
+    u.cmd("clear_lines")
+
+
+def check_global_freq(u):
+    """calc_global_freq counts the dealt cards' card removal, as Pio (probe 13: an unsolved tree, so both
+    solvers hold the same uniform strategies)."""
+    print("[calc_global_freq: card removal of the dealt cards]")
+    for c in ("set_range OOP AA:0.5,KK,QQ:0.25,JJ,TT,99,AK:0.75,AQ,AJ,KQ,KJ,QJ,JT,T9",
+              "set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ:0.5,KQ,QJ,JT", "set_board Kh9h4h", "set_pot 0 0 60",
+              "set_eff_stack 200", "clear_lines", "add_line 20 20 60 60 200", "add_line 0 20 20 60 60",
+              "add_line 0 0 40", "add_line 20 200", "build_tree"):
+        u.cmd(c)
+    g1 = float(u.cmd("calc_global_freq r:0:c:c:2c:c"))
+    g2 = float(u.cmd("calc_global_freq r:0:b20:c:As:c:c:3d"))
+    check(abs(g1 - 0.125) < 1e-6, f"a 2c turn blocks nothing: 1/8 from the strategies, Pio 0.125 ({g1})")
+    check(abs(g2 - 0.0692357495) < 1e-5, f"an As turn blocks AA/AK/AQ/AJ combos: Pio 0.0692357495 ({g2})")
+    u.cmd("free_tree")
+
+
+def check_scripts(u):
+    """load_script(_silent), skip_if_done, LABEL: and stdoutredi as Pio 3.10.1 answers them (#251)."""
+    print("[load_script / load_script_silent / skip_if_done / stdoutredi]")
+    td = tempfile.mkdtemp(prefix="wsolver-scripts-")
+    s2 = os.path.join(td, "s2.txt")
+    with open(s2, "w") as f:
+        f.write("is_ready\nset_eff_stack 11\nLABEL: a\nshow_node r\nset_eff_stack 22\nis_ready\n")
+    u.cmd("free_tree")
+    u.send_raw("load_script " + s2)
+    got = [u.read_response() for _ in range(5)]
+    check(got == ["is_ready ok!", "set_eff_stack ok!", "", "ERROR: show_node missing/incorrect tree", "load_script ok!"],
+          f"load_script: each line answers, LABEL: answers empty, the first ERROR ends it, then its ok ({got})")
+    got = u.cmd("load_script_silent " + s2)
+    check(got == "is_ready ok!\nset_eff_stack ok!\nERROR: show_node missing/incorrect tree\nload_script_silent ok!",
+          f"load_script_silent: the same answers without end strings, in one response ({got!r})")
+    s4 = os.path.join(td, "s4.txt")
+    with open(s4, "w") as f:
+        f.write(f"skip_if_done {s4} here\nis_ready\nLABEL: here\nset_eff_stack 5\n")
+    u.send_raw("load_script " + s4)
+    got = [u.read_response() for _ in range(4)]
+    check(got == ["skip_if_done ok!", "", "set_eff_stack ok!", "load_script ok!"],
+          f"skip_if_done skips to the label, which answers empty ({got})")
+    nope = os.path.join(td, "nope.txt")
+    check(u.cmd("load_script " + nope) == f"ERROR: load_script couldn't open {nope}: No such file or directory",
+          "a missing script: Pio's message")
+    out = os.path.join(td, "out.txt")
+    u.send_raw("stdoutredi " + out)
+    u.send_raw("is_ready")
+    check(u.cmd("stdoutback") == "stdoutback ok!", "stdoutback answers on stdout")
+    with open(out) as f:
+        text = f.read()
+    check(text == "stdoutredi ok!\nEND\nis_ready ok!\nEND\n", f"stdoutredi answers into the file, like Pio ({text!r})")
 
 
 def check_go_partial(u):
@@ -836,9 +993,13 @@ def main(exe, big=False):
 
         check_calc_eq_preflop_exact(u)
 
+        check_calc_ev_zero_reach(u)
         check_union_hands(u)
         check_output_format(u)
 
+        check_force_line(u)
+        check_scripts(u)
+        check_global_freq(u)
         check_go_partial(u)
         check_go_limits_and_errors(u)
         check_info_freq_auto(u)

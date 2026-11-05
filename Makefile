@@ -40,6 +40,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	./build/test_parallel
 	python3 tests/test_tree_builder.py
 	python3 tests/test_packaging.py
+	python3 tests/test_jobs.py ./solver
 	python3 tests/test_upi.py ./solver
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py
@@ -47,6 +48,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 viewer/test_locks.py ./solver
 	python3 viewer/test_nl_lock.py ./solver
 	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
+	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 
 test-big: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel
@@ -58,6 +60,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	./build/test_parallel
 	python3 tests/test_tree_builder.py
 	python3 tests/test_packaging.py
+	python3 tests/test_jobs.py ./solver
 	python3 tests/test_upi.py ./solver --big
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py
@@ -65,6 +68,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	python3 viewer/test_locks.py ./solver
 	python3 viewer/test_nl_lock.py ./solver
 	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
+	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 
 # Cross-compile a static Windows binary (solver.exe) from macOS/Linux with mingw-w64. ZLIB_DIR must

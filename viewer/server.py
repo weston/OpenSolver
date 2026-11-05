@@ -33,6 +33,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from library import Library, LibraryError  # noqa: E402
 
+# Run as a script this module is __main__; resolve.py and jobs_api.py `import server`. Register it
+# under that name so they share these classes (a second copy would have its own SolverError, which
+# the request handler would not catch as a 400).
+if __name__ == "__main__":
+    sys.modules.setdefault("server", sys.modules["__main__"])
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 STATIC = os.path.join(HERE, "static")
@@ -440,6 +446,14 @@ def set_nl(service):
     _nl = service
 
 
+_jobs = None  # jobs_api.JobsService (#196), set by main()/tests; runs the solve queue
+
+
+def set_jobs(service):
+    global _jobs
+    _jobs = service
+
+
 def set_refiner(refiner):
     global _refiner, _preview
     _refiner = refiner
@@ -462,6 +476,10 @@ def api(solver, lib, method, path, query, body):
             raise SolverError("plain-English locks not initialized")
         solver.lease()  # it reads the node like a browse click (a no-op unless solving)
         return _nl.api(sys.modules[__name__], solver, method, path, body)
+    if path.startswith("/api/jobs/"):
+        if _jobs is None:
+            raise SolverError("job queue not initialized")
+        return _jobs.api(solver, method, path, query, body)
     if path == "/api/refine" or path.startswith("/api/refine/"):
         if _refiner is None:
             raise SolverError("fast preview not initialized")
@@ -1128,8 +1146,11 @@ def op_lock_revert(solver):
     return {"ok": True}
 
 
-def op_generate(solver, b):
-    """PioViewer-style bet sizes -> add_lines via tools/tree_builder.py, then configure the solver."""
+def setup_from_body(b):
+    """The Build form (ranges, pot, stack, sizes, optional board) -> (UPI setup commands, line count).
+
+    Shared by /api/generate and the job queue (#196), which runs the same setup on many flops: the
+    board-free form has no set_board and expands the lines from the flop."""
     range_oop = no_newlines(str(b.get("range_oop", "")).strip(), "range_oop")
     range_ip = no_newlines(str(b.get("range_ip", "")).strip(), "range_ip")
     board = no_newlines(str(b.get("board", "")).replace(" ", "").strip(), "board")
@@ -1168,15 +1189,20 @@ def op_generate(solver, b):
     # trees, #137; EV and exploitability identical, strategies within <1 point of the "1 0" solve,
     # both equilibria). The UPI default stays "1 0" for Pio output parity. An "iso" field from old
     # clients is ignored.
-    cmds = ["stop", "wait_for_solver",
-            "set_range OOP " + range_oop,
+    cmds = ["set_range OOP " + range_oop,
             "set_range IP " + range_ip]
     if board:
         cmds.append("set_board " + board)
     cmds += [f"set_eff_stack {stack}", f"set_pot 0 0 {pot}",
              "set_isomorphism 1 1", "clear_lines"]
     cmds += lines
-    solver.cmds(cmds)
+    return cmds, lines
+
+
+def op_generate(solver, b):
+    """PioViewer-style bet sizes -> add_lines via tools/tree_builder.py, then configure the solver."""
+    cmds, lines = setup_from_body(b)
+    solver.cmds(["stop", "wait_for_solver"] + cmds)
     solver.forget_locks()
     solver.tree_present = False
     solver.loaded_file = False
@@ -1290,6 +1316,11 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--library", default=os.path.join("~", ".wsolver", "library"),
                     help="root for saved ranges and tree configs (#116)")
+    ap.add_argument("--jobs", default=os.environ.get("WSOLVER_JOBS", os.path.join("~", ".wsolver", "jobs")),
+                    help="solve queue directory, shared with tools/jobs.py (#196)")
+    ap.add_argument("--flops-dir", default=None,
+                    help="folder of flop files for the Jobs view (default: a PioSOLVER install's "
+                         "preflop_subsets, or $WSOLVER_FLOPS_DIR)")
     args = ap.parse_args(argv)
 
     solver = Solver(os.path.abspath(args.solver))
@@ -1297,6 +1328,9 @@ def main(argv=None):
     set_resolver(vresolve.ResolveManager(solver, Solver, os.path.abspath(args.solver)))
     import nl_lock
     set_nl(nl_lock.NLService())   # reads the Sail key, if any; it never leaves this process
+    import jobs_api
+    set_jobs(jobs_api.JobsService(args.jobs, os.path.abspath(args.solver),
+                                  args.flops_dir if args.flops_dir is not None else jobs_api.default_flops_dir()))
     import refine as vrefine
     set_refiner(vrefine.RefineManager(solver, Solver, os.path.abspath(args.solver)))
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

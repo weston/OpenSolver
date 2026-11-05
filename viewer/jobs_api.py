@@ -71,11 +71,22 @@ class JobsService:
         try:
             counts = jobs.run(self.q, ids, batch, None, self.solver_exe, 0, self._log, self._progress)
             self._log(f"finished: {counts['done']} done, {counts['failed']} failed")
-        except jobs.JobError as e:
+        except Exception as e:   # JobError, or anything unexpected: show it rather than lose it
             with self.mu:
                 self.last_error = str(e)
             self._log(f"error: {e}")
         finally:
+            # However the run ended, no job of this process is running any more: one still marked
+            # running under our pid would otherwise stay stuck (recover() skips live pids, and
+            # Retry / remove refuse a running job), so it goes back to the queue.
+            me = os.getpid()
+            try:
+                for j in self.q.jobs():
+                    if j["status"] == "running" and j.get("runner_pid") == me:
+                        self.q.update(j["id"], expect=lambda x: x["status"] == "running" and x.get("runner_pid") == me,
+                                      status="queued", started=None, runner_pid=None)
+            except Exception as e:
+                self._log(f"error: could not re-queue the interrupted job: {e}")
             with self.mu:
                 self.current = None
                 self.point = None

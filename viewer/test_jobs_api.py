@@ -221,6 +221,26 @@ class JobsApiTest(unittest.TestCase):
         self.assertIsNone(mine.get("runner_pid"))
         self.assertIsNone(d["current"])
 
+    def test_07_runner_thread_crash_requeues_its_job(self):
+        """If the viewer's runner thread dies of an unexpected error mid-job, the job it marked
+        running (under the viewer's own, live pid) goes back to the queue and the error shows."""
+        q = self.service.q
+        j = q.jobs()[0]
+        real = jobs_api.jobs.run
+
+        def crash(q_, ids, batch, *a, **k):
+            q_.update(j["id"], status="running", runner_pid=os.getpid(), started=time.time())
+            raise RuntimeError("boom")
+        jobs_api.jobs.run = crash
+        try:
+            self.service._run(None, None)
+        finally:
+            jobs_api.jobs.run = real
+        self.assertEqual(q.job(j["id"])["status"], "queued")
+        st, d = self.req("/api/jobs/state")
+        self.assertEqual(d["error"], "boom")
+        self.assertEqual(next(x for x in d["jobs"] if x["id"] == j["id"])["status"], "queued")
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

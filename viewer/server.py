@@ -1171,7 +1171,7 @@ def setup_from_body(b):
         add_allin_limit = float(b.get("add_allin_limit", 300))
         if pot < 0 or stack <= 0:
             raise ValueError
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):   # float() of a 400-digit int overflows
         raise SolverError("bad pot/stack/all-in numbers (pot and stack are whole chips)")
 
     tb = load_tree_builder()

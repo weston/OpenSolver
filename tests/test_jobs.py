@@ -365,11 +365,27 @@ def stop_during_build():
         t.start()
         time.sleep(1.5)  # well into the minute-long build
         with open(q.stop_file, "w") as f:
+            f.write("after")  # after this job: the build goes on
+        time.sleep(1.0)
+        check(t.is_alive() and q.job(job["id"])["status"] == "running", "a stop after this job leaves the build running")
+        with open(q.stop_file, "w") as f:
             f.write("now")
         t.join(30)
         took = time.time() - t0
         check(not t.is_alive() and got.get("status") == "queued", f"run_job returns queued ({got}, {took:.1f} s)")
         check(took < 15, f"without waiting for the build ({took:.1f} s of its 60)")
+        # the whole run: the stop is used up, so the Jobs tab does not keep saying "stopping"
+        q.retry([job["id"]])
+        got.clear()
+        t = threading.Thread(target=lambda: got.update(counts=jobs.run(q, None, None, None, fake, 1, log=lambda m: None)),
+                             daemon=True)
+        t.start()
+        time.sleep(1.5)
+        with open(q.stop_file, "w") as f:
+            f.write("now")
+        t.join(30)
+        check(not t.is_alive() and not os.path.exists(q.stop_file),
+              f"after a stop --now mid-build, run() ends and removes the stop request ({got})")
         j = q.job(job["id"])
         check(j["status"] == "queued" and not j.get("error") and j.get("runner_pid") is None,
               f"the job is back in the queue, not failed ({j['status']}, {j.get('error')})")

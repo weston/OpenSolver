@@ -622,7 +622,9 @@ def _stop_request(q: Queue) -> str:
 class _StopWatch:
     """While a blocking command runs (the setup and build_tree: minutes on a big tree), watch for
     `stop --now` and end the solver process, so the command returns at once (#256). `hit` tells the
-    caller that the error it then sees is the stop, not a failure."""
+    caller that the error it then sees is the stop, not a failure; read it after the with block (the
+    join in __exit__ orders it). A stop landing just as the build ends still ends the solver: the
+    job goes back to the queue, as asked."""
 
     def __init__(self, q: "Queue", s, poll: float = 0.2):
         self.q, self.s, self.poll = q, s, poll
@@ -632,7 +634,11 @@ class _StopWatch:
 
     def _watch(self):
         while not self._done.wait(self.poll):
-            if _stop_request(self.q) == "now":
+            try:
+                now = _stop_request(self.q) == "now"
+            except Exception:  # noqa: BLE001 - a garbled stop file: keep watching
+                now = False
+            if now:
                 self.hit = True
                 try:
                     self.s.proc.kill()
@@ -675,6 +681,11 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
     s = None
     watch = None
     t0 = time.time()
+
+    def requeue(why):
+        q.update(jid, status="queued", started=None, runner_pid=None)
+        log(f"{tag} {why}; back in the queue")
+        return "queued"
     try:
         s = vserver.Solver(solver_exe)
         with _StopWatch(q, s) as watch:  # a stop --now during the build ends it; the job is re-queued
@@ -682,8 +693,8 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
             s.cmds(b["setup"])
             s.cmd(f"set_board {job['board']}")
             s.cmd("build_tree", timeout=7200)
-        if watch.hit:
-            raise vserver.SolverError("stopped")
+        if watch.hit:  # the build finished just as the stop landed
+            return requeue("stopped")
         s.cmd(f"set_accuracy {b['accuracy_pct'] / 100.0:.10g} fraction")
         s.cmd("set_info_freq auto")  # check the target on the viewer's adaptive schedule (#165)
         limit = f" {b['max_iters']} steps" if b.get("max_iters") else \
@@ -716,9 +727,7 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
                     last_report = time.time()
             time.sleep(0.2)
         if stopping:
-            q.update(jid, status="queued", started=None, runner_pid=None)
-            log(f"{tag} stopped; back in the queue")
-            return "queued"
+            return requeue("stopped")
         # calc_results and the save run to the end, also after a stop --now: the solve is done, and
         # keeping it beats solving it again (the run then stops before the next job)
         res = parse_results(s.cmd("calc_results", timeout=3600))
@@ -744,9 +753,7 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
         raise
     except Exception as e:  # noqa: BLE001 - any failure fails this job, not the run
         if watch is not None and watch.hit:  # the solver was ended for a stop --now, mid-build
-            q.update(jid, status="queued", started=None, runner_pid=None)
-            log(f"{tag} stopped during the tree build; back in the queue")
-            return "queued"
+            return requeue("stopped during the tree build")
         q.update(jid, status="failed", finished=time.time(), error=str(e)[:2000], runner_pid=None)
         log(f"{tag} FAILED: {e}")
         return "failed"
@@ -781,7 +788,11 @@ def run(q: Queue, ids: list[str] | None, batch: str | None, limit: int | None, s
             if not pending:
                 break
             status = run_job(q, pending[0], solver_exe, threads, log, progress)
-            if status == "queued":  # stopped with --now
+            if status == "queued":  # stopped with --now: the request is done
+                try:
+                    os.remove(q.stop_file)
+                except FileNotFoundError:
+                    pass
                 break
             if status == "skipped":  # removed or changed after we listed it: look again
                 continue

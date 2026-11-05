@@ -154,23 +154,78 @@ numbers. Saves are compressed and loaded lazily per street, so reopening a big t
 `lossless` to keep exact regrets as well as strategies, or `no_turns` / `no_rivers` to store only the
 early streets and re-solve the rest on demand.
 
-## 8. Or use the browser viewer
+## 8. Lock a node and see the exploit
+
+A node lock fixes one player's strategy at a node; solving again then finds the best play against
+it. Make IP fold to every flop bet, then solve on:
+
+```
+set_strategy r:0:b10 <1326 zeros> <1326 zeros> <1326 ones>
+lock_node r:0:b10
+go 60 steps
+wait_for_solver
+calc_results
+calc_global_freq r:0:b10
+```
+
+`set_strategy` takes one row of 1326 floats per action, in `show_children` order. Here that's
+raise to 30, call, then fold, so the third row is all ones. Generate the line rather than typing it:
+`python3 -c "print('set_strategy r:0:b10 ' + ' '.join(['0'] * 2652 + ['1'] * 1326))"`.
+
+| | before | after the lock |
+|---|---|---|
+| EV OOP | 10.43 | 19.76 |
+| OOP bets at the root (`calc_global_freq r:0:b10`) | 38% | 97% |
+
+OOP's MES is 20.000, the whole pot: against a player who always folds, betting every hand is best.
+Keep solving and the last 3% goes too.
+
+- `lock_node` without `set_strategy` freezes the strategy as it is now.
+- `combo_lock_node` locks only some hands; the rest keep solving.
+- `unlock_node` and `unlock_all` undo it.
+- Locks are kept in saves (`dump_tree`).
+
+## 9. Solve one tree on many flops
+
+`tools/jobs.py` queues one tree over a list of boards and runs them one at a time, saving each:
+
+```sh
+python3 tools/jobs.py add srp tree.txt --flops "Kh9h4h, As7d2c" --accuracy 0.5
+python3 tools/jobs.py run                 # everything queued, one solve at a time
+python3 tools/jobs.py report srp --by suits   # root strategy per flop, grouped and weighted
+```
+
+- `tree.txt` is a UPI script with ranges, pot, stacks and lines (a PioViewer tree script works).
+  Each job sets its own board.
+- `--flops-file` takes a weighted flop subset: one `board:weight` per line, like PioSOLVER's preflop_subsets files.
+- Saves leave out the rivers by default. `--save full` keeps them.
+
+As a guide, the 25bb test tree on 9 flops took 3 min 40 s on a 32-thread PC, about 20 s per flop
+at 0.5% of the pot. Peak memory was one tree's worth (5.7 GB), and the saves came to 40 MB.
+
+## 10. Or use the browser viewer
 
 ```sh
 python3 viewer/server.py --solver ./solver --port 8000
 ```
 
-Then open `http://localhost:8000`. It gives you tree navigation, 13x13 strategy and EV matrices,
-range display, subgame re-solves, and a library of saved spots — the same engine, without writing
-UPI by hand.
+Then open `http://localhost:8000`. It has:
+- tree navigation, 13x13 strategy and EV matrices, and range display;
+- node locking: edit a strategy by hand, or describe it in plain English;
+- subgame re-solves and bet-size searches;
+- a Jobs tab for the queue above;
+- a library of saved spots.
+
+It's the same engine, without writing UPI by hand.
 
 ## Practical notes
 
 - **Threads.** `set_threads` scales well on large trees and poorly on tiny ones, where there is not
   enough work to spread. It does not change results. On Apple silicon, set it to the number of
   **performance** cores: scaling saturates there, and the efficiency cores add nothing (on a 20-core
-  M1 Ultra, 16 and 20 threads are the same speed). Defaults to every logical core, which is harmless
-  but not useful.
+  M1 Ultra, 16 and 20 threads are the same speed). On x86, left unset, each solve picks every hardware
+  thread or one per core (with two threads per core, the second helps only very big trees), whichever
+  runs faster on that tree; set it to pin a count (#276).
 - **Memory.** It is the tree that costs memory, not the solver. `small_strats on` stores strategies
   as 16-bit values and roughly halves it, at a small accuracy cost; `small_strats auto` (the default)
   decides per tree. Run `estimate_schematic_tree` after setting the ranges and lines but before

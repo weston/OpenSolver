@@ -10,6 +10,7 @@ import { get, post, prefs, fmt, toast } from "./api.js";
 const $ = (id) => document.getElementById(id);
 const P = {
   watching: false, t0: 0, timer: null,                // after Solve: the loading modal
+  ringBest: 0,                                        // the ring's furthest point this solve (0..1)
   solving: false,                                     // main solve running (incl. parked for a refine)
   shown: null, refineRoot: null, refineTimer: null,   // node on screen and its refine
   events: null, refresh: null,                        // last solver event count seen
@@ -30,7 +31,9 @@ function closeModal() {
 
 /** The ring: how far the solve's exploitability has come from its first report toward the
  *  point where the Study view opens (PREVIEW_FACTOR x the target), on a log scale - the scale
- *  exploitability falls on. Spins until the first report. */
+ *  exploitability falls on. Spins until the first report. It never goes back: exploitability is
+ *  not monotone (threebet_mono: 15.8 -> 21.7 chips right after the average restarts at iteration
+ *  33, #135), so it shows the best point so far; the status line keeps the current number. */
 function drawRing(pg) {
   const ring = document.querySelector("#solve-modal .sm-ring");
   const arc = $("sm-arc");
@@ -44,7 +47,8 @@ function drawRing(pg) {
   }
   ring.classList.remove("spin");
   let f = first > goal ? Math.log(first / explo) / Math.log(first / goal) : 1;
-  f = Math.max(0, Math.min(1, f));
+  f = Math.max(P.ringBest, Math.min(1, f));
+  P.ringBest = f;
   arc.style.strokeDashoffset = String(RING * (1 - f));
   if (pct) pct.textContent = `${Math.round(f * 100)}%`;
 }
@@ -87,7 +91,7 @@ export function startPreview(on) {
   clearTimeout(P.timer);
   P.watching = false;
   if (!previewOn() || !on) return;
-  Object.assign(P, { watching: true, t0: performance.now() });
+  Object.assign(P, { watching: true, t0: performance.now(), ringBest: 0 });
   const m = modal();
   if (m) {
     drawRing(null);

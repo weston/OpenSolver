@@ -156,6 +156,8 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 input.invalid, textarea.invalid { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(255, 107, 107, .15); }
 .suffix { position: relative; }
 .suffix input { padding-right: 58px; }
+.suffix.long input { padding-right: 104px; }
+#sf-context { margin-bottom: 12px; }   /* Solve further: the context line, then the target field */   /* "% of this pot": clear of the number spinner */
 .suffix i { position: absolute; right: 10px; top: 0; height: 32px; display: flex; align-items: center; font-style: normal; color: var(--text-3); font-size: 12px; pointer-events: none; }
 .field.readonly output { height: 32px; display: flex; align-items: center; font-weight: 600; font-size: 15px; }
 
@@ -669,6 +671,8 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
 .lock-acts td.changed { color: var(--accent); font-weight: 700; }
 .lock-acts .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 .lock-acts input { width: 52px; height: 24px; padding: 0 6px; text-align: right; }
+/* the Selected inputs have class "mix", which .mix (a flex column, above) also matches: keep them inline */
+.lock-acts input.mix { display: inline-block; }
 .lock-acts .scale-cell { display: flex; gap: 4px; align-items: center; }
 .lock-after { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .lock-dialog label.check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-2); cursor: pointer; margin: 0; }

@@ -9,3 +9,4 @@ __pycache__/
 *.cfr
 .DS_Store
 /dist/
+test.log

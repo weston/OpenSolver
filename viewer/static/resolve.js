@@ -119,6 +119,17 @@ async function poll() {
   $("rs-stop").classList.toggle("hidden", !st.busy);
   $("rs-go").classList.toggle("hidden", !!st.busy);
   $("rs-go").disabled = st.busy;
+  // A job started at another node (dialog closed, reopened here): say so and offer Stop, but show
+  // none of its numbers or its result - they belong to that node, not to the context drawn here.
+  if (st.node && st.node !== R.id) {
+    $("rs-table").textContent = "";
+    $("rs-next").classList.add("hidden");
+    $("rs-bar-fill").parentElement.classList.toggle("indet", !!st.busy);
+    $("rs-status").textContent = st.busy ? `A re-solve at ${st.node} is running: stop it to start one here.` : "";
+    $("rs-progress").classList.toggle("hidden", !st.busy);
+    if (st.busy) R.timer = setTimeout(poll, 600);
+    return;
+  }
   const bar = $("rs-bar-fill").parentElement;
   const status = $("rs-status");
   if (st.kind === "search" && st.total) {

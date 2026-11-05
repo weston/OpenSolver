@@ -729,7 +729,7 @@ def categories_at(solver, node_id, player):
     `player` ("actor" resolves to the decision's actor; the toggle in the UI passes
     OOP/IP explicitly). Each category row carries its weighted combos, share of the
     range, a range-weighted strategy per child action (only when the queried player
-    is the one to act), a range-and-matchups-weighted EV (the same average the Node
+    is the one to act), a matchups-weighted EV (the same average the Node
     tab shows), and the matrix classes its combos live in.
     """
     player = player.upper()
@@ -792,10 +792,12 @@ def categories_at(solver, node_id, player):
             if acc["strat"] is not None:
                 for j, row in enumerate(strat_rows):
                     acc["strat"][j] += w * (row[i] or 0)
-            mu = mus[i] if mus else 1
+            # calc_ev's matchups already carry the hand's own reach (reach * compatible opponent
+            # mass), so they are the whole weight: multiplying by reach again would count it twice
+            mu = mus[i] if mus else w
             if evs[i] is not None and mu and mu > 0:
-                acc["ev_num"] += w * mu * evs[i]
-                acc["ev_den"] += w * mu
+                acc["ev_num"] += mu * evs[i]
+                acc["ev_den"] += mu
             acc["classes"].add(cls)
 
     total = sum(w for w in reach if w)
@@ -808,6 +810,7 @@ def categories_at(solver, node_id, player):
              "strategy": [round(x / combos, 6) if combos else 0 for x in acc["strat"]]
                          if acc["strat"] is not None else None,
              "ev": round(acc["ev_num"] / acc["ev_den"], 4) if acc["ev_den"] > 0 else None,
+             "matchups": round(acc["ev_den"], 6),  # the EV's weight: sum of reach * opponent mass
              "classes": sorted(acc["classes"], key=class_sort_key)}
         return r
 

@@ -276,6 +276,28 @@ class ViewerTest(unittest.TestCase):
         self.assertTrue(all(pts[i]["t"] <= pts[i + 1]["t"] for i in range(len(pts) - 1)))
         self.assertAlmostEqual(pts[-1]["explo"], expl, places=3)
 
+    def test_09a_range_ev_conserves_chips(self):
+        # A range's EV is the matchups-weighted mean of its hands' EVs: calc_ev's matchups already
+        # include the hand's own reach, so weighting by reach again skews the mean toward the
+        # hands that reach the node most. The two players' range EVs then stop summing to the
+        # starting pot (EVs are chips relative to the tree start) wherever reach is uneven -
+        # here, below the root once the solve above has run.
+        st, kids = self.req("/api/node?id=r:0")
+        self.assertEqual(st, 200, kids)
+        ids = ["r:0:c"] + [k["id"] for k in kids["children"] if k["id"].split(":")[-1].startswith("b")][:1]
+        self.assertEqual(len(ids), 2, kids)
+        for nid in ids:
+            q = urllib.parse.quote(nid)
+            total = 0.0
+            for pl in ("OOP", "IP"):
+                st, d = self.req(f"/api/categories?id={q}&player={pl}")
+                self.assertEqual(st, 200, d)
+                rows = [c for c in d["made"] if c["ev"] is not None]
+                w = sum(c["matchups"] for c in rows)
+                self.assertGreater(w, 0)
+                total += sum(c["ev"] * c["matchups"] for c in rows) / w
+            self.assertAlmostEqual(total, CFG["pot"], delta=0.01, msg=nid)
+
     def test_09b_solve_further_subtree(self):
         """#153: solve further at a decision node mutates only that subtree."""
         st, d = self.req("/api/strategy?id=" + urllib.parse.quote("r:0:c"))

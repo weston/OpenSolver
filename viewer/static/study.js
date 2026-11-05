@@ -554,9 +554,10 @@ function renderMatrix() {
       if (evd) {
         let num = 0, den = 0;
         for (const i of H.byClass[x.cls]) {
-          const e = evd.ev[i], mu = evd.matchups ? evd.matchups[i] : 1, rw = w[i] || 0;
+          // matchups = own reach * compatible opponent mass: already the full weight
+          const e = evd.ev[i], rw = w[i] || 0, mu = evd.matchups ? evd.matchups[i] : rw;
           if (e == null || !(mu > 0) || rw <= 0) continue;
-          num += rw * mu * e; den += rw * mu;
+          num += mu * e; den += mu;
         }
         const v = den > 0 ? num / den : null;
         color = v == null ? "var(--surface-3)" : evColor(v, pot * 0.75);
@@ -687,9 +688,10 @@ async function renderNodePanel() {
       const e = S.ev[pl], w = pl === "OOP" ? S.range.oop : S.range.ip;
       let num = 0, den = 0;
       for (let i = 0; i < 1326; i++) {
-        const mu = e.matchups ? e.matchups[i] : 1;
+        // matchups already include the hand's reach (see the matrix's EV mode)
+        const mu = e.matchups ? e.matchups[i] : w[i];
         if (e.ev[i] == null || !(mu > 0) || !(w[i] > 0)) continue;
-        num += w[i] * mu * e.ev[i]; den += w[i] * mu;
+        num += mu * e.ev[i]; den += mu;
       }
       const d = el("div", "kv");
       d.append(el("div", "k", pl), el("div", "v num", den > 0 ? fmtChips(num / den) : "—"));

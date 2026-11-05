@@ -45,7 +45,9 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -170,6 +172,48 @@ class Queue:
         self.stop_file = os.path.join(self.root, "stop")
         self.lock_file = os.path.join(self.root, "runner.lock")
 
+    # ---- the edit lock: every read-modify-write of the queue (add, remove, move, retry, the runner's
+    # status changes) holds it, across processes (CLI next to the viewer) and threads (viewer handlers
+    # next to its runner thread). Plain reads don't need it: each job file is replaced atomically.
+    _held = threading.local()
+
+    @contextmanager
+    def edit(self):
+        depth = getattr(Queue._held, "depth", 0)
+        if depth:  # already held by this thread
+            Queue._held.depth = depth + 1
+            try:
+                yield
+            finally:
+                Queue._held.depth = depth
+            return
+        os.makedirs(self.root, exist_ok=True)
+        f = open(os.path.join(self.root, "queue.lock"), "a+")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                while True:
+                    try:
+                        f.seek(0)
+                        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)  # retries for ~10 s, then raises
+                        break
+                    except OSError:
+                        continue
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            Queue._held.depth = 1
+            try:
+                yield
+            finally:
+                Queue._held.depth = 0
+                if os.name == "nt":
+                    import msvcrt
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            f.close()  # closing also drops a flock
+
     # ---- batches and jobs
     def batch(self, name: str) -> dict:
         try:
@@ -183,8 +227,11 @@ class Queue:
         if os.path.isdir(self.jobs_dir):
             for fn in os.listdir(self.jobs_dir):
                 if fn.endswith(".json"):
-                    with open(os.path.join(self.jobs_dir, fn)) as f:
-                        j = json.load(f)
+                    try:
+                        with open(os.path.join(self.jobs_dir, fn)) as f:
+                            j = json.load(f)
+                    except FileNotFoundError:
+                        continue  # removed since the listing
                     if batch is None or j["batch"] == batch:
                         out.append(j)
         out.sort(key=lambda j: (j["order"], j["id"]))
@@ -192,13 +239,42 @@ class Queue:
 
     def job(self, jid: str) -> dict:
         path = os.path.join(self.jobs_dir, jid + ".json")
-        if not re.fullmatch(r"\d{1,9}", jid) or not os.path.exists(path):
+        if not re.fullmatch(r"\d{1,9}", jid):
             raise JobError(f"no job {jid!r}")
-        with open(path) as f:
-            return json.load(f)
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            raise JobError(f"no job {jid!r}") from None
 
     def save(self, job: dict) -> None:
         _write_json(os.path.join(self.jobs_dir, job["id"] + ".json"), job)
+
+    def update(self, jid: str, expect=None, **fields) -> dict | None:
+        """Change some fields of a job as it is on disk now (not as a caller read it earlier).
+        Returns the job, or None (nothing written) if it was removed or expect(job) is false."""
+        with self.edit():
+            try:
+                j = self.job(jid)
+            except JobError:
+                return None
+            if expect is not None and not expect(j):
+                return None
+            j.update(fields)
+            self.save(j)
+            return j
+
+    def retry(self, jids: list[str] | None) -> int:
+        """Back to queued: the given jobs, or (None) every failed one. A running job is refused."""
+        with self.edit():
+            js = [j for j in self.jobs() if j["status"] == "failed"] if jids is None else [self.job(i) for i in jids]
+            for j in js:
+                if j["status"] == "running" and _pid_alive(j.get("runner_pid") or 0):
+                    raise JobError(f"job {j['id']} is running")
+            for j in js:
+                j.update(status="queued", started=None, finished=None, error=None, result=None, runner_pid=None)
+                self.save(j)
+            return len(js)
 
     def add_batch(self, name: str, setup: list[str], flops: list[tuple[str, float]], accuracy: float,
                   max_iters: int | None, max_seconds: float | None, save: str, out_dir: str | None,
@@ -209,6 +285,14 @@ class Queue:
             raise JobError(f"save mode must be one of {SAVE_MODES}")
         if not accuracy > 0:
             raise JobError("accuracy must be > 0 (percent of the starting pot)")
+        if max_iters is not None and not max_iters > 0:
+            raise JobError("max iterations must be > 0")
+        if max_seconds is not None and not max_seconds > 0:
+            raise JobError("max seconds must be > 0")
+        with self.edit():
+            return self._add_batch(name, setup, flops, accuracy, max_iters, max_seconds, save, out_dir, source)
+
+    def _add_batch(self, name, setup, flops, accuracy, max_iters, max_seconds, save, out_dir, source):
         if os.path.exists(os.path.join(self.batches_dir, name + ".json")):
             raise JobError(f"batch {name!r} exists (remove it first, or pick another name)")
         out_dir = os.path.abspath(os.path.expanduser(out_dir)) if out_dir else \
@@ -231,11 +315,16 @@ class Queue:
         return added
 
     def remove(self, jobs: list[dict]) -> None:
-        for j in jobs:
-            if j["status"] == "running" and _pid_alive(j.get("runner_pid") or 0):
-                raise JobError(f"job {j['id']} is running (stop it first)")
-        for j in jobs:
-            os.remove(os.path.join(self.jobs_dir, j["id"] + ".json"))
+        with self.edit():
+            jobs = [self.job(j["id"]) for j in jobs]  # as they are now: one may have started meanwhile
+            for j in jobs:
+                if j["status"] == "running" and _pid_alive(j.get("runner_pid") or 0):
+                    raise JobError(f"job {j['id']} is running (stop it first)")
+            for j in jobs:
+                os.remove(os.path.join(self.jobs_dir, j["id"] + ".json"))
+            self._drop_empty_batches(jobs)
+
+    def _drop_empty_batches(self, jobs: list[dict]) -> None:
         # drop batches without jobs
         left = {j["batch"] for j in self.jobs()}
         for j in jobs:
@@ -244,29 +333,31 @@ class Queue:
                 os.remove(p)
 
     def move(self, jid: str, pos: int) -> None:
-        jobs = self.jobs()
-        j = next((x for x in jobs if x["id"] == jid), None)
-        if j is None:
-            raise JobError(f"no job {jid!r}")
-        waiting = [x for x in jobs if x["status"] == "queued" and x["id"] != jid]
-        pos = max(1, min(pos, len(waiting) + 1))
-        waiting.insert(pos - 1, j)
-        base = min((x["order"] for x in jobs), default=1)
-        for k, x in enumerate(waiting):
-            if x["order"] != base + k:
-                x["order"] = base + k
-                self.save(x)
-        # finished/running jobs keep their place after the waiting ones
-        for k, x in enumerate(y for y in jobs if y["status"] != "queued" and y["id"] != jid):
-            x["order"] = base + len(waiting) + k
-            self.save(x)
+        with self.edit():
+            jobs = self.jobs()
+            j = next((x for x in jobs if x["id"] == jid), None)
+            if j is None:
+                raise JobError(f"no job {jid!r}")
+            if j["status"] != "queued":
+                raise JobError(f"job {jid} is {j['status']}, not queued")
+            waiting = [x for x in jobs if x["status"] == "queued" and x["id"] != jid]
+            pos = max(1, min(pos, len(waiting) + 1))
+            waiting.insert(pos - 1, j)
+            base = min((x["order"] for x in jobs), default=1)
+            # finished/running jobs keep their place after the waiting ones
+            rest = [y for y in jobs if y["status"] != "queued"]
+            for k, x in enumerate(waiting + rest):
+                if x["order"] != base + k:
+                    x["order"] = base + k
+                    self.save(x)
 
     def recover(self) -> None:
         """Jobs left 'running' by a runner that died go back to the queue."""
-        for j in self.jobs():
-            if j["status"] == "running" and not _pid_alive(j.get("runner_pid") or 0):
-                j.update(status="queued", started=None, runner_pid=None)
-                self.save(j)
+        with self.edit():
+            for j in self.jobs():
+                if j["status"] == "running" and not _pid_alive(j.get("runner_pid") or 0):
+                    j.update(status="queued", started=None, runner_pid=None)
+                    self.save(j)
 
     # ---- runner lock
     def lock(self) -> None:
@@ -288,6 +379,15 @@ class Queue:
                 f.write(str(os.getpid()))
             return
         raise JobError("could not take the runner lock")
+
+    def runner(self) -> int:
+        """The pid of the live runner holding the lock (this process or another), else 0."""
+        try:
+            with open(self.lock_file) as f:
+                pid = int(f.read().strip() or 0)
+        except (OSError, ValueError):
+            return 0
+        return pid if _pid_alive(pid) else 0
 
     def unlock(self) -> None:
         try:
@@ -444,16 +544,27 @@ def _stop_request(q: Queue) -> str:
 
 
 def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progress=None) -> str:
-    """Solve one job; returns its final status. Raises KeyboardInterrupt through (job re-queued).
+    """Solve one job; returns its final status, or "skipped" if it was removed or changed (no
+    longer queued) since the caller listed it. Raises KeyboardInterrupt through (job re-queued).
 
     progress(job, {"t", "explo", "pct", ...}) is called on each new solver progress report."""
     import server as vserver  # viewer/server.py: the solver session wrapper
 
-    b = q.batch(job["batch"])
-    tag = f"[{job['id']} {job['board']}]"
-    job.update(status="running", started=time.time(), finished=None, error=None, result=None,
-               runner_pid=os.getpid())
-    q.save(job)
+    with q.edit():  # claim it: as it is now, not as the caller listed it
+        try:
+            b = q.batch(job["batch"])
+        except JobError as e:  # its batch config is gone: fail it, or the run would pick it again
+            gone = q.update(job["id"], expect=lambda j: j["status"] == "queued", status="failed",
+                            finished=time.time(), error=str(e))
+            if gone is not None:
+                log(f"[{job['id']} {job['board']}] FAILED: {e}")
+            return "failed" if gone is not None else "skipped"
+        job = q.update(job["id"], expect=lambda j: j["status"] == "queued", status="running",
+                       started=time.time(), finished=None, error=None, result=None, runner_pid=os.getpid())
+        if job is None:
+            return "skipped"
+    jid = job["id"]
+    tag = f"[{jid} {job['board']}]"
     s = None
     t0 = time.time()
     try:
@@ -494,8 +605,7 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
                     last_report = time.time()
             time.sleep(0.2)
         if stopping:
-            job.update(status="queued", started=None, runner_pid=None)
-            q.save(job)
+            q.update(jid, status="queued", started=None, runner_pid=None)
             log(f"{tag} stopped; back in the queue")
             return "queued"
         res = parse_results(s.cmd("calc_results", timeout=3600))
@@ -511,19 +621,16 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
         os.makedirs(os.path.dirname(job["out"]), exist_ok=True)
         mode = "" if b["save"] == "full" else " " + b["save"]
         s.cmd(f'dump_tree "{job["out"]}"{mode}', timeout=7200)
-        job.update(status="done", finished=time.time(), result=res, runner_pid=None)
-        q.save(job)
+        q.update(jid, status="done", finished=time.time(), result=res, runner_pid=None)
         expl = res.get("exploitability")
         log(f"{tag} done in {res['seconds']:.1f} s, {res.get('iterations', '?')} iterations, exploitable "
             f"for {expl if expl is None else f'{expl:.3f}'} -> {job['out']}")
         return "done"
     except KeyboardInterrupt:
-        job.update(status="queued", started=None, runner_pid=None)
-        q.save(job)
+        q.update(jid, status="queued", started=None, runner_pid=None)
         raise
     except Exception as e:  # noqa: BLE001 - any failure fails this job, not the run
-        job.update(status="failed", finished=time.time(), error=str(e)[:2000], runner_pid=None)
-        q.save(job)
+        q.update(jid, status="failed", finished=time.time(), error=str(e)[:2000], runner_pid=None)
         log(f"{tag} FAILED: {e}")
         return "failed"
     finally:
@@ -559,6 +666,8 @@ def run(q: Queue, ids: list[str] | None, batch: str | None, limit: int | None, s
             status = run_job(q, pending[0], solver_exe, threads, log, progress)
             if status == "queued":  # stopped with --now
                 break
+            if status == "skipped":  # removed or changed after we listed it: look again
+                continue
             counts[status] += 1
             ran += 1
     finally:
@@ -688,13 +797,8 @@ def main(argv: list[str] | None = None) -> int:
             j = q.job(args.id)
             print(json.dumps(j, indent=1, sort_keys=True))
         elif args.cmd == "retry":
-            jobs = [j for j in q.jobs() if j["status"] == "failed"] if args.failed else [q.job(i) for i in args.ids]
-            for j in jobs:
-                if j["status"] == "running":
-                    raise JobError(f"job {j['id']} is running")
-                j.update(status="queued", started=None, finished=None, error=None, result=None)
-                q.save(j)
-            print(f"re-queued {len(jobs)} job(s)")
+            n = q.retry(None if args.failed else args.ids)
+            print(f"re-queued {n} job(s)")
         elif args.cmd == "remove":
             jobs = q.jobs(args.batch) if args.batch else [q.job(i) for i in args.ids]
             if not jobs:

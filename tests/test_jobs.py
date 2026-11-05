@@ -101,6 +101,74 @@ def unit():
         q.unlock()
         check(raises(q.job, "../../etc"), "job ids are numbers")
 
+    print("[queue edits racing the runner]")
+    with tempfile.TemporaryDirectory() as td:
+        q = jobs.Queue(td)
+        setup, _ = jobs.tree_setup(TREE)
+        check(raises(q.add_batch, "z", setup, [("Kh9h4h", 1)], 0.5, None, 0, "no_rivers", None)
+              and raises(q.add_batch, "z", setup, [("Kh9h4h", 1)], 0.5, -5, None, "no_rivers", None),
+              "a limit of 0 or less is refused, not taken as no limit")
+        q.add_batch("b1", setup, [("Kh9h4h", 1), ("As7d2c", 2), ("Qs8c3d", 1)], 0.5, None, None, "no_rivers", None)
+        listed = q.jobs()
+        q.update("00001", status="running", runner_pid=os.getpid())  # the runner starts it after the listing
+        check(raises(q.remove, listed[:1]), "remove re-reads: a job that started since it was listed is refused")
+        check(raises(q.move, "00001", 3), "only a queued job can be moved")
+        q.update("00001", status="done", runner_pid=None)
+        q.move("00003", 1)
+        check(q.job("00001")["status"] == "done", "move keeps a finished job's status")
+        check([j["id"] for j in q.jobs() if j["status"] == "queued"] == ["00003", "00002"], "move among queued jobs")
+        q.remove([q.job("00002")])
+        check(q.update("00002", status="done") is None and raises(q.job, "00002"),
+              "a status change of a removed job doesn't bring it back")
+        check(jobs.run_job(q, listed[1], "/nonexistent", 1, log=lambda m: None) == "skipped",
+              "the runner skips a job removed since it listed it")
+        check(jobs.run_job(q, q.job("00001"), "/nonexistent", 1, log=lambda m: None) == "skipped",
+              "the runner skips a job that is no longer queued")
+        os.remove(os.path.join(q.batches_dir, "b1.json"))
+        check(jobs.run_job(q, q.job("00003"), "/nonexistent", 1, log=lambda m: None) == "failed"
+              and q.job("00003")["status"] == "failed", "a job whose batch is gone fails instead of looping")
+        real = os.listdir
+        os.listdir = lambda d: real(d) + ["99999.json"]  # listed, then removed before it was read
+        try:
+            ids = [j["id"] for j in q.jobs()]
+        finally:
+            os.listdir = real
+        check(ids == ["00003", "00001"], f"a job removed between listing and reading is left out ({ids})")
+        check(q.retry(None) == 1 and q.job("00003")["status"] == "queued", "retry --failed")
+        q.update("00001", status="running", runner_pid=os.getpid())
+        check(raises(q.retry, ["00001"]), "retry refuses a running job")
+
+    print("[concurrent adds]")
+    with tempfile.TemporaryDirectory() as td:
+        import threading
+        setup, _ = jobs.tree_setup(TREE)
+        errs = []
+
+        def add(k):
+            try:
+                jobs.Queue(td).add_batch(f"t{k}", setup, [("Kh9h4h", 1), ("As7d2c", 1)], 0.5, None, None,
+                                          "no_rivers", None)
+            except Exception as e:  # noqa: BLE001
+                errs.append(e)
+        ts = [threading.Thread(target=add, args=(k,)) for k in range(8)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        js = jobs.Queue(td).jobs()
+        check(not errs and len(js) == 16 and len({j["id"] for j in js}) == 16,
+              f"8 batches added at once get 16 distinct jobs ({len(js)} jobs, {len({j['id'] for j in js})} ids)")
+        tree = os.path.join(td, "tree.txt")
+        with open(tree, "w") as f:
+            f.write(TREE)
+        cmd = [sys.executable, os.path.join(REPO, "tools", "jobs.py"), "--queue", td]
+        procs = [subprocess.Popen(cmd + ["add", f"p{k}", tree, "--flops", "Kh9h4h,As7d2c", "--no-check"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) for k in range(4)]
+        outs = [p.communicate()[1] for p in procs]
+        js = jobs.Queue(td).jobs()
+        check(len(js) == 16 + 8 and len({j["id"] for j in js}) == 24,
+              f"4 processes adding at once: distinct ids ({len(js)} jobs; {[o[-200:] for o in outs if o]})")
+
 
 def integration(solver):
     print("[run]")

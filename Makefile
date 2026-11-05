@@ -1,5 +1,7 @@
 # OpenUPI-Solver build. `make` builds ./solver; `make test` runs the unit and integration tests.
 # `make test-big` also runs the 25bb fixture section of test_upi.py (~4 GB of free RAM needed).
+# macOS's JavaScriptCore shell: runs the viewer's JS unit tests when Node is not installed
+JSC ?= /System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc
 CXX      ?= clang++
 # ARM compilers use -mcpu; x86 compilers use -march. Inspect the compiler's
 # target so this also works when building for a target other than the host.
@@ -47,7 +49,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 viewer/test_resolve.py ./solver
 	python3 viewer/test_locks.py ./solver
 	python3 viewer/test_nl_lock.py ./solver
-	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
+	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 
@@ -67,7 +69,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	python3 viewer/test_resolve.py ./solver
 	python3 viewer/test_locks.py ./solver
 	python3 viewer/test_nl_lock.py ./solver
-	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
+	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 

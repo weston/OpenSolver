@@ -10,6 +10,7 @@ tree of viewer/test_resolve.py:
 - browse requests inside the refined subtree come from it, with ids in main-tree terms;
 - requests above it come from the main tree;
 - Stop during a refine keeps the main solve stopped;
+- a refine rebuilds with the sizes the tree was built with, not the client's current form;
 - a rebuild drops the refined subtree;
 - once the main solve meets its target, the overlay is off;
 - a fresh solve with fast preview reports the loading modal's numbers.
@@ -198,6 +199,25 @@ class RefineIntegrationTest(unittest.TestCase):
             self.view_and_wait(TURN)
             st, d = self.req("/api/refine/view", "POST", dict(CFG, id=TURN, accuracy_pct=0.3))
         self.assertEqual(d["state"], "ready")
+
+    def test_refine_uses_the_built_sizes(self):
+        # The client sends the Build form as it is now; edited after the build (turn and river
+        # sizes changed, no rebuild), it must not reshape the refined street: the refine has
+        # the main tree's actions, so every action shown can be followed in the main tree.
+        self.build_and_run_forever()
+        body = dict(CFG, id=TURN, accuracy_pct=0.3, turn_bet="20", turn_raise="", river_bet="20")
+        st, d = self.req("/api/refine/view", "POST", body)
+        self.assertEqual(st, 200, d)
+        deadline = time.time() + 120
+        while time.time() < deadline and self.req("/api/refine/status")[1]["busy"]:
+            time.sleep(0.05)
+        st, d = self.req("/api/strategy?id=" + TURN)
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d.get("refined", {}).get("root"), TURN, d.get("refined"))
+        main_kids = vsrv.parse_children(self.main.cmd("show_children " + TURN))
+        self.assertEqual([k["id"] for k in d["children"]], [k["id"] for k in main_kids])
+        self.req("/api/stop", "POST")
+        self.main.cmd("wait_for_solver")
 
     def test_stop_during_refine_keeps_main_stopped(self):
         self.build_and_run_forever()

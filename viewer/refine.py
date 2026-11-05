@@ -9,7 +9,7 @@
 3. When you look at a node on a later street, the subtree from that street's first decision is
    re-solved here (RefineManager):
    - ranges are the main solve's current reaches at that street root;
-   - bet sizes are the build's;
+   - bet sizes are the ones the tree was built with (server-side, not the form as it is now);
    - the accuracy is the build's target, as a share of that node's pot.
    The main solve is parked for the second or so that takes, so the street in front of you gets
    the whole machine, then it resumes exactly where it was (iterations are deterministic). A
@@ -160,6 +160,11 @@ class RefineManager(vresolve.ResolveManager):
             pct = float(body.get("accuracy_pct", 0.3))
         except (TypeError, ValueError):
             raise vsrv.SolverError("bad accuracy_pct")
+        # The subgame must have the main tree's shape: the client sends the Build form as it is
+        # now, which may have been edited since the tree was built.
+        built = getattr(self.main, "built_sizes", None)
+        if built:
+            body = dict(body, **built)
         with self.mu:
             if self.ready and self.ready["root"] == root and not self._stale(self.ready):
                 return {"state": "ready", "root": root, "refine": dict(self.ready)}

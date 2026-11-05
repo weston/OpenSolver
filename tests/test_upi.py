@@ -980,8 +980,11 @@ def check_legacy_params(u):
     check(u.cmd("unlock_all") == "unlock_all ok!", "unlock_all")
     check(sum(floats(u.cmd("show_locked_combos r:0:c"))) == 0, "unlock_all clears node locks")
     check(sum(floats(u.cmd("show_locked_combos r:0"))) == len(aa), "unlock_all keeps combo locks (as Pio)")
+    check(u.cmd("combo_unlock_all") == "combo_unlock_all ok!", "combo_unlock_all (extension, #255)")
+    check(sum(floats(u.cmd("show_locked_combos r:0"))) == 0 and "COMBO_LOCKED" not in u.cmd("show_node r:0"),
+          "combo_unlock_all clears combo locks: no mask, no flag")
     u.cmd("free_tree")
-    for c in ("lock_node", "show_node r:0", "set_rake 0.05 3", "set_icm 100 100", "clear_cache", "go 10 steps"):
+    for c in ("lock_node", "combo_unlock_all", "show_node r:0", "set_rake 0.05 3", "set_icm 100 100", "clear_cache", "go 10 steps"):
         check(u.cmd(c).endswith(" missing/incorrect tree"), f"{c} without a tree: missing/incorrect tree first")
 
     print("[over-long lines keep their prefix]")

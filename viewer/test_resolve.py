@@ -654,6 +654,29 @@ class ResolveIntegrationTest(unittest.TestCase):
         self.assertEqual(len(kids), 2, kids)  # check and the one size kept
 
 
+    def test_33_stopped_job_does_not_report_the_previous_result(self):
+        # A finished re-solve leaves a result; the next job rebuilds the subgame solver's tree, so
+        # once it starts the old result must not be reported (after a Stop it used to be, as if
+        # it were the stopped job's, and after a failure it stayed browsable over another tree).
+        st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", accuracy=ACC))
+        self.assertEqual(st, 200, d)
+        first = self.wait_job()
+        self.assertIsNone(first["error"])
+        self.assertIsNotNone(first["result"])
+        self.assertTrue(first["tree"])
+        st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", accuracy=0))  # runs until stopped
+        self.assertEqual(st, 200, d)
+        st, now = self.req("/api/resolve/status")
+        self.assertTrue(now["busy"])
+        self.assertIsNone(now["result"])
+        self.assertFalse(now["tree"])
+        self.assertEqual(self.req("/api/resolve/stop", "POST", {})[0], 200)
+        after = self.wait_job()
+        self.assertIsNone(after["result"], after["result"])
+        self.assertFalse(after["tree"])
+        st, d = self.req("/api/resolve/strategy?id=r:0")
+        self.assertEqual(st, 400, d)   # nothing to browse until a job finishes
+
 if __name__ == "__main__":
     unittest.main(argv=["test_resolve.py", "-v"] if sys.argv[1:] and not sys.argv[1].startswith("-")
                   else sys.argv)

@@ -166,10 +166,12 @@ UPI by hand.
 
 ## Practical notes
 
-- **Threads.** Leave it unset and, on x86, each solve picks every hardware thread or half of them (one per
-  core), whichever runs faster on that tree; set it to pin a count. `set_threads` scales well on large trees — about 14x on 20 cores for a flop tree — and
-  poorly on tiny ones, where there is not enough work to spread. Set it and forget it; it does not
-  change results.
+- **Threads.** `set_threads` scales well on large trees and poorly on tiny ones, where there is not
+  enough work to spread. It does not change results. On Apple silicon, set it to the number of
+  **performance** cores: scaling saturates there, and the efficiency cores add nothing (on a 20-core
+  M1 Ultra, 16 and 20 threads are the same speed). On x86, left unset, each solve picks every hardware
+  thread or one per core (with two threads per core, the second helps only very big trees), whichever
+  runs faster on that tree; set it to pin a count (#276).
 - **Memory.** It is the tree that costs memory, not the solver. `small_strats on` stores strategies
   as 16-bit values and roughly halves it, at a small accuracy cost; `small_strats auto` (the default)
   decides per tree. Run `estimate_schematic_tree` after setting the ranges and lines but before

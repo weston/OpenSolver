@@ -229,8 +229,15 @@ async function doLock(mode) {
   // lost: Lock sends the edited strategy, so apply it first (what typing it then locking means).
   if (mode !== "current" && L.mixTyped && L.sel.size && !setSelected()) return;
   const body = { id: L.ctx.id, mode, snapshot: $("lk-snap").checked && !$("lk-snap").disabled };
-  if (mode !== "current") {
+  if (mode === "current" && L.ctx.refined) {
+    // The dialog shows the fast preview's refined strategy; the server's "current" would lock the
+    // main tree's own (less solved) one. Lock what is shown (#255).
+    body.mode = "node";
+    body.freq = L.ctx.freq.map((r) => r.map((v) => v || 0));
+    body.actions = L.ctx.actions;
+  } else if (mode !== "current") {
     body.freq = L.edit;
+    body.actions = L.ctx.actions;  // the server checks the rows are for its node's actions
     const scope = document.querySelector('input[name="lk-scope"]:checked').value;
     if (scope === "combos") {
       if (!L.edited.size) { info("Edit some hands first (or lock every hand).", true); return; }
@@ -241,7 +248,7 @@ async function doLock(mode) {
   info(body.snapshot ? "Keeping a copy of the unlocked solve, then locking…" : "Locking…");
   try {
     L.state = await post("/api/lock", body);
-    info(mode === "current" ? "Locked as solved." : body.mode === "combos" ? `Locked ${L.edited.size} hands.` : "Locked.");
+    info(mode === "current" ? (L.ctx.refined ? "Locked as shown (the refined strategy)." : "Locked as solved.") : body.mode === "combos" ? `Locked ${L.edited.size} hands.` : "Locked.");
     renderState();
     await onChanged();
   } catch (e) { info(String(e.message || e), true); }

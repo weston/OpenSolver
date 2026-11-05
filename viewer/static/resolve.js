@@ -48,7 +48,11 @@ function validate() {
   const cre = raising ? RAISE_RE : SIZE_RE;
   const cbad = cand.value.split(",").map((x) => x.trim()).filter(Boolean).some((p) => !cre.test(p));
   cand.classList.toggle("invalid", cbad);
-  return ok && (R.tab !== "search" || !cbad);
+  // an empty box reads as 0, and accuracy 0 means "never stop"
+  const acc = $("rs-accuracy");
+  const accOk = acc.value.trim() !== "" && Number(acc.value) > 0;
+  acc.classList.toggle("invalid", !accOk);
+  return ok && accOk && (R.tab !== "search" || !cbad);
 }
 
 /** At a node facing a bet, a search on its own street varies the raise sizes (viewer/resolve.py). */
@@ -70,7 +74,7 @@ function body() {
 /* ------------------------------------------------------------------ run + progress */
 
 async function go() {
-  if (!validate()) { toast("Fix the highlighted sizes", "err"); return; }
+  if (!validate()) { toast("Fix the highlighted fields", "err"); return; }
   const b = body();
   prefs.set("rs-accuracy", $("rs-accuracy").value);
   try {
@@ -119,6 +123,17 @@ async function poll() {
   $("rs-stop").classList.toggle("hidden", !st.busy);
   $("rs-go").classList.toggle("hidden", !!st.busy);
   $("rs-go").disabled = st.busy;
+  // A job started at another node (dialog closed, reopened here): say so and offer Stop, but show
+  // none of its numbers or its result - they belong to that node, not to the context drawn here.
+  if (st.node && st.node !== R.id) {
+    $("rs-table").textContent = "";
+    $("rs-next").classList.add("hidden");
+    $("rs-bar-fill").parentElement.classList.toggle("indet", !!st.busy);
+    $("rs-status").textContent = st.busy ? `A ${st.kind === "search" ? "size search" : "re-solve"} at ${st.node} is running: stop it to start one here.` : "";
+    $("rs-progress").classList.toggle("hidden", !st.busy);
+    if (st.busy) R.timer = setTimeout(poll, 600);
+    return;
+  }
   const bar = $("rs-bar-fill").parentElement;
   const status = $("rs-status");
   if (st.kind === "search" && st.total) {

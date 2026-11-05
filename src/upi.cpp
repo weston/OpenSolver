@@ -305,7 +305,7 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
   // the arguments (probed with each one bare and with valid arguments).
   static const std::set<std::string> needs_tree = {
       "calc_ev", "calc_ev_pp", "calc_global_freq", "calc_line_freq", "calc_results", "clear_cache",
-      "combo_lock_node", "dump_tree", "eliminate_path", "estimate_rebuild_tree", "explo_partial", "go",
+      "combo_lock_node", "combo_unlock_all", "dump_tree", "eliminate_path", "estimate_rebuild_tree", "explo_partial", "go",
       "load_all_nodes", "lock_node", "node_count", "rebuild_tree", "set_strategy", "show_children",
       "show_effective_stack", "show_incentives", "show_locked_combos", "show_node", "show_strategy",
       "show_strategy_pp", "show_win_evs", "solve_all_splits", "solve_partial", "unlock_all", "unlock_node"};

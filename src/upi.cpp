@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstring>
@@ -238,7 +239,10 @@ bool Upi::execute_line(const std::string& raw, bool silent) {
   // load_script_silent; a LABEL: line answers empty; the first ERROR ends the script; then the
   // load_script itself answers (Pio prints that "ok!" without its end string, merged into the next
   // command's answer; ours ends it like any other).
-  const bool quiet = from_script_ && !script_silent_.empty() && script_silent_.back();
+  // Inside a load_script_silent everything is silent, a script nested in it too: its answers go
+  // into the outer script's one response (an end string mid-way would end that response early).
+  auto any_silent = [this] { return std::find(script_silent_.begin(), script_silent_.end(), true) != script_silent_.end(); };
+  const bool quiet = from_script_ && any_silent();
   auto answer = [&](const std::string& body) {
     if (quiet) out_raw(body.empty() || body.back() == '\n' ? body : body + "\n");
     else respond(body);
@@ -246,7 +250,10 @@ bool Upi::execute_line(const std::string& raw, bool silent) {
   if (!raw.empty() && raw[0] == '\x02') {
     bool was_silent = !script_silent_.empty() && script_silent_.back();
     if (!script_silent_.empty()) script_silent_.pop_back();
-    respond(was_silent ? "load_script_silent ok!" : "load_script ok!");
+    // A nested script's ok belongs to the enclosing script: no end string inside a silent one.
+    std::string ok = was_silent ? "load_script_silent ok!" : "load_script ok!";
+    if (any_silent()) out_raw(ok + "\n");
+    else respond(ok);
     return true;
   }
   std::string line = raw;
@@ -1035,19 +1042,24 @@ void Upi::register_commands() {
     }
     return std::string("add_line ok!");
   };
-  H["remove_line"] = [this, parse_line, current_tree, walk_line, cut_line](const Args& a) {
+  H["remove_line"] = [this, parse_line, current_tree, walk_line, cut_line, is_prefix](const Args& a) {
     // Pio: the line must be in the tree and not its parent's last child, else this error and no
     // change; removing deletes its subtree, so re-adding the line brings back only its own path.
+    // With no buildable tree (no board yet, or a bad line pending) it must at least be on an added
+    // line, as force_line checks there.
     auto l = parse_line(a);
+    const char* err = "Can't remove the line (it doesn't exist or is the last child)";
     if (auto root = current_tree()) {
       ActionNode* parent = nullptr;
-      if (!walk_line(root.get(), l, &parent) || !parent || parent->actions.size() < 2)
-        throw CmdError{"Can't remove the line (it doesn't exist or is the last child)"};
+      if (!walk_line(root.get(), l, &parent) || !parent || parent->actions.size() < 2) throw CmdError{err};
+    } else if (std::none_of(cfg_.lines.add.begin(), cfg_.lines.add.end(),
+                            [&](const std::vector<int32_t>& x) { return is_prefix(l, x); })) {
+      throw CmdError{err};
     }
     cut_line(l);
     return std::string("remove_line ok!");
   };
-  H["force_line"] = [this, parse_line, current_tree, walk_line, cut_line](const Args& a) {
+  H["force_line"] = [this, parse_line, current_tree, cut_line, is_prefix](const Args& a) {
     // Pio keeps only the tree's lines that the forced one is a prefix of: every other action along
     // its path goes, now (an add_line after it is added beside it again). The line must be a line of
     // the tree as it stands - an implicit call or fold counts (force_line 0 50 50 after add_line
@@ -1058,10 +1070,9 @@ void Upi::register_commands() {
     auto root = current_tree();
     if (!root) {
       // no buildable tree yet (no board or stack): keep it for build_tree, which prunes the same way
-      bool found = false;
-      for (auto& l : cfg_.lines.add)
-        found = found || (f.size() <= l.size() && std::equal(f.begin(), f.end(), l.begin()));
-      if (!found) throw CmdError{"Specified line doesn't exists."};
+      if (std::none_of(cfg_.lines.add.begin(), cfg_.lines.add.end(),
+                       [&](const std::vector<int32_t>& l) { return is_prefix(f, l); }))
+        throw CmdError{"Specified line doesn't exists."};
       cfg_.lines.force.push_back(f);
       return std::string("force_line ok!");
     }

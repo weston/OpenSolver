@@ -1006,7 +1006,29 @@ def check_legacy_params(u):
     u.cmd("free_tree")
 
 
+def check_framing(exe):
+    """Raw stdout around the terminator and exit, byte for byte as PioSOLVER 3.10.1 printed it for
+    the same input (black-box, 2026-11-04): reset_end_string answers without a terminator line and
+    leaves the later answers bare; nothing follows exit. quit is our alias (Pio rejects it)."""
+    print("[framing: reset_end_string, exit, quit]")
+
+    def raw(lines):
+        p = subprocess.run([exe], input="".join(l + "\n" for l in lines), capture_output=True,
+                           text=True, timeout=60)
+        out = p.stdout
+        return out[out.index("set_end_string ok!"):], p.returncode
+
+    out, rc = raw(["set_end_string END", "is_ready", "reset_end_string", "is_ready",
+                   "set_end_string XX", "is_ready", "exit", "is_ready"])
+    want = ("set_end_string ok!\nEND\nis_ready ok!\nEND\nreset_end_string ok!\nis_ready ok!\n"
+            "set_end_string ok!\nXX\nis_ready ok!\nXX\n")
+    check(out == want and rc == 0, f"reset_end_string / exit framing matches Pio ({out!r}, rc {rc})")
+    out, rc = raw(["set_end_string END", "quit", "is_ready"])
+    check(out == "set_end_string ok!\nEND\n" and rc == 0, f"quit exits like exit ({out!r}, rc {rc})")
+
+
 def main(exe, big=False):
+    check_framing(exe)
     u = Upi(exe)
     try:
         print("[basics]")

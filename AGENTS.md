@@ -295,6 +295,11 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   file or directory`. `stdoutredi(_append)` answers into the new file. After `stdoutback`, Pio's output is
   lost when its stdout is a pipe (not copied). Pio resolves relative paths from its own directory, so a
   probe can't share a script file with ours.
+- Framing (raw stdout, `check_framing`): `reset_end_string` answers `reset_end_string ok!` with no
+  terminator, and later answers have none until the next `set_end_string`. `exit` prints nothing, and
+  later lines are not read. Both are byte-identical to Pio. Pio rejects `quit` (`ERROR: Command quit not
+  recognized`), which is our alias for exit. At end of input without `exit`, Pio prints `EOF encountered`
+  and we print nothing (not matched: no tool reads past the last answer).
 - `calc_global_freq <node>` is the node's matchups (reach x compatible opponent reach) over **all** the
   root's matchups, so the turn and river cards' card removal counts: on probe 13's unsolved tree, after an
   As turn that blocks AA/AK/AQ/AJ combos, Pio 0.0692357 where the strategies alone give 1/12. No chance

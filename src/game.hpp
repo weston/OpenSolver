@@ -237,6 +237,15 @@ class GameTree {
   // Strategy storage. Uncompressed: float32 arrays indexed by GNode::storage. Compressed: int16 regrets and
   // uint16 strategy sums with one float scale per decision node (indexed by GNode::aux).
   bool compressed = false;
+  // 16-bit strategy sums are rounded stochastically when the solver commits them (#272): rounded to the
+  // nearest step, a low-reach hand's increment late in a solve is below its node's 16-bit step and is
+  // lost, which is full 16-bit's exploitability floor (threebet_mono stalled at 0.35% of pot). Rounding
+  // up with probability equal to the fraction makes every increment count on average. The uniforms come
+  // from a fixed table read at an offset hashed from the node and round_seed, which the solver sets per
+  // iteration: results stay identical for any thread count. On every platform: the table costs ~2% per
+  // iteration on the M4 where a per-slot hash cost ~9% (threebet_mono, 10 threads, #293).
+  uint32_t round_seed = 0;
+  static constexpr size_t kRoundTable = 4096;
   ZVec<float> regrets;
   ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
   // Predictive CFR (#71): the last instantaneous regret per slot, allocated on demand by
@@ -283,6 +292,12 @@ class GameTree {
   std::unordered_map<uint32_t, uint32_t> eliminated;              // bitmask of removed actions
 
   long long iterations = 0;  // CFR iterations run on this tree
+  // Thread-count tuning under the default thread count (#276, upi.cpp): 0 = not tuned yet, else the count
+  // this tree solves fastest with; tune_k / tune_s are the trial iterations run so far and their seconds
+  // (even k: every hardware thread, odd k: half).
+  int tuned_threads = 0;
+  int tune_k = 0;
+  double tune_s[2] = {0, 0};
   bool incomplete = false;
   int missing_street = 0;     // first street without saved strategies (4 = turn, 5 = river); 0 = none
   bool fast_loaded = false;   // loaded without `full` (Pio: some commands need load_all_nodes)

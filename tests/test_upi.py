@@ -9,6 +9,7 @@ By default the multi-street checks run on a small tree (tens of MB) so `make tes
 """
 import math
 import os
+import platform
 import re
 import time
 import subprocess
@@ -535,6 +536,38 @@ def check_calc_ev_zero_reach(u):
     u.cmd("free_tree")
 
 
+def check_threads_auto(u):
+    """#276: under the default thread count a whole-tree solve times iterations 18-23, alternating every
+    hardware thread and half of them, keeps the faster, and says so; results are those of any explicit count."""
+    print("[default thread count: tuned per tree]")
+    setup = ["set_range OOP AA,KK,QQ,JJ,TT,AK,AQ,KQ,QJs,JTs", "set_range IP AA,KK,QQ,JJ,TT,99,AK,AQ,KQ,KJ,QJ",
+             "set_board KhQs7d", "set_pot 0 0 100", "set_eff_stack 150", "clear_lines", "add_line 0 50", "add_line 50 150"]
+
+    def solve(threads):
+        u.cmd("free_tree")
+        for c in setup:
+            u.cmd(c)
+        u.cmd(f"set_threads {threads}")
+        u.cmd("build_tree")
+        u.cmd("set_accuracy 0")
+        u.solver_msgs.clear()
+        u.cmd("go 30 steps")
+        u.cmd("wait_for_solver")
+        tuned = [m[0] for m in u.solver_msgs if m and m[0].startswith("SOLVER: threads:")]
+        return u.cmd("calc_results"), floats(u.cmd("show_strategy r:0")), tuned, u.cmd("show_cpu_info")
+
+    hw = os.cpu_count() or 1
+    res0, s0, tuned0, cpu0 = solve(0)
+    res3, s3, tuned3, _ = solve(3)
+    if hw >= 4 and platform.machine().lower() not in ("arm64", "aarch64"):
+        m = re.match(r"SOLVER: threads: (\d+) ", tuned0[0]) if len(tuned0) == 1 else None
+        check(m is not None and int(m.group(1)) in (hw, hw // 2), f"default threads: one tuning line ({tuned0})")
+        check(m is not None and f"max threads: {m.group(1)}" in cpu0, "the pool keeps the tuned count")
+    check(not tuned3, "an explicit set_threads is not tuned")
+    check(res0 == res3 and s0 == s3, "tuned and explicit thread counts give identical results")
+    u.cmd("set_threads 0")
+
+
 def check_union_hands(u):
     """set_union_hands: opponent-only hands get a slot, a signed inf and _pp rows (#9)."""
     print("[set_union_hands: hands of either range]")
@@ -1058,6 +1091,7 @@ def main(exe, big=False):
 
         check_calc_ev_zero_reach(u)
         check_union_hands(u)
+        check_threads_auto(u)
         check_output_format(u)
 
         check_force_line(u)

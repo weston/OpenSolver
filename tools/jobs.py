@@ -853,7 +853,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--batch")
     r.add_argument("--limit", type=int)
     r.add_argument("--solver", default=default_solver())
-    r.add_argument("--threads", type=int, default=0, help="0 = all hardware threads")
+    r.add_argument("--threads", type=int, default=0,
+                   help="0 = the solver's default (on x86, all hardware threads or one per core, timed per tree, #276)")
 
     st = sub.add_parser("stop", help="stop the runner after the current job")
     st.add_argument("--now", action="store_true", help="stop the current job too (it is re-queued)")

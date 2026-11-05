@@ -370,6 +370,20 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   // A partial solve without an info frequency would never check its stop conditions:
   // fall back to solve_subtree's every-25-iterations cadence.
   const long long sub_freq = sub ? (info_freq_ > 0 ? info_freq_ : 25) : info_freq_;
+  // Default thread count (#276): with two hardware threads per core, the second one helps big trees and
+  // hurts the rest (Zen 5 9950X, seconds to 0.1% of pot, 16 vs 32 threads: srp_big 78.2 vs 71.5,
+  // threebet_mono 5.46 vs 6.23, deep 1.47 vs 1.70, flop_3bet 0.23 vs 0.36, turn 0.09 vs 0.18). Results do
+  // not depend on the thread count, so a whole-tree solve times three iterations each with every hardware
+  // thread and with half, alternating over iterations 18-23 (pruning is on by then, and the full-measure
+  // iteration 24 is left out; from iteration 2 the pick was unreliable: deep chose 32 once), and
+  // keeps the faster. An explicit set_threads turns this off.
+  const int hw_threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const bool tune_threads = false;  // no SMT on Apple silicon
+#else
+  const bool tune_threads = !sub && threads_ == 0 && hw_threads >= 4;
+#endif
+  bool pool_set = !tune_threads;  // set under tree_mu_ below: a command may be using the pool now
   for (;;) {
     if (stop_flag_) {
       reason = stop_reason_.empty() ? "requested" : stop_reason_;
@@ -392,7 +406,26 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       } else {
         ++tree_->iterations;
         ++iterations_;
+        if (!pool_set) {
+          pool().set_threads(tree_->tuned_threads > 0 ? tree_->tuned_threads : hw_threads);
+          pool_set = true;
+        }
+        const bool trial = tune_threads && tree_->tuned_threads == 0 && tree_->iterations >= 18;
+        if (trial) pool().set_threads(tree_->tune_k % 2 == 0 ? hw_threads : hw_threads / 2);
+        const auto it0 = std::chrono::steady_clock::now();
         solver_->iterate(static_cast<int>(tree_->iterations - discount_restart_));
+        if (trial) {
+          tree_->tune_s[tree_->tune_k % 2] += std::chrono::duration<double>(std::chrono::steady_clock::now() - it0).count();
+          if (++tree_->tune_k == 6) {
+            const bool half = tree_->tune_s[1] < tree_->tune_s[0];
+            tree_->tuned_threads = half ? hw_threads / 2 : hw_threads;
+            pool().set_threads(tree_->tuned_threads);
+            char buf[160];
+            std::snprintf(buf, sizeof buf, "SOLVER: threads: %d (3 iterations took %.3f s with %d threads, %.3f s with %d)\n",
+                          tree_->tuned_threads, tree_->tune_s[0], hw_threads, tree_->tune_s[1], hw_threads / 2);
+            out_raw(buf);
+          }
+        }
       }
       ++done;
       double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

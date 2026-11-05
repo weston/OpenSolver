@@ -237,6 +237,13 @@ class GameTree {
   // Strategy storage. Uncompressed: float32 arrays indexed by GNode::storage. Compressed: int16 regrets and
   // uint16 strategy sums with one float scale per decision node (indexed by GNode::aux).
   bool compressed = false;
+  // int16 regrets, float32 strategy sums (`small_strats regrets`, #272): 6 bytes per slot instead of 8.
+  // The 16-bit precision floor comes from the strategy sums (late in a solve a low-reach hand's increment
+  // is below its node's 16-bit step and is lost), so keeping them float32 keeps float32's convergence,
+  // while most of the traffic per iteration is regrets. Only meaningful when !compressed.
+  bool regrets16 = false;
+  bool rq16() const { return compressed || regrets16; }  // regrets in regrets_q
+  bool sq16() const { return compressed; }               // strategy sums in strat_q
   ZVec<float> regrets;
   ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
   // Predictive CFR (#71): the last instantaneous regret per slot, allocated on demand by
@@ -299,11 +306,11 @@ class GameTree {
   // Build from config. Returns false + err.
   bool build(const GameConfig& c, std::string& err, bool allocate = true);
   // Memory needed (bytes) for the current node set; valid after build(..., false).
-  uint64_t memory_bytes() const { return memory_bytes_for(compressed); }
+  uint64_t memory_bytes() const { return memory_bytes_for(compressed, false, regrets16); }
   // with_preds: count the predictive array that set_predictive will allocate after the
   // build. Already-allocated preds are counted regardless, so memory_bytes() is right
   // once the feature is on; the flag is for the check that runs *before* allocation.
-  uint64_t memory_bytes_for(bool compress, bool with_preds = false) const;
+  uint64_t memory_bytes_for(bool compress, bool with_preds = false, bool regrets16_only = false) const;
   void allocate_storage();  // uses `compressed`
 
   // Payoff for player p at a terminal given outcome (1 win, 0 tie, -1 lose).

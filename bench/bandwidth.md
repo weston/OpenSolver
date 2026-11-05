@@ -117,3 +117,35 @@ use), vs 0.146 iters/s at 2.35 GB/s and 6516 MB in float32; exploitability uncha
 in kind (both far above the 1% target at the cap, 0.47 vs 0.45 chips of a 40-chip
 pot). flop_srp_4 at equal accuracy: 0.2% of pot in 12.8 s float32 vs 13.9 s 16-bit;
 0.05% in 19.7 s vs 34.8 s.
+
+## Update (#272, 2026-11-05): the floor is in the strategy sums; int16 regrets alone
+
+This doc is from an M4 at 1 thread, before the SIMD kernels. Two of its conclusions no longer hold on
+the owner's Zen 5 PC at 32 threads (WSL, `bench/run.py`, two interleaved reps):
+
+- **That machine is bandwidth-bound.** Full 16-bit (`on`) is 37% faster per iteration than float32 on
+  threebet_mono (60 iterations: 1.06 vs 1.74 s).
+- **On the small bench trees, 16-bit needs no extra iterations any more.** flop_srp_4 reaches 0.05%
+  of pot in 80 iterations in both modes, not 80 vs 145.
+
+The convergence loss that remains is a **floor**, and it comes from the **strategy sums**, not the
+regrets. Late in a solve, a low-reach hand's strategy-sum increment is below its node's 16-bit step,
+so it is lost. Splitting the two halves on threebet_mono shows it:
+- float32 regrets with 16-bit sums get to 0.1% of pot, then drift up to 0.86 chips over 4,600
+  iterations;
+- full 16-bit stalls at 0.71 chips;
+- int16 regrets with float32 sums reach 0.05% in 435 iterations, against 450 for float32.
+
+So `small_strats regrets` stores int16 regrets with float32 sums, 6 bytes per slot. Seconds to the
+target:
+
+| tree | float32 to 0.05% | `regrets` | `on` |
+|---|---|---|---|
+| threebet_mono | 13.9 (450 it) | **10.7** (435 it) | never (0.71 chips) |
+| flop_srp_4 | 1.39 | **1.10** | 0.97 |
+| deep | 2.82 | **2.32** | 2.28 |
+| flop_srp_2 | 0.66 | **0.57** | 0.56 |
+| flop_3bet | 0.50 | 0.50 | 0.49 |
+
+`auto` now picks `regrets` where it picked full 16-bit for bandwidth, and tries it first when
+float32 doesn't fit (README, `src/upi.cpp`).

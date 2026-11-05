@@ -496,10 +496,25 @@ void write_record(GzOut& out, const GameTree& g, const GNode& n) {
     out.put(g.sscale[n.aux]);
     out.write(g.regrets_q.data() + n.storage, len * sizeof(int16_t));
     out.write(g.strat_q.data() + n.storage, len * sizeof(uint16_t));
+  } else if (g.regrets16) {  // float32 records: the 16-bit regrets decoded, as regrets_ro does
+    std::vector<float> r(len), s(len);
+    const float* rp = g.regrets_ro(n, r.data());
+    const float* sp = g.strat_ro(n, s.data());
+    out.write(rp, len * sizeof(float));
+    out.write(sp, len * sizeof(float));
   } else {
     out.write(g.regrets.data() + n.storage, len * sizeof(float));
     out.write(g.strat.data() + n.storage, len * sizeof(float));
   }
+}
+
+// Regrets fr and strategy sums fs (float32, A*H) into the tree's storage, whatever its mode.
+void store_record(GameTree& t, const GNode& n, const std::vector<float>& fr, const std::vector<float>& fs) {
+  const size_t len = t.node_size(n);
+  if (t.rq16()) t.regrets_store(n, fr.data());
+  else std::memcpy(t.regrets.data() + n.storage, fr.data(), len * sizeof(float));
+  if (t.sq16()) t.strat_store(n, fs.data());
+  else std::memcpy(t.strat.data() + n.storage, fs.data(), len * sizeof(float));
 }
 
 struct MemIn {
@@ -543,13 +558,7 @@ void read_record_quant(In& in, GameTree& t, const GNode& n, int prec, std::vecto
     fr[static_cast<size_t>(A - 1) * H + h] = std::max(0.0f, rest);
   }
   for (size_t i = 0; i < len; ++i) fs[i] = fr[i] * sscale;  // regrets = frequencies (fr)
-  if (t.compressed) {
-    t.regrets_store(n, fr.data());
-    t.strat_store(n, fs.data());
-  } else {
-    std::memcpy(t.regrets.data() + n.storage, fr.data(), len * sizeof(float));
-    std::memcpy(t.strat.data() + n.storage, fs.data(), len * sizeof(float));
-  }
+  store_record(t, n, fr, fs);
 }
 
 template <class In>
@@ -564,7 +573,7 @@ void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int pre
     in.read(t.strat_q.data() + n.storage, len * sizeof(uint16_t));
     return;
   }
-  if (!(file_mode & 1) && !t.compressed) {
+  if (!(file_mode & 1) && !t.rq16() && !t.sq16()) {
     in.read(t.regrets.data() + n.storage, len * sizeof(float));
     in.read(t.strat.data() + n.storage, len * sizeof(float));
     return;
@@ -581,14 +590,11 @@ void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int pre
       fr[i] = qr[i] * rs;
       fs[i] = qs[i] * ss;
     }
-    std::memcpy(t.regrets.data() + n.storage, fr.data(), len * sizeof(float));
-    std::memcpy(t.strat.data() + n.storage, fs.data(), len * sizeof(float));
   } else {
     in.read(fr.data(), len * sizeof(float));
     in.read(fs.data(), len * sizeof(float));
-    t.regrets_store(n, fr.data());
-    t.strat_store(n, fs.data());
   }
+  store_record(t, n, fr, fs);
 }
 
 // Segments present in a save truncated at board length `max_len` (all nodes of a segment share it).
@@ -775,12 +781,14 @@ std::string Upi::cmd_load_tree(const Args& a) {
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
   if (small_strats_ == "on") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
+  else if (small_strats_ == "regrets") t->compressed = false, t->regrets16 = true;
   // auto: keep the file's storage mode so a save/load round trip is exact. Requantizing a float32 save
   // to 16-bit is lossy (~1e-4 in strategies), so only do it when float32 genuinely does not fit.
   // Price in the preds array when predictive is on: apply_pcfr_settings below resizes it
   // after this decision, so float32 chosen against an unpriced budget can overflow (#98).
-  else t->compressed = ((lc.h.mode & kModeQ16) && !(lc.h.mode & kModeQuant)) ||
-                       t->memory_bytes_for(false, predictive_) > avail;
+  else if ((lc.h.mode & kModeQ16) && !(lc.h.mode & kModeQuant)) t->compressed = true;
+  else if (t->memory_bytes_for(false, predictive_) > avail)  // the regrets layout first (#272)
+    (t->memory_bytes_for(false, predictive_, true) <= avail ? t->regrets16 : t->compressed) = true;
   tree_.reset();
   solver_.reset();
   t->allocate_storage();

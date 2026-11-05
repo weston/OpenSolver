@@ -170,7 +170,8 @@ UPI by hand.
   poorly on tiny ones, where there is not enough work to spread. Set it and forget it; it does not
   change results.
 - **Memory.** It is the tree that costs memory, not the solver. `small_strats on` stores strategies
-  as 16-bit values and roughly halves it, at a small accuracy cost; `small_strats auto` (the default)
+  as 16-bit values and roughly halves it, at an accuracy cost on big trees; `small_strats regrets`
+  saves a quarter and converges like float32; `small_strats auto` (the default)
   decides per tree. Run `estimate_schematic_tree` after setting the ranges and lines but before
   `build_tree` to see what a tree will cost — it answers in MB.
 - **Results are deterministic.** The same script gives bit-identical output on the same build,

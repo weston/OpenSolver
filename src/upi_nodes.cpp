@@ -655,10 +655,8 @@ void Upi::set_node_strategy(uint32_t ni, const float* strat) {
   const GNode& n = tree_->nodes[ni];
   int A = n.num_children, H = tree_->num_hands(n.player);
   std::vector<float> rbuf, sbuf;
-  if (tree_->compressed) {
-    rbuf.resize(static_cast<size_t>(A) * H);
-    sbuf.resize(static_cast<size_t>(A) * H);
-  }
+  if (tree_->rq16()) rbuf.resize(static_cast<size_t>(A) * H);
+  if (tree_->sq16()) sbuf.resize(static_cast<size_t>(A) * H);
   float* R = tree_->regrets_rw(n, rbuf.data());
   float* S = tree_->strat_rw(n, sbuf.data());
   for (int h = 0; h < H; ++h) {
@@ -1188,7 +1186,7 @@ void Upi::register_node_commands() {
     from_1326(n.player, r.frame, v.data(), local.data());
     std::vector<float> sig(static_cast<size_t>(A) * Hn);
     solver_->average_strategy(r.node, sig.data());
-    std::vector<float> sbuf(tree_->compressed ? static_cast<size_t>(A) * Hn : 0);
+    std::vector<float> sbuf(tree_->sq16() ? static_cast<size_t>(A) * Hn : 0);
     float* S = tree_->strat_rw(n, sbuf.data());
     std::vector<uint8_t> mask(Hn, 0);
     bool any = false;

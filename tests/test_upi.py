@@ -535,6 +535,47 @@ def check_calc_ev_zero_reach(u):
     u.cmd("free_tree")
 
 
+def check_small_strats_regrets(u):
+    """small_strats regrets (#272): int16 regrets with float32 strategy sums. It solves to target, and a
+    lossless save reloads exactly under the same mode and under float32 (the regrets decode)."""
+    print("[small_strats regrets]")
+    setup = ["set_range OOP AA,KK,QQ,JJ,TT,AK,AQ,KQ,QJs,JTs", "set_range IP AA,KK,QQ,JJ,TT,99,AK,AQ,KQ,KJ,QJ",
+             "set_board KhQs7d", "set_pot 0 0 100", "set_eff_stack 150", "clear_lines", "add_line 0 50", "add_line 50 150"]
+
+    def build(mode):
+        u.cmd("free_tree")
+        for c in setup:
+            u.cmd(c)
+        check(u.cmd("small_strats " + mode) == "small_strats ok!", f"small_strats {mode} accepted")
+        u.cmd("build_tree")
+
+    build("off")
+    full = u.cmd("estimate_rebuild_tree")
+    build("regrets")
+    mid = u.cmd("estimate_rebuild_tree")
+    mb = lambda t: int(re.search(r"needed: (\d+) MB", t).group(1))
+    check(mb(mid) <= mb(full), f"the regrets layout needs no more memory ({mb(mid)} vs {mb(full)} MB)")
+    u.cmd("set_accuracy 0.3")
+    u.cmd("go")
+    u.cmd("wait_for_solver")
+    res = u.cmd("calc_results")
+    expl = float(res.splitlines()[4].split(": ")[1])
+    check(expl <= 0.3, f"solves to target under the regrets layout ({expl})")
+    strat = floats(u.cmd("show_strategy r:0"))
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "r16.cfr")
+        check(u.cmd(f'dump_tree "{path}" lossless') == "dump_tree ok!", "lossless save of a regrets-layout tree")
+        for mode in ("regrets", "off"):
+            u.cmd("small_strats " + mode)
+            u.cmd(f'load_tree "{path}"')
+            got = floats(u.cmd("show_strategy r:0"))
+            dev = max(abs(a - b) for a, b in zip(strat, got))
+            check(len(got) == len(strat) and dev < 1e-6, f"reloaded under small_strats {mode}: strategy exact (max dev {dev:.1e})")
+            check(u.cmd("calc_results") == res, f"reloaded under small_strats {mode}: calc_results identical")
+    u.cmd("small_strats auto")
+    check(u.cmd("small_strats strat").startswith("ERROR"), "unknown small_strats mode rejected")
+
+
 def check_union_hands(u):
     """set_union_hands: opponent-only hands get a slot, a signed inf and _pp rows (#9)."""
     print("[set_union_hands: hands of either range]")
@@ -1033,6 +1074,7 @@ def main(exe, big=False):
 
         check_calc_ev_zero_reach(u)
         check_union_hands(u)
+        check_small_strats_regrets(u)
         check_output_format(u)
 
         check_force_line(u)

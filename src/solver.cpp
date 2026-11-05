@@ -978,7 +978,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   const int H = g_.num_hands(n.player);
   ArenaScope sc;
   const bool need_s = (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) != 0;
-  const float* S = need_s ? g_.strat_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr) : nullptr;
+  const float* S = need_s ? g_.strat_ro(n, g_.sq16() ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr) : nullptr;
   if (n.flags & GF_LOCKED) {
     std::memcpy(out, S, sizeof(float) * A * H);
     if (n.flags & GF_ELIMINATED) apply_elimination(ni, out);
@@ -995,7 +995,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     // generic three-pass loops below (sum over actions in order, 1/sum, o * inv + add as an fma), so
     // the floats are identical; no arena sum/add rows, and 16-bit regrets decode in registers.
     g_.ensure_loaded(n);
-    const bool q16 = g_.compressed;
+    const bool q16 = g_.rq16();
     const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
     const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
     const __m512 qs = _mm512_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm512_setzero_ps(),
@@ -1028,7 +1028,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     // AVX2 form of the single pass (#175 / NEON #222) for x86 builds without AVX-512: 8 hands at a
     // time with every action's row in registers. The generic loops' operations in the same order.
     g_.ensure_loaded(n);
-    const bool q16 = g_.compressed;
+    const bool q16 = g_.rq16();
     const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
     const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
     const __m256 qs = _mm256_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm256_setzero_ps(),
@@ -1075,7 +1075,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     // order (r + 0, max with 0, sum over actions in order, 1/sum, fma(v, inv, add)): identical floats.
     // M4, 10 threads: -2 to -5% on every bench tree (threebet_mono 6.12 -> 5.95 s).
     g_.ensure_loaded(n);
-    const bool q16 = g_.compressed;
+    const bool q16 = g_.rq16();
     const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
     const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
     const float qs = q16 ? g_.rscale[n.aux] : 0.0f;
@@ -1113,7 +1113,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   } else
 #endif
   {
-  const float* R = g_.regrets_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+  const float* R = g_.regrets_ro(n, g_.rq16() ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
   float* sum = sc.a.alloc_zero(H);
   for (int a = 0; a < A; ++a) {
     const float* r = R + static_cast<size_t>(a) * H;
@@ -1181,7 +1181,7 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
   const int A = n.num_children;
   const int H = g_.num_hands(n.player);
   ArenaScope sc;
-  const float* S = g_.strat_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+  const float* S = g_.strat_ro(n, g_.sq16() ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
   if (n.flags & GF_LOCKED) {
     std::memcpy(out, S, sizeof(float) * A * H);
     return;
@@ -1227,11 +1227,11 @@ void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* r
   const int A = n.num_children;
   const int Hp = g_.num_hands(p);
   ArenaScope sc;
-  float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+  float* R = g_.regrets_rw(n, g_.rq16() ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
   // Strategy-sum accumulation (accumulate_). With avg_reset (default) it runs from t = 1 and
   // Solver::iterate zeroes the sums at t = avg_delay + 1 (#135); without it, it is skipped until
   // t > avg_delay and S stays untouched (zero) until then.
-  float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+  float* S = g_.strat_rw(n, g_.sq16() ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
   // Predictive CFR stores each round's instantaneous regret for the next round's
   // matching input; keep the array fresh whenever it is allocated.
   float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
@@ -1272,14 +1272,13 @@ void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* r
       // avg_delay phase, exactly like the unpruned rows do.) The maxima only matter for 16-bit storage.
       if (accum)
         for (int h = 0; h < Hp; ++h) s[h] *= sm;
-      if (g_.compressed) {
-        if (accum)
-          for (int h = 0; h < Hp; ++h) ms = std::max(ms, nonneg_bits(s[h]));
+      if (g_.sq16() && accum)
+        for (int h = 0; h < Hp; ++h) ms = std::max(ms, nonneg_bits(s[h]));
+      if (g_.rq16())
         for (int h = 0; h < Hp; ++h) mr = std::max(mr, abs_bits(r[h]));
-      }
       continue;
     }
-    if (fast && !g_.compressed) {
+    if (fast && !g_.rq16() && !g_.sq16()) {
       // float32 storage: plain update (no max tracking needed)
       if (pr) {
         if (accum) regret_row<true, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
@@ -1360,7 +1359,7 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
     // and 8 threads, -7% at 32). The regrets need no hint: current_strategy has just read them.
     if (accumulate_) {
       const size_t len = static_cast<size_t>(A) * Hp;
-      if (g_.compressed) {
+      if (g_.sq16()) {
         const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + n.storage);
         for (size_t off = 0; off < len * 2; off += 64) __builtin_prefetch(b + off, 1, 3);
       } else {
@@ -1682,8 +1681,8 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       }
       if (write_best_response && !(n.flags & GF_LOCKED)) {
         // set_mes: store the pure best response as both strategy and regrets.
-        float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
-        float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+        float* R = g_.regrets_rw(n, g_.rq16() ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+        float* S = g_.strat_rw(n, g_.sq16() ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
         for (int h = 0; h < Hp; ++h) {
           int best = 0;
           for (int a = 1; a < A; ++a)
@@ -1848,8 +1847,8 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
   float* sigma = sc.a.alloc(static_cast<size_t>(A) * Hp);
   current_strategy(ni, sigma);
   if (!(n.flags & GF_LOCKED)) {
-    float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
-    float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+    float* R = g_.regrets_rw(n, g_.rq16() ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+    float* S = g_.strat_rw(n, g_.sq16() ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
     // An unreached node had zero counterfactual values this round, so its instantaneous
     // regret is zero: the prediction must not reuse a stale one from an earlier round.
     float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
@@ -2013,7 +2012,7 @@ void Solver::reset_strategy_sums() {
       if (n.kind != ANodeKind::Decision || (n.flags & GF_LOCKED)) continue;
       const int A = n.num_children, H = g_.num_hands(n.player);
       ArenaScope sc;
-      float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+      float* S = g_.strat_rw(n, g_.sq16() ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
       const uint8_t* lockmask = nullptr;
       if (n.flags & GF_COMBO_LOCKED) {
         auto it = g_.combo_lock.find(static_cast<uint32_t>(ni));

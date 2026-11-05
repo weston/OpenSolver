@@ -22,7 +22,8 @@ static bool same_bytes(const V& a, const V& b) {
 
 static bool parallel_equivalence() {
   const int saved_threads = pool().threads();
-  for (bool compressed : {false, true}) {
+  for (int mode : {0, 1, 2}) {  // float32, 16-bit, 16-bit regrets + float32 strategy sums
+    const bool compressed = mode == 1;
     for (bool iso : {false, true}) {
       GameConfig cfg;
       parse_cards("Kh9h4h", cfg.board);
@@ -41,6 +42,7 @@ static bool parallel_equivalence() {
       cfg.lines.add = {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {20, 200}};
       GameTree g;
       g.compressed = compressed;
+      g.regrets16 = mode == 2;
       if (!g.build(cfg, err)) return false;
       Solver s(g);
       pool().set_threads(1);
@@ -61,7 +63,7 @@ static bool parallel_equivalence() {
             actual.ev[0] != expected.ev[0] || actual.ev[1] != expected.ev[1] ||
             actual.mes[0] != expected.mes[0] || actual.mes[1] != expected.mes[1] ||
             actual.exploitability != expected.exploitability) {
-          std::printf("Parallel result differs: threads=%d compressed=%d iso=%d\n", threads, compressed, iso);
+          std::printf("Parallel result differs: threads=%d storage mode=%d iso=%d\n", threads, mode, iso);
           pool().set_threads(saved_threads);
           return false;
         }
@@ -320,6 +322,55 @@ static bool decompress_midsolve() {
   return same && e0 == e1 && e2 < e1;
 }
 
+// small_strats regrets (#272): int16 regrets, float32 strategy sums. The layout holds 6 bytes per slot;
+// the solve converges like float32 on a small tree; decompress() restores float32 regrets with the
+// regrets_ro decode, leaving the sums untouched, and the solve carries on.
+static bool regrets16_layout() {
+  GameConfig cfg;
+  parse_cards("KhQs7d", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ,JJ,TT,AK,AQ,KQ,QJs,JTs", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = cfg.range[1][i] = w[i];
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 150;
+  cfg.lines.add = {{0, 50}, {50, 150}};
+  GameTree f, q;
+  q.regrets16 = true;
+  if (!f.build(cfg, err) || !q.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+  const bool layout = q.regrets.empty() && q.regrets_q.size() == q.storage_floats && q.strat.size() == q.storage_floats &&
+                      q.strat_q.empty() && q.memory_bytes() < f.memory_bytes() &&
+                      q.memory_bytes() == q.memory_bytes_for(false, false, true);
+  Solver sf(f), sq(q);
+  for (int t = 1; t <= 60; ++t) {
+    sf.iterate(t);
+    sq.iterate(t);
+  }
+  const double ef = sf.root_stats().exploitability, eq = sq.root_stats().exploitability;
+  std::vector<float> before, buf;
+  for (const GNode& n : q.nodes) {
+    if (n.kind != ANodeKind::Decision) continue;
+    buf.resize(q.node_size(n));
+    const float* r = q.regrets_ro(n, buf.data());
+    before.insert(before.end(), r, r + buf.size());
+  }
+  const auto sums = q.strat;
+  q.decompress();
+  std::vector<float> after;
+  for (const GNode& n : q.nodes)
+    if (n.kind == ANodeKind::Decision) {
+      const float* r = q.regrets_ro(n, nullptr);
+      after.insert(after.end(), r, r + q.node_size(n));
+    }
+  const bool decoded = !q.regrets16 && q.regrets_q.empty() && before == after && same_bytes(sums, q.strat);
+  for (int t = 61; t <= 120; ++t) sq.iterate(t);
+  const double e2 = sq.root_stats().exploitability;
+  const bool ok = layout && decoded && eq < 1.5 * ef + 1e-3 && e2 < eq;
+  std::printf("[regrets16] layout %s, exploitability %.5f vs float32 %.5f after 60 iterations, decompress %s, "
+              "then %.5f after 60 more\n", layout ? "ok" : "WRONG", eq, ef, decoded ? "exact" : "DIFFERS", e2);
+  return ok;
+}
+
 // All-in terminals before the river: the outcome-table path must match evaluating every runout with
 // the showdown kernel (flop all-in: 1176 runouts; turn all-in: 48), both players, random reaches.
 static bool allin_tables_match() {
@@ -484,6 +535,7 @@ int main(int argc, char** argv) {
   fails += !mem_accounting();
   fails += !showdown_kernels_match();
   fails += !decompress_midsolve();
+  fails += !regrets16_layout();
   fails += !allin_tables_match();
   fails += !river_batch_matches();
   if (big) {

@@ -512,29 +512,38 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   // Old tree memory is released before allocating the new one, so count it as available.
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
   uint64_t full = t->memory_bytes_for(false, predictive_), small = t->memory_bytes_for(true, predictive_);
+  t->regrets16 = false;
   if (small_strats_ == "on") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
+  else if (small_strats_ == "regrets") t->compressed = false, t->regrets16 = true;
   else {
-    // auto: 16-bit storage for preflop trees (like Pio), when float32 does not fit, and (x86) when
-    // the float32 tree is large for the thread count. 16-bit converges in the same number of
-    // iterations as float32 down to ~0.05% of pot on the bench trees, so the choice is speed per
-    // iteration: on x86, half the bytes win once (float32 bytes x threads) reaches about 2 GB, and
-    // the conversion arithmetic loses below that (Zen 5 32 threads flop_srp_4 -24%, deep -10%,
-    // flop_srp_2 -9%, flop_3bet +7%; 1 thread deep +20%). On Apple silicon the memory system keeps
-    // up with float32: since the regret update vectorizes under clang (#180), float32 is faster on
-    // every tree (M4 10 threads, time to 0.05% of pot: deep 3.87 vs 4.10 s, flop_srp_4 2.08 vs
-    // 2.14, flop_3bet 0.50 vs 0.52, flop_srp_2 0.96 vs 0.99; threebet_mono 24.9 s vs never), so
-    // there 16-bit is only for capacity. 16-bit also has a precision floor: flop_3bet plateaus at
-    // 0.009 chips against 0.002, threebet_mono at ~0.09% of pot (bench/where-the-time-goes.md).
+    // auto (#272). Two 16-bit layouts: `regrets` (int16 regrets, float32 strategy sums, 6 bytes per
+    // slot) and `on` (both int16, 4 bytes). Full 16-bit has a precision floor that comes from the
+    // strategy sums: threebet_mono stalls near 0.35% of pot (0.71 chips) and needs #182's switch to
+    // float32. The regrets layout converges like float32 (to 0.05% of pot: 435 iterations vs 450) at
+    // nearly full 16-bit speed per iteration. Zen 5, 32 threads, time to 0.05% of pot, float32 /
+    // regrets / on: threebet_mono 13.9 / 10.7 / never, flop_srp_4 1.39 / 1.10 / 0.97, deep 2.82 /
+    // 2.32 / 2.28, flop_srp_2 0.66 / 0.57 / 0.56, flop_3bet 0.50 / 0.50 / 0.49 s. So:
+    // - preflop trees: full 16-bit (like Pio);
+    // - float32 does not fit: the regrets layout if that fits, else full 16-bit;
+    // - x86, float32 bytes x threads at least 2 GB: the regrets layout (the conversion arithmetic
+    //   loses below that; 1 thread deep +20% with full 16-bit);
+    // - Apple silicon keeps up with float32: since the regret update vectorizes under clang (#180),
+    //   float32 is faster there on every bench tree (M4 10 threads), so 16-bit is only for capacity.
+    const uint64_t mid = t->memory_bytes_for(false, predictive_, true);
 #if defined(__aarch64__) || defined(_M_ARM64)
-    t->compressed = c.preflop || full > avail * 9 / 10;
+    const bool bandwidth = false;
 #else
     const uint64_t th = threads_ > 0 ? static_cast<uint64_t>(threads_)
                                      : std::max<uint64_t>(1, std::thread::hardware_concurrency());
-    t->compressed = c.preflop || full > avail * 9 / 10 || full * th >= (uint64_t(2) << 30);
+    const bool bandwidth = full * th >= (uint64_t(2) << 30);
 #endif
+    if (c.preflop) t->compressed = true;
+    else if (full > avail * 9 / 10) (mid <= avail * 9 / 10 ? t->regrets16 : t->compressed) = true;
+    else if (bandwidth) t->regrets16 = true;
+    else t->compressed = false;
   }
-  uint64_t need = t->memory_bytes_for(t->compressed, predictive_);  // preds is allocated after the build (#98)
+  uint64_t need = t->memory_bytes_for(t->compressed, predictive_, t->regrets16);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board
   if (!mem_ignore && need > avail)
     throw CmdError{"not enough memory: need " + std::to_string(need >> 20) + " MB (" + std::to_string(small >> 20) +
@@ -1128,7 +1137,8 @@ void Upi::register_commands() {
     return std::string("ignore_mem_check ok!");
   };
   H["small_strats"] = [this](const Args& a) {
-    if (a.empty() || (a[0] != "on" && a[0] != "off" && a[0] != "auto")) throw CmdError{"incorrect or missing argument"};
+    if (a.empty() || (a[0] != "on" && a[0] != "off" && a[0] != "auto" && a[0] != "regrets"))
+      throw CmdError{"incorrect or missing argument"};
     small_strats_ = a[0];
     return std::string("small_strats ok!");
   };

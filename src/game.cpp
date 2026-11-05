@@ -543,8 +543,9 @@ void GameTree::build_allin_tables() {
   pool().parallel_for(static_cast<int>(todo.size()), fn);
 }
 
-uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
-  uint64_t b = compress ? storage_floats * 4 + num_decisions * 8 : storage_floats * sizeof(float) * 2;
+uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds, bool regrets16_only) const {
+  const bool rq = compress || regrets16_only, sq = compress;
+  uint64_t b = storage_floats * ((rq ? 2 : 4) + (sq ? 2 : 4)) + num_decisions * 4 * ((rq ? 1 : 0) + (sq ? 1 : 0));
   // Predictive CFR's `preds` is never compressed and is allocated after the build, so the
   // pre-allocation check has to be told about it (#98).
   if (with_preds || !preds.empty()) b += storage_floats * sizeof(float);
@@ -572,33 +573,42 @@ void GameTree::allocate_storage() {
   strat_q.clear();
   strat_q.shrink_to_fit();
   // resize() on an empty ZVec is a fresh calloc: zero pages, committed only when touched.
-  if (compressed) {
+  if (rq16()) {
     regrets_q.resize(storage_floats);
-    strat_q.resize(storage_floats);
     rscale.assign(num_decisions, 0.0f);
-    sscale.assign(num_decisions, 0.0f);
   } else {
     regrets.resize(storage_floats);
+  }
+  if (sq16()) {
+    strat_q.resize(storage_floats);
+    sscale.assign(num_decisions, 0.0f);
+  } else {
     strat.resize(storage_floats);
   }
 }
 
 void GameTree::decompress() {
-  if (!compressed) return;
-  regrets.resize(storage_floats);
-  strat.resize(storage_floats);
+  const bool rq = rq16(), sq = sq16();
+  if (!rq && !sq) return;
+  if (rq) regrets.resize(storage_floats);
+  if (sq) strat.resize(storage_floats);
   for (const GNode& n : nodes) {
     if (n.kind != ANodeKind::Decision) continue;
     const size_t len = node_size(n);
-    const float rs = rscale[n.aux], ss = sscale[n.aux];
-    const int16_t* rq = regrets_q.data() + n.storage;
-    const uint16_t* sq = strat_q.data() + n.storage;
-    float* r = regrets.data() + n.storage;
-    float* s = strat.data() + n.storage;
-    for (size_t i = 0; i < len; ++i) r[i] = static_cast<float>(rq[i]) * rs;
-    for (size_t i = 0; i < len; ++i) s[i] = static_cast<float>(sq[i]) * ss;
+    if (rq) {
+      const float rs = rscale[n.aux];
+      const int16_t* q = regrets_q.data() + n.storage;
+      float* r = regrets.data() + n.storage;
+      for (size_t i = 0; i < len; ++i) r[i] = static_cast<float>(q[i]) * rs;
+    }
+    if (sq) {
+      const float ss = sscale[n.aux];
+      const uint16_t* q = strat_q.data() + n.storage;
+      float* st = strat.data() + n.storage;
+      for (size_t i = 0; i < len; ++i) st[i] = static_cast<float>(q[i]) * ss;
+    }
   }
-  compressed = false;
+  compressed = regrets16 = false;
   regrets_q.clear();
   regrets_q.shrink_to_fit();
   strat_q.clear();
@@ -618,7 +628,7 @@ void GameTree::clear_storage() {
 
 const float* GameTree::regrets_ro(const GNode& n, float* scratch) const {
   ensure_loaded(n);
-  if (!compressed) return regrets.data() + n.storage;
+  if (!rq16()) return regrets.data() + n.storage;
   const size_t len = node_size(n);
   const int16_t* q = regrets_q.data() + n.storage;
   const float s = rscale[n.aux];
@@ -628,7 +638,7 @@ const float* GameTree::regrets_ro(const GNode& n, float* scratch) const {
 
 const float* GameTree::strat_ro(const GNode& n, float* scratch) const {
   ensure_loaded(n);
-  if (!compressed) return strat.data() + n.storage;
+  if (!sq16()) return strat.data() + n.storage;
   const size_t len = node_size(n);
   const uint16_t* q = strat_q.data() + n.storage;
   const float s = sscale[n.aux];
@@ -638,20 +648,20 @@ const float* GameTree::strat_ro(const GNode& n, float* scratch) const {
 
 float* GameTree::regrets_rw(const GNode& n, float* scratch) {
   ensure_loaded(n);
-  if (!compressed) return regrets.data() + n.storage;
+  if (!rq16()) return regrets.data() + n.storage;
   regrets_ro(n, scratch);
   return scratch;
 }
 
 float* GameTree::strat_rw(const GNode& n, float* scratch) {
   ensure_loaded(n);
-  if (!compressed) return strat.data() + n.storage;
+  if (!sq16()) return strat.data() + n.storage;
   strat_ro(n, scratch);
   return scratch;
 }
 
 void GameTree::regrets_commit(const GNode& n, const float* data, float maxabs) {
-  if (!compressed) return;
+  if (!rq16()) return;
   ensure_loaded(n);
   regrets_store(n, data, maxabs);
 }
@@ -679,7 +689,7 @@ void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
 }
 
 void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
-  if (!compressed) return;
+  if (!sq16()) return;
   ensure_loaded(n);
   strat_store(n, data, maxval);
 }

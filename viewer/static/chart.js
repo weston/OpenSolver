@@ -13,7 +13,8 @@ const mk = (tag, attrs, parent) => {
 function niceTime(t) {
   if (t < 1) return t.toFixed(1) + "s";
   if (t < 60) return Math.round(t) + "s";
-  return Math.floor(t / 60) + "m" + String(Math.round(t % 60)).padStart(2, "0");
+  const s = Math.round(t);   // round first: 119.7 s is 2m00, not 1m60
+  return Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0");
 }
 function pctLabel(v, step) {
   const d = step >= 1 ? 0 : step >= 0.1 ? 1 : step >= 0.01 ? 2 : 3;

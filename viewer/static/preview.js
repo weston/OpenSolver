@@ -149,7 +149,7 @@ function watchRefine(root) {
     try { st = await get("/api/refine/status"); } catch (e) { return; }
     if (P.refineRoot !== root) return;
     if (st.ready && st.ready.root === root && !st.busy) { if (P.refresh) P.refresh(); return; }
-    if (!st.busy && st.error) { if (P.shown) P.shown.state = "error"; drawBadge(); return; }
+    if (!st.busy && st.error) { if (P.shown) { P.shown.state = "error"; P.shown.error = st.error; } drawBadge(); return; }
     P.refineTimer = setTimeout(poll, 500);
   };
   P.refineTimer = setTimeout(poll, 400);
@@ -165,6 +165,10 @@ function drawBadge() {
       text = `Refined · ${s.refined.street} re-solved to ${fmt(s.refined.accuracy_pct, 2)}%`;
       cls = "ok";
       title = `This street was re-solved from its first decision in ${fmt(s.refined.seconds, 1)} s with the current ranges (opponent range fixed there). The main solve continues in the background.`;
+    } else if (s.state === "error") {
+      text = "Street re-solve failed";
+      cls = "err";
+      title = `Re-solving this street failed${s.error ? ": " + s.error : ""}. Showing the main solve's strategy.`;
     } else if (s.state === "running") {
       text = "Refining this street…";
       cls = "busy";

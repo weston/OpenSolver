@@ -539,7 +539,9 @@ function renderMatrix() {
       x.c.classList.toggle("on-fill", cw.w > 0.62);
       x.val.textContent = "";
     }
-    note.textContent = S.decId !== S.id ? `Last decision: ${d.actor} at ${S.decId} — pick a card to continue` : "";
+    // only a deal continues below; a fold or showdown ends the hand
+    const more = n && n.type === "SPLIT_NODE" ? " — pick a card to continue" : "";
+    note.textContent = S.decId !== S.id ? `Last decision: ${d.actor} at ${S.decId}${more}` : "";
   } else {
     const pl = viewPlayer();
     const w = pl === "OOP" ? S.range.oop : S.range.ip;

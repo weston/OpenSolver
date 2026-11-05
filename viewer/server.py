@@ -81,6 +81,9 @@ class Solver:
         self.series = []         # convergence points of the current tree: {t, explo, ev_oop, ev_ip}
         self.partial = None      # live/last subtree solve (#153): {node, pot, accuracy, done, ...}
         self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
+        # The Build form the current tree's lines came from (op_generate): street refines rebuild
+        # their subgames with these sizes, not with whatever the form holds by the time you browse.
+        self.built_sizes = None
         self.holds = set()       # who keeps the solve parked (UPI hold): "browse" lease, "refine" (refine.py)
         self._lease_until = 0.0
         self._lease_thread = None
@@ -308,6 +311,7 @@ class Solver:
                 self.solver_status = ""
                 self.partial = None
                 self.loaded_file = False
+                self.built_sizes = None
             self.holds.clear()
             self.forget_locks()
 
@@ -687,6 +691,7 @@ def _api_main(solver, lib, method, path, query, body):
         solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = True
+        solver.built_sizes = None
         solver.reset_series()
         solver.clear_partial()
         return 200, {"ok": True}
@@ -1206,6 +1211,7 @@ def op_generate(solver, b):
     solver.forget_locks()
     solver.tree_present = False
     solver.loaded_file = False
+    solver.built_sizes = {k: v for k, v in b.items() if k not in ("range_oop", "range_ip")}
     solver.reset_series()
     solver.clear_partial()
     return {"lines": len(lines), "sample": [l[len("add_line "):] for l in lines[:8]]}

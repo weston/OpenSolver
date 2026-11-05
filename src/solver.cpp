@@ -1998,6 +1998,79 @@ void Solver::iterate(int t) {
     ArenaScope sc;
     float* out = sc.a.alloc(g_.num_hands(p));
     walk_t<Walk::CFR>(0, p, g_.init_reach[p].data(), g_.init_reach[1 - p].data(), out);
+    // every 4th iteration (before the other player's walk reads p's strategies): rounding asymmetry grows
+    // about 3x per iteration where hands are near-indifferent, so it stays near 1e-5 between resets, at a
+    // quarter of the cost (3.5% per iteration on threebet_mono's monotone flop when done every iteration)
+    if (t % 4 == 0) symmetrize_root_street(p);
+  }
+}
+
+// #300. On a board with suit symmetries (both ranges symmetric too: GameTree::perm_all), suit-swapped
+// hands are the same hand and must keep the same strategy. Float sums run in a hand-dependent order
+// (chance children, opponent rows), so they drift apart by rounding; where hands are near-indifferent
+// CFR blows that up into different strategies, the opponent's reach stops being symmetric, and the
+// isomorphism shortcut at the next deal (which assumes it is) gives wrong values: EV OOP + EV IP then
+// drifts off the pot (a flop all-in spot: 60.311 on a 60 pot; set_isomorphism 0 0 gives 60.000).
+// Averaging each orbit's rows at the root street keeps it exact; those are the few nodes above the
+// first deal, so it costs next to nothing.
+void Solver::symmetrize_root_street(int p) {
+  const auto& G = g_.perm_all;
+  if (G.size() <= 1 || g_.cfg.preflop || g_.nodes.empty()) return;
+  if (!sym_ready_) {
+    sym_ready_ = true;
+    const int bl = g_.nodes[0].board_len;
+    for (int q = 0; q < 2; ++q) {
+      for (uint32_t ni = 0; ni < g_.nodes.size(); ++ni) {
+        const GNode& n = g_.nodes[ni];
+        if (n.kind == ANodeKind::Decision && n.player == q && n.board_len == bl) sym_nodes_[q].push_back(ni);
+      }
+      const int H = g_.num_hands(q);
+      std::vector<char> seen(H, 0);
+      for (int h = 0; h < H; ++h) {
+        if (seen[h]) continue;
+        const size_t start = sym_orbits_[q].size();
+        for (uint8_t pm : G) {
+          const int x = g_.perm_hand[q][pm][h];
+          if (!seen[x]) { seen[x] = 1; sym_orbits_[q].push_back(static_cast<uint16_t>(x)); }
+        }
+        if (sym_orbits_[q].size() - start < 2) sym_orbits_[q].resize(start);  // a hand that is its own image
+        else sym_orbit_end_[q].push_back(static_cast<uint32_t>(sym_orbits_[q].size()));
+      }
+    }
+  }
+  if (sym_orbit_end_[p].empty() || sym_nodes_[p].empty()) return;
+  const int H = g_.num_hands(p);
+  const uint16_t* orb = sym_orbits_[p].data();
+  const auto& ends = sym_orbit_end_[p];
+  auto task = [&](int k) {
+    const GNode& n = g_.nodes[sym_nodes_[p][static_cast<size_t>(k)]];
+    if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) return;
+    const int A = n.num_children;
+    ArenaScope sc;
+    float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+    float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+    for (int a = 0; a < A; ++a) {
+      float* r = R + static_cast<size_t>(a) * H;
+      float* s = S + static_cast<size_t>(a) * H;
+      uint32_t b = 0;
+      for (uint32_t e : ends) {
+        double sr = 0, ss = 0;
+        for (uint32_t i = b; i < e; ++i) { sr += r[orb[i]]; ss += s[orb[i]]; }
+        const double inv = 1.0 / static_cast<double>(e - b);
+        const float mr = static_cast<float>(sr * inv), ms = static_cast<float>(ss * inv);
+        for (uint32_t i = b; i < e; ++i) { r[orb[i]] = mr; s[orb[i]] = ms; }
+        b = e;
+      }
+    }
+    g_.regrets_commit(n, R);
+    g_.strat_commit(n, S);
+  };
+  const int K = static_cast<int>(sym_nodes_[p].size());
+  if (parallel && K > 1) {
+    std::function<void(int)> fn = task;
+    pool().parallel_for(K, fn);
+  } else {
+    for (int k = 0; k < K; ++k) task(k);
   }
 }
 

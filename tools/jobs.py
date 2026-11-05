@@ -366,7 +366,8 @@ class Queue:
                 fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
                 try:
-                    pid = int(open(self.lock_file).read().strip() or 0)
+                    with open(self.lock_file) as f:
+                        pid = int(f.read().strip() or 0)
                 except (OSError, ValueError):
                     pid = 0
                 if _pid_alive(pid):
@@ -377,6 +378,15 @@ class Queue:
                 f.write(str(os.getpid()))
             return
         raise JobError("could not take the runner lock")
+
+    def runner(self) -> int:
+        """The pid of the live runner holding the lock (this process or another), else 0."""
+        try:
+            with open(self.lock_file) as f:
+                pid = int(f.read().strip() or 0)
+        except (OSError, ValueError):
+            return 0
+        return pid if _pid_alive(pid) else 0
 
     def unlock(self) -> None:
         try:
@@ -410,6 +420,20 @@ def start_pot(setup: list[str]) -> float:
     return pot
 
 
+def close_solver(s) -> None:
+    """End a job's solver process and close its pipes."""
+    try:
+        s.proc.kill()
+        s.proc.wait(timeout=30)
+    except Exception:  # noqa: BLE001
+        pass
+    for f in (s.proc.stdin, s.proc.stdout):
+        try:
+            f.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def check_tree(solver_exe: str, setup: list[str], board: str) -> str:
     """Validate a batch's tree on one board without building it; returns the size estimate.
 
@@ -424,16 +448,22 @@ def check_tree(solver_exe: str, setup: list[str], board: str) -> str:
     except vserver.SolverError as e:
         raise JobError(f"the tree does not build on {board}: {e}") from None
     finally:
-        try:
-            s.proc.kill()
-            s.proc.wait(timeout=30)
-        except Exception:  # noqa: BLE001
-            pass
+        close_solver(s)
 
 
-def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print) -> str:
+def _stop_request(q: Queue) -> str:
+    try:
+        with open(q.stop_file) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progress=None) -> str:
     """Solve one job; returns its final status, or "skipped" if it was removed or changed (no
-    longer queued) since the caller listed it. Raises KeyboardInterrupt through (job re-queued)."""
+    longer queued) since the caller listed it. Raises KeyboardInterrupt through (job re-queued).
+
+    progress(job, {"t", "explo", "pct", ...}) is called on each new solver progress report."""
     import server as vserver  # viewer/server.py: the solver session wrapper
 
     with q.edit():  # claim it: as it is now, not as the caller listed it
@@ -460,12 +490,14 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print) -> st
         s.cmd(f"set_board {job['board']}")
         s.cmd("build_tree", timeout=7200)
         s.cmd(f"set_accuracy {b['accuracy_pct'] / 100.0:.10g} fraction")
+        s.cmd("set_info_freq auto")  # check the target on the viewer's adaptive schedule (#165)
         limit = f" {b['max_iters']} steps" if b.get("max_iters") else \
             f" {b['max_seconds']:g} seconds" if b.get("max_seconds") else ""
         before = s.state()["events"]
         s.cmd("go" + limit)
         pot = start_pot(b["setup"]) or 1.0
         last_report = 0.0
+        last_events = -1
         stopping = False
         while True:
             st = s.state()
@@ -473,9 +505,14 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print) -> st
                 raise vserver.SolverError("solver exited")
             if st["events"] > before and st["solver_status"].startswith("stopped") and not st["solving"]:
                 break
-            if not stopping and os.path.exists(q.stop_file) and open(q.stop_file).read().strip() == "now":
+            if not stopping and _stop_request(q) == "now":
                 s.send_raw("stop")
                 stopping = True
+            if progress and st["events"] != last_events and st["progress"]:
+                last_events = st["events"]
+                pt = vserver.parse_progress_point(st["progress"])
+                if pt:
+                    progress(job, dict(pt, pct=100 * pt["explo"] / pot))
             if time.time() - last_report > 5 and st["progress"]:
                 pt = vserver.parse_progress_point(st["progress"])
                 if pt:
@@ -510,15 +547,11 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print) -> st
         return "failed"
     finally:
         if s is not None:
-            try:
-                s.proc.kill()
-                s.proc.wait(timeout=30)
-            except Exception:  # noqa: BLE001
-                pass
+            close_solver(s)
 
 
 def run(q: Queue, ids: list[str] | None, batch: str | None, limit: int | None, solver_exe: str,
-        threads: int, log=print) -> dict:
+        threads: int, log=print, progress=None) -> dict:
     """Run queued jobs one at a time (all, the given ids, or one batch). Returns status counts."""
     if not os.path.isfile(solver_exe):
         raise JobError(f"solver not found: {solver_exe}")
@@ -542,7 +575,7 @@ def run(q: Queue, ids: list[str] | None, batch: str | None, limit: int | None, s
             pending = [j for j in q.jobs(batch) if j["status"] == "queued" and (not ids or j["id"] in ids)]
             if not pending:
                 break
-            status = run_job(q, pending[0], solver_exe, threads, log)
+            status = run_job(q, pending[0], solver_exe, threads, log, progress)
             if status == "queued":  # stopped with --now
                 break
             if status == "skipped":  # removed or changed after we listed it: look again

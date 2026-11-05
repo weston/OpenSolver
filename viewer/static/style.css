@@ -638,6 +638,29 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
 .path-back:hover:not(:disabled) { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
 .path-back:disabled { opacity: .35; cursor: default; }
 
+/* ------------------------------------------------------------------ jobs (#196) */
+.btn.tiny { height: 22px; padding: 0 8px; font-size: 11px; }
+.tag.err { background: rgba(255, 107, 107, .14); color: var(--danger); }
+.jobs-batches { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.jobs-batch { display: grid; grid-template-columns: auto 1fr auto; grid-template-rows: auto auto; column-gap: 12px; row-gap: 6px;
+  align-items: center; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; }
+.jobs-batch .muted { font-size: 12px; }
+.jobs-batch-tools { display: flex; gap: 6px; grid-row: 1 / 3; grid-column: 3; }
+.jobs-bar { grid-column: 1 / 3; height: 4px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+.jobs-bar i { display: block; height: 100%; background: var(--ok); transition: width .4s; }
+.jobs-table-wrap { overflow-x: auto; max-height: 60vh; overflow-y: auto; }
+.jobs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.jobs-table th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3);
+  padding: 6px 8px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+.jobs-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.jobs-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.jobs-table tr.running td { background: var(--accent-soft); }
+.jobs-board { display: inline-flex; gap: 2px; vertical-align: middle; }
+.jobs-actions { display: flex; gap: 4px; justify-content: flex-end; }
+.jobs-log { margin: 0; max-height: 220px; overflow: auto; font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  color: var(--text-2); white-space: pre-wrap; }
+.jobs .hint a { color: var(--accent); }
+@media (max-width: 900px) { .build.jobs { grid-template-columns: minmax(0, 1fr); } }
 /* fast preview (viewer/static/preview.js) */
 label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); margin: 10px 0 2px; cursor: pointer; }
 label.check input { accent-color: var(--accent); }

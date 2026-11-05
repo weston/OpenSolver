@@ -17,6 +17,7 @@
   <nav class="views" role="tablist">
     <button class="view-tab" data-view="study" role="tab">Study</button>
     <button class="view-tab" data-view="build" role="tab">Build</button>
+    <button class="view-tab" data-view="jobs" role="tab">Jobs</button>
   </nav>
   <div class="topbar-spacer"></div>
   <button id="solve-pill" class="solve-pill" title="Solver status">
@@ -171,6 +172,62 @@
         </div>
         <div id="solve-stats" class="stats"></div>
         <button class="btn wide" data-goto="study" id="btn-to-study">Study this tree →</button>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<!-- ============================== JOBS (#196) ============================== -->
+<main id="view-jobs" class="view hidden">
+  <div class="build jobs">
+    <div class="build-main">
+      <section class="card">
+        <div class="card-head">
+          <h2>Queue</h2>
+          <div class="card-tools">
+            <span id="jobs-state" class="tag">idle</span>
+            <button class="btn small primary" id="jobs-run">Run queue</button>
+            <button class="btn small hidden" id="jobs-stop" title="Finish the running job, then stop">Stop after this job</button>
+            <button class="btn small danger hidden" id="jobs-stop-now" title="Stop now; the running job goes back to the queue">Stop now</button>
+            <button class="btn small ghost" id="jobs-retry-failed">Retry failed</button>
+          </div>
+        </div>
+        <div id="jobs-batches" class="jobs-batches"></div>
+        <div class="jobs-table-wrap">
+          <table class="jobs-table">
+            <thead><tr><th>#</th><th>Batch</th><th>Board</th><th class="num">Weight</th><th>Status</th>
+              <th class="num">Exploitable</th><th class="num">EV OOP</th><th class="num">Time</th><th></th></tr></thead>
+            <tbody id="jobs-body"></tbody>
+          </table>
+        </div>
+        <p id="jobs-empty" class="muted">No jobs yet. Queue a batch on the right, or with <code>python3 tools/jobs.py add</code>.</p>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Log</h2></div>
+        <pre id="jobs-log" class="jobs-log"></pre>
+      </section>
+    </div>
+    <aside class="build-side">
+      <section class="card sticky">
+        <div class="card-head"><h2>New batch</h2></div>
+        <div class="solve-form">
+          <p class="hint">The tree is the one on the <a href="#build" data-goto="build">Build</a> tab: its ranges, pot, stack and sizes.
+            Every flop gets its own solve and its own save.</p>
+          <label class="field"><span>Name</span><input id="jb-name" placeholder="SRP BTN vs BB" spellcheck="false"></label>
+          <label class="field"><span>Flops</span><select id="jb-file"></select></label>
+          <label class="field" id="jb-list-field"><span>Boards, comma or one per line, optional :weight</span>
+            <textarea id="jb-list" rows="4" placeholder="Kh9h4h, As7d2c:2" spellcheck="false"></textarea></label>
+          <label class="field"><span>Target exploitability</span><div class="suffix"><input id="jb-acc" type="number" step="0.05" min="0.01" value="0.5"><i>% pot</i></div></label>
+          <div class="field"><span>Save</span>
+            <div class="radio-row">
+              <label><input type="radio" name="jb-save" value="no_rivers" checked> No rivers</label>
+              <label><input type="radio" name="jb-save" value="no_turns"> Flop only</label>
+              <label><input type="radio" name="jb-save" value="full"> Full tree</label>
+            </div>
+          </div>
+          <div class="btn-row"><button id="jb-add" class="btn primary">Queue batch</button></div>
+          <div id="jb-info" class="build-info"></div>
+        </div>
       </section>
     </aside>
   </div>

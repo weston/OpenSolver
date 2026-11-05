@@ -257,6 +257,14 @@ python3 tools/jobs.py export srp100 -o srp100.csv   # board, weight, EVs, MES, e
   Ctrl-C or `stop --now` puts the current job back in the queue. One runner at a time (a lock in the queue directory).
 - The solver must see the same paths as the script: run it where the solver runs (for WSL, the Linux
   build with `/mnt/c/...` paths).
+- **In the viewer:** the **Jobs** tab shows the same queue. It can:
+  - queue the Build tab's tree on a flop list, or on a flop file from `--flops-dir`
+    (default: `C:\PioSOLVER\preflop_subsets` if it exists, or `$WSOLVER_FLOPS_DIR`);
+  - run everything, one batch or one job; stop after the current job or right away;
+  - retry, reorder or remove jobs;
+  - open a finished save in Study.
+
+  Jobs run in their own solver processes, so browsing stays responsive. `viewer/server.py --jobs DIR` picks the queue directory.
 
 ## Viewer
 

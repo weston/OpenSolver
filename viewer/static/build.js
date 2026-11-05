@@ -435,3 +435,11 @@ export function initBuild({ built }) {
 }
 
 export function treeLoadedElsewhere() { builtSig = null; markDirty(); }
+
+// The Build form as a tree config for the job queue (#196): everything but the board, which each job sets.
+export function currentTree() {
+  if (!validateSizes()) throw new Error("Fix the highlighted sizes on the Build tab first.");
+  const f = readForm();
+  if (!f.range_oop || !f.range_ip) throw new Error("Set both ranges on the Build tab first.");
+  return { ...f, board: "" };
+}

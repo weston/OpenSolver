@@ -166,6 +166,23 @@ class NLTest(unittest.TestCase):
         mixed_after = sum(1 for i in range(NUM) if ctx["reach"][i] > 0 and 1e-6 < r["freq"][b][i] < 1 - 1e-6)
         self.assertGreaterEqual(mixed_after, mixed_before - 5)
 
+    def test_proportional_target_at_the_edge(self):
+        """A target within the reachability slack (1e-9) past the edge is clamped, not scaled past it:
+        every share stays in [0, 1], so /api/lock takes the proposal."""
+        ctx = self.ctx("r:0")
+        cats = ["top_pair", "top_pair_tp", "overpair", "two_pair", "set"]
+        R = sum(ctx["reach"])
+        room = sum(ctx["reach"][i] for i in range(NUM) if nl_lock._cats(ctx, i) & set(cats)) / R
+        self.assertTrue(0 < room < 1, room)
+        st, r = self.propose({"ok": True, "explanation": "edge", "rules": [
+            {"hands": "all", "target": {"action": "b24", "overall": 0.0, "order": "current"}},
+            {"hands": {"categories": cats}, "target": {"action": "b24", "overall": room + 5e-10,
+                                                        "order": "proportional"}}]}, node="r:0")
+        self.assertTrue(r["ok"], r)
+        lo = min(v for row in r["freq"] for v in row)
+        hi = max(v for row in r["freq"] for v in row)
+        self.assertTrue(lo >= 0 and hi <= 1, (lo, hi))
+
     def test_never_and_mix(self):
         ctx = self.ctx("r:0")
         keys = [a["key"] for a in ctx["acts"]]

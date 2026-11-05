@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 """Fast preview: hide the solve time (viewer "Fast preview" checkbox, on by default).
 
-Apart from the modal's hand-off point, nothing here uses a tuned threshold; each step stops or
-switches when a comparison says so.
-1. Build & solve first solves a sketch of the tree (SketchManager: one turn/river size, no
-   turn/river raises) to the build's own target; a loading modal shows its progress. Once the
-   sketch is within PREVIEW_FACTOR (10, the owner's choice) x the target, the modal closes and
-   the Study view opens on the still-solving sketch. When the sketch reaches the target, the main
-   solve starts.
-2. Each flop node is shown from the sketch until the main tree's strategy there has caught up
-   with the sketch's (see SketchManager), and from the main tree after; once the main solve
-   meets its target it shows everything.
+1. Build & solve shows a loading modal on the main solve's progress. Once its exploitability is
+   within PREVIEW_FACTOR (10, the owner's choice) x the target, the modal closes and the Study
+   view opens on the still-solving tree (server.py records the target; /api/progress reports
+   {"preview": ...}).
+2. The node on screen refreshes at each progress report of the main solve.
 3. When you look at a node on a later street, the subtree from that street's first decision is
    re-solved here (RefineManager):
-   - ranges are the current reaches of whichever tree shows the flop line above it;
+   - ranges are the main solve's current reaches at that street root;
    - bet sizes are the build's;
    - the accuracy is the build's target, as a share of that node's pot.
    The main solve is parked for the second or so that takes, so the street in front of you gets
    the whole machine, then it resumes exactly where it was (iterations are deterministic). A
-   refine is redone when its ranges are out of date (RefineManager._stale).
+   refine is redone when the main solve has reported progress since (RefineManager._stale).
+
+A flop sketch (a smaller tree solved first, #241-#243) used to show the flop within seconds; it
+was removed because it added its own solve time (about 11%) to every solve, and running it
+alongside the main solve saved nothing (the same CPU work either way).
 
 While a refined subtree exists, the browse endpoints (/api/strategy, /api/range, /api/ev,
 /api/node, /api/categories) answer for nodes inside it from the refine solver, with node ids
@@ -75,9 +74,8 @@ def _rewrite_ids(obj, src, dst):
 class RefineManager(vresolve.ResolveManager):
     """A third solver process for street refines, plus the main solve's pause/resume."""
 
-    def __init__(self, main_solver, solver_cls, exe, sketch=None):
+    def __init__(self, main_solver, solver_cls, exe):
         super().__init__(main_solver, solver_cls, exe)
-        self.sketch = sketch    # SketchManager: the range source while the main solve is young
         self.gen = 0            # bumped when the main tree changes: older results are void
         self.root = None        # main-tree id of the street root being refined / refined
         self.ready = None       # finished refine: {root, sub_root, accuracy, seconds, explo_main, ...}
@@ -121,13 +119,9 @@ class RefineManager(vresolve.ResolveManager):
             try:
                 t0 = time.time()
                 phases = {"pause": round(t0 - tp, 2)}
-                from_sketch = self.sketch is not None and self.sketch.serves_line(root)
-                src = self.sketch.solver if from_sketch else self.main
                 with self.main.state_lock:
                     points = len(self.main.series)
-                sk_points = len(self.sketch.solver.series) if from_sketch else 0
-                sk_running = from_sketch and self.sketch.state == "running"
-                ctx = vresolve.read_context(src, root, with_ranges=True)
+                ctx = vresolve.read_context(self.main, root, with_ranges=True)
                 phases["context"] = round(time.time() - t0, 2)
                 pot = ctx["pot"]["oop"] + ctx["pot"]["ip"] + ctx["pot"]["dead"]
                 acc = max(pct, 0.01) / 100.0 * pot
@@ -144,9 +138,7 @@ class RefineManager(vresolve.ResolveManager):
                         self.ready = {"root": root, "sub_root": ctx["subgame_root"], "street": ctx["street"],
                                       "accuracy": acc, "accuracy_pct": pct, "pot": pot,
                                       "seconds": round(time.time() - t0, 2),
-                                      "source": "sketch" if from_sketch else "main", "main_points": points,
-                                      "sketch_points": sk_points, "sketch_running": sk_running,
-                                      "main_paused": paused, "phases": phases}
+                                      "main_points": points, "main_paused": paused, "phases": phases}
             finally:
                 if paused:
                     self._resume_main()
@@ -193,14 +185,9 @@ class RefineManager(vresolve.ResolveManager):
                 "required accuracy" in self.main.solver_status
 
     def _stale(self, r):
-        """A refine is out of date once its ranges are: they came from the sketch and the main
-        tree now shows that flop line, or they came from the main solve and it has reported
-        progress since (so redone at most once per report, and reports are spaced
-        geometrically in iterations)."""
-        if r["source"] == "sketch":
-            if r.get("sketch_running") and len(self.sketch.solver.series) > r["sketch_points"]:
-                return True   # made while the sketch was still solving, and it has reported since
-            return not (self.sketch is not None and self.sketch.serves_line(r["root"]))
+        """A refine is out of date once its ranges are: the main solve has reported progress
+        since (so redone at most once per report, and reports are spaced geometrically in
+        iterations)."""
         with self.main.state_lock:
             return len(self.main.series) > r["main_points"]
 
@@ -257,352 +244,20 @@ class RefineManager(vresolve.ResolveManager):
         return 404, {"error": "unknown endpoint"}
 
 
-# ---------------------------------------------------------------- the flop sketch
+# ---------------------------------------------------------------- the loading modal
 
-# The owner's choice: the loading modal ends, and the Study view opens on the still-solving sketch,
-# once the sketch is within this factor of the target (3% of the pot for a 0.3% target).
+# The owner's choice: the loading modal ends, and the Study view opens on the still-solving tree,
+# once the main solve is within this factor of the target (3% of the pot for a 0.3% target).
 PREVIEW_FACTOR = 10
 
 
-def _one_size(field):
-    """The single later-street size the sketch keeps: the median of the build's sizes (the
-    larger middle one of an even count). A field with no numeric size is kept as it is."""
-    sizes = []
-    for p in str(field or "").split(","):
-        try:
-            sizes.append(float(p.strip()))
-        except ValueError:
-            continue
-    if not sizes:
-        return field
-    return f"{sorted(sizes)[len(sizes) // 2]:g}"
-
-
-def sketch_body(b):
-    """The build body with one bet size and no raises or donks on the turn and river. Flop
-    actions are untouched, so every flop node has the same id in both trees."""
-    s = dict(b)
-    for street in ("turn", "river"):
-        for sfx in ("", "_ip"):
-            k = f"{street}_bet{sfx}"
-            if k not in b:
-                continue
-            s[k] = _one_size(b.get(k))
-            s[f"{street}_raise{sfx}"] = ""
-        s[f"{street}_donk"] = ""
-    return s
-
-
-def read_node(solver, node_id):
-    """(actor, strategy rows, actor's reach) at a decision node, or None for any other node."""
-    node = vsrv.parse_node_block(solver.cmd("show_node " + node_id))
-    if node["type"] not in ("OOP_DEC", "IP_DEC"):
-        return None
-    actor = "OOP" if node["type"] == "OOP_DEC" else "IP"
-    rows = [r for r in solver.cmd("show_strategy " + node_id).split("\n") if r.strip()]
-    if any(len(r.split()) != vsrv.NUM_COMBOS for r in rows):
-        return None
-    return (actor, [vsrv.parse_floats(r, vsrv.NUM_COMBOS) for r in rows],
-            vsrv.parse_floats(solver.cmd(f"show_range {actor} {node_id}"), vsrv.NUM_COMBOS))
-
-
-def strategy_gap(a, b):
-    """How differently two trees play one node: the share of the hand mix (combos weighted by
-    a's reach) that would choose a different action, i.e. the reach-weighted total variation
-    distance between the two strategies. None when they are not comparable."""
-    if a is None or b is None or a[0] != b[0] or len(a[1]) != len(b[1]):
-        return None
-    _, fa, reach = a
-    fb = b[1]
-    tot = sum(reach)
-    if tot <= 0:
-        return None
-    acc = 0.0
-    for h, r in enumerate(reach):
-        if r > 0:
-            acc += r * sum(abs(x[h] - y[h]) for x, y in zip(fa, fb))
-    return 0.5 * acc / tot
-
-
-class SketchManager:
-    """A small version of the tree (one later-street size, no later-street raises) solved first,
-    so the flop can be shown within seconds (fast preview). It has its own solver process.
-
-    How far: to the build's own accuracy target. Measured on a big full-range SRP (541K nodes;
-    sketch 133K), the sketch's flop stops getting closer to the full tree's answer at about that
-    point: what is left is the gap between the two trees, which more solving cannot close.
-
-    Which tree shows a flop node: the sketch, until the main solve's strategy there is closer
-    to the truth. That is judged per node, with no tolerance, from the distance between the two
-    trees' strategies at each main progress report (FlopWatch): while the main solve is still
-    converging the distance shrinks; once it stops shrinking, what remains is the sketch's own
-    error, and the main tree has caught up with the sketch. On the measured tree that switched
-    the root at iteration 140 of 198 (ideal: 84) and never switched a node early. Once the main
-    solve meets its target, it shows everything.
-
-    Street refines take their ranges from whichever tree shows the flop line above them."""
-
-    def __init__(self, main_solver, solver_cls, exe):
-        self.main = main_solver
-        self.solver = solver_cls(exe)
-        self.mu = threading.Lock()
-        self.gen = 0
-        self.state = "idle"      # idle | running | ready | error
-        self.info = None         # {accuracy, accuracy_pct, explo, seconds, nodes}
-        self.error = None
-        self.abort = False
-        self.target = None       # the sketch's accuracy target in chips while it runs
-        self.early = False       # running, and within PREVIEW_FACTOR x the target: browsable
-        self.nodes = {}          # flop node id -> {"sketch": read_node(...), "gaps": [...], "main": bool}
-        self.avg_delay = None    # the main solver's set_avg_delay: no comparisons up to it
-
-    def invalidate(self):
-        with self.mu:
-            self.gen += 1
-            busy = self.state == "running"
-            self.state, self.info, self.error, self.abort = "idle", None, None, busy
-            self.nodes, self.target, self.early = {}, None, False
-        with self.main.progress_cv:
-            self.main.progress_cv.notify_all()   # the watch thread notices the new gen and exits
-        if busy:
-            try:
-                self.solver.proc.kill()
-            except Exception:
-                pass
-
-    def start(self, body, main_accuracy, start_main):
-        """Build and solve the sketch to the main solve's target (main_accuracy, in chips: the
-        same pot), then run start_main() (which starts the main solve) and watch the flop."""
-        self.invalidate()
-        with self.mu:
-            gen = self.gen
-            self.state, self.abort, self.target, self.early = "running", False, main_accuracy, False
-
-        def job():
-            t0 = time.time()
-            try:
-                if self.solver.dead:
-                    self.solver.restart()
-                pot = float(body["pot"])
-                acc = main_accuracy
-                self.solver.reset_series()
-                vsrv.op_generate(self.solver, sketch_body(body))
-                self.solver.cmd("build_tree")
-                self.solver.tree_present = True
-                self.solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto"])
-                ev0 = self.solver.events
-                self.solver.cmd("go")
-                self._wait_sketch(gen, acc, ev0)
-                explo = self.solver.series[-1]["explo"] if self.solver.series else None
-                nodes = self.solver.cmd("node_count").split("\n")[0]
-                # The root and the first decision after each root action are watched from the
-                # start: read them before announcing "ready", so anyone who sees it sees them too.
-                first = {"r:0": self._watch_entry("r:0")}
-                for k in vsrv.parse_children(self.solver.cmd("show_children r:0")):
-                    first[k["id"]] = self._watch_entry(k["id"])
-                with self.mu:
-                    if gen == self.gen and not self.abort:
-                        self.nodes.update(first)
-                        self.state = "ready"
-                        self.info = {"accuracy": acc, "accuracy_pct": 100.0 * acc / pot if pot else None,
-                                     "explo": explo, "seconds": round(time.time() - t0, 2), "nodes": nodes}
-            except Exception as e:
-                with self.mu:
-                    if gen == self.gen and not self.abort:
-                        self.state, self.error = "error", str(e)
-            finally:
-                if self.abort or self.solver.dead:
-                    try:
-                        self.solver.restart()
-                    except Exception:
-                        pass
-            with self.mu:
-                go = gen == self.gen and not self.abort
-                ready = self.state == "ready"
-            if go:   # also after a sketch error: the main solve is what was asked for
-                start_main()
-                if ready:
-                    self._watch(gen)
-
-        threading.Thread(target=job, daemon=True).start()
-
-    def _wait_sketch(self, gen, acc, ev0):
-        """Wait for the sketch solve to stop, without holding the solver's command lock (so the
-        flop can be browsed meanwhile), and mark it browsable once it is within PREVIEW_FACTOR x
-        the target."""
-        s = self.solver
-        deadline = time.time() + vresolve.SOLVE_TIMEOUT
-        seen = -1
-        with s.progress_cv:
-            while True:
-                with self.mu:
-                    if gen != self.gen or self.abort:
-                        return
-                if s.dead:
-                    raise vsrv.SolverError("sketch solver died")
-                if s.events != seen:
-                    seen = s.events
-                    e = s.series[-1]["explo"] if s.series else None
-                    if e is not None and e <= PREVIEW_FACTOR * acc:
-                        with self.mu:
-                            if gen == self.gen:
-                                self.early = True
-                    if s.events > ev0 and not s.solving and s.solver_status.startswith("stopped"):
-                        return
-                left = deadline - time.time()
-                if left <= 0:
-                    raise vsrv.SolverError("sketch solve timed out")
-                s.progress_cv.wait(min(left, 1.0))
-
-    # ---- the flop watch: which tree shows each flop node ----
-
-    def track(self, node_id):
-        """Start comparing a flop decision node (idempotent). Its sketch strategy is fixed, so
-        it is read once. If the main solve is running, its strategy is read right away (a
-        browse request has the main solve parked anyway), so the next report can compare."""
-        with self.mu:
-            if self.state != "ready" or node_id in self.nodes:
-                return
-            gen = self.gen
-            self.nodes[node_id] = None   # claimed: concurrent calls return
-        entry = self._watch_entry(node_id)
-        with self.mu:
-            if gen != self.gen:
-                return
-            self.nodes[node_id] = entry
-            if entry["main"]:
-                return
-        if self.main.solving and not self._main_done():
-            self._checkpoint(gen, only=[node_id])
-
-    def _watch_entry(self, node_id):
-        """A flop node's watch record. Its sketch strategy is fixed once the sketch is done, so it
-        is read once; a node that is not a decision is always shown from the main tree."""
-        try:
-            sk = read_node(self.solver, node_id)
-        except vsrv.SolverError:
-            sk = None
-        return {"sketch": sk, "gaps": [], "main": sk is None}
-
-    def _watch(self, gen):
-        """Runs after the main solve starts: one checkpoint per progress report, until the
-        tree changes (a Stop and Resume keeps it going)."""
-        seen = 0
-        while True:
-            with self.main.progress_cv:
-                while True:
-                    with self.mu:
-                        if gen != self.gen:
-                            return
-                    n = len(self.main.series)
-                    if n > seen:
-                        break
-                    self.main.progress_cv.wait()
-            seen = n
-            self._checkpoint(gen)
-
-    def _checkpoint(self, gen, only=None):
-        with self.mu:
-            if gen != self.gen:
-                return
-            ids = [k for k, v in self.nodes.items() if v and not v["main"] and (only is None or k in only)]
-        main = self.main
-        held = False
-        try:
-            if main.solving:
-                main.hold("watch")
-                held = True
-            if self.avg_delay is None:
-                self.avg_delay = int(main.cmd("show_avg_delay"))
-            iters = int(main.cmd("show_iters"))
-            with main.state_lock:
-                t = main.series[-1]["t"] if main.series else None
-            reads = {}
-            if iters > self.avg_delay:   # (show_iters counts the whole solve, Resume included)   # the average restarts at avg_delay + 1: compare after it
-                for k in ids:
-                    reads[k] = read_node(main, k)
-        except (vsrv.SolverError, ValueError):
-            return
-        finally:
-            if held:
-                main.unhold("watch")
-        if only is None and t is not None:
-            prev = getattr(self, "_last_cp", None)
-            if prev and prev[0] == gen and iters > prev[2] and t > prev[1]:
-                main.iter_seconds = (t - prev[1]) / (iters - prev[2])
-            self._last_cp = (gen, t, iters)
-        with self.mu:
-            if gen != self.gen:
-                return
-            for k, m in reads.items():
-                v = self.nodes.get(k)
-                if not v or v["main"]:
-                    continue
-                g = strategy_gap(m, v["sketch"])
-                if g is None:
-                    v["main"] = True
-                    continue
-                if v["gaps"] and iters <= v["gaps"][-1][0]:
-                    continue             # no iteration since the last look: nothing to compare
-                if v["gaps"] and g >= v["gaps"][-1][1]:
-                    v["main"] = True     # stopped shrinking: the main solve has caught up here
-                v["gaps"].append((iters, round(g, 5)))
-
-    def _main_done(self):
-        with self.main.state_lock:
-            return not self.main.solving and "required accuracy" in self.main.solver_status
-
-    def serves(self, node_id):
-        """Whether the sketch shows this flop node now (tracking it if new)."""
-        if street_root(node_id)[0] is not None or self._main_done():
-            return False
-        with self.mu:
-            if self.state == "running":
-                return self.early     # still solving: shown live, compared once it is done
-            if self.state != "ready":
-                return False
-        self.track(node_id)
-        with self.mu:
-            v = self.nodes.get(node_id)
-            return bool(v) and not v["main"]
-
-    def serves_line(self, street_root_id):
-        """Whether a later street's ranges come from the sketch: some flop decision on the line
-        to it is still shown from the sketch."""
-        toks = street_root_id.split(":")
-        line = [":".join(toks[:i]) for i in range(2, len(toks))]
-        return any(self.serves(k) for k in line)
-
-    def overlay(self, path, query):
-        if path not in OVERLAY or "id" not in query:
-            return None
-        node_id = query["id"][0]
-        if not self.serves(node_id):
-            return None
-        self.solver.lease()    # a still-running sketch: park it for the burst of requests
-        try:
-            status, data = vsrv._api_main(self.solver, None, "GET", path, query, None)
-        except vsrv.SolverError:
-            return None
-        if status != 200 or not isinstance(data, dict):
-            return None
-        with self.mu:
-            info = dict(self.info) if self.info else {}
-            info["solving"] = self.state == "running"
-        data["sketch"] = info
-        return status, data
-
-    def status(self):
-        with self.mu:
-            st = {"state": self.state, "info": dict(self.info) if self.info else None, "error": self.error,
-                  "early": self.early, "events": self.solver.events,
-                  "flop_sketch": sum(1 for v in self.nodes.values() if v and not v["main"]),
-                  "flop_main": sum(1 for v in self.nodes.values() if v and v["main"])}
-            target = self.target
-        if st["state"] == "running":
-            with self.solver.state_lock:
-                last = self.solver.series[-1]["explo"] if self.solver.series else None
-            first = self.solver.series[0]["explo"] if self.solver.series else None
-            st["progress"] = {"explo": last, "first": first, "target": target,
-                              "preview_at": None if target is None else PREVIEW_FACTOR * target}
-        return st
+def preview_status(solver, target):
+    """The loading modal's numbers for a solve started with fast preview to `target` chips:
+    the first and the latest reported exploitability, and where the modal hands off."""
+    with solver.state_lock:
+        series = list(solver.series)
+    first = series[0]["explo"] if series else None
+    explo = series[-1]["explo"] if series else None
+    goal = PREVIEW_FACTOR * target
+    return {"target": target, "preview_at": goal, "first": first, "explo": explo,
+            "early": explo is not None and explo <= goal}

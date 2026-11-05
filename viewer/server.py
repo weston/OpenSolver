@@ -75,11 +75,11 @@ class Solver:
         self.series = []         # convergence points of the current tree: {t, explo, ev_oop, ev_ip}
         self.partial = None      # live/last subtree solve (#153): {node, pot, accuracy, done, ...}
         self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
-        self.last_generate = None  # the /api/generate body of the tree in memory (fast preview)
         self.holds = set()       # who keeps the solve parked (UPI hold): "browse" lease, "refine" (refine.py)
         self._lease_until = 0.0
         self._lease_thread = None
-        self.iter_seconds = None  # measured solver time per iteration of the running solve (refine.py)
+        self.iter_seconds = None  # measured solver time per iteration of the running solve (note_iters)
+        self._iter_mark = None    # (reports, solver time, iterations) at the last report seen
         self._hold_wait = None    # how long the last hold took to land (a stand-in until then)
         self.locks = {}          # node id -> "node" | "combos": locks set from the viewer (#200)
         self.undo = None         # {"path", "time"}: lossless save of the tree before its first lock
@@ -230,9 +230,8 @@ class Solver:
         click makes and let it run again once no request has come for one iteration's time.
         That is the break-even: parked longer, the solve loses more than a request would have
         waited; shorter, the next request of the burst waits an iteration boundary again. The
-        iteration time is measured (refine.py's flop watch sets it at each progress report);
-        before the first report, the wait for the last hold to land (the cost a request just
-        paid) stands in."""
+        iteration time is measured from the progress reports (note_iters); before the first
+        two, the wait for the last hold to land (the cost a request just paid) stands in."""
         if not self.solving:
             return
         self.hold("browse")
@@ -257,6 +256,22 @@ class Solver:
         with self.state_lock:
             self.series = []
             self.iter_seconds = None
+            self._iter_mark = None
+
+    def note_iters(self, iters):
+        """Measure seconds per iteration from the whole-tree reports: the first poll after each
+        report pairs its solver time with the iteration count then. Off by at most the
+        iterations run between the report and the poll, over gaps of many iterations."""
+        with self.state_lock:
+            if not self.series or self.partial or not isinstance(iters, int):
+                return
+            n, t = len(self.series), self.series[-1]["t"]
+            m = self._iter_mark
+            if m is not None and n == m[0]:
+                return
+            if m is not None and iters > m[2] and t > m[1]:
+                self.iter_seconds = (t - m[1]) / (iters - m[2])
+            self._iter_mark = (n, t, iters)
 
     def start_partial(self, node_id, accuracy, pot):
         """Mark the subtree solve in flight, so the pump routes its blocks here (#153)."""
@@ -288,7 +303,6 @@ class Solver:
                 self.partial = None
                 self.loaded_file = False
             self.holds.clear()
-            self.last_generate = None
             self.forget_locks()
 
     def forget_locks(self):
@@ -410,7 +424,7 @@ def node_id_arg(query, name="id", default="r:0"):
 
 _resolver = None  # resolve.ResolveManager, set by main()/tests; owns the 2nd solver
 _refiner = None   # refine.RefineManager (fast preview), set by main()/tests; owns the 3rd
-_sketch = None    # refine.SketchManager (fast preview's flop sketch); owns the 4th
+_preview = None   # fast preview's loading modal: the target (chips) of the solve it follows
 
 
 def set_resolver(resolver):
@@ -426,10 +440,10 @@ def set_nl(service):
     _nl = service
 
 
-def set_refiner(refiner, sketch=None):
-    global _refiner, _sketch
+def set_refiner(refiner):
+    global _refiner, _preview
     _refiner = refiner
-    _sketch = sketch
+    _preview = None
 
 
 def lib_query(query, name="name"):
@@ -446,6 +460,7 @@ def api(solver, lib, method, path, query, body):
     if path.startswith("/api/nl/"):
         if _nl is None:
             raise SolverError("plain-English locks not initialized")
+        solver.lease()  # it reads the node like a browse click (a no-op unless solving)
         return _nl.api(sys.modules[__name__], solver, method, path, body)
     if path == "/api/refine" or path.startswith("/api/refine/"):
         if _refiner is None:
@@ -453,53 +468,41 @@ def api(solver, lib, method, path, query, body):
         return _refiner.api(method, path, query, body)
     if method == "GET" and path in BROWSE_PATHS:
         solver.lease()
+    global _preview
     if _refiner is not None:
         if method == "GET":
             served = _refiner.overlay(path, query)
-            if served is None and _sketch is not None:
-                served = _sketch.overlay(path, query)
             if served is not None:
                 return served
         elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate"):
-            _refiner.invalidate()  # the main tree is new: old refines and the sketch don't apply
-            if _sketch is not None:
-                _sketch.invalidate()
-        elif path == "/api/stop" and _sketch is not None and _sketch.state == "running":
-            _sketch.invalidate()   # cancels the sketch, and with it the main solve it would start
-        elif path in LOCK_PATHS:
+            _refiner.invalidate()  # the main tree is new: old refines don't apply
+            _preview = None
+        elif path in LOCK_PATHS and not solver.state()["solving"]:
             # A lock, unlock or revert changes the main tree's strategies: a refined street was
-            # solved against the old ones. A running sketch would start the main solve under the
-            # lock, so it counts as solving.
-            if _sketch is not None and _sketch.state == "running":
-                raise SolverError("the solver is running (stop it first)")
+            # solved against the old ones. (While solving the request is refused: keep them.)
             _refiner.invalidate()
-            if _sketch is not None:
-                _sketch.invalidate()
-        if method == "POST" and path == "/api/solve" and _sketch is not None:
+        if method == "POST" and path == "/api/solve":
             b = need_body(body)
-            # Only a fresh tree gets a sketch: Resume on a stopped solve just continues it.
+            # Only a fresh tree gets the loading modal: Resume on a stopped solve just continues it.
             fresh = not solver.series and not solver.solving
-            if b.get("preview") and fresh and solver.last_generate and solver.tree_present \
-                    and not solver.loaded_file:
-                acc = b.get("accuracy", 0.05)
-                if isinstance(acc, bool) or not isinstance(acc, (int, float)) or not math.isfinite(acc) or acc < 0:
-                    raise SolverError("bad accuracy")
-            else:
-                acc = 0
-            if acc > 0:   # the sketch solves to the main target: with none (0), there is no sketch
+            acc = b.get("accuracy", 0.05)
+            if b.get("preview") and fresh and solver.tree_present and not solver.loaded_file \
+                    and isinstance(acc, (int, float)) and not isinstance(acc, bool) \
+                    and math.isfinite(acc) and acc > 0:
                 _refiner.invalidate()
-                solver.clear_partial()
-
-                def start_main():
-                    try:
-                        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go"])
-                    except SolverError:
-                        pass
-                _sketch.start(solver.last_generate, acc, start_main)
-                return 200, {"ok": True, "sketch": True}
-    if path == "/api/progress" and _sketch is not None:
+                try:
+                    status, data = _api_main(solver, lib, method, path, query, body)
+                finally:
+                    solver.drop_holds()
+                _preview = acc
+                data["preview"] = True
+                return status, data
+            _preview = None   # any other solve (Resume, no target, preview off): no modal
+    target = _preview         # read once: a concurrent build may clear it
+    if path == "/api/progress" and _refiner is not None and target is not None:
         status, data = _api_main(solver, lib, method, path, query, body)
-        data["sketch"] = _sketch.status()
+        import refine as vrefine   # (refine imports this module: not at the top)
+        data["preview"] = vrefine.preview_status(solver, target)
         return status, data
     if method == "POST" and path in ("/api/stop", "/api/solve", "/api/solve_node", "/api/build", "/api/load",
                                     "/api/lock/revert"):
@@ -596,6 +599,7 @@ def _api_main(solver, lib, method, path, query, body):
                 st["iters"] = int(solver.cmd("show_iters"))
             except (SolverError, ValueError):
                 st["iters"] = None
+            solver.note_iters(st["iters"])
         return 200, st
 
     if path == "/api/estimate":
@@ -623,7 +627,6 @@ def _api_main(solver, lib, method, path, query, body):
     if path == "/api/generate":
         b = need_body(body)
         out = op_generate(solver, b)
-        solver.last_generate = dict(b)   # fast preview builds its flop sketch from the same config
         return 200, out
 
     if path == "/api/build":
@@ -953,7 +956,8 @@ def lock_state(solver, node_id):
     combos = parse_floats(solver.cmd("show_locked_combos " + node_id), NUM_COMBOS)
     return {"id": node_id, "locked": "LOCKED" in flags, "combo_locked": "COMBO_LOCKED" in flags,
             "combos": [1 if (c or 0) > 0 else 0 for c in combos], "locks": dict(solver.locks),
-            "undo": bool(solver.undo), "can_solve": not solver.loaded_file}
+            "undo": bool(solver.undo), "can_solve": not solver.loaded_file,
+            "can_snapshot": solver.undo is None and not solver.locks and not solver.loaded_file}
 
 
 def op_lock(solver, b):
@@ -1003,7 +1007,9 @@ def op_lock(solver, b):
     else:
         cmds.append(f"lock_node {node_id}")
     with solver.cmd_lock:
-        if b.get("snapshot") and solver.undo is None and not solver.loaded_file:
+        # the copy is of the *unlocked* solve: only before the first lock (a later lock with the
+        # box ticked would otherwise keep a tree that already has the earlier locks in it)
+        if b.get("snapshot") and solver.undo is None and not solver.locks and not solver.loaded_file:
             import tempfile
             fd, snap = tempfile.mkstemp(prefix="wsolver-unlocked-", suffix=".cfr")
             os.close(fd)
@@ -1112,6 +1118,9 @@ def op_lock_revert(solver):
         solver.cmds([f'load_tree "{solver.undo["path"]}" full'])
         # a lossless save keeps the regrets: the reverted tree can be solved further
         solver.locks = {}
+        # used up: the tree *is* the copy now. Keeping it would make a later lock skip its own copy,
+        # and a later revert throw away everything solved after this one.
+        solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = False
         solver.reset_series()
@@ -1289,8 +1298,7 @@ def main(argv=None):
     import nl_lock
     set_nl(nl_lock.NLService())   # reads the Sail key, if any; it never leaves this process
     import refine as vrefine
-    sketch = vrefine.SketchManager(solver, Solver, os.path.abspath(args.solver))
-    set_refiner(vrefine.RefineManager(solver, Solver, os.path.abspath(args.solver), sketch), sketch)
+    set_refiner(vrefine.RefineManager(solver, Solver, os.path.abspath(args.solver)))
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     srv.solver = solver
@@ -1303,7 +1311,7 @@ def main(argv=None):
         pass
     finally:
         srv.server_close()
-        for s in ([solver] + ([_resolver.rsolver] if _resolver else []) + ([_refiner.rsolver] if _refiner else []) + ([_sketch.solver] if _sketch else [])):
+        for s in ([solver] + ([_resolver.rsolver] if _resolver else []) + ([_refiner.rsolver] if _refiner else [])):
             try:
                 s.proc.kill()
             except Exception:

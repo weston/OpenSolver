@@ -154,7 +154,7 @@ Other measurements:
 - **Cost.** The hash costs 1.5-2.5% at 1 thread (deep to 0.1% of pot: 15.2 s against 15.0 s), the
   only place it shows.
 
-**Apple silicon (#291, M4, 10 threads, threebet_mono forced to 16-bit, two interleaved reps).** Rounding
+**Apple silicon (#293, M4, 10 threads, threebet_mono forced to 16-bit, two interleaved reps).** Rounding
 to nearest stalls there too: 0.1% of pot in 14.5 s, and 0.05% not in 1,740 iterations. The per-slot hash
 reaches 0.05% in 17.8 s (470 iterations) but costs ~9% per iteration; a fixed table of uniforms read at a
 hashed offset costs ~2% and reaches it in 16.7 s, against 17.0 s (515 iterations) for float32. So every

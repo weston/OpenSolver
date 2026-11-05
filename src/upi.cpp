@@ -1004,6 +1004,15 @@ void Upi::register_commands() {
   auto is_prefix = [](const std::vector<int32_t>& p, const std::vector<int32_t>& l) {
     return p.size() <= l.size() && std::equal(p.begin(), p.end(), l.begin());
   };
+  // With no buildable tree: is the line on an added line? Its last step may also be an implicit
+  // action the adds don't list - a check or fold (0) or a call (the amount before it).
+  auto on_added_line = [this, is_prefix](const std::vector<int32_t>& l) {
+    bool implicit = !l.empty() && (l.back() == 0 || (l.size() >= 2 && l.back() == l[l.size() - 2]));
+    std::vector<int32_t> head(l.begin(), l.end() - (l.empty() ? 0 : 1));
+    return std::any_of(cfg_.lines.add.begin(), cfg_.lines.add.end(), [&](const std::vector<int32_t>& x) {
+      return is_prefix(l, x) || (implicit && is_prefix(head, x));
+    });
+  };
   auto cut_line = [this, is_prefix](const std::vector<int32_t>& l) {
     auto& add = cfg_.lines.add;
     add.erase(std::remove_if(add.begin(), add.end(), [&](const std::vector<int32_t>& x) { return is_prefix(l, x); }),
@@ -1042,7 +1051,7 @@ void Upi::register_commands() {
     }
     return std::string("add_line ok!");
   };
-  H["remove_line"] = [this, parse_line, current_tree, walk_line, cut_line, is_prefix](const Args& a) {
+  H["remove_line"] = [parse_line, current_tree, walk_line, cut_line, on_added_line](const Args& a) {
     // Pio: the line must be in the tree and not its parent's last child, else this error and no
     // change; removing deletes its subtree, so re-adding the line brings back only its own path.
     // With no buildable tree (no board yet, or a bad line pending) it must at least be on an added
@@ -1052,14 +1061,13 @@ void Upi::register_commands() {
     if (auto root = current_tree()) {
       ActionNode* parent = nullptr;
       if (!walk_line(root.get(), l, &parent) || !parent || parent->actions.size() < 2) throw CmdError{err};
-    } else if (std::none_of(cfg_.lines.add.begin(), cfg_.lines.add.end(),
-                            [&](const std::vector<int32_t>& x) { return is_prefix(l, x); })) {
+    } else if (!on_added_line(l)) {
       throw CmdError{err};
     }
     cut_line(l);
     return std::string("remove_line ok!");
   };
-  H["force_line"] = [this, parse_line, current_tree, cut_line, is_prefix](const Args& a) {
+  H["force_line"] = [this, parse_line, current_tree, cut_line, on_added_line](const Args& a) {
     // Pio keeps only the tree's lines that the forced one is a prefix of: every other action along
     // its path goes, now (an add_line after it is added beside it again). The line must be a line of
     // the tree as it stands - an implicit call or fold counts (force_line 0 50 50 after add_line
@@ -1070,9 +1078,7 @@ void Upi::register_commands() {
     auto root = current_tree();
     if (!root) {
       // no buildable tree yet (no board or stack): keep it for build_tree, which prunes the same way
-      if (std::none_of(cfg_.lines.add.begin(), cfg_.lines.add.end(),
-                       [&](const std::vector<int32_t>& l) { return is_prefix(f, l); }))
-        throw CmdError{"Specified line doesn't exists."};
+      if (!on_added_line(f)) throw CmdError{"Specified line doesn't exists."};
       cfg_.lines.force.push_back(f);
       return std::string("force_line ok!");
     }

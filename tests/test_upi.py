@@ -678,9 +678,17 @@ def check_force_line(u):
     u.cmd("clear_lines")
     bad = [u.cmd("add_line " + l) for l in ("0 50", "75 30")]
     check(bad[1] == "ERROR: add_line Incorrect bet size.", f"a raise below the bet is kept with an error ({bad})")
-    out = [u.cmd("remove_line " + l) for l in ("0 60", "75 30")]
-    check(out == [err, "remove_line ok!"], f"remove_line with a bad line pending: checked against the added lines ({out})")
-    check(u.cmd("build_tree") == "build_tree ok!" and kids("r:0") == "c", "the bad line removed, the tree builds")
+    out = [u.cmd("remove_line " + l) for l in ("0 60", "0 50 0", "75 30")]
+    check(out == [err, "remove_line ok!", "remove_line ok!"],
+          f"remove_line with a bad line pending: on an added line, or its implicit fold ({out})")
+    check(u.cmd("build_tree") == "build_tree ok!" and kids("r:0") == "c" and kids("r:0:c:b50") == "c",
+          "the bad line removed, the tree builds, without the fold")
+    u.cmd("free_tree")
+    u.cmd("clear_lines")
+    out = [u.cmd(c) for c in ("add_line 0 50", "add_line 75 30", "force_line 0 50 50", "force_line 0 60")]
+    check(out[2:] == ["force_line ok!", "ERROR: force_line Specified line doesn't exists."],
+          f"force_line with no tree: an implicit call on an added line, not a missing line ({out[2:]})")
+    u.cmd("clear_lines")
     # removing deletes the subtree: re-adding the line brings back only its own path
     u.cmd("free_tree")
     u.cmd("clear_lines")
@@ -740,6 +748,17 @@ def check_scripts(u):
           f"a script nested in load_script_silent is silent too: one response ({got!r})")
     got = u.cmd("is_ready")
     check(got == "is_ready ok!", f"the next command's answer is its own ({got!r})")
+    s7, s8 = os.path.join(td, "s7.txt"), os.path.join(td, "s8.txt")
+    with open(s7, "w") as f:
+        f.write("show_node r\nset_eff_stack 9\n")
+    with open(s8, "w") as f:
+        f.write(f"load_script {s7}\nis_ready\n")
+    u.cmd("free_tree")
+    u.send_raw("load_script " + s8)
+    got = [u.read_response() for _ in range(4)]
+    check(got == ["ERROR: show_node missing/incorrect tree", "load_script ok!", "is_ready ok!", "load_script ok!"],
+          f"an ERROR in a nested script ends only that one; the outer goes on ({got})")
+    check(u.cmd("is_ready") == "is_ready ok!", "and the stream is in step after it")
     s4 = os.path.join(td, "s4.txt")
     with open(s4, "w") as f:
         f.write(f"skip_if_done {s4} here\nis_ready\nLABEL: here\nset_eff_stack 5\n")

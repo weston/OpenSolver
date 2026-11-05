@@ -266,7 +266,8 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   after `force_line` goes in beside the forced one. The checks need the board, pot and stack set. With no
   board, Pio has no usable line tree at all: lines added before `set_board` (even plain `add_line`s) make
   its `build_tree` ask for 10^7-10^8 MB (probe 16). So that order has no Pio behaviour to match, and ours
-  is its own: edits are kept as given, `remove_line` / `force_line` must be on an added line, and a
+  is its own: edits are kept as given, `remove_line` / `force_line` must be on an added line (its last step may be an implicit check,
+  call or fold), and a
   deferred force prunes at `build_tree` every line through its path, also one added after it. The same
   added-line check applies when a bad line kept by `add_line` leaves no buildable tree. Pio accepts bets
   above the effective stack; ours rejects them at `build_tree`.

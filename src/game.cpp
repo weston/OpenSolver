@@ -615,6 +615,25 @@ void GameTree::decompress() {
   strat_q.shrink_to_fit();
 }
 
+void GameTree::float_sums() {
+  if (!compressed) return;
+  strat.resize(storage_floats);
+  for (const GNode& n : nodes) {
+    if (n.kind != ANodeKind::Decision) continue;
+    const size_t len = node_size(n);
+    const float ss = sscale[n.aux];
+    const uint16_t* q = strat_q.data() + n.storage;
+    float* st = strat.data() + n.storage;
+    for (size_t i = 0; i < len; ++i) st[i] = static_cast<float>(q[i]) * ss;
+  }
+  compressed = false;
+  regrets16 = true;
+  strat_q.clear();
+  strat_q.shrink_to_fit();
+  sscale.clear();
+  sscale.shrink_to_fit();
+}
+
 void GameTree::clear_storage() {
   lazy.reset();  // everything is zero now: nothing left to read from a save file
   std::fill(regrets.begin(), regrets.end(), 0.0f);

@@ -268,6 +268,9 @@ class GameTree {
   // 16-bit -> float32 storage in place (#182): decodes every node exactly as regrets_ro / strat_ro do,
   // then frees the 16-bit arrays. Needs room for the float32 arrays; no walk may be running.
   void decompress();
+  // Full 16-bit -> the regrets layout in place (#272): the strategy sums become float32 (same decode as
+  // strat_ro), the regrets stay int16. Needs room for the float32 sums; no walk may be running.
+  void float_sums();
 
   // Lazy loading (see LazyStore). Every accessor above calls ensure_loaded first.
   std::unique_ptr<LazyStore> lazy;

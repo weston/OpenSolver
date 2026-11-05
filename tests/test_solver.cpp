@@ -371,6 +371,50 @@ static bool regrets16_layout() {
   return ok;
 }
 
+// #272: float_sums() turns a full 16-bit tree into the regrets layout mid-solve. Every regret and sum
+// keeps its value (the regrets_ro / strat_ro decode), and the solve carries on.
+static bool float_sums_midsolve() {
+  GameConfig cfg;
+  parse_cards("KhQs7d", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ,JJ,TT,AK,AQ,KQ,QJs,JTs", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = cfg.range[1][i] = w[i];
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 150;
+  cfg.lines.add = {{0, 50}, {50, 150}};
+  GameTree g;
+  g.compressed = true;
+  if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+  Solver s(g);
+  for (int t = 1; t <= 40; ++t) s.iterate(t);
+  auto values = [&g] {
+    std::vector<float> v, a, b;
+    for (const GNode& n : g.nodes) {
+      if (n.kind != ANodeKind::Decision) continue;
+      a.resize(g.node_size(n));
+      b.resize(g.node_size(n));
+      const float* r = g.regrets_ro(n, a.data());
+      const float* st = g.strat_ro(n, b.data());
+      v.insert(v.end(), r, r + a.size());
+      v.insert(v.end(), st, st + b.size());
+    }
+    return v;
+  };
+  const auto before = values();
+  const double e0 = s.root_stats().exploitability;
+  g.float_sums();
+  const bool layout = !g.compressed && g.regrets16 && g.strat_q.empty() && g.strat.size() == g.storage_floats &&
+                      g.regrets_q.size() == g.storage_floats;
+  const bool same = before == values();
+  const double e1 = s.root_stats().exploitability;
+  for (int t = 41; t <= 120; ++t) s.iterate(t);
+  const double e2 = s.root_stats().exploitability;
+  std::printf("[float_sums] layout %s, values %s, exploitability %.5f == %.5f, then %.5f after 80 more iterations\n",
+              layout ? "ok" : "WRONG", same ? "identical" : "DIFFER", e0, e1, e2);
+  return layout && same && e0 == e1 && e2 < e1;
+}
+
 // All-in terminals before the river: the outcome-table path must match evaluating every runout with
 // the showdown kernel (flop all-in: 1176 runouts; turn all-in: 48), both players, random reaches.
 static bool allin_tables_match() {
@@ -536,6 +580,7 @@ int main(int argc, char** argv) {
   fails += !showdown_kernels_match();
   fails += !decompress_midsolve();
   fails += !regrets16_layout();
+  fails += !float_sums_midsolve();
   fails += !allin_tables_match();
   fails += !river_batch_matches();
   if (big) {

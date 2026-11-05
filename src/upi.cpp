@@ -420,6 +420,20 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           reason = "required accuracy reached";
           break;
         }
+        // #272: full 16-bit's floor comes from the strategy sums: late in a solve a low-reach hand's
+        // increment falls below its node's 16-bit step. On threebet_mono it starts to show near 0.3% of
+        // pot (it never reaches 0.05%, float32 sums do in about the same iterations as float32). So
+        // under auto, a whole-tree solve aiming below 0.5% of pot moves its sums to float32 (int16
+        // regrets stay: `small_strats regrets`) once it is below 0.5%, if that fits. A looser target
+        // keeps full 16-bit's speed (srp_big to 0.5%: 71 s, against 93 s with float32 sums).
+        if (!sub && tree_->compressed && small_strats_ == "auto" && accuracy_ > 0) {
+          const double edge = 0.005 * tree_->cfg.start_pot();
+          if (target < edge && st.exploitability < edge &&
+              tree_->storage_floats * sizeof(float) <= available_memory_bytes() * 9 / 10) {
+            tree_->float_sums();
+            out_raw("SOLVER: near 0.5% of pot with a tighter target; strategy sums switched to 32-bit\n");
+          }
+        }
         // 16-bit storage has an exploitability floor (threebet_mono: ~0.09% of pot, #182). Under
         // small_strats auto, a whole-tree solve whose last three reports set no new best while above
         // its target switches to float32 if that fits, once, and carries on from the same state.
@@ -517,31 +531,21 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   else if (small_strats_ == "off") t->compressed = false;
   else if (small_strats_ == "regrets") t->compressed = false, t->regrets16 = true;
   else {
-    // auto (#272). Two 16-bit layouts: `regrets` (int16 regrets, float32 strategy sums, 6 bytes per
-    // slot) and `on` (both int16, 4 bytes). Full 16-bit has a precision floor that comes from the
-    // strategy sums: threebet_mono stalls near 0.35% of pot (0.71 chips) and needs #182's switch to
-    // float32. The regrets layout converges like float32 (to 0.05% of pot: 435 iterations vs 450) at
-    // nearly full 16-bit speed per iteration. Zen 5, 32 threads, time to 0.05% of pot, float32 /
-    // regrets / on: threebet_mono 13.9 / 10.7 / never, flop_srp_4 1.39 / 1.10 / 0.97, deep 2.82 /
-    // 2.32 / 2.28, flop_srp_2 0.66 / 0.57 / 0.56, flop_3bet 0.50 / 0.50 / 0.49 s. So:
-    // - preflop trees: full 16-bit (like Pio);
-    // - float32 does not fit: the regrets layout if that fits, else full 16-bit;
-    // - x86, float32 bytes x threads at least 2 GB: the regrets layout (the conversion arithmetic
-    //   loses below that; 1 thread deep +20% with full 16-bit);
-    // - Apple silicon keeps up with float32: since the regret update vectorizes under clang (#180),
-    //   float32 is faster there on every bench tree (M4 10 threads), so 16-bit is only for capacity.
-    const uint64_t mid = t->memory_bytes_for(false, predictive_, true);
+    // auto: 16-bit storage for preflop trees (like Pio), when float32 does not fit, and (x86) when
+    // the float32 tree is large for the thread count: there half the bytes win once (float32 bytes x
+    // threads) reaches about 2 GB, and the conversion arithmetic loses below that (Zen 5 32 threads
+    // flop_srp_4 -24%, deep -10%, flop_srp_2 -9%, flop_3bet +7%; 1 thread deep +20%). On Apple silicon
+    // the memory system keeps up with float32: since the regret update vectorizes under clang (#180),
+    // float32 is faster on every tree (M4 10 threads), so there 16-bit is only for capacity.
+    // Full 16-bit has a precision floor, from its strategy sums: go() moves them to float32 once a
+    // tight solve gets close (#272), and #182 switches a stalled one to float32.
 #if defined(__aarch64__) || defined(_M_ARM64)
-    const bool bandwidth = false;
+    t->compressed = c.preflop || full > avail * 9 / 10;
 #else
     const uint64_t th = threads_ > 0 ? static_cast<uint64_t>(threads_)
                                      : std::max<uint64_t>(1, std::thread::hardware_concurrency());
-    const bool bandwidth = full * th >= (uint64_t(2) << 30);
+    t->compressed = c.preflop || full > avail * 9 / 10 || full * th >= (uint64_t(2) << 30);
 #endif
-    if (c.preflop) t->compressed = true;
-    else if (full > avail * 9 / 10) (mid <= avail * 9 / 10 ? t->regrets16 : t->compressed) = true;
-    else if (bandwidth) t->regrets16 = true;
-    else t->compressed = false;
   }
   uint64_t need = t->memory_bytes_for(t->compressed, predictive_, t->regrets16);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board

@@ -147,5 +147,9 @@ target:
 | flop_srp_2 | 0.66 | **0.57** | 0.56 |
 | flop_3bet | 0.50 | 0.50 | 0.49 |
 
-`auto` now picks `regrets` where it picked full 16-bit for bandwidth, and tries it first when
-float32 doesn't fit (README, `src/upi.cpp`).
+Picking `regrets` at build time loses on srp_big (13 GB, 32 threads), where the floor doesn't show at
+looser targets. To 1.5% / 1% / 0.5% of pot, full 16-bit takes 39 / 49 / 71 s and `regrets` 51 / 64 /
+93 s, both in 185 iterations, since `regrets` streams 1.5x the bytes. Full 16-bit tracks float32
+until about 0.3% of pot on threebet_mono, then falls behind. So `auto` still builds full 16-bit, and
+`go` moves the sums to float32 once a solve aiming below 0.5% of pot gets below 0.5% (README,
+`src/upi.cpp`).

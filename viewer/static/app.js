@@ -65,7 +65,6 @@ async function poll() {
   const pt = st.partial && st.partial.point, ppot = st.partial && st.partial.pot;
   const ppct = pt && ppot ? (pt.explo / ppot) * 100 : null;
   if (st.dead) setPill("err", "Solver stopped working — restart from Open");
-  else if (st.sketch && st.sketch.state === "running") setPill("solving", "Sketching the flop…");
   else if (st.suspended) setPill("solving", `Refining a street · ${pct != null ? fmt(pct, 2) + "% · " : ""}main solve paused`);
   else if (st.solving && st.partial) setPill("solving", `Solving further · ${ppct != null ? fmt(ppct, 2) + "%" : "…"} · ${pt ? fmt(pt.t, 0) + "s" : "0s"}`);
   else if (st.solving) setPill("solving", `Solving · ${pct != null ? fmt(pct, 2) + "%" : "…"} · ${last ? fmt(last.t, 0) + "s" : "0s"}`);

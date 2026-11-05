@@ -1,7 +1,9 @@
 // UPI (Universal Poker Interface) command processor.
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
@@ -58,6 +60,41 @@ struct NodeRef {
     int perm;       // chance: perm of the dealt card (canonical -> parent frame)
   };
   std::vector<Step> steps;
+};
+
+// Adaptive report schedule (set_info_freq auto, an extension). Each report is an exploitability
+// check costing about one iteration, and a solve stopping on an accuracy target overshoots by half
+// the report interval on average: at a fixed info_freq of 10 that is ~9% of a 140-iteration solve
+// (srp_big). Exploitability falls roughly as t^-k, so after each report the last two reports give k
+// and an estimate t* of the iteration where the target is met; the next report goes there, clamped
+// to [2, max(5, t/2)] iterations so a poor early estimate cannot overshoot by much and progress
+// still updates. Early DCFR curves fall faster than later ones, so estimates err early (an extra
+// check) rather than late. Without a target or a downward trend, reports are geometric (every
+// max(5, t/4) iterations). The schedule depends only on iteration counts and exploitabilities, so
+// a solve stays deterministic.
+// The average restarts at iteration reset_t (set_avg_delay; 0 = none), which moves exploitability
+// onto a new curve: from 2.2 to 4.9 chips on a 115K-node flop tree. A trend fitted across that
+// jump reads as no progress and waits the longest gap, so the first report after it starts afresh
+// (the viewer's fast preview opened 8 iterations late, waiting on it). Inline so the tests can
+// drive it directly (tests/test_solver.cpp).
+struct AutoReportSchedule {
+  long long last_t = 0;  // the previous report (0: none since the solve started)
+  double last_e = 0;
+  // The iteration of the next report, after one at iteration t with exploitability e.
+  long long next(long long t, double e, double target, long long reset_t) {
+    long long gap = std::max<long long>(5, t / 4);
+    if (reset_t > 0 && last_t < reset_t && t >= reset_t) last_t = 0;
+    if (target > 0 && e > target && last_t > 0 && t > last_t && last_e > e) {
+      double k = std::log(last_e / e) / std::log(static_cast<double>(t) / static_cast<double>(last_t));
+      k = std::clamp(k, 0.5, 4.0);
+      const double tstar = static_cast<double>(t) * std::pow(e / target, 1.0 / k);
+      const long long g = static_cast<long long>(std::ceil(tstar - static_cast<double>(t)));
+      gap = std::clamp<long long>(g, 2, std::max<long long>(5, t / 2));
+    }
+    last_t = t;
+    last_e = e;
+    return t + gap;
+  }
 };
 
 class Upi {
@@ -199,11 +236,10 @@ class Upi {
   int always_recalc_street_ = 0, always_recalc_ms_ = 0;
   int info_freq_ = 25;
   // set_info_freq auto: report (and test the accuracy target) on an adaptive schedule instead of
-  // every info_freq_ iterations. See Upi::next_auto_report.
+  // every info_freq_ iterations. See AutoReportSchedule.
   bool info_auto_ = false;
-  long long next_report_ = 0, last_rep_t_ = 0;
-  double last_rep_e_ = 0;
-  long long next_auto_report(long long t, double e, double target);
+  long long next_report_ = 0;
+  AutoReportSchedule auto_sched_;
   int threads_ = 0;
   double step_ = 1.0;
   std::string algorithm_ = "auto";

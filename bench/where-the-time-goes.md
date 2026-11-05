@@ -169,6 +169,24 @@ nothing.
 
 Recorded so they are not re-attempted:
 
+- **Cheapening the scheduler's spin at a join.** A 20-thread profile of `flop_srp_2` puts **25.1% of
+  all samples in synchronisation waits** (`__psynch_mutexwait` 9.8%, `__psynch_cvwait` 7.6%,
+  `__ulock_wait` 4.8% — that last one is the main thread in `wait_for_solver` — `__psynch_mutexdrop`
+  2.8%). The mechanism is real: a thread waiting at a join takes the one scheduler mutex, finds
+  nothing in `pick_job`, drops it, yields, and repeats, so every waiting thread hammers `m_`.
+
+  Fixing it does **not** help. A `publish_epoch_` atomic bumped on each job publish lets the spin
+  skip the mutex entirely until something new is published (sound, because a job's `next` only ever
+  increases, so an empty `pick_job` stays empty until a publish). Bit-identical, suite green, and
+  worth **-0.95% at 0.6x sd** — not significant; per-iteration it was -1.2% on `flop_srp_2` and
+  **+1.4%** on `deep`, signs disagreeing.
+
+  **The lesson: that 25% is threads with nothing to do, not throughput lost to lock traffic.** Wall
+  clock at a join is bounded by the straggler finishing its chunk, and making the other threads idle
+  more cheaply does not shorten it. A profile showing a quarter of samples in mutex wait reads as a
+  quarter recoverable, and it is not. So the remaining ~1.4x of scaling (#53) is a **load-balance /
+  critical-path** problem — fewer threads sitting at the join — not a scheduler-contention one.
+
 - **Reach-based subtree pruning** never fires (**subtree level only** - per-*entry* skipping is a real 4.3% win, see #151 below). At ε=1e-3, a million times looser than useful,
   exploitability stayed bit-identical — proof that nothing was being skipped. Mixed strategies keep
   reach strictly positive, and folds are terminal nodes rather than subtrees. (#51)
@@ -328,6 +346,75 @@ exactly zero at showdown terminals (#151, verified at +4.3% bit-identical on `de
 per-hand regret pruning on the traverser's side took `deep` from 180 to 425 iterations (#151), and
 sampling the strategy average took `flop_srp_2` from 75 to 970 (#135). Cheapening a per-iteration
 update by dropping contributions costs more in convergence than it saves in work.
+
+On convergence, measured 2026-11-04 on an Apple M4 (10 threads) with one viewer tree: an SRP
+Qs8d7s flop, 541K nodes, two sizes per street, solved to 0.3% of the pot (0.165 chips). The
+default takes 198 iterations, about 91 s. Iteration counts are deterministic, so they are the
+signal; the seconds are interleaved runs on a quiet machine.
+
+- **PDCFR+** (Xu et al. 2024: predictive regret matching plus DCFR at α 2.3, γ 5, negative regrets
+  dropped) loses badly:
+
+  | configuration | iterations |
+  |---|---|
+  | default | 198 |
+  | DCFR 2.3 / -inf / 5 alone | 448 |
+  | `set_predictive on` alone | 297 |
+  | PDCFR+ (both) | 559 |
+
+  This is the #71 result again, now with the published parameters. The predictive runs were also
+  about 4x slower per iteration: one extra float per regret slot pushed this 16 GB machine toward
+  swap.
+- **Averaging delay on a small tree** makes no difference. On a 115K-node flop tree, every
+  `set_avg_delay` from 0 to 48 reaches 1.65, 0.5 and 0.165 chips within one or two iterations of
+  the others. γ=4 already weights the late iterates.
+- **Warm-starting from a smaller tree.** The idea: solve a sketch first (one turn/river size, no
+  turn/river raises; it shares the full tree's flop) and copy its flop regrets into the full tree
+  before it starts. That does save iterations on the full tree, but the sketch's own cost takes it
+  back. Times are when the solve crosses the target, interpolated; the sketch is solved to 10x
+  the target:
+
+  | tree | cold | sketch + warm-started tree | change |
+  |---|---|---|---|
+  | SRP Qs8d7s, 541K nodes | 87 s, 198 iterations | 4.5 + 76 s, 169 iterations | -7.5% |
+  | SRP Kh8h3h, 256K nodes | 37.9 s, 181 iterations | 2.2 + 35.2 s, 168 iterations | -1% |
+  | 3-bet Jd7c4s, 161K nodes | 3.4 s, 187 iterations | 0.5 + 3.3 s, 182 iterations | +12% |
+
+  Seeding the sketch's flop *strategy* as regrets (`set_strategy` with a chosen scale) depends on
+  the scale picked. On Qs8d7s:
+
+  | scale | full-tree solve to target |
+  |---|---|
+  | 1e2-1e3 | about the cold time |
+  | 1e4 | 81 s |
+  | 1e5 | 75 s |
+  | 1e6 | 80 s |
+  | 1e7 | 190 s (this locks the flop to the sketch) |
+
+  Copying the real regrets reaches about the same result without picking a scale.
+- **Running a second solve alongside the main one saves nothing.** The viewer's flop sketch was
+  run concurrently, starting the main solve once the sketch reached 10x its target: the main
+  solve finished at 101.3 / 101.5 s, against 101.0 / 101.5 s run one after the other. Two
+  processes share the same 10 cores and do the same work.
+- **Stochastic rounding for 16-bit storage** (round up with probability equal to the fraction,
+  from a hash of iteration and slot, so updates smaller than one quantum survive on average).
+  Forcing `small_strats on`:
+
+  | 16-bit storage | iterations | time |
+  |---|---|---|
+  | round to nearest | 214 | 97.9 s |
+  | stochastic rounding | 204 | 116.7 s |
+
+  It recovers part of the gap to float32 (198 iterations), but the hash per stored value costs
+  about 24% per iteration. At this target, 16-bit storage only costs 8% more iterations; the 1.8x
+  of `bench/bandwidth.md` is at 0.05% of the pot. A cheaper generator might change the answer for
+  very tight targets.
+- **Thread scaling on the M4** (4 performance + 6 efficiency cores, same tree, after the first 20
+  iterations): 1 -> 4 threads gives 3.57x, 4 -> 10 threads gives 1.6x more, 5.7x in all, about 89%
+  of what this core mix can deliver.
+- **Sustained load does not throttle it:** 45 back-to-back 30-iteration runs over 10 minutes stayed
+  at 13.2-13.4 s. Twice-as-slow runs seen earlier that day were outside load, so check `uptime`
+  before timing anything.
 
 ## Showdown terminals per river subtree, measured on arm64 (#186)
 

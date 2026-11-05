@@ -595,6 +595,16 @@ def check_schematic_after_build(u):
     check(u.cmd("add_all_flops") == "add_all_flops ok!", "add_all_flops")
     check("r:0:b25:c:AsKsQs" in u.cmd("show_children r:0:b25:c"), "the flop hangs under the exit")
     check(u.cmd("show_node r:0:b25:c:AsKsQs").splitlines()[3] == "0 0 50 ", "with the schematic's pot")
+    # Like Pio, add_all_flops accepts exits without a schematic: they stay pure preflop exits (exact equity).
+    check(u.cmd("build_preflop_tree") == "build_preflop_tree ok!", "build_preflop_tree again (schematics cleared)")
+    for c in ("set_pot 0 0 50", "set_eff_stack 975", "clear_lines", "add_line 25", "add_line 0 25"):
+        u.cmd(c)
+    check(u.cmd("add_schematic_tree r:0:b25:c") == "add_schematic_tree ok!", "one schematic only")
+    check(u.cmd("add_all_flops") == "add_all_flops ok!", "add_all_flops with exits left without a schematic")
+    check(u.cmd("show_node r:0:c:c").splitlines()[1] == "END_NODE" and
+          "r:0:b25:c:AsKsQs" in u.cmd("show_children r:0:b25:c"), "those exits stay END_NODE; the attached one deals flops")
+    res = u.cmd("calc_results")
+    check("nan" not in res and "inf" not in res, "and the tree evaluates")
     u.cmd("reset_subset")
     u.cmd("free_tree")
 

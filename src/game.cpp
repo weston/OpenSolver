@@ -436,12 +436,10 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
       const Schematic* sch = nullptr;
       for (auto& s : cfg.schematics)
         if (s.exit_line == x->line) sch = &s;
-      if (!sch) {
-        std::string l;
-        for (int32_t v : x->line) l += (l.empty() ? "" : " ") + std::to_string(v);
-        err = "no schematic tree attached to the preflop exit reached by line " + l;
-        return false;
-      }
+      // An exit without a schematic stays a pure preflop exit, evaluated by exact equity (the Filler's
+      // childless case), as Pio 3.10.1 does: its add_all_flops accepts missing schematics and shows
+      // those exits as END_NODE (#306).
+      if (!sch) continue;
       ActionTreeParams sp;
       sp.board_len = 3;
       sp.eff_stack = sch->eff_stack;

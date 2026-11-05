@@ -85,10 +85,16 @@ class JobsService:
 
     # ---- operations
     def state(self):
-        js = self.q.jobs()
         # a runner started from the CLI (tools/jobs.py run) works on the same queue: show it as running
         external = 0 if self.running() else self.q.runner()
         running = self.running() or bool(external)
+        js = self.q.jobs()
+        if not running and any(j["status"] == "running" for j in js):
+            # Jobs a dead runner left "running" (the viewer restarted or crashed mid-job, a CLI
+            # runner was killed) go back to the queue now, as the next run would do: otherwise
+            # the tab shows them running forever, with no Retry or remove on their row.
+            self.q.recover()
+            js = self.q.jobs()
         with self.mu:
             cur = self.current
             if running and cur is None:  # between progress reports: the job marked running

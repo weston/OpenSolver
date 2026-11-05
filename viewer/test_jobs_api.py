@@ -205,6 +205,22 @@ class JobsApiTest(unittest.TestCase):
         st, d = self.req("/api/jobs/state")
         self.assertFalse(d["running"], "a dead runner's lock doesn't count")
 
+    def test_06_dead_runner_job_is_requeued(self):
+        """A job left 'running' by a runner that is gone (the viewer restarted mid-job) shows as
+        queued, not running forever."""
+        q = self.service.q
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        j = q.jobs()[0]
+        q.update(j["id"], status="running", runner_pid=dead.pid, started=time.time())
+        st, d = self.req("/api/jobs/state")
+        self.assertEqual(st, 200, d)
+        self.assertFalse(d["running"], d)
+        mine = next(x for x in d["jobs"] if x["id"] == j["id"])
+        self.assertEqual(mine["status"], "queued", mine)
+        self.assertIsNone(mine.get("runner_pid"))
+        self.assertIsNone(d["current"])
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

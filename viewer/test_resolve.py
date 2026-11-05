@@ -620,6 +620,35 @@ class ResolveIntegrationTest(unittest.TestCase):
         kids = [c["id"] for c in d["children"]]
         self.assertTrue(any(k.startswith("r:0:c:b") for k in kids), kids)
 
+    def test_32_search_plus_allin(self):
+        # main tree is the river spot from test_30 (OOP acts first at r:0). With allin, every
+        # subset gets the all-in beside its N sizes: "a" stops being a candidate, the rows
+        # list only the N sizes, and the subgame root offers check, the pick and the all-in.
+        def search(allin):
+            body = {"id": "r:0", "street": "river", "candidates": "25,50,a", "n": 1,
+                    "allin": allin, "accuracy": self.ACC,
+                    "allin_threshold": 100000, "add_allin_limit": 300}
+            st, d = self.req("/api/resolve/search", "POST", body)
+            self.assertEqual(st, 200, d)
+            st_ = self.wait_job()
+            self.assertIsNone(st_["error"], st_["error"])
+            st, d = self.req("/api/resolve/node?id=r:0")
+            self.assertEqual(st, 200, d)
+            return st_, [c["id"] for c in d["children"]]
+
+        allin_id = f"r:0:b{self.RIVER['stack']}"
+        st_, kids = search(True)
+        self.assertTrue(st_["allin"])
+        self.assertTrue(st_["result"]["search"]["allin"])
+        self.assertEqual(sorted(r["sizes"] for r in st_["rows"]), [["25"], ["50"]])
+        self.assertEqual(len(kids), 3, kids)  # check, the best of 25/50, all-in
+        self.assertIn(allin_id, kids)
+
+        st_, kids = search(False)  # without it, "a" is one of the candidates
+        self.assertFalse(st_["allin"])
+        self.assertEqual(len(st_["rows"]), 3)
+        self.assertEqual(len(kids), 2, kids)  # check and the one size kept
+
 
 if __name__ == "__main__":
     unittest.main(argv=["test_resolve.py", "-v"] if sys.argv[1:] and not sys.argv[1].startswith("-")

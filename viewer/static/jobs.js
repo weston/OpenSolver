@@ -4,6 +4,7 @@
 import { get, post, toast, fail, prefs, fmt } from "./api.js";
 import { el, cardEl } from "./cards.js";
 import { currentTree } from "./build.js";
+import { tokenColor } from "./study.js";
 
 const $ = (id) => document.getElementById(id);
 let onOpened = async () => {};
@@ -167,36 +168,86 @@ async function addBatch() {
   $("jb-add").disabled = false;
 }
 
+let lastReport = null;
+
 async function showReport(name) {
-  const rep = await get("/api/jobs/report?batch=" + encodeURIComponent(name));
+  lastReport = await get("/api/jobs/report?batch=" + encodeURIComponent(name));
+  const rep = lastReport;
   $("jr-title").textContent = `Report · ${rep.batch}`;
   $("jr-sub").textContent = `${rep.player || "?"} acts first · starting pot ${rep.pot} · ${rep.rows.length} flops done` +
     (rep.pending ? ` · ${rep.pending} not done yet (left out)` : "");
+  const by = $("jr-by");
+  by.replaceChildren(el("option", "", "Every flop"));
+  by.firstChild.value = "";
+  for (const [k, title] of Object.entries(rep.group_titles || {})) {
+    const o = el("option", "", `By ${title.toLowerCase()}`);
+    o.value = k;
+    by.appendChild(o);
+  }
+  by.value = prefs.get("jobs-report-by", "");
+  if (by.value && !(rep.groups || {})[by.value]) by.value = "";
+  renderReport();
+  $("jobs-report").showModal();
+}
+
+/** A stacked bar of a root strategy, in the Study colours. */
+function stratBar(freqs, rep) {
+  const bar = el("span", "jr-bar");
+  freqs.forEach((f, i) => {
+    const seg = el("i");
+    seg.style.width = `${Math.max(0, 100 * f)}%`;
+    seg.style.background = tokenColor(rep.actions[i], rep.pot);
+    seg.title = `${rep.labels[i]}: ${fmt(100 * f, 1)}%`;
+    bar.appendChild(seg);
+  });
+  return bar;
+}
+
+function renderReport() {
+  const rep = lastReport;
+  if (!rep) return;
+  const by = $("jr-by").value;
+  prefs.set("jobs-report-by", by);
   const t = $("jr-table");
   t.replaceChildren();
   const head = el("tr");
-  for (const h of ["Board", "Weight", "EV OOP", "Exploitable"]) head.appendChild(el("th", h === "Board" ? "" : "num", h));
+  const first = by ? rep.group_titles[by] : "Board";
+  for (const h of [first, by ? "Flops" : "Weight", by ? "Weight" : "EV OOP", by ? "EV OOP" : "Exploitable"])
+    head.appendChild(el("th", h === first ? "" : "num", h));
   for (const l of rep.labels) head.appendChild(el("th", "num", l));
+  head.appendChild(el("th", "", "Strategy"));
   const thead = el("thead"); thead.appendChild(head); t.appendChild(thead);
   const tb = el("tbody");
   const pct = (v) => (v == null ? "—" : fmt(100 * v, 1) + "%");
-  const addRow = (cells, cls) => {
+  const addRow = (cells, freqs, cls, title) => {
     const tr = el("tr", cls || "");
+    if (title) tr.title = title;
     cells.forEach((c, i) => { const td = el("td", i ? "num" : ""); if (c instanceof Node) td.appendChild(c); else td.textContent = c; tr.appendChild(td); });
+    const td = el("td");
+    if (freqs) td.appendChild(stratBar(freqs, rep));
+    tr.appendChild(td);
     tb.appendChild(tr);
   };
-  for (const x of rep.rows) {
-    addRow([boardEl(x.board), fmt(x.weight, 2), fmt(x.ev_oop, 2),
-      x.exploitability != null && rep.pot ? fmt((100 * x.exploitability) / rep.pot, 2) + "%" : "—",
-      ...(x.freqs ? x.freqs.map(pct) : rep.labels.map(() => "—"))]);
+  if (by) {
+    for (const g of rep.groups[by] || []) {
+      addRow([g.key, String(g.flops), fmt(g.weight, 2), fmt(g.ev_oop, 2), ...g.freqs.map(pct)], g.freqs, "", g.boards.join(" "));
+    }
+  } else {
+    for (const x of rep.rows) {
+      addRow([boardEl(x.board), fmt(x.weight, 2), fmt(x.ev_oop, 2),
+        x.exploitability != null && rep.pot ? fmt((100 * x.exploitability) / rep.pot, 2) + "%" : "—",
+        ...(x.freqs ? x.freqs.map(pct) : rep.labels.map(() => "—"))], x.freqs);
+    }
   }
   if (rep.total && rep.total.freqs) {
-    addRow([`Weighted (${rep.total.flops})`, fmt(rep.total.weight, 2), fmt(rep.total.ev_oop, 2), "", ...rep.total.freqs.map(pct)], "total");
+    addRow(by ? ["All flops", String(rep.total.flops), fmt(rep.total.weight, 2), fmt(rep.total.ev_oop, 2), ...rep.total.freqs.map(pct)]
+      : [`Weighted (${rep.total.flops})`, fmt(rep.total.weight, 2), fmt(rep.total.ev_oop, 2), "", ...rep.total.freqs.map(pct)],
+    rep.total.freqs, "total");
   }
   t.appendChild(tb);
-  $("jr-note").textContent = "Frequencies are over the acting player's whole range at the first decision. " +
-    "Command line: python3 tools/jobs.py report " + JSON.stringify(rep.batch) + " --csv FILE";
-  $("jobs-report").showModal();
+  $("jr-note").textContent = "Frequencies are over the acting player's whole range at the first decision; groups and the " +
+    "total are weighted by the flop weights. Command line: python3 tools/jobs.py report " + JSON.stringify(rep.batch) +
+    (by ? ` --by ${by}` : "") + " --csv FILE";
 }
 
 export function showJobs(on) {
@@ -213,6 +264,7 @@ export function initJobs({ opened }) {
   $("jb-file").onchange = () => { prefs.set("jobs-file", $("jb-file").value); $("jb-list-field").classList.toggle("hidden", !!$("jb-file").value); };
   $("jb-add").onclick = addBatch;
   $("jr-close").onclick = () => $("jobs-report").close();
+  $("jr-by").onchange = renderReport;
   $("jb-acc").value = prefs.get("jobs-acc", "0.5");
   $("jb-acc").oninput = () => prefs.set("jobs-acc", $("jb-acc").value);
   loadFlopFiles();

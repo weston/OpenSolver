@@ -238,7 +238,7 @@ python3 tools/jobs.py run 00007             # just one job (or several ids, or -
 python3 tools/jobs.py stop [--now]          # from another terminal: after this job / right now
 python3 tools/jobs.py retry --failed        # also: remove, move ID --to 1, show ID
 python3 tools/jobs.py export srp100 -o srp100.csv   # board, weight, EVs, MES, exploitability, ...
-python3 tools/jobs.py report srp100 [--csv FILE]     # root strategy per flop + weighted average
+python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy per flop, by texture, weighted
 ```
 
 - **The tree** is a UPI script (set_range, set_pot, set_eff_stack, add_line, ...) or a PioViewer-style
@@ -258,7 +258,9 @@ python3 tools/jobs.py report srp100 [--csv FILE]     # root strategy per flop + 
   range. `report` lists it per flop with EV and exploitability, plus the flop-weighted average, for
   example `bet 33 (33%) 48.2% · check 51.8%` over a subset. `export` carries the same columns, and the
   Jobs tab has a Report button per batch. Saves from jobs that finished before this was recorded are
-  read once to fill it in.
+  read once to fill it in. `--by high|suits|pairing|straight` (a select in the Report dialog) groups the
+  flops by texture: top card, rainbow / two-tone / monotone, paired, and whether three ranks fit a
+  straight. Each group gets its flop-weighted strategy and EVs, and the CSV carries the four texture columns.
 - A job that fails (the solver errors or exits) is marked `failed` with the error and the run goes on.
   Ctrl-C or `stop --now` puts the current job back in the queue. One runner at a time (a lock in the queue directory).
 - The solver must see the same paths as the script: run it where the solver runs (for WSL, the Linux

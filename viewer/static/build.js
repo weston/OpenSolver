@@ -246,6 +246,25 @@ function updateSpr() {
 
 function validateSizes() { return validateSizeTable(sizesBody()); }
 
+/* An empty number input reads as 0, and the server takes 0 literally: a 0 all-in threshold turns
+ * every bet into a shove, a 0 "add all-in below" never adds one, a 0 pot builds a tree with no
+ * bets. So each of these must hold before a build (the target, before a solve). */
+const NUMBER_FIELDS = {
+  "f-pot": ["Pot (a whole number of chips, at least 1)", (v) => Number.isInteger(v) && v >= 1],
+  "f-stack": ["Effective stack (a whole number of chips, at least 1)", (v) => Number.isInteger(v) && v >= 1],
+  "f-allin-threshold": ["All-in threshold (above 0)", (v) => v > 0],
+  "f-allin-limit": ["Add all-in below (0 or more)", (v) => v >= 0],
+  "f-accuracy": ["Target exploitability (above 0)", (v) => v > 0],
+};
+function checkNumber(id) {
+  const raw = $(id).value.trim();
+  const good = raw !== "" && Number.isFinite(Number(raw)) && NUMBER_FIELDS[id][1](Number(raw));
+  $(id).classList.toggle("invalid", !good);
+  return good;
+}
+/** Names of the invalid fields among ids (marked in the form), empty when all are fine. */
+function badNumbers(ids) { return ids.filter((id) => !checkNumber(id)).map((id) => NUMBER_FIELDS[id][0]); }
+
 const sig = (f) => JSON.stringify(f);
 
 /* ------------------------------------------------------------------ spots (library configs, #116) */
@@ -335,6 +354,8 @@ function memLine(text) {
 async function build() {
   if (!validateSizes()) { info("Fix the highlighted sizes: 33 (% pot), 2e (geometric), 3x (raises only), a (all-in).", true); return false; }
   if (board.length < 3) { info("Pick at least a flop (3 cards).", true); return false; }
+  const bad = badNumbers(["f-pot", "f-stack", "f-allin-threshold", "f-allin-limit"]);
+  if (bad.length) { info(`Fix ${bad.join(", ")}.`, true); return false; }
   const f = readForm();
   setBusy(true, "Generating the tree…");
   try {
@@ -345,6 +366,7 @@ async function build() {
     const b = await post("/api/build");
     builtSig = sig(f);
     treeReady = true;
+    rootPotNow = f.pot;   // the target of a Resume right after this build (before a poll sets it)
     const total = /TOTAL\D*(\d+)/.exec(b.node_count);
     let locked = "";
     const locks = await savedSpotLocks();
@@ -368,6 +390,8 @@ async function build() {
 
 /** Solve the tree that is in the solver now; a stopped solve continues where it left off. */
 async function solve() {
+  const bad = badNumbers(["f-accuracy"]);
+  if (bad.length) { info(`Fix ${bad.join(", ")}.`, true); return; }
   const pot = rootPotNow || Number($("f-pot").value);
   const pct = Number($("f-accuracy").value);
   try {
@@ -461,6 +485,8 @@ export function initBuild({ built }) {
   $("btn-build").onclick = () => { if (!busy) build(); };
   $("btn-solve").onclick = () => { if (!busy) buildAndSolve(); };
   $("btn-resume").onclick = () => { if (!busy && treeReady) solve(); };
+  for (const id of Object.keys(NUMBER_FIELDS))   // a marked field clears once it is fixed
+    $(id).addEventListener("input", () => { if ($(id).classList.contains("invalid")) checkNumber(id); });
   $("btn-stop").onclick = async () => { try { await post("/api/stop"); } catch (e) { fail(e); } };
   loadForm();
   validateSizes();

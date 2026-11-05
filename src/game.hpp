@@ -237,6 +237,12 @@ class GameTree {
   // Strategy storage. Uncompressed: float32 arrays indexed by GNode::storage. Compressed: int16 regrets and
   // uint16 strategy sums with one float scale per decision node (indexed by GNode::aux).
   bool compressed = false;
+  // Thread-count tuning under the default thread count (#276, upi.cpp): 0 = not tuned yet, else the count
+  // this tree solves fastest with; tune_k / tune_s are the trial iterations run so far and their seconds
+  // (even k: every hardware thread, odd k: half).
+  int tuned_threads = 0;
+  int tune_k = 0;
+  double tune_s[2] = {0, 0};
   ZVec<float> regrets;
   ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
   // Predictive CFR (#71): the last instantaneous regret per slot, allocated on demand by

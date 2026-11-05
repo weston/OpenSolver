@@ -166,7 +166,8 @@ UPI by hand.
 
 ## Practical notes
 
-- **Threads.** `set_threads` scales well on large trees — about 14x on 20 cores for a flop tree — and
+- **Threads.** Leave it unset and, on x86, each solve picks every hardware thread or half of them (one per
+  core), whichever runs faster on that tree; set it to pin a count. `set_threads` scales well on large trees — about 14x on 20 cores for a flop tree — and
   poorly on tiny ones, where there is not enough work to spread. Set it and forget it; it does not
   change results.
 - **Memory.** It is the tree that costs memory, not the solver. `small_strats on` stores strategies

@@ -100,8 +100,28 @@ This path is close to its CPU ceiling, and the reasons are all measured rather t
    are stable (14.1x vs 14.0x) because both sides shift together, which is why ratios survive this
    and absolute numbers do not.
 
-   So on the trees that cost real time, 20 cores already return 12.3-14.3x and the remaining
-   headroom is about **1.4x**, not 2-3x. Small trees still scale badly (`turn` at 2.01x), but they
+   **Scaling saturates at the performance-core count, not the core count.** Full curve on
+   `flop_srp_2`, two-point slope over 40 iterations, best of 3 (this machine is 16 P-cores + 4
+   E-cores):
+
+   | threads | s/iter | speedup | efficiency |
+   |---|---|---|---|
+   | 1 | 0.08679 | 1.00x | 100% |
+   | 2 | 0.04731 | 1.83x | 92% |
+   | 4 | 0.02453 | 3.54x | 88% |
+   | 8 | 0.01272 | 6.82x | 85% |
+   | 12 | 0.00882 | 9.85x | 82% |
+   | 16 | 0.00697 | 12.45x | 78% |
+   | 18 | 0.00696 | 12.47x | 69% |
+   | 20 | 0.00696 | 12.47x | 62% |
+
+   16, 18 and 20 threads are **identical to three significant figures**: the four efficiency cores
+   contribute nothing at all. So quote scaling against **P-cores**, not logical cores — the real
+   figure is 12.45x on 16 usable cores (78% efficiency), and the headroom is about **1.29x**, not
+   1.4x of 20. Using all 20 threads is harmless (peak RSS differs by 2 MB of 314) but buys nothing.
+
+   This also means a benchmark that reports "Nx on 20 cores" on Apple silicon is reporting against a
+   denominator the hardware cannot deliver. Small trees still scale badly (`turn` at 2.01x), but they
    are cheap in absolute terms — the share-is-not-amount rule applies. Note also that the old claim
    of a net *loss* on the smallest trees no longer holds: `turn` is a 2x gain.
 2. **x86 gather (#89) — unknown, needs x86 hardware.** AVX2 `vgatherdps` / AVX-512 gather might

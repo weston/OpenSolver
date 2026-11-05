@@ -263,9 +263,14 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   isn't in the tree, or is its parent's last child, is `ERROR: remove_line Can't remove the line (it
   doesn't exist or is the last child)`; removing deletes the subtree, so `add_line` of the same line brings
   back only its own path (`0 50` comes back, the `0 50 150` raise removed with it does not); a line added
-  after `force_line` goes in beside the forced one. The checks need the board, pot and stack set (with no
-  board, edits are kept as given). Pio accepts bets above the effective stack; ours rejects them at
-  `build_tree`.
+  after `force_line` goes in beside the forced one. The checks need the board, pot and stack set. With no
+  board, Pio has no usable line tree at all: lines added before `set_board` (even plain `add_line`s) make
+  its `build_tree` ask for 10^7-10^8 MB (probe 16). So that order has no Pio behaviour to match, and ours
+  is its own: edits are kept as given, `remove_line` / `force_line` must be on an added line (its last step may be an implicit check,
+  call or fold), and a
+  deferred force prunes at `build_tree` every line through its path, also one added after it. The same
+  added-line check applies when a bad line kept by `add_line` leaves no buildable tree. Pio accepts bets
+  above the effective stack; ours rejects them at `build_tree`.
 - `force_line` (probe 11 and the cases in `check_force_line`): Pio keeps only the tree's lines that the
   forced line is a prefix of, so it must be a line of the tree *as the lines and earlier forces stand*:
   `force_line 0 50 50` (the implicit call) is fine after `add_line 0 50`, while after `force_line 0 50`

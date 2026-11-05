@@ -326,9 +326,75 @@ def integration(solver):
         check(json.loads(out)["board"] == "Kh9h4h", "show")
 
 
+# A stand-in solver whose build_tree takes a minute (UPI framing only: every command answers ok).
+SLOW_BUILD = """#!/usr/bin/env python3
+import sys, time
+end = "END"
+for line in sys.stdin:
+    cmd = line.split()[0] if line.split() else ""
+    if cmd == "set_end_string":
+        end = line.split()[1]
+    if cmd == "build_tree":
+        time.sleep(60)
+    print(cmd + " ok!" if cmd != "show_version" else "slow-build 0", flush=True)
+    print(end, flush=True)
+"""
+
+
+def stop_during_build():
+    """stop --now while build_tree runs ends the solver at once and re-queues the job (#256)."""
+    print("[stop --now during the tree build]")
+    if os.name == "nt":
+        print("  skip: the stand-in solver is a script")
+        return
+    import threading
+    import time
+    with tempfile.TemporaryDirectory() as td:
+        fake = os.path.join(td, "slow_solver")
+        with open(fake, "w") as f:
+            f.write(SLOW_BUILD)
+        os.chmod(fake, 0o755)
+        q = jobs.Queue(os.path.join(td, "q"))
+        setup, _ = jobs.tree_setup(TREE)
+        (job,) = q.add_batch("b", setup, [("Kh9h4h", 1)], 0.5, 10, None, "no_rivers", None)
+        got = {}
+        # a daemon: if the stop does not land, the job would wait on the stand-in forever
+        t = threading.Thread(target=lambda: got.update(status=jobs.run_job(q, job, fake, 1, log=lambda m: None)),
+                             daemon=True)
+        t0 = time.time()
+        t.start()
+        time.sleep(1.5)  # well into the minute-long build
+        with open(q.stop_file, "w") as f:
+            f.write("after")  # after this job: the build goes on
+        time.sleep(1.0)
+        check(t.is_alive() and q.job(job["id"])["status"] == "running", "a stop after this job leaves the build running")
+        with open(q.stop_file, "w") as f:
+            f.write("now")
+        t.join(30)
+        took = time.time() - t0
+        check(not t.is_alive() and got.get("status") == "queued", f"run_job returns queued ({got}, {took:.1f} s)")
+        check(took < 15, f"without waiting for the build ({took:.1f} s of its 60)")
+        # the whole run: the stop is used up, so the Jobs tab does not keep saying "stopping"
+        q.retry([job["id"]])
+        got.clear()
+        t = threading.Thread(target=lambda: got.update(counts=jobs.run(q, None, None, None, fake, 1, log=lambda m: None)),
+                             daemon=True)
+        t.start()
+        time.sleep(1.5)
+        with open(q.stop_file, "w") as f:
+            f.write("now")
+        t.join(30)
+        check(not t.is_alive() and not os.path.exists(q.stop_file),
+              f"after a stop --now mid-build, run() ends and removes the stop request ({got})")
+        j = q.job(job["id"])
+        check(j["status"] == "queued" and not j.get("error") and j.get("runner_pid") is None,
+              f"the job is back in the queue, not failed ({j['status']}, {j.get('error')})")
+
+
 def main():
     solver = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "solver"))
     unit()
+    stop_during_build()
     integration(solver)
     if FAILS:
         print(f"{len(FAILS)} FAILED")

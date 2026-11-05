@@ -262,7 +262,8 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
   flops by texture: top card, rainbow / two-tone / monotone, paired, and whether three ranks fit a
   straight. Each group gets its flop-weighted strategy and EVs, and the CSV carries the four texture columns.
 - A job that fails (the solver errors or exits) is marked `failed` with the error and the run goes on.
-  Ctrl-C or `stop --now` puts the current job back in the queue. One runner at a time (a lock in the queue directory).
+  Ctrl-C or `stop --now` puts the current job back in the queue, also mid-build (the job's solver is ended); a
+  stop once the solve is over lets its save finish first, so the solve is kept. One runner at a time (a lock in the queue directory).
 - The solver must see the same paths as the script: run it where the solver runs (for WSL, the Linux
   build with `/mnt/c/...` paths).
 - **In the viewer:** the **Jobs** tab shows the same queue. It can:
@@ -324,7 +325,8 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
 - **Re-solve (#117):** at any decision of the original tree, **Re-solve…** re-solves the subtree from
   there in a second solver process. Either edit the sizes for the rest of the hand, or find the best
   N sizes out of a candidate list. At a node facing a bet on its own street the candidates are
-  raise sizes (`3x` allowed). Results are ranked by the acting player's EV, and you can browse them
+  raise sizes (`3x` allowed). **Plus all-in** (on by default) offers the all-in beside every
+  subset, on top of its N sizes. Results are ranked by the acting player's EV, and you can browse them
   like the original tree; **↩ Original** in the action line, or ← at the subtree root, goes back.
   This is unsafe re-solving: the opponent's range stays fixed at the node.
 - **Solve further (#153):** at a solved decision, **Solve further…** continues solving from that
@@ -407,7 +409,7 @@ Endpoints (all JSON; ids refer to the main tree, subgame browsing uses subgame i
 |---|---|---|
 | `GET /api/resolve/context?id=<node>` | a decision node of the main tree | `{board, street ("flop"/"turn"/"river"), actor, pot: {oop, ip, dead}, stack}` — exactly what the subgame setup will use. 400 for chance/terminal/preflop nodes |
 | `POST /api/resolve/start` | `{id, accuracy?, <sizing fields as in /api/generate>}` | starts a re-solve job; 400 on bad input or while another job runs |
-| `POST /api/resolve/search` | `{id, street?, candidates: "25,50,100", n, accuracy?, <other sizing fields>}` | starts a size search: the `n`-size subset of `candidates` (used as both players' `BetSize` on `street`, defaulting to X's street) with the highest EV for the acting player. All C(k, n) subsets are solved up to 12 combinations; above that, greedy forward selection |
+| `POST /api/resolve/search` | `{id, street?, candidates: "25,50,100", n, allin?, accuracy?, <other sizing fields>}` | starts a size search: the `n`-size subset of `candidates` (used as both players' `BetSize` on `street`, defaulting to X's street) with the highest EV for the acting player. With `allin`, every subset also gets the all-in (`a`), which then is not a candidate. All C(k, n) subsets are solved up to 12 combinations; above that, greedy forward selection |
 | `GET /api/resolve/status` | — | `{busy, kind ("resolve"/"search"), node, error, done, total, method, rows (each `{sizes, ev, ev_oop, ev_ip}`, the acting player's EV first), best, context, result (root EVs, node count, line count, accuracy, calc_results text), tree, solve}` — poll this for progress; `solve` is the subgame solver's own status |
 | `GET /api/resolve/node`, `/strategy`, `/range`, `/ev`, `/calc_results` | same as the main-tree endpoints | browse the (re-)solved subgame. After a search these show the table's **best** subset |
 | `POST /api/resolve/stop` | — | cancels the running job (restarts the subgame solver); no-op when idle |

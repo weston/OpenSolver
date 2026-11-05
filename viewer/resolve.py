@@ -27,7 +27,8 @@ subgame, not r:0 ("subgame_root" in the API tells the two apart).
 
 Size search: given a candidate size list and N, evaluate N-size subsets (all of them
 below BRUTE_FORCE_LIMIT combinations, greedy forward selection above it), solving each
-to a loose accuracy, and report the acting player's EV at X for each candidate.
+to a loose accuracy, and report the acting player's EV at X for each candidate. With
+"allin", every subset also offers the all-in, on top of its N sizes.
 
 THIS IS UNSAFE RE-SOLVING. The opponent's range at X is frozen at its solved reach;
 there is no gadget game grafting the opponent's counterfactual values, so the subgame
@@ -339,6 +340,7 @@ class ResolveManager:
         self.total = 0
         self.method = None
         self.best = None
+        self.allin = False               # search: every subset also offers the all-in
         self.result = None               # summary of the finished (re-)solve
         self.tree_ok = False             # rsolver currently holds a browsable tree
         self.carried = None              # main-tree locks set on the last subgame (#200)
@@ -353,6 +355,7 @@ class ResolveManager:
             self.busy, self.kind, self.node = True, kind, node_id
             self.error, self.rows, self.best, self.ctx = None, [], None, None
             self.done, self.total, self.method = 0, 0, None
+            self.allin = False
             self.abort = False
         threading.Thread(target=self._entry, args=(job,), daemon=True).start()
 
@@ -481,8 +484,18 @@ class ResolveManager:
         candidates = _field_sizes({"candidates": body.get("candidates", "")},
                                   "candidates", allow_mult=True).split(",")
         candidates = sorted(set(c for c in candidates if c), key=_size_key)
+        # allin: the all-in is offered beside every subset, on top of its n sizes (not one of
+        # them), so it is no longer a candidate itself
+        allin = bool(body.get("allin"))
+        extra = ("a",) if allin else ()
+        if allin:
+            candidates = [c for c in candidates if c.lower() != "a"]
+
+        def sizes(sub):
+            return ",".join(tuple(sub) + extra)
         if len(candidates) < 2:
-            raise vsrv.SolverError("need at least 2 candidate sizes")
+            raise vsrv.SolverError("need at least 2 candidate sizes" +
+                                   (" besides the all-in" if allin else ""))
         try:
             n = int(body["n"])
         except (KeyError, TypeError, ValueError):
@@ -496,18 +509,19 @@ class ResolveManager:
         if s_idx < STREET_INDEX[ctx["street"]]:
             raise vsrv.SolverError("search street is before the subgame root street")
         # validate sizes eagerly -> 400 (incl. Nx candidates, which only raises accept)
-        build_config(_tree_builder(), ctx, body, (s_idx, ",".join(candidates)))
+        build_config(_tree_builder(), ctx, body, (s_idx, sizes(candidates)))
 
         def job():
             brute = comb(len(candidates), n) <= BRUTE_FORCE_LIMIT
             with self.mu:
+                self.allin = allin
                 self.method = "brute" if brute else "greedy"
                 self.total = (comb(len(candidates), n) if brute
                               else n * (2 * len(candidates) - n + 1) // 2) + 1  # +1: final replay
             ev_pairs = {}
 
             def score(sub):
-                self._build_and_solve(ctx, body, acc, (s_idx, ",".join(sub)))
+                self._build_and_solve(ctx, body, acc, (s_idx, sizes(sub)))
                 evs = parse_evs(self.rsolver.cmd("calc_results"))
                 ev_pairs[sub] = evs
                 row = {"sizes": list(sub), "ev": evs[ctx["actor"]],
@@ -531,12 +545,12 @@ class ResolveManager:
             best["ev_oop"], best["ev_ip"] = best_pair["OOP"], best_pair["IP"]
             with self.mu:
                 self.rows, self.best = rows, best
-            lines = self._build_and_solve(ctx, body, acc, (s_idx, ",".join(best["sizes"])))
+            lines = self._build_and_solve(ctx, body, acc, (s_idx, sizes(best["sizes"])))
             with self.mu:
                 self.done += 1
             self._finish(ctx, acc, lines, {"search": {"street": STREET_NAME[s_idx],
                                                       "n": n, "candidates": candidates,
-                                                      "method": method}})
+                                                      "allin": allin, "method": method}})
 
         self._launch("search", node_id, job)
 
@@ -546,7 +560,7 @@ class ResolveManager:
         with self.mu:
             return {"busy": self.busy, "kind": self.kind, "node": self.node,
                     "error": self.error, "done": self.done, "total": self.total,
-                    "method": self.method, "rows": [dict(r) for r in self.rows],
+                    "method": self.method, "allin": self.allin, "rows": [dict(r) for r in self.rows],
                     "best": self.best, "context": self.ctx, "result": self.result,
                     "tree": self.tree_ok, "solve": self.rsolver.state()}
 

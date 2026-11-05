@@ -78,7 +78,9 @@ async function go() {
       b.street = $("rs-street").value;
       b.candidates = $("rs-candidates").value.replace(/\s+/g, "");
       b.n = Number($("rs-n").value);
+      b.allin = $("rs-allin").checked;
       prefs.set("rs-candidates", $("rs-candidates").value);
+      prefs.set("rs-allin", b.allin);
       await post("/api/resolve/search", b);
     } else {
       await post("/api/resolve/start", b);
@@ -89,14 +91,23 @@ async function go() {
   } catch (e) { fail(e); }
 }
 
-/** Largest first (owner, #141). Percentages by value; geometric/multiple/all-in after them. */
+/** Largest first (owner, #141): the all-in, raise multiples, percentages by value, then geometric. */
 function largestFirst(sizes) {
   const key = (s) => (/^a$/i.test(s) ? 1e9 : /x$/i.test(s) ? 1e6 + parseFloat(s) : /e$/i.test(s) ? 1e3 - (parseFloat(s) || 0) : parseFloat(s));
   return [...sizes].sort((a, b) => key(b) - key(a));
 }
 
-function sizeChips(sizes) {
-  return largestFirst(sizes).map((s) => `<span class="chip">${/^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s}</span>`).join("");
+function sizeLabel(s) {
+  return /^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s.toLowerCase() === "a" ? "all-in" : s;
+}
+
+/** A search's sizes, plus the all-in it offered beside every subset (st.allin), largest first. */
+function withAllin(sizes, allin) {
+  return largestFirst(allin ? sizes.concat(["a"]) : sizes);
+}
+
+function sizeChips(sizes, allin) {
+  return withAllin(sizes, allin).map((s) => `<span class="chip">${sizeLabel(s)}</span>`).join("");
 }
 
 async function poll() {
@@ -139,7 +150,7 @@ async function poll() {
     for (const r of rows) {
       const tr = el("tr");
       if (st.best && JSON.stringify(st.best.sizes) === JSON.stringify(r.sizes)) tr.className = "best";
-      tr.innerHTML = `<td>${sizeChips(r.sizes)}</td><td class="num">${fmtChips(r.ev)}</td><td class="num delta">${r.ev === top ? "—" : fmt(r.ev - top, 2)}</td><td class="num">${fmtChips(r.ev_oop)}</td><td class="num">${fmtChips(r.ev_ip)}</td>`;
+      tr.innerHTML = `<td>${sizeChips(r.sizes, st.allin)}</td><td class="num">${fmtChips(r.ev)}</td><td class="num delta">${r.ev === top ? "—" : fmt(r.ev - top, 2)}</td><td class="num">${fmtChips(r.ev_oop)}</td><td class="num">${fmtChips(r.ev_ip)}</td>`;
       t.appendChild(tr);
     }
   } else if (!st.busy && st.result && st.result.ev) {
@@ -161,10 +172,11 @@ async function poll() {
   if (!st.busy && st.tree && st.result && !st.error) {
     $("rs-next").classList.remove("hidden");
     $("rs-next-what").textContent = st.kind === "search" && st.best
-      ? `Best: ${largestFirst(st.best.sizes).map((x) => (/^\d/.test(x) && !/[ex]$/i.test(x) ? x + "%" : x)).join(" · ")}. Opening it closes this dialog and browses the re-solved subtree.`
+      ? `Best: ${withAllin(st.best.sizes, st.allin).map(sizeLabel).join(" · ")}. Opening it closes this dialog and browses the re-solved subtree.`
       : "Opening it closes this dialog and browses the re-solved subtree.";
     R.result = st.result;
     R.best = st.best;
+    R.allin = !!st.allin;
   }
   if (st.busy) R.timer = setTimeout(poll, 600);
 }
@@ -172,7 +184,7 @@ async function poll() {
 function browse() {
   const r = R.result;
   if (!r) return;
-  const label = R.best ? largestFirst(R.best.sizes).map((s) => (/^\d/.test(s) && !/[ex]$/i.test(s) ? s + "%" : s)).join(" · ") : "edited sizes";
+  const label = R.best ? withAllin(R.best.sizes, R.allin).map(sizeLabel).join(" · ") : "edited sizes";
   $("resolve-dialog").close();
   enterSubgame({ origin: R.id, root: r.subgame_root, label });
 }
@@ -189,6 +201,7 @@ export async function openResolve(nodeId) {
   drawRows(R.ctx);
   $("rs-accuracy").value = prefs.get("rs-accuracy", "0.5");
   $("rs-candidates").value = prefs.get("rs-candidates", "25, 33, 50, 75, 100, 150");
+  $("rs-allin").checked = prefs.get("rs-allin", true) !== false;
   $("rs-progress").classList.add("hidden");
   $("rs-next").classList.add("hidden");
   $("rs-stop").classList.add("hidden");

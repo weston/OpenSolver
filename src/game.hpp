@@ -242,7 +242,14 @@ class GameTree {
   // lost, which is full 16-bit's exploitability floor (threebet_mono stalled at 0.35% of pot). Rounding
   // up with probability equal to the fraction makes every increment count on average. The random bits
   // are a hash of the slot and round_seed, which the solver sets per iteration: results stay identical
-  // for any thread count.
+  // for any thread count. x86 only: on the compute-bound M4 an earlier version cost ~24% per iteration
+  // (bench/where-the-time-goes.md), and Apple silicon uses 16-bit only when float32 does not fit, so it
+  // keeps rounding to nearest (and #182's switch to float32) until someone measures it there.
+#if defined(__aarch64__) || defined(_M_ARM64)
+  static constexpr bool kStochasticSums = false;
+#else
+  static constexpr bool kStochasticSums = true;
+#endif
   uint32_t round_seed = 0;
   ZVec<float> regrets;
   ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)

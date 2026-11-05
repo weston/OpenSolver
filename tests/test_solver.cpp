@@ -356,6 +356,10 @@ static bool stochastic_sums() {
     const float* cur = g.strat_ro(n, buf.data());
     return std::vector<float>(cur, cur + len);
   };
+  if (!GameTree::kStochasticSums) {
+    std::printf("[stochastic sums] skipped: this build rounds 16-bit strategy sums to nearest (ARM)\n");
+    return true;
+  }
   const auto a = run(2000), b = run(2000);
   double mean = 0;
   for (size_t i = 1; i < len; ++i) mean += a[i];

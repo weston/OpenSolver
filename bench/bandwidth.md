@@ -154,5 +154,9 @@ Other measurements:
 - **Cost.** The hash costs 1.5-2.5% at 1 thread (deep to 0.1% of pot: 15.2 s against 15.0 s), the
   only place it shows.
 
+x86 only: an earlier version cost about 24% per iteration on the compute-bound M4
+(bench/where-the-time-goes.md, "Stochastic rounding"), and Apple silicon uses 16-bit only when float32
+does not fit. So ARM builds keep rounding to nearest until it is measured there.
+
 The separate int16-regrets layout was dropped: it streams 1.5x the bytes of full 16-bit (srp_big
 93 s against 71 s to 0.5%), and stochastic rounding makes it unnecessary.

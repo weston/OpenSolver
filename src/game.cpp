@@ -681,6 +681,7 @@ void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
 void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   if (!compressed) return;
   ensure_loaded(n);
+  if constexpr (!kStochasticSums) return strat_store(n, data, maxval);
   const size_t len = node_size(n);
   float m = maxval;
   if (m < 0) {

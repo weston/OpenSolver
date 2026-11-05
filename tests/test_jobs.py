@@ -117,7 +117,7 @@ def unit():
         q.move("00003", 1)
         check(q.job("00001")["status"] == "done", "move keeps a finished job's status")
         check([j["id"] for j in q.jobs() if j["status"] == "queued"] == ["00003", "00002"], "move among queued jobs")
-        q.remove([q.job("00002")])
+        q.remove([q.job("00002"), q.job("00002")])  # the same job twice: removed once, no error (API fuzz)
         check(q.update("00002", status="done") is None and raises(q.job, "00002"),
               "a status change of a removed job doesn't bring it back")
         check(jobs.run_job(q, listed[1], "/nonexistent", 1, log=lambda m: None) == "skipped",

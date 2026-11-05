@@ -244,7 +244,6 @@ class GameTree {
   // from a fixed table read at an offset hashed from the node and round_seed, which the solver sets per
   // iteration: results stay identical for any thread count. On every platform: the table costs ~2% per
   // iteration on the M4 where a per-slot hash cost ~9% (threebet_mono, 10 threads, #293).
-  static constexpr bool kStochasticSums = true;
   uint32_t round_seed = 0;
   static constexpr size_t kRoundTable = 4096;
   ZVec<float> regrets;

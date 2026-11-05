@@ -705,7 +705,6 @@ static const float* rounding_uniforms() {
 void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   if (!compressed) return;
   ensure_loaded(n);
-  if constexpr (!kStochasticSums) return strat_store(n, data, maxval);
   const size_t len = node_size(n);
   float m = maxval;
   if (m < 0) {
@@ -728,6 +727,8 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   h ^= h >> 16;
   h *= 0x85EBCA6Bu;
   h ^= h >> 13;
+  h *= 0xC2B2AE35u;
+  h ^= h >> 16;
   size_t i = 0;
   while (i < len) {
     const size_t start = (h + i) & (kRoundTable - 1), blk = std::min(len - i, kRoundTable);

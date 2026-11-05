@@ -157,7 +157,7 @@ Other measurements:
 **Apple silicon (#293, M4, 10 threads, threebet_mono forced to 16-bit, two interleaved reps).** Rounding
 to nearest stalls there too: 0.1% of pot in 14.5 s, and 0.05% not in 1,740 iterations. The per-slot hash
 reaches 0.05% in 17.8 s (470 iterations) but costs ~9% per iteration; a fixed table of uniforms read at a
-hashed offset costs ~2% and reaches it in 16.7 s, against 17.0 s (515 iterations) for float32. So every
+hashed offset costs ~2% and reaches it in 16.7 s (also 470 iterations), against 17.0 s (515 iterations) for float32. So every
 build now rounds the sums stochastically, with the table. On deep and flop_srp_4 it is within 1% of
 nearest rounding at every target down to 0.02%. Apple silicon still uses 16-bit only when float32 does
 not fit, but those trees now converge instead of stalling.

@@ -413,7 +413,7 @@ UPI probe matches the macOS build up to floating-point rounding).
 | Node IDs | `r`, `r:0`, then `c` / `f` / `b<amount>` where the amount is the **cumulative** chips invested by the bettor (e.g. `r:0:c:b20:c:7s:b60`), and card tokens at chance nodes. `?` means the first runout in display order (the highest card). |
 | Node types | `ROOT`, `OOP_DEC`, `IP_DEC`, `SPLIT_NODE`, `END_NODE`. All-ins before the river are `END_NODE`s whose value averages over every runout (no chance nodes), exactly like Pio. |
 | Children order | Bets/raises largest first, then check/call, then fold; dealt cards from `As` down to `2c`. `show_all_lines` walks the reverse order with `?` card markers. |
-| EVs | Chips relative to the tree start: payoff = share of the final pot - own chips invested in the tree, so `EV OOP + EV IP = starting pot`. `calc_ev` matchups are weighted by the hand's own reach (Pio semantics); out-of-range hands print `nan`/`inf`. |
+| EVs | Chips relative to the tree start: payoff = share of the final pot - own chips invested in the tree, so `EV OOP + EV IP = starting pot`. `calc_ev` matchups are weighted by the hand's own reach (Pio semantics); out-of-range hands print `nan`/`inf`, and an in-range hand that never reaches the node prints its counterfactual EV with matchups 0, as Pio does (#247). |
 | Hands of either range | By default each player's hand list is their own range. `set_union_hands on` (before `build_tree`) makes it the union of both, like Pio: a hand only in the opponent's range gets a slot with reach 0, so `calc_ev` reports the **sign** of its counterfactual value (`inf`/`-inf` rather than a bare `inf`) and `calc_ev_pp`/`show_strategy_pp` list it. The equilibrium is unchanged; vectors get wider (about +23% solve time on `bench_flop`), which is why it is off by default. |
 | SOLVER output | `SOLVER: started`, periodic `SOLVER:` blocks (running time, EVs, MES, `Exploitable for`) ending in END, and `SOLVER: stopped (<reason>)`. Command responses never interleave with these. |
 | Isomorphism | Querying a non-canonical card (e.g. `7s` when it mirrors `7d`) returns the suit-swapped strategy; node IDs keep the card you asked for. |
@@ -512,9 +512,9 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   probes ruled out a stable sort and MSVC `std::sort` / heap orders over the 1326 order, so we keep ours.
 - `_pp` listings omit hands that are only in the opponent's range by default; Pio always lists the union
   of both ranges. `set_union_hands on` (before `build_tree`) gives Pio's exact hand list (#9, #61).
-- `add_line` / `remove_line` / `force_line` are collected and applied at `build_tree`, where Pio edits
-  its line tree command by command. Scripts that add first and then remove or force (the usual shape)
-  build the same tree. Re-adding a removed line, or adding after `force_line`, does not (see AGENTS.md).
+- `remove_line` / `force_line` act on the tree as the lines stand, like Pio's live line tree: a line that
+  isn't there is an error, removing deletes the subtree, and a line re-added afterwards comes back (#251,
+  see AGENTS.md). Without a board, pot and stack set yet, the edits are kept and applied at `build_tree`.
   Bets above the effective stack are rejected at `build_tree`; Pio builds them.
 - Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
   there; results are identical with isomorphism on or off (#12).

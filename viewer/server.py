@@ -1164,15 +1164,23 @@ def setup_from_body(b):
     board = no_newlines(str(b.get("board", "")).replace(" ", "").strip(), "board")
     if not range_oop or not range_ip:
         raise SolverError("both ranges are required")
+    def whole(v):   # int() would truncate 10.5 to 10, building another pot than the form shows
+        if isinstance(v, bool):
+            raise ValueError
+        f = float(v)
+        if not f.is_integer():
+            raise ValueError
+        return int(f)
+
     try:
-        pot = int(b["pot"])
-        stack = int(b["stack"])
+        pot = whole(b["pot"])
+        stack = whole(b["stack"])
         allin_threshold = float(b.get("allin_threshold", 67))
         add_allin_limit = float(b.get("add_allin_limit", 300))
         if pot < 0 or stack <= 0:
             raise ValueError
-    except (KeyError, TypeError, ValueError):
-        raise SolverError("bad pot/stack/all-in numbers")
+    except (KeyError, TypeError, ValueError, OverflowError):   # float() of a 400-digit int overflows
+        raise SolverError("bad pot/stack/all-in numbers (pot and stack are whole chips)")
 
     tb = load_tree_builder()
     header = [f"#Pot#{pot}", f"#EffectiveStacks#{stack}"]

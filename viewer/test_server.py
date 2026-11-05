@@ -137,6 +137,14 @@ class ViewerTest(unittest.TestCase):
             self.assertEqual(code, 404, path)
 
     def test_05_generate_estimate_build(self):
+        # pot and stack are whole chips: 40.5 used to be truncated to 40 (a different tree than
+        # the form shows); a whole number written as 40.0 is fine
+        for bad in ({"pot": 40.5}, {"stack": 59.9}, {"pot": True}, {"pot": 10 ** 400}):
+            st, d = self.req("/api/generate", "POST", dict(CFG, **bad))
+            self.assertEqual(st, 400, (bad, d))
+            self.assertIn("whole chips", d["error"])
+        st, d = self.req("/api/generate", "POST", dict(CFG, pot=40.0, stack="60"))
+        self.assertEqual(st, 200, d)
         st, d = self.req("/api/generate", "POST", CFG)
         self.assertEqual(st, 200, d)
         self.assertGreater(d["lines"], 0)

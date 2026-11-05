@@ -341,6 +341,7 @@ class ResolveManager:
         self.best = None
         self.result = None               # summary of the finished (re-)solve
         self.tree_ok = False             # rsolver currently holds a browsable tree
+        self.carried = None              # main-tree locks set on the last subgame (#200)
 
     # ---- jobs (run on a daemon thread) ----
 
@@ -388,8 +389,9 @@ class ResolveManager:
                 pass
         return {"ok": True, "was_busy": busy}
 
-    def _build_and_solve(self, ctx, body, acc, bet_override=None):
-        """Configure rsolver for the subgame at ctx, build, solve to acc; return lines."""
+    def _build_and_solve(self, ctx, body, acc, bet_override=None, locks=None):
+        """Configure rsolver for the subgame at ctx, build, set the carried locks, solve to
+        acc; return lines. self.carried reports the locks ({applied, skipped}, main ids)."""
         tb = _tree_builder()
         cfg, start = build_config(tb, ctx, body, bet_override)
         lines = tb.build_lines(cfg, start)
@@ -406,6 +408,7 @@ class ResolveManager:
         cmds += tb.format_lines(lines)
         cmds.append("build_tree")
         self.rsolver.cmds(cmds)
+        self.carried = self._apply_locks(locks)
         self.rsolver.cmds([f"set_accuracy {acc:g}", "go"])
         self.rsolver.cmd("wait_for_solver", timeout=SOLVE_TIMEOUT)
         return lines
@@ -434,18 +437,43 @@ class ResolveManager:
             self.ctx = {k: v for k, v in ctx.items() if not k.startswith("range_")}
         return ctx
 
+    def subtree_locks(self, ctx):
+        """The main tree's viewer locks (#200) at X or below it, with ids moved into the
+        subgame (X -> its subgame root). Bet tokens are absolute amounts and the subgame starts
+        from X's investments, so a node keeps its id whenever the edited sizes still make it."""
+        x = ctx["id"]
+        if not any(i == x or i.startswith(x + ":") for i in list(self.main.locks)):  # a lock may land meanwhile
+            return []
+        out = []
+        for lock in vsrv.op_lock_export(self.main)["locks"]:
+            i = lock["id"]
+            if i == x or i.startswith(x + ":"):
+                out.append({**lock, "id": ctx["subgame_root"] + i[len(x):], "main_id": i})
+        return out
+
+    def _apply_locks(self, locks):
+        """Set the carried locks on the freshly built subgame; {applied, skipped} in main ids."""
+        self.rsolver.forget_locks()
+        if not locks:
+            return None
+        back = {l["id"]: l["main_id"] for l in locks}
+        r = vsrv.op_lock_apply(self.rsolver, {"locks": locks})
+        return {"applied": [back.get(i, i) for i in r["applied"]],
+                "skipped": [{**s, "id": back.get(s["id"], s["id"])} for s in r["skipped"]]}
+
     def start_resolve(self, node_id, body):
         acc = _accuracy(body)
         ctx = self._fresh_ctx(node_id)          # eager: bad nodes/sizes -> 400, not a job error
         build_config(_tree_builder(), ctx, body)
+        locks = self.subtree_locks(ctx) if body.get("locks", True) else []
 
         def job():
             with self.mu:
                 self.total = 1
-            lines = self._build_and_solve(ctx, body, acc)
+            lines = self._build_and_solve(ctx, body, acc, locks=locks)
             with self.mu:
                 self.done = 1
-            self._finish(ctx, acc, lines)
+            self._finish(ctx, acc, lines, {"locks": self.carried} if self.carried else None)
 
         self._launch("resolve", node_id, job)
 

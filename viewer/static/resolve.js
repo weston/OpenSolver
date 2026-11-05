@@ -148,6 +148,15 @@ async function poll() {
     const nodes = /TOTAL\D*(\d+)/.exec(st.result.node_count || "");
     tr.innerHTML = `<td>${st.result.lines} lines</td><td class="num">${fmtChips(st.result.ev.OOP)}</td><td class="num">${fmtChips(st.result.ev.IP)}</td><td class="num">${nodes ? Number(nodes[1]).toLocaleString() : "—"}</td>`;
     t.appendChild(tr);
+    const lk = st.result.locks;   // the main tree's locks at or below this node (#200)
+    if (lk && (lk.applied.length || lk.skipped.length)) {
+      const row = el("tr");
+      const td = el("td", "muted", `Locks kept: ${lk.applied.length ? lk.applied.join(", ") : "none"}`
+        + (lk.skipped.length ? ` · not in the new tree: ${lk.skipped.map((s) => s.id).join(", ")}` : ""));
+      td.colSpan = 4;
+      row.appendChild(td);
+      t.appendChild(row);
+    }
   }
   if (!st.busy && st.tree && st.result && !st.error) {
     $("rs-next").classList.remove("hidden");

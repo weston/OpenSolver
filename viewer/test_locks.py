@@ -257,6 +257,61 @@ class LocksTest(unittest.TestCase):
         self.assertLess(max(abs((a or 0) - (b or 0)) for ra, rb in zip(want[FACING], got) for a, b in zip(ra, rb)),
                         1e-5, "and holds through the solve")
 
+    def test_6_subgame_resolve_keeps_locks(self):
+        """Re-solve… (resolve.py) carries the main tree's locks at or below the node."""
+        import resolve as vresolve
+        mgr = vresolve.ResolveManager(self.solver, vsrv.Solver, SOLVER)
+        vsrv.set_resolver(mgr)
+        sizing = {k: CFG[k] for k in CFG if k.endswith(("_bet", "_raise"))}
+
+        def resolve(node, **extra):
+            self.ok("/api/resolve/start", "POST", dict(sizing, id=node, accuracy=0.2, **extra))
+            t0 = time.time()
+            while True:
+                st = self.ok("/api/resolve/status")
+                if not st["busy"]:
+                    self.assertIsNone(st["error"], st["error"])
+                    return st["result"]
+                self.assertLess(time.time() - t0, 300)
+                time.sleep(0.1)
+
+        try:
+            self.build_and_solve()
+            kids = [c["id"].rsplit(":", 1)[1] for c in self.strategy(FACING)["children"]]
+            fold = [[1.0 if k == "f" else 0.0] * NUM for k in kids]
+            self.ok("/api/lock", "POST", {"id": FACING, "mode": "node", "freq": fold})
+
+            r = resolve("r:0")
+            self.assertEqual(r["locks"], {"applied": [FACING], "skipped": []})
+            sub = self.ok("/api/resolve/strategy?id=" + FACING)
+            self.assertAlmostEqual(self.overall(sub, "f"), 1.0, places=4, msg="the lock holds in the subgame")
+            bet_locked = self.overall(self.ok("/api/resolve/strategy?id=r:0"), "b24")
+            r = resolve("r:0", locks=False)
+            self.assertNotIn("locks", r)
+            bet_free = self.overall(self.ok("/api/resolve/strategy?id=r:0"), "b24")
+            self.assertGreater(bet_locked, bet_free + 0.2, f"locked {bet_locked:.3f} vs free {bet_free:.3f}")
+
+            # an IP node: the subgame root is r:0:c behind the forced-check wrapper
+            r = resolve(FACING)
+            self.assertEqual(r["subgame_root"], "r:0:c")
+            self.assertEqual(r["locks"]["applied"], [FACING])
+            self.assertAlmostEqual(self.overall(self.ok("/api/resolve/strategy?id=r:0:c"), "f"), 1.0, places=4)
+
+            # other sizes: the locked node is not in the new tree, so it is reported, not guessed
+            r = resolve("r:0", flop_bet="33")
+            self.assertEqual(r["locks"]["applied"], [])
+            self.assertEqual([s["id"] for s in r["locks"]["skipped"]], [FACING])
+        finally:
+            vsrv.set_resolver(None)
+            mgr.stop()
+            try:
+                mgr.rsolver.proc.kill()
+                mgr.rsolver.proc.wait(timeout=10)
+                for f in (mgr.rsolver.proc.stdin, mgr.rsolver.proc.stdout):
+                    f.close()
+            except Exception:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

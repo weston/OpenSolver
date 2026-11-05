@@ -40,6 +40,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	./build/test_parallel
 	python3 tests/test_tree_builder.py
 	python3 tests/test_packaging.py
+	python3 tests/test_jobs.py ./solver
 	python3 tests/test_upi.py ./solver
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py
@@ -55,6 +56,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	./build/test_parallel
 	python3 tests/test_tree_builder.py
 	python3 tests/test_packaging.py
+	python3 tests/test_jobs.py ./solver
 	python3 tests/test_upi.py ./solver --big
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py

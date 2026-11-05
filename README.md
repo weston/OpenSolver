@@ -222,6 +222,42 @@ the donk rule above indirectly: it sets `DonkBetSize` equal to `BetSize` on ever
 its donk sizes are indistinguishable from the PioViewer fallback - but its IP check-bet lines
 prove that a bet after the opponent checks is an ordinary `BetSize`, not a donk.
 
+## Job queue: one tree on many flops
+
+`tools/jobs.py` queues solves of one tree setup over a list of boards and runs them one at a time, each
+in a fresh solver process with all threads, saving each to its own file. The queue is on disk
+(`~/.wsolver/jobs`, or `--queue DIR` / `WSOLVER_JOBS`), so you can queue many batches, run them later,
+run just one job, add or reorder jobs while a run is going, and continue after a crash.
+
+```
+python3 tools/jobs.py add srp100 tree.txt --flops-file C:/PioSOLVER/preflop_subsets/PioSolver_2021_23_flops.txt
+python3 tools/jobs.py add test tree.txt --flops "Kh9h4h, As7d2c" --accuracy 0.3 --save full
+python3 tools/jobs.py list                  # id, status, board, weight, EVs, exploitability, time
+python3 tools/jobs.py run                   # everything queued, in order
+python3 tools/jobs.py run 00007             # just one job (or several ids, or --batch NAME, --limit N)
+python3 tools/jobs.py stop [--now]          # from another terminal: after this job / right now
+python3 tools/jobs.py retry --failed        # also: remove, move ID --to 1, show ID
+python3 tools/jobs.py export srp100 -o srp100.csv   # board, weight, EVs, MES, exploitability, ...
+```
+
+- **The tree** is a UPI script (set_range, set_pot, set_eff_stack, add_line, ...) or a PioViewer-style
+  config with `#Key#Value` sizing headers, expanded with the tree builder above. Line amounts don't depend
+  on the board, so one setup fits every flop. `set_board`, `build_tree`, `go`, `dump_tree` and other run
+  commands in the file are ignored. The setup is copied into the batch when you add it. `add` checks the
+  tree on the first board (`estimate_schematic_tree`, which builds nothing) and prints its size, so a
+  bad line fails at once rather than once per flop.
+- **Flops:** a list or a file with one board per line, each optionally followed by `:weight`. That's the
+  format of the `preflop_subsets` flop files in a PioSOLVER install; pass your own copy's path (none ship
+  with this repo). Weights go into `list` and `export`.
+- **Each job:** `set_board`, `build_tree`, `set_accuracy <pct> fraction` (default 0.5% of the starting pot;
+  `--max-iters` or `--max-seconds` cap it), `go`, then `calc_results` into the job and `dump_tree` to
+  `<queue>/saves/<batch>/<board>.cfr` (`--out DIR`). Saves are `no_rivers` by default (`--save no_turns|full`):
+  rivers are re-solved when you browse them, and `calc_results` on the save reports this solve's numbers (#195, with #198).
+- A job that fails (the solver errors or exits) is marked `failed` with the error and the run goes on.
+  Ctrl-C or `stop --now` puts the current job back in the queue. One runner at a time (a lock in the queue directory).
+- The solver must see the same paths as the script: run it where the solver runs (for WSL, the Linux
+  build with `/mnt/c/...` paths).
+
 ## Viewer
 
 A PioViewer-style browser UI, driven by a small local server that talks to `./solver` over UPI
@@ -533,7 +569,7 @@ src/equity.*       calc_eq family
 src/categories.*   range explorer
 src/upi*.cpp       command processor, node queries, save/load
 tests/             unit tests (eval, range, categories, solver, tree builder) + end-to-end UPI test
-tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands)
+tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue)
 ```
 
 ## Contributing

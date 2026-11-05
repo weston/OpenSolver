@@ -45,6 +45,8 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py
 	python3 viewer/test_resolve.py ./solver
+	python3 viewer/test_locks.py ./solver
+	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 
@@ -62,6 +64,8 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	python3 viewer/test_server.py ./solver
 	python3 viewer/test_library.py
 	python3 viewer/test_resolve.py ./solver
+	python3 viewer/test_locks.py ./solver
+	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 

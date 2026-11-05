@@ -9,6 +9,7 @@ import { drawSpark } from "./chart.js";
 import { initLibrary } from "./library.js";
 import { initResolve, openResolve } from "./resolve.js";
 import { initFurther, pollFurther } from "./further.js";
+import { initLock } from "./lock.js";
 import { initJobs, showJobs } from "./jobs.js";
 import { initPreview, previewStatus } from "./preview.js";
 
@@ -144,6 +145,7 @@ async function boot() {
   initLibrary();
   initResolve();
   initFurther();
+  initLock({ changed: () => study.refresh() });
   initPreview();
   // Fast preview: the flop strategy has settled, so show it (the solve carries on).
   window.addEventListener("preview-ready", () => {

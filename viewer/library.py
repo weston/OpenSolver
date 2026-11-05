@@ -94,6 +94,14 @@ class Library:
         schema = data.get("schema", SCHEMA)
         if schema != SCHEMA:
             raise LibraryError(f"unsupported config schema {schema!r}")
+        # Optional node locks of the spot (#200), as /api/lock/export gives them: the viewer sets
+        # them again after building the spot. Only the shape is checked here; /api/lock/apply
+        # checks them against the tree.
+        locks = data.get("locks")
+        if locks is not None and (not isinstance(locks, list) or not all(
+                isinstance(l, dict) and isinstance(l.get("id"), str) and isinstance(l.get("freq"), list)
+                for l in locks)):
+            raise LibraryError("locks must be a list of {id, mode, freq, ...} objects")
         return data
 
     def _config_text(self, content):

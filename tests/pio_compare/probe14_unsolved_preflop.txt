@@ -1,24 +1,40 @@
-# Probe 14: probe 4's preflop tree with two attached flops, built and never solved, so both solvers hold
-# the same uniform strategies and every evaluation must agree: preflop strategies by class, ranges through
-# the preflop exit and the flop deal, EVs over preflop all-ins (exact preflop equity) and the flop subset.
+# Probe 14: a preflop tree with two attached flops, built and never solved, so both solvers hold the same
+# uniform strategies and every evaluation must agree: preflop strategies by class, ranges through the
+# preflop exit and the flop deal, EVs over the preflop all-in (exact preflop equity) and the flop subset.
+# Every exit that is not all-in gets a schematic: its pot, stack and lines, then add_schematic_tree (no
+# build_tree: Pio 3.10.1 crashes on a second build_tree once a schematic is attached). Each schematic's
+# root offers a bet: Pio rejects one where OOP can only check ("incorrect path"). The subset takes three card
+# arguments (add_to_subset 1 As Ks Qs); the earlier version wrote AsKsQs, which both solvers refuse, so it
+# compared a preflop tree without flops.
 set_range OOP 22+,A2s+,K9s+,Q9s+,J9s+,T9s,ATo+,KJo+
 set_range IP 22+,A2s+,K5s+,Q8s+,J8s+,T8s+,97s+,87s,76s,A2o+,K9o+,QTo+,JTo
 set_pot 10 5 0
 set_eff_stack 1000
-add_preflop_line 25 100 220
-add_preflop_line 25 100 1000
 add_preflop_line 25 25
 add_preflop_line 25 100 100
+add_preflop_line 25 100 1000
 build_preflop_tree
-add_to_subset 1 AsKsQs
-add_to_subset 0.5 7c7d2h
+add_to_subset 1 As Ks Qs
+add_to_subset 0.5 7c 7d 2h
 set_board AsKsQs
-set_eff_stack 950
-set_pot 0 0 50
+set_pot 0 0 20
+set_eff_stack 990
 clear_lines
-add_line 0 25 25
-build_tree
+add_line 10
+add_line 0 10
+add_schematic_tree r:0:c:c
+set_pot 0 0 50
+set_eff_stack 975
+clear_lines
+add_line 25
+add_line 0 25
 add_schematic_tree r:0:b25:c
+set_pot 0 0 200
+set_eff_stack 900
+clear_lines
+add_line 100
+add_line 0 100
+add_schematic_tree r:0:b25:b100:c
 add_all_flops
 calc_results
 show_strategy r:0
@@ -33,7 +49,7 @@ calc_ev OOP r:0
 calc_ev IP r:0
 calc_ev IP r:0:b25:b100:b1000
 calc_ev OOP r:0:b25:c:AsKsQs
-calc_ev IP r:0:b25:c:7c7d2h:c
+calc_ev IP r:0:b25:c:7c7d2h:b25
 calc_line_freq r:0:b25:c
 calc_global_freq r:0:b25:b100:c
 calc_global_freq r:0:b25:c:AsKsQs:c

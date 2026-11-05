@@ -568,6 +568,37 @@ def check_threads_auto(u):
     u.cmd("set_threads 0")
 
 
+def check_schematic_after_build(u):
+    """#306: Pio's preflop workflow builds each schematic before attaching it (set_board, set_pot, set_eff_stack,
+    lines, build_tree, add_schematic_tree), so the tree in memory is the postflop one by then. The exit is
+    resolved in the preflop tree all the same; it used to fail with "incorrect path"."""
+    print("[add_schematic_tree after build_tree, Pio's order]")
+    for c in ("set_range OOP 22+,A2s+,K9s+,ATo+,KJo+", "set_range IP 22+,A2s+,K5s+,A2o+,K9o+", "set_pot 10 5 0",
+              "set_eff_stack 1000", "clear_preflop_lines", "add_preflop_line 25 25", "add_preflop_line 25 100 100"):
+        u.cmd(c)
+    check(u.cmd("build_preflop_tree") == "build_preflop_tree ok!", "build_preflop_tree")
+    u.cmd("reset_subset")
+    u.cmd("add_to_subset 1 As Ks Qs")
+    for c in ("set_board AsKsQs", "set_pot 0 0 50", "set_eff_stack 975", "clear_lines", "add_line 0 25 25"):
+        u.cmd(c)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree of the schematic")
+    check(u.cmd("add_schematic_tree r:0:b25:c") == "add_schematic_tree ok!", "add_schematic_tree after build_tree (#306)")
+    check(u.cmd("add_schematic_tree r:0:b99:c").startswith("ERROR"), "a path that is not a preflop exit is refused")
+    for c in ("set_pot 0 0 200", "set_eff_stack 900", "clear_lines", "add_line 0 100 100"):  # the 3-bet pot's exit
+        u.cmd(c)
+    u.cmd("build_tree")
+    check(u.cmd("add_schematic_tree r:0:b25:b100:c") == "add_schematic_tree ok!", "a second schematic, also after build_tree")
+    for c in ("set_pot 0 0 20", "set_eff_stack 990", "clear_lines", "add_line 0 10 10"):  # the limped pot's exit
+        u.cmd(c)
+    u.cmd("build_tree")
+    check(u.cmd("add_schematic_tree r:0:c:c") == "add_schematic_tree ok!", "the limped pot's schematic")
+    check(u.cmd("add_all_flops") == "add_all_flops ok!", "add_all_flops")
+    check("r:0:b25:c:AsKsQs" in u.cmd("show_children r:0:b25:c"), "the flop hangs under the exit")
+    check(u.cmd("show_node r:0:b25:c:AsKsQs").splitlines()[3] == "0 0 50 ", "with the schematic's pot")
+    u.cmd("reset_subset")
+    u.cmd("free_tree")
+
+
 def check_union_hands(u):
     """set_union_hands: opponent-only hands get a slot, a signed inf and _pp rows (#9)."""
     print("[set_union_hands: hands of either range]")
@@ -1091,6 +1122,7 @@ def main(exe, big=False):
 
         check_calc_ev_zero_reach(u)
         check_union_hands(u)
+        check_schematic_after_build(u)
         check_threads_auto(u)
         check_output_format(u)
 

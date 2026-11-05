@@ -25,23 +25,16 @@ struct Builder {
     return false;
   }
 
-  // With forced lines present, a node whose key is a proper prefix of a forced line may only take
-  // the forced continuation(s). Returns true if `next` is allowed after `key`.
+  // Forced lines (force_line): Pio keeps only the lines every forced line is a prefix of, so a node
+  // whose key is a proper prefix of a forced line may only take that line's next action - for each
+  // forced line, so a longer force still applies below a shorter one (force_line 0, then 0 50 50).
+  // force_line only accepts lines of the tree as it stands, so the forced lines lie on one path.
+  // Returns true if `next` is allowed after `key`.
   bool allowed_by_force(const std::vector<int32_t>& key, int32_t next) const {
-    if (forced.empty()) return true;
-    bool on_forced_prefix = false;
-    for (auto& f : forced) {
-      if (f.size() <= key.size()) {
-        // key extends (or equals) this forced line: everything below is free.
-        if (std::equal(f.begin(), f.end(), key.begin())) return true;
-        continue;
-      }
-      if (std::equal(key.begin(), key.end(), f.begin())) {
-        on_forced_prefix = true;
-        if (f[key.size()] == next) return true;
-      }
-    }
-    return !on_forced_prefix;
+    for (auto& f : forced)
+      if (key.size() < f.size() && std::equal(key.begin(), key.end(), f.begin()) && f[key.size()] != next)
+        return false;
+    return true;
   }
 
   // Classify number x at decision node n. Returns false on illegal.

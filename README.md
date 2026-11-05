@@ -460,9 +460,9 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   probes ruled out a stable sort and MSVC `std::sort` / heap orders over the 1326 order, so we keep ours.
 - `_pp` listings omit hands that are only in the opponent's range by default; Pio always lists the union
   of both ranges. `set_union_hands on` (before `build_tree`) gives Pio's exact hand list (#9, #61).
-- `add_line` / `remove_line` / `force_line` are collected and applied at `build_tree`, where Pio edits
-  its line tree command by command. Scripts that add first and then remove or force (the usual shape)
-  build the same tree. Re-adding a removed line, or adding after `force_line`, does not (see AGENTS.md).
+- `remove_line` / `force_line` act on the tree as the lines stand, like Pio's live line tree: a line that
+  isn't there is an error, removing deletes the subtree, and a line re-added afterwards comes back (#251,
+  see AGENTS.md). Without a board, pot and stack set yet, the edits are kept and applied at `build_tree`.
   Bets above the effective stack are rejected at `build_tree`; Pio builds them.
 - Inside preflop trees we use a few more (valid) river symmetries than Pio, so `node_count` is lower
   there; results are identical with isomorphism on or off (#12).

@@ -1,0 +1,26 @@
+# Probe 16 (#257): line edits before set_board. Each block ran in a fresh PioSOLVER 3.10.1 session
+# (2026-11-04), so no board is set until the set_board line. Pio's answers are in the comments.
+# In all three, build_tree fails: Pio does not build a postflop line tree from lines given before the
+# board. The amounts differ (force_line did act, and a later add_line widened it again), but there is
+# no tree to compare, so ours keeps its own rule for this order (AGENTS.md, line edits).
+#
+# Block A: plain add_lines
+set_pot 0 0 100
+set_eff_stack 200
+add_line 0 50
+add_line 75
+set_board KhQs7d
+build_tree
+#   ERROR: build_tree not enough memory; needed: 99929724 MB; available: 44425 MB
+#
+# Block B (fresh session): force_line after the adds
+#   set_pot 0 0 100 / set_eff_stack 200 / add_line 0 50 / add_line 75 / force_line 0 50 (ok!) / set_board KhQs7d
+#   build_tree -> ERROR: build_tree not enough memory; needed: 34806415 MB; available: 44429 MB
+#
+# Block C (fresh session): an add_line after the force
+#   set_pot 0 0 100 / set_eff_stack 200 / add_line 0 50 / force_line 0 50 (ok!) / add_line 75 / set_board KhQs7d
+#   build_tree -> ERROR: build_tree not enough memory; needed: 70854038 MB; available: 44425 MB
+#
+# With the board set first (same session as block C, after free_tree / clear_lines / set_board KhQs7d):
+#   add_line 0 50 / force_line 0 50 / add_line 75 / build_tree -> r:0 has b75 and c, r:0:c has b50 only:
+#   the later line goes in beside the forced one (as check_force_line in tests/test_upi.py).

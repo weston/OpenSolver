@@ -12,7 +12,7 @@ const mk = (tag, attrs, parent) => {
 
 function niceTime(t) {
   if (t < 1) return t.toFixed(1) + "s";
-  if (t < 60) return Math.round(t) + "s";
+  if (t < 59.5) return Math.round(t) + "s";   // 59.5 s and up round to a minute
   const s = Math.round(t);   // round first: 119.7 s is 2m00, not 1m60
   return Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0");
 }

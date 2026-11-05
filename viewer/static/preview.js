@@ -149,7 +149,13 @@ function watchRefine(root) {
     try { st = await get("/api/refine/status"); } catch (e) { return; }
     if (P.refineRoot !== root) return;
     if (st.ready && st.ready.root === root && !st.busy) { if (P.refresh) P.refresh(); return; }
-    if (!st.busy && st.error) { if (P.shown) { P.shown.state = "error"; P.shown.error = st.error; } drawBadge(); return; }
+    if (!st.busy && st.error) {
+      // only on a node of that street: browsing back to the flop meanwhile must not show it there
+      const s = P.shown;
+      if (s && (s.id === root || s.id.startsWith(root + ":"))) { s.state = "error"; s.error = st.error; }
+      drawBadge();
+      return;
+    }
     P.refineTimer = setTimeout(poll, 500);
   };
   P.refineTimer = setTimeout(poll, 400);

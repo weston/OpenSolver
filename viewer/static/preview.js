@@ -115,7 +115,6 @@ export function previewStatus(st) {
 // was lost. So a refresh neither starts nor renders while a pointer is down; it carries on after
 // the release, once the click has run (setTimeout), so a click's own navigation wins.
 let pressed = false, deferred = false, waiters = [];
-document.addEventListener("pointerdown", () => { pressed = true; }, true);
 const release = () => {
   pressed = false;
   setTimeout(() => {
@@ -124,8 +123,14 @@ const release = () => {
     if (deferred) { deferred = false; liveRefresh(); }
   }, 0);
 };
-document.addEventListener("pointerup", release, true);
-document.addEventListener("pointercancel", release, true);
+// Registered only in a page: the JS unit tests import this module without a DOM (#286 review).
+if (typeof document !== "undefined") {
+  document.addEventListener("pointerdown", () => { pressed = true; }, true);
+  document.addEventListener("pointerup", release, true);
+  document.addEventListener("pointercancel", release, true);
+  // a press released outside the window sends no pointerup: losing focus counts as the release
+  window.addEventListener("blur", () => { if (pressed) release(); });
+}
 /** Resolves now, or once a pressed pointer is released and its click has run. */
 export const whenReleased = () => (pressed ? new Promise((r) => waiters.push(r)) : Promise.resolve());
 

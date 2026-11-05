@@ -237,12 +237,6 @@ class GameTree {
   // Strategy storage. Uncompressed: float32 arrays indexed by GNode::storage. Compressed: int16 regrets and
   // uint16 strategy sums with one float scale per decision node (indexed by GNode::aux).
   bool compressed = false;
-  // Thread-count tuning under the default thread count (#276, upi.cpp): 0 = not tuned yet, else the count
-  // this tree solves fastest with; tune_k / tune_s are the trial iterations run so far and their seconds
-  // (even k: every hardware thread, odd k: half).
-  int tuned_threads = 0;
-  int tune_k = 0;
-  double tune_s[2] = {0, 0};
   ZVec<float> regrets;
   ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
   // Predictive CFR (#71): the last instantaneous regret per slot, allocated on demand by
@@ -289,6 +283,12 @@ class GameTree {
   std::unordered_map<uint32_t, uint32_t> eliminated;              // bitmask of removed actions
 
   long long iterations = 0;  // CFR iterations run on this tree
+  // Thread-count tuning under the default thread count (#276, upi.cpp): 0 = not tuned yet, else the count
+  // this tree solves fastest with; tune_k / tune_s are the trial iterations run so far and their seconds
+  // (even k: every hardware thread, odd k: half).
+  int tuned_threads = 0;
+  int tune_k = 0;
+  double tune_s[2] = {0, 0};
   bool incomplete = false;
   int missing_street = 0;     // first street without saved strategies (4 = turn, 5 = river); 0 = none
   bool fast_loaded = false;   // loaded without `full` (Pio: some commands need load_all_nodes)

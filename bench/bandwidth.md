@@ -117,3 +117,42 @@ use), vs 0.146 iters/s at 2.35 GB/s and 6516 MB in float32; exploitability uncha
 in kind (both far above the 1% target at the cap, 0.47 vs 0.45 chips of a 40-chip
 pot). flop_srp_4 at equal accuracy: 0.2% of pot in 12.8 s float32 vs 13.9 s 16-bit;
 0.05% in 19.7 s vs 34.8 s.
+
+## Update (#272, 2026-11-05): the 16-bit floor was rounding the strategy sums; stochastic rounding removes it
+
+This doc is from an M4 at 1 thread, before the SIMD kernels. On the owner's Zen 5 PC at 32 threads
+(WSL, `bench/run.py`, two interleaved reps), things look different:
+- **It is bandwidth-bound.** Full 16-bit is 37% faster per iteration than float32 on threebet_mono.
+- **16-bit no longer costs iterations on the small bench trees.** flop_srp_4 reaches 0.05% of pot in
+  80 iterations either way.
+- **What remained was a floor, on threebet_mono.** 16-bit got to 0.1% of pot, then stalled at
+  0.71 chips (0.35%), and needed #182's switch to float32: 48 s to 0.05% under `auto`.
+
+**The floor came from the strategy sums, not the regrets.** Splitting the two halves shows it:
+- float32 regrets with 16-bit sums also stall, at 0.86 chips;
+- int16 regrets with float32 sums reach 0.05% in 435 iterations, against 450 for float32.
+
+The sums are discounted and added to every iteration. Late in a solve, a low-reach hand's increment is
+below its node's 16-bit step (1/65535 of the node's largest sum). Rounded to nearest, it is lost
+every time.
+
+**Stochastic rounding fixes it.** The sums are now committed as floor(x + u), with u uniform in [0, 1)
+from a hash of the slot and the iteration. Every increment then counts on average, and results stay
+identical for any thread count. Seconds to 0.05% of pot, 32 threads, two reps:
+
+| tree | float32 | 16-bit, nearest | 16-bit, stochastic | int16 regrets + f32 sums |
+|---|---|---|---|---|
+| threebet_mono | 13.9 (450 it) | never (0.71 chips) | **9.0 / 9.3** (440 it) | 10.9 / 11.0 |
+| flop_srp_4 | 1.39 | 1.00 | 0.98 / 1.01 | 1.10 |
+| deep | 2.82 | 2.30 | 2.25 / 2.23 | 2.40 |
+| flop_srp_2 | 0.66 | 0.53 | 0.52 / 0.52 | 0.57 |
+| flop_3bet | 0.50 | 0.51 | 0.48 / 0.52 | 0.49 |
+
+Other measurements:
+- **srp_big (13 GB, `auto`).** 71.5 s to 0.5% of pot either way. To 0.3%, 86.7 s against 88.6 s
+  (225 iterations against 230).
+- **Cost.** The hash costs 1.5-2.5% at 1 thread (deep to 0.1% of pot: 15.2 s against 15.0 s), the
+  only place it shows.
+
+The separate int16-regrets layout was dropped: it streams 1.5x the bytes of full 16-bit (srp_big
+93 s against 71 s to 0.5%), and stochastic rounding makes it unnecessary.

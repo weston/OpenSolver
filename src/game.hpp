@@ -237,6 +237,13 @@ class GameTree {
   // Strategy storage. Uncompressed: float32 arrays indexed by GNode::storage. Compressed: int16 regrets and
   // uint16 strategy sums with one float scale per decision node (indexed by GNode::aux).
   bool compressed = false;
+  // 16-bit strategy sums are rounded stochastically when the solver commits them (#272): rounded to the
+  // nearest step, a low-reach hand's increment late in a solve is below its node's 16-bit step and is
+  // lost, which is full 16-bit's exploitability floor (threebet_mono stalled at 0.35% of pot). Rounding
+  // up with probability equal to the fraction makes every increment count on average. The random bits
+  // are a hash of the slot and round_seed, which the solver sets per iteration: results stay identical
+  // for any thread count.
+  uint32_t round_seed = 0;
   ZVec<float> regrets;
   ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
   // Predictive CFR (#71): the last instantaneous regret per slot, allocated on demand by

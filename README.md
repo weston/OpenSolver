@@ -262,7 +262,8 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
   flops by texture: top card, rainbow / two-tone / monotone, paired, and whether three ranks fit a
   straight. Each group gets its flop-weighted strategy and EVs, and the CSV carries the four texture columns.
 - A job that fails (the solver errors or exits) is marked `failed` with the error and the run goes on.
-  Ctrl-C or `stop --now` puts the current job back in the queue. One runner at a time (a lock in the queue directory).
+  Ctrl-C or `stop --now` puts the current job back in the queue, also mid-build (the job's solver is ended); a
+  stop once the solve is over lets its save finish first, so the solve is kept. One runner at a time (a lock in the queue directory).
 - The solver must see the same paths as the script: run it where the solver runs (for WSL, the Linux
   build with `/mnt/c/...` paths).
 - **In the viewer:** the **Jobs** tab shows the same queue. It can:

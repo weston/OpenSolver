@@ -320,6 +320,57 @@ static bool decompress_midsolve() {
   return same && e0 == e1 && e2 < e1;
 }
 
+// #272: 16-bit strategy sums are committed with stochastic rounding. A slot that gains 0.1 of its node's
+// 16-bit step per iteration (while another slot holds the node's maximum, so the scale stays put) must
+// grow by about 0.1 step per iteration on average; rounded to nearest it would stay at 0 forever. The
+// rounding depends only on the slot and the seed, so a replay gives the same bytes.
+static bool stochastic_sums() {
+  GameConfig cfg;
+  parse_cards("KhQs7d", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = cfg.range[1][i] = w[i];
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 150;
+  cfg.lines.add = {{0, 50}};
+  GameTree g;
+  g.compressed = true;
+  if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+  const GNode& n = g.nodes[0];
+  const size_t len = g.node_size(n);
+  std::vector<float> buf(len);
+  auto run = [&](int iters) {
+    std::vector<float> s(len, 0.0f);
+    s[0] = 65535.0f;  // the node's maximum: one step = 1.0
+    g.round_seed = 0;
+    g.strat_commit(n, s.data());
+    for (int t = 1; t <= iters; ++t) {
+      g.round_seed = static_cast<uint32_t>(t) * 0x27D4EB2Fu + 0x165667B1u;
+      const float* cur = g.strat_ro(n, buf.data());
+      std::vector<float> nx(cur, cur + len);
+      for (size_t i = 1; i < len; ++i) nx[i] += 0.1f;
+      nx[0] = 65535.0f;
+      g.strat_commit(n, nx.data());
+    }
+    const float* cur = g.strat_ro(n, buf.data());
+    return std::vector<float>(cur, cur + len);
+  };
+  if (!GameTree::kStochasticSums) {
+    std::printf("[stochastic sums] skipped: this build rounds 16-bit strategy sums to nearest (ARM)\n");
+    return true;
+  }
+  const auto a = run(2000), b = run(2000);
+  double mean = 0;
+  for (size_t i = 1; i < len; ++i) mean += a[i];
+  mean /= static_cast<double>(len - 1);
+  // Expected 200 steps; the spread per slot is ~sqrt(2000 * 0.09) = 13, far less on the mean.
+  const bool ok = a == b && len > 2 && std::fabs(mean - 200.0) < 5.0;
+  std::printf("[stochastic sums] 2000 increments of 0.1 step: mean %.2f steps (expect 200, nearest rounding: 0), "
+              "replay %s\n", mean, a == b ? "identical" : "DIFFERS");
+  return ok;
+}
+
 // All-in terminals before the river: the outcome-table path must match evaluating every runout with
 // the showdown kernel (flop all-in: 1176 runouts; turn all-in: 48), both players, random reaches.
 static bool allin_tables_match() {
@@ -484,6 +535,7 @@ int main(int argc, char** argv) {
   fails += !mem_accounting();
   fails += !showdown_kernels_match();
   fails += !decompress_midsolve();
+  fails += !stochastic_sums();
   fails += !allin_tables_match();
   fails += !river_batch_matches();
   if (big) {

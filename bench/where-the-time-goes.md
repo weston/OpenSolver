@@ -431,7 +431,12 @@ signal; the seconds are interleaved runs on a quiet machine.
   It recovers part of the gap to float32 (198 iterations), but the hash per stored value costs
   about 24% per iteration. At this target, 16-bit storage only costs 8% more iterations; the 1.8x
   of `bench/bandwidth.md` is at 0.05% of the pot. A cheaper generator might change the answer for
-  very tight targets.
+  very tight targets. **On x86 it does (#272, 2026-11-05):** on the Zen 5 PC the hash costs
+  1.5-2.5% per iteration at 1 thread and nothing measurable at 32 threads, where the walk is
+  bandwidth-bound. Rounding to nearest is what makes full 16-bit stall at tight targets (threebet_mono
+  never reaches 0.05% of pot), so x86 builds now round the sums stochastically: threebet_mono
+  reaches 0.05% in 9.0-9.3 s, against 13.9 s with float32 and 48 s under main's `auto`.
+  ARM builds keep rounding to nearest (see bench/bandwidth.md).
 - **Thread scaling on the M4** (4 performance + 6 efficiency cores, same tree, after the first 20
   iterations): 1 -> 4 threads gives 3.57x, 4 -> 10 threads gives 1.6x more, 5.7x in all, about 89%
   of what this core mix can deliver.

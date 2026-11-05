@@ -126,3 +126,24 @@ PioSOLVER 3.10 on the same PC and tree: 70.5 s (about 110 iterations).
 Constant beta 0.5 costs the small bench trees 25-40% more iterations; the switch after 50 keeps them
 close (PC, 32 threads, iterations to 0.05% of pot: deep 180 -> 200, flop_3bet 95 -> 100, river 165 -> 175;
 flop_srp_4 80, flop_srp_2 70, turn 75 unchanged).
+
+## Re-sweep after stochastic 16-bit strategy sums (#272, 2026-11-05)
+
+#275 changes how 16-bit storage converges. `small_strats auto` picks 16-bit for all of these trees on
+the PC, so the defaults were checked again: Zen 5, 16 threads, WSL, `bench/run.py --extra 'set_dcfr ...'`,
+two interleaved reps. Seconds to 0.3% / 0.1% / 0.05% of pot (iterations to 0.05%):
+
+| alpha / beta / gamma (beta_late after switch) | threebet_mono | deep | flop_srp_4 | flop_3bet |
+|---|---|---|---|---|
+| 1.3 / 0 / 4 (0.5 after 50), default | 2.9 / 5.0 / 7.3 (440) | 0.85 / 1.34 / 1.78 (195) | 0.51 / 0.70 / 0.88 (80) | 0.14 / 0.21 / 0.30 (100) |
+| 1.3 / 0 / 3 (0.5 after 50) | 3.1 / 5.0 / 7.2 (425) | 0.86 / 1.35 / 1.79 (190) | 0.51 / 0.70 / 0.88 (80) | 0.15 / 0.22 / 0.29 (95) |
+| 1.5 / 0 / 4 (0.5 after 50) | 3.3 / 5.7 / 9.1 (535) | 1.12 / 1.83 / 2.55 (275) | 0.59 / 0.83 / 1.11 (100) | 0.14 / 0.25 / 0.36 (120) |
+| 1.3 / 0 / 5 (0.5 after 50) | 3.0 / 5.0 / **37.3** (1635) | 0.87 / 1.42 / 1.91 (200) | 0.53 / 0.66 / 0.91 (80) | 0.14 / 0.23 / 0.30 (100) |
+| 1.1 / 0 / 4 (0.5 after 50) | 6.4 / 12.7 / **80.7** (3215) | **0.62 / 0.89 / 1.38** (145) | 0.88 / 1.12 / 1.36 (100) | 0.15 / 0.22 / 0.29 (95) |
+| 1.3 / 0 / 4 (0.5 after 30) | 3.1 / 5.2 / **62.1** (2560) | 0.87 / 1.37 / 1.85 (195) | 0.52 / 0.70 / 0.89 (80) | 0.16 / 0.24 / 0.33 (110) |
+
+**The defaults hold.** gamma 3 is level within noise. alpha 1.5 is 20-40% slower everywhere.
+- **Settings that stall threebet_mono short of 0.05%:** gamma 5, alpha 1.1 and the earlier beta
+  switch. Their peak RSS doubles, because #182's switch to float32 kicks in.
+- **alpha 1.1 is faster on deep only** (1.38 s against 1.78 s to 0.05%), but more than twice as slow
+  on flop_srp_4 and stalls threebet_mono.

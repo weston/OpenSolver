@@ -1976,6 +1976,7 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
 }
 
 void Solver::iterate(int t) {
+  g_.round_seed = static_cast<uint32_t>(t) * 0x27D4EB2Fu + 0x165667B1u;  // stochastic rounding (game.hpp)
   double td = static_cast<double>(t);
   double pa = std::pow(td, params.alpha);
   double pb = std::pow(td, params.beta_at(t));
@@ -2039,6 +2040,7 @@ void Solver::reset_strategy_sums() {
 }
 
 void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r1) {
+  g_.round_seed = static_cast<uint32_t>(t) * 0x27D4EB2Fu + 0x165667B1u ^ 0x5BD1E995u ^ ni;
   double td = static_cast<double>(t);
   double pa = std::pow(td, params.alpha);
   double pb = std::pow(td, params.beta_at(t));

@@ -420,8 +420,9 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           reason = "required accuracy reached";
           break;
         }
-        // 16-bit storage has an exploitability floor (threebet_mono: ~0.09% of pot, #182). Under
-        // small_strats auto, a whole-tree solve whose last three reports set no new best while above
+        // 16-bit storage had an exploitability floor (threebet_mono: ~0.09% of pot, #182), which came from
+        // rounding the strategy sums to nearest; they are rounded stochastically now (#272, game.hpp),
+        // and this stays as a safety net. Under small_strats auto, a whole-tree solve whose last three reports set no new best while above
         // its target switches to float32 if that fits, once, and carries on from the same state.
         if (!sub && tree_->compressed && small_strats_ == "auto" && accuracy_ > 0) {
           if (st.exploitability < best_e) {
@@ -524,8 +525,9 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
     // up with float32: since the regret update vectorizes under clang (#180), float32 is faster on
     // every tree (M4 10 threads, time to 0.05% of pot: deep 3.87 vs 4.10 s, flop_srp_4 2.08 vs
     // 2.14, flop_3bet 0.50 vs 0.52, flop_srp_2 0.96 vs 0.99; threebet_mono 24.9 s vs never), so
-    // there 16-bit is only for capacity. 16-bit also has a precision floor: flop_3bet plateaus at
-    // 0.009 chips against 0.002, threebet_mono at ~0.09% of pot (bench/where-the-time-goes.md).
+    // there 16-bit is only for capacity. 16-bit used to have a precision floor (flop_3bet plateaued
+    // at 0.009 chips against 0.002, threebet_mono never reached 0.05% of pot); it came from the
+    // strategy sums' rounding and is gone with stochastic rounding (#272, bench/bandwidth.md).
 #if defined(__aarch64__) || defined(_M_ARM64)
     t->compressed = c.preflop || full > avail * 9 / 10;
 #else

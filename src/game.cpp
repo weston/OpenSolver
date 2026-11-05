@@ -681,7 +681,34 @@ void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
 void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   if (!compressed) return;
   ensure_loaded(n);
-  strat_store(n, data, maxval);
+  if constexpr (!kStochasticSums) return strat_store(n, data, maxval);
+  const size_t len = node_size(n);
+  float m = maxval;
+  if (m < 0) {
+    uint32_t mb = 0;
+    for (size_t i = 0; i < len; ++i) mb = std::max(mb, nonneg_bits(data[i]));
+    m = std::bit_cast<float>(mb);
+  }
+  uint16_t* q = strat_q.data() + n.storage;
+  if (!(m > 0) || !std::isfinite(m)) {
+    sscale[n.aux] = 0;
+    std::fill(q, q + len, uint16_t(0));
+    return;
+  }
+  sscale[n.aux] = m / 65535.0f;
+  const float inv = 65535.0f / m;
+  // Stochastic rounding (see round_seed): floor(x + u), u uniform in [0, 1) from a hash of the slot.
+  const uint32_t seed = round_seed, base = static_cast<uint32_t>(n.storage);
+  for (size_t i = 0; i < len; ++i) {
+    uint32_t h = (base + static_cast<uint32_t>(i)) * 0x9E3779B1u ^ seed;
+    h ^= h >> 16;
+    h *= 0x85EBCA6Bu;
+    h ^= h >> 13;
+    h *= 0xC2B2AE35u;
+    h ^= h >> 16;
+    const float u = static_cast<float>(h >> 8) * (1.0f / 16777216.0f);
+    q[i] = static_cast<uint16_t>(std::min(65535.0f, std::max(0.0f, data[i]) * inv + u));
+  }
 }
 
 void GameTree::strat_store(const GNode& n, const float* data, float maxval) {

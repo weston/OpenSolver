@@ -568,6 +568,26 @@ def check_threads_auto(u):
     u.cmd("set_threads 0")
 
 
+def check_iso_symmetry(u):
+    """#300: on a board with a suit symmetry (4c2d6c: hearts and spades are interchangeable), suit-swapped hands
+    stay equal and EV OOP + EV IP stays the pot. With a flop all-in, rounding asymmetry used to grow into
+    different strategies (KsQs 0.246 vs KhQh 1.000) and an EV sum of 60.311 on a 60 pot."""
+    print("[isomorphism keeps suit-symmetric hands symmetric]")
+    for c in ("set_range OOP AQo,KK,KQs", "set_range IP TT,KQo", "set_board 4c2d6c", "set_pot 0 0 60", "set_eff_stack 10",
+              "clear_lines", "add_line 10", "add_line 0 10"):
+        u.cmd(c)
+    u.cmd("build_tree")
+    u.cmd("set_accuracy 0")
+    u.cmd("go 100 steps")
+    u.cmd("wait_for_solver")
+    res = u.cmd("calc_results").splitlines()
+    ev = float(res[0].split(": ")[1]) + float(res[1].split(": ")[1])
+    check(abs(ev - 60) < 1e-3, f"EV OOP + EV IP = pot on a symmetric flop with an all-in ({ev:.3f})")
+    pp = u.cmd("show_strategy_pp r:0")
+    row = lambda c: re.search(r"^" + c + r":\s+(.*)$", pp, re.M).group(1).split()
+    check(row("KsQs") == row("KhQh") and row("KsKc") == row("KhKc"), "suit-swapped hands get the same strategy")
+
+
 def check_union_hands(u):
     """set_union_hands: opponent-only hands get a slot, a signed inf and _pp rows (#9)."""
     print("[set_union_hands: hands of either range]")
@@ -1091,6 +1111,7 @@ def main(exe, big=False):
 
         check_calc_ev_zero_reach(u)
         check_union_hands(u)
+        check_iso_symmetry(u)
         check_threads_auto(u)
         check_output_format(u)
 

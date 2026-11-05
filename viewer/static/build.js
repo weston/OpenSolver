@@ -339,8 +339,8 @@ async function solve() {
   const pct = Number($("f-accuracy").value);
   try {
     const r = await post("/api/solve", { accuracy: (pct / 100) * pot, preview: previewOn() });
-    if (!r.sketch) toast("Solving…");
-    startPreview(!!r.sketch);
+    if (!r.preview) toast("Solving…");
+    startPreview(!!r.preview);
   } catch (e) { fail(e); }
 }
 

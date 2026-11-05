@@ -464,9 +464,9 @@ def api(solver, lib, method, path, query, body):
         elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate"):
             _refiner.invalidate()  # the main tree is new: old refines don't apply
             _preview = None
-        elif path in LOCK_PATHS:
+        elif path in LOCK_PATHS and not solver.state()["solving"]:
             # A lock, unlock or revert changes the main tree's strategies: a refined street was
-            # solved against the old ones.
+            # solved against the old ones. (While solving the request is refused: keep them.)
             _refiner.invalidate()
         if method == "POST" and path == "/api/solve":
             b = need_body(body)
@@ -943,7 +943,8 @@ def lock_state(solver, node_id):
     combos = parse_floats(solver.cmd("show_locked_combos " + node_id), NUM_COMBOS)
     return {"id": node_id, "locked": "LOCKED" in flags, "combo_locked": "COMBO_LOCKED" in flags,
             "combos": [1 if (c or 0) > 0 else 0 for c in combos], "locks": dict(solver.locks),
-            "undo": bool(solver.undo), "can_solve": not solver.loaded_file}
+            "undo": bool(solver.undo), "can_solve": not solver.loaded_file,
+            "can_snapshot": solver.undo is None and not solver.locks and not solver.loaded_file}
 
 
 def op_lock(solver, b):
@@ -993,7 +994,9 @@ def op_lock(solver, b):
     else:
         cmds.append(f"lock_node {node_id}")
     with solver.cmd_lock:
-        if b.get("snapshot") and solver.undo is None and not solver.loaded_file:
+        # the copy is of the *unlocked* solve: only before the first lock (a later lock with the
+        # box ticked would otherwise keep a tree that already has the earlier locks in it)
+        if b.get("snapshot") and solver.undo is None and not solver.locks and not solver.loaded_file:
             import tempfile
             fd, snap = tempfile.mkstemp(prefix="wsolver-unlocked-", suffix=".cfr")
             os.close(fd)
@@ -1102,6 +1105,9 @@ def op_lock_revert(solver):
         solver.cmds([f'load_tree "{solver.undo["path"]}" full'])
         # a lossless save keeps the regrets: the reverted tree can be solved further
         solver.locks = {}
+        # used up: the tree *is* the copy now. Keeping it would make a later lock skip its own copy,
+        # and a later revert throw away everything solved after this one.
+        solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = False
         solver.reset_series()

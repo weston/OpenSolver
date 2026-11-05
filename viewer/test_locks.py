@@ -128,6 +128,18 @@ class LocksTest(unittest.TestCase):
                                msg="revert brings back the unlocked solve")
         self.assertFalse(self.ok("/api/progress")["loaded_file"], "the reverted tree can be solved further")
 
+        # the copy is used up: the next lock keeps a copy of the solve as it is then, so a later
+        # revert doesn't throw away what was solved after this one
+        st = self.ok("/api/lock_state?id=" + urllib.parse.quote(FACING))
+        self.assertTrue(not st["undo"] and st["can_snapshot"], st)
+        self.solve(0.03)
+        bet_resolved = self.overall(self.strategy("r:0"), "b24")
+        self.ok("/api/lock", "POST", {"id": FACING, "mode": "node", "freq": fold, "snapshot": True})
+        self.solve(0.05)
+        self.ok("/api/lock/revert", "POST", {})
+        self.assertAlmostEqual(self.overall(self.strategy("r:0"), "b24"), bet_resolved, places=6,
+                               msg="a second revert goes back to the solve before the second lock")
+
     def test_2_combos_unlock_errors(self):
         self.build_and_solve()
         d = self.strategy(FACING)
@@ -140,6 +152,8 @@ class LocksTest(unittest.TestCase):
         st = self.ok("/api/lock", "POST", {"id": "r:0", "mode": "current"})
         self.assertTrue(st["locked"] and set(st["locks"]) == {"r:0", FACING})
         self.assertFalse(st["undo"], "no snapshot unless asked")
+        st = self.ok("/api/lock", "POST", {"id": "r:0", "mode": "current", "snapshot": True})
+        self.assertFalse(st["undo"] or st["can_snapshot"], "no 'unlocked' copy of a tree that already has locks")
         st = self.ok("/api/unlock", "POST", {"id": "r:0"})
         self.assertFalse(st["locked"])
         self.ok("/api/unlock", "POST", {"all": True})

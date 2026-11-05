@@ -189,9 +189,10 @@ function renderState() {
   $("lk-unlock").classList.toggle("hidden", !(st.locked || st.combo_locked));
   $("lk-unlock-all").classList.toggle("hidden", !st.locks || Object.keys(st.locks).length < 1);
   $("lk-revert").classList.toggle("hidden", !st.undo);
-  $("lk-snap").disabled = !!st.undo || !st.can_solve;
+  $("lk-snap").disabled = st.can_snapshot === false || !!st.undo || !st.can_solve;
   $("lk-snap").parentElement.title = st.undo ? "A copy of the unlocked solve is already kept" :
-    !st.can_solve ? "This tree was opened from a file: it cannot be re-solved here" : "";
+    !st.can_solve ? "This tree was opened from a file: it cannot be re-solved here" :
+    st.can_snapshot === false ? "The tree already has locks: there is no unlocked solve to copy" : "";
   $("lk-after").classList.toggle("hidden", !(st.locked || st.combo_locked) || !st.can_solve);
 }
 

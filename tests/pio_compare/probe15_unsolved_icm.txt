@@ -1,0 +1,36 @@
+# Probe 15: probe 8's river tree with ICM (and then ICM plus rake) set before any solve, so both solvers
+# hold the same uniform strategies and ICM payoffs, EVs and exploitability must agree exactly.
+set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s
+set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s
+set_board KhQs7d4c2s
+set_pot 0 0 100
+set_eff_stack 200
+add_line 75 200
+add_line 0 75 200
+add_line 0 50
+build_tree
+set_icm_point OOP 0 0
+set_icm_point OOP 200 40
+set_icm_point OOP 300 55
+set_icm_point OOP 400 66
+set_icm_point OOP 500 74
+set_icm_point IP 0 0
+set_icm_point IP 100 20
+set_icm_point IP 300 52
+set_icm_point IP 400 63
+set_icm_point IP 500 72
+set_icm 200 300
+calc_results
+calc_ev OOP r:0
+calc_ev IP r:0:b75
+calc_ev OOP r:0:b75:b200
+explo_partial r:0:c
+show_win_evs OOP r:0:c:b50:c
+show_win_evs IP r:0:b75:b200:f
+set_rake 0.05 3
+calc_results
+calc_ev IP r:0:c
+calc_ev OOP r:0:c:b50
+reset_icm_tables
+calc_results
+calc_ev OOP r:0

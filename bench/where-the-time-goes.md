@@ -359,6 +359,46 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
     vectorised call is cheaper than a scalar per-hand loop.
   - **Board-blocked hands are 8.05% of river storage** on every tree (river rows are 98-99% of all
     storage; turn rows 1-3%, 4% of them blocked), so 8% of the bytes streamed per iteration are dead. Compacting them is #239.
+- **Per-street DCFR parameters** (2026-11-05, M4; an env-var prototype giving nodes with 3 / 4 / 5 board
+  cards their own alpha / beta / gamma). Iterations to 1 / 0.5 / 0.3 / 0.1 / 0.05 / 0.02% of the pot
+  (deterministic counts, checked every 2 iterations; `-` = not reached within 800), one street changed
+  at a time from the default 1.3 / 0 (0.5 after 50) / 4:
+
+  | change | threebet_mono | deep | flop_srp_4 |
+  |---|---|---|---|
+  | default | 108 142 174 296 514 - | 46 64 82 140 190 286 | 28 36 38 56 78 116 |
+  | river alpha 1.0 | 110 148 190 - - - | 46 62 80 136 178 276 | 28 36 36 86 106 140 |
+  | river alpha 1.15 | 100 136 168 500 666 - | 46 64 82 138 182 276 | 28 36 38 54 76 112 |
+  | river alpha 1.6 | 112 150 190 358 562 - | 48 68 86 144 204 306 | 28 36 40 60 86 132 |
+  | river gamma 3 / 5 | 110 146 182 326 568 - / 110 146 180 320 562 - | ~default | ~default |
+  | turn alpha 1.1 | 102 138 196 484 - - | 46 64 80 134 176 272 | 26 32 38 54 74 128 |
+  | flop alpha 1.0 | 124 290 334 - - - | **42 50 58 94 122 180** | 24 30 58 82 108 156 |
+  | flop alpha 1.8 | 104 140 172 306 574 - | 66 100 134 230 344 566 | 32 36 42 72 106 164 |
+  | flop gamma 5 | 108 142 176 304 534 - | 46 64 84 142 200 294 | 26 32 38 56 76 114 |
+
+  Nothing wins on every tree: flop alpha 1.0 takes 37% off `deep` and never reaches 0.1% on
+  `threebet_mono`; river alpha 1.15 is 5% faster early on `threebet_mono` and 70% slower at 0.1%. The
+  global defaults stay. The size of the `deep` effect says some trees have a much faster schedule
+  than ours; a per-tree choice would need a way to pick it without solving twice.
+- **Sampling chance cards in the first iterations** (2026-11-05, M4; prototype: through iteration T, each
+  turn-to-river chance node visits one river card in m, stratified by iteration and a per-node hash,
+  the kept cards reweighted to the full deal weight; T <= 16 so it ends before the average restarts
+  at 33). Iterations to 1 / 0.5 / 0.3 / 0.1% of the pot, m = 4, T = 8, four hash seeds:
+
+  | tree | default | sampled (4 seeds) |
+  |---|---|---|
+  | threebet_mono | 108 141 174 295 | 91-93, 123-125, 157-174, **294 / 309 / 366 / not in 400** |
+  | deep | 46 64 82 139 | 38, 48-49, 60, 114-115 (-18%) |
+  | fixture25bb (16-bit) | 110 152 190 386 | 100 132 166 338 (one seed) |
+  | flop_srp_2 | 23 30 37 52 | 28 36 41 64-65 (+25%) |
+  | flop_srp_4 | 27 35 37 56 | 28-29 36 39 59-62 |
+
+  The sampled iterations are also cheaper, so on `threebet_mono` (10 threads, m = 4, T = 16, two
+  interleaved reps each) it is 16% / 11% / 9% faster to 1 / 0.5 / 0.3% and 2% slower to 0.1%.
+  Not kept: it loses on the simple SRP trees at every target, and on `threebet_mono` the tight-target
+  result depends on the seed (one never reaches 0.1% in 400 iterations). m = 2 / 3 and T = 12 / 16
+  behave the same way. Like the per-street result above, it gives fewer iterations, not only cheaper
+  ones, on `deep` and the 25bb tree: the early regret dynamics matter more than the cost of the early iterations.
 - **Pio's per-iteration convergence matches ours** on threebet_mono (see bench/vs_pio.md), so no
   algorithmic gap was found there; the lead is per-iteration speed.
 

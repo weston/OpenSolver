@@ -355,6 +355,9 @@ class ResolveManager:
             self.busy, self.kind, self.node = True, kind, node_id
             self.error, self.rows, self.best, self.ctx = None, [], None, None
             self.done, self.total, self.method = 0, 0, None
+            # The job rebuilds the subgame solver's tree: the last result no longer describes it
+            # (shown after a Stop, or browsable after a failure, it would pass for this job's).
+            self.result, self.tree_ok = None, False
             self.allin = False
             self.abort = False
         threading.Thread(target=self._entry, args=(job,), daemon=True).start()

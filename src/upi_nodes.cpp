@@ -1156,6 +1156,15 @@ void Upi::register_node_commands() {
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~GF_LOCKED);
     return std::string("unlock_all ok!");
   };
+  // Extension (#255): Pio's unlock_all leaves combo locks, and nothing lists them, so a viewer
+  // could not clear the ones that came with a loaded save. This clears every combo lock.
+  H["combo_unlock_all"] = [this](const Args&) {
+    require_tree();
+    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~GF_COMBO_LOCKED);
+    tree_->combo_lock.clear();
+    return std::string("combo_unlock_all ok!");
+  };
   auto line_nodes = [this](const std::string& id) {
     std::set<uint32_t> nodes;
     for_each_runout(id, [&](const NodeRef& r, double) {

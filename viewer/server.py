@@ -1003,6 +1003,12 @@ def op_lock(solver, b):
         raise SolverError("mode must be current, node or combos")
     _, kids = _decision(solver, node_id)
     cmds = []
+    shown = b.get("actions")
+    if mode != "current" and shown is not None and list(shown) != _actions(kids):
+        # rows for other actions: e.g. a refined street (fast preview) built from other sizes
+        # than this tree's, with the same number of actions (#261)
+        raise SolverError(f"the strategy shown is for actions {' '.join(map(str, shown))}, "
+                          f"this node has {' '.join(_actions(kids))}")
     if mode != "current":
         freq = b.get("freq")
         if not isinstance(freq, list) or len(freq) != len(kids) or any(
@@ -1053,14 +1059,16 @@ def op_unlock(solver, b):
     zeros = " ".join(["0"] * NUM_COMBOS)
     with solver.cmd_lock:
         if b.get("all"):
-            # Every lock set from this session, then Pio's unlock_all (node locks only, #169) for
-            # locks that came with a loaded save, where the solver has it.
+            # Every lock set from this session.
             for i in list(solver.locks):
                 solver.cmds([f"unlock_node {i}", f"combo_lock_node {i} {zeros}"])
-            try:
-                solver.cmd("unlock_all")
-            except SolverError:
-                pass
+            # plus locks that came with a loaded save, which are not in the list: unlock_all
+            # clears node locks (as Pio, combo locks stay), combo_unlock_all the combo locks (#255)
+            for c in ("unlock_all", "combo_unlock_all"):
+                try:
+                    solver.cmd(c)
+                except SolverError:
+                    pass
             solver.locks = {}
             return {"locks": {}}
         node_id = node_id_arg({"id": [str(b.get("id", ""))]})

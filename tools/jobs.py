@@ -471,18 +471,23 @@ def report(q: Queue, name: str, solver_exe: str | None = None) -> dict:
         if j["status"] != "done":
             continue
         r = j.get("result") or {}
-        if not r.get("root") and solver_exe and os.path.isfile(j["out"]):
+        # read once: a summary ({} when the root has nothing to show) or the reason it failed is kept
+        if "root" not in r and "root_error" not in r and solver_exe and os.path.isfile(j["out"]):
             import server as vserver
-            s = vserver.Solver(solver_exe)
+            s = None
             try:
+                s = vserver.Solver(solver_exe)
                 s.cmd(f'load_tree "{j["out"]}"', timeout=3600)
                 r["root"] = root_summary(s)
-                j["result"] = r
-                q.save(j)
-            except vserver.SolverError:
-                pass
+            except (vserver.SolverError, OSError, ValueError, IndexError) as e:
+                r["root_error"] = str(e)[:500]
             finally:
-                close_solver(s)
+                if s is not None:
+                    close_solver(s)
+            # the load can take minutes: write it only to the same finished job (not one removed or
+            # retried meanwhile), and as the job is now
+            fin = j.get("finished")
+            q.update(j["id"], expect=lambda x: x["status"] == "done" and x.get("finished") == fin, result=r)
         root = r.get("root") or {}
         if root and actions is None:
             actions, player = root["actions"], root["player"]

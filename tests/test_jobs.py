@@ -249,6 +249,44 @@ def integration(solver):
         check(got and got["actions"] == before["actions"] and
               max(abs(a - b) for a, b in zip(got["freqs"], before["freqs"])) < 1e-3,
               f"root summary recomputed from the save ({before['freqs']} vs {got and got['freqs']})")
+        # a save that can't be read: the failure is kept, so the next report doesn't load it again
+        j = q.job("00002")
+        j["result"].pop("root")
+        good_out, j["out"] = j["out"], os.path.join(td, "broken.cfr")
+        with open(j["out"], "w") as f:
+            f.write("not a save")
+        q.save(j)
+        jobs.report(q, "srp", solver)
+        err = q.job("00002")["result"].get("root_error")
+        check(bool(err) and "root" not in q.job("00002")["result"], f"a failed read is recorded ({err!r})")
+        os.remove(j["out"])
+        with open(j["out"], "w") as f:
+            f.write("still not a save")
+        os.chmod(j["out"], 0)  # a second load attempt would now fail differently
+        jobs.report(q, "srp", solver)
+        check(q.job("00002")["result"].get("root_error") == err, "a recorded failure isn't retried")
+        os.chmod(j["out"], 0o644)
+        j = q.job("00002")
+        j["out"] = good_out
+        j["result"].pop("root_error")
+        q.save(j)
+        # retried while the report reads its save: the report must not write the old result back
+        done = q.job("00002")
+        done["result"].pop("root", None)
+        q.save(done)
+        real = jobs.root_summary
+
+        def retried_meanwhile(s):
+            q.retry(["00002"])
+            return real(s)
+        jobs.root_summary = retried_meanwhile
+        try:
+            jobs.report(q, "srp", solver)
+        finally:
+            jobs.root_summary = real
+        j = q.job("00002")
+        check(j["status"] == "queued" and j["result"] is None, f"a job retried during the read stays queued ({j['status']})")
+        q.save(done)  # done again, for the checks below (they re-read its root from the save)
         rc, out = cli("report", "srp", "--solver", solver, "--csv", os.path.join(td, "r.csv"))
         check(rc == 0 and "weighted" in out and "bet 50 (50%)" in out, "report CLI")
         with open(os.path.join(td, "r.csv")) as f:

@@ -128,6 +128,18 @@ class LocksTest(unittest.TestCase):
                                msg="revert brings back the unlocked solve")
         self.assertFalse(self.ok("/api/progress")["loaded_file"], "the reverted tree can be solved further")
 
+        # the copy is used up: the next lock keeps a copy of the solve as it is then, so a later
+        # revert doesn't throw away what was solved after this one
+        st = self.ok("/api/lock_state?id=" + urllib.parse.quote(FACING))
+        self.assertTrue(not st["undo"] and st["can_snapshot"], st)
+        self.solve(0.03)
+        bet_resolved = self.overall(self.strategy("r:0"), "b24")
+        self.ok("/api/lock", "POST", {"id": FACING, "mode": "node", "freq": fold, "snapshot": True})
+        self.solve(0.05)
+        self.ok("/api/lock/revert", "POST", {})
+        self.assertAlmostEqual(self.overall(self.strategy("r:0"), "b24"), bet_resolved, places=6,
+                               msg="a second revert goes back to the solve before the second lock")
+
     def test_2_combos_unlock_errors(self):
         self.build_and_solve()
         d = self.strategy(FACING)
@@ -140,6 +152,8 @@ class LocksTest(unittest.TestCase):
         st = self.ok("/api/lock", "POST", {"id": "r:0", "mode": "current"})
         self.assertTrue(st["locked"] and set(st["locks"]) == {"r:0", FACING})
         self.assertFalse(st["undo"], "no snapshot unless asked")
+        st = self.ok("/api/lock", "POST", {"id": "r:0", "mode": "current", "snapshot": True})
+        self.assertFalse(st["undo"] or st["can_snapshot"], "no 'unlocked' copy of a tree that already has locks")
         st = self.ok("/api/unlock", "POST", {"id": "r:0"})
         self.assertFalse(st["locked"])
         self.ok("/api/unlock", "POST", {"all": True})
@@ -175,10 +189,10 @@ class LocksTest(unittest.TestCase):
             self.assertLess(diff, tol, f"{mode or 'default'} save: locked strategy kept (max diff {diff:.2e})")
 
     def test_4_locks_invalidate_fast_preview(self):
-        """A lock changes the tree the refined streets and the flop sketch were solved against."""
+        """A lock changes the tree the refined streets were solved against."""
         class Stub:
-            def __init__(self, state="idle"):
-                self.state, self.calls = state, 0
+            def __init__(self):
+                self.calls = 0
 
             def invalidate(self):
                 self.calls += 1
@@ -186,24 +200,17 @@ class LocksTest(unittest.TestCase):
             def overlay(self, path, query):
                 return None
 
-            def status(self):
-                return {"state": self.state}
-
         self.build_and_solve()
-        refiner, sketch = Stub(), Stub()
-        vsrv.set_refiner(refiner, sketch)
+        refiner = Stub()
+        vsrv.set_refiner(refiner)
         try:
             self.ok("/api/lock", "POST", {"id": FACING, "mode": "current", "snapshot": True})
-            self.assertEqual((refiner.calls, sketch.calls), (1, 1), "lock drops refines and the sketch")
+            self.assertEqual(refiner.calls, 1, "lock drops refines")
             self.ok("/api/unlock", "POST", {"id": FACING})
             self.ok("/api/lock/revert", "POST", {})
             self.assertEqual(refiner.calls, 3)
-            sketch.state = "running"
-            st, r = self.req("/api/lock", "POST", {"id": FACING, "mode": "current"})
-            self.assertEqual(st, 400, r)
-            self.assertIn("running", r["error"])
         finally:
-            vsrv.set_refiner(None, None)
+            vsrv.set_refiner(None)
 
     def test_5_spot_locks_export_apply(self):
         """A library spot keeps its locks (/api/lock/export) and sets them again on a fresh build

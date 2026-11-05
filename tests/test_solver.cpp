@@ -10,6 +10,7 @@
 #include "../src/parallel.hpp"
 #include "../src/range.hpp"
 #include "../src/solver.hpp"
+#include "../src/upi.hpp"
 
 using namespace pio;
 
@@ -411,11 +412,35 @@ static bool river_batch_matches() {
   return same && same_stats && !g1.regrets.empty();
 }
 
+// set_info_freq auto across the average's restart (set_avg_delay). Replays the reports of a real
+// 115K-node flop solve (the viewer's fast-preview sketch, target 0.165 chips, delay 32): the restart
+// at iteration 33 lifts exploitability from 2.2 to 4.9, just under the previous report's 5.25. A
+// trend fitted across that reads as no progress and waited the longest gap (to 49, at 0.82 chips);
+// starting afresh reports at 41 (1.23 chips), which is when the preview's first threshold is met.
+static bool auto_report_schedule() {
+  AutoReportSchedule s;
+  const double target = 0.165;
+  const long long reset = 33;
+  long long a = s.next(10, 29.38, target, reset), b = s.next(a, 11.74, target, reset);
+  long long c = s.next(b, 5.25, target, reset), d = s.next(c, 4.88, target, reset);
+  AutoReportSchedule old;   // no restart passed: the trend runs across it
+  long long od = old.next(old.next(old.next(old.next(10, 29.38, target, 0), 11.74, target, 0), 5.25, target, 0), 4.88, target, 0);
+  // Without set_avg_delay the restart test never fires; a restart before the first report neither.
+  AutoReportSchedule n1, n2;
+  long long e1 = n1.next(n1.next(40, 2.0, target, 0), 1.0, target, 0);
+  long long e2 = n2.next(n2.next(40, 2.0, target, 33), 1.0, target, 33);
+  bool ok = a == 15 && b == 22 && c == 33 && d == 41 && od == 49 && e1 == e2;
+  std::printf("[auto reports] after the average restarts: next report %lld (old schedule %lld), %s\n", d, od,
+              ok ? "ok" : "WRONG");
+  return ok;
+}
+
 int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
   int fails = 0;
   fails += !parallel_equivalence();
+  fails += !auto_report_schedule();
   // #71 convergence experiments still converge: predictive regret matching (PCFR+-style,
   // matching input R + last instantaneous regret) and a delayed strategy average.
   {

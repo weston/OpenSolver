@@ -460,6 +460,7 @@ def api(solver, lib, method, path, query, body):
     if path.startswith("/api/nl/"):
         if _nl is None:
             raise SolverError("plain-English locks not initialized")
+        solver.lease()  # it reads the node like a browse click (a no-op unless solving)
         return _nl.api(sys.modules[__name__], solver, method, path, body)
     if path == "/api/refine" or path.startswith("/api/refine/"):
         if _refiner is None:

@@ -386,6 +386,7 @@ def apply_spec(ctx, spec):
                 lo, hi = 100 * fixed, 100 * (fixed + room)
                 raise NLError(f"rule {n}: {keys[a]} at {100 * goal:.1f}% overall is out of reach when only "
                               f"those hands change (it can go from {lo:.1f}% to {hi:.1f}%)")
+            goal = min(max(goal, fixed), fixed + room)  # inside the 1e-9 slack: keeps every share in [0, 1]
             need = (goal - fixed) * R          # reach-weighted mass the chosen hands must supply
             if order == "proportional":
                 _scale(freq, a, need, combos, reach)

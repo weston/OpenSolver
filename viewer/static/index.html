@@ -371,6 +371,7 @@
         <label class="field grow"><span id="rs-cand-label">Candidate bet sizes</span><input id="rs-candidates" value="25, 33, 50, 75, 100, 150" spellcheck="false"></label>
         <label class="field"><span>Keep</span><select id="rs-n"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
       </div>
+      <label class="check rs-allin" title="Every subset also offers the all-in, on top of its N sizes"><input type="checkbox" id="rs-allin" checked> Plus all-in (not counted in N)</label>
       <p class="hint">Solves the subtree once per subset of N candidates (greedy above 12 subsets) and ranks them by the acting player's EV. Other streets use the sizes from <i>Edit sizes</i>.</p>
     </div>
     <div class="rs-acc">

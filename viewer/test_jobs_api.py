@@ -5,6 +5,7 @@ Usage: python3 viewer/test_jobs_api.py [path-to-solver]
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -91,7 +92,7 @@ class JobsApiTest(unittest.TestCase):
         bad = [
             ({"name": "x", "tree": TREE, "flops_file": "../three_flops.txt"}, "pick a flop file"),
             ({"name": "x", "tree": TREE, "flops": "Kh9h4h2c"}, "3-card boards"),
-            ({"name": "x", "tree": dict(TREE, flop_bet="zz"), "flops": "Kh9h4h"}, ""),
+            ({"name": "x", "tree": dict(TREE, flop_bet="zz"), "flops": "Kh9h4h"}, "bad sizes in flop_bet"),
             ({"name": "x", "flops": "Kh9h4h"}, "Build form"),
             ({"name": "x", "tree": TREE, "flops": "Kh9h4h", "accuracy": -1}, "accuracy"),
             ({"name": "../x", "tree": TREE, "flops": "Kh9h4h"}, "batch names"),
@@ -166,6 +167,33 @@ class JobsApiTest(unittest.TestCase):
             self.assertIn("javascript", f.headers["Content-Type"])
         with urllib.request.urlopen(self.base + "/", timeout=10) as f:
             self.assertIn('id="view-jobs"', f.read().decode())
+
+    def test_05_cli_runner(self):
+        """A runner started from the CLI (another process holding the runner lock) shows as running;
+        the tab can stop it but not start a second one."""
+        q = self.service.q
+        os.makedirs(q.root, exist_ok=True)
+        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            with open(q.lock_file, "w") as f:
+                f.write(str(holder.pid))
+            st, d = self.req("/api/jobs/state")
+            self.assertTrue(d["running"] and d["external"] == holder.pid, d)
+            st, d = self.req("/api/jobs/run", "POST", {})
+            self.assertEqual(st, 400, d)
+            self.assertIn("command line", d["error"])
+            st, d = self.req("/api/jobs/stop", "POST", {})
+            self.assertEqual(st, 200, d)
+            with open(q.stop_file) as f:
+                self.assertEqual(f.read(), "after")
+        finally:
+            holder.kill()
+            holder.wait()
+            for p in (q.lock_file, q.stop_file):
+                if os.path.exists(p):
+                    os.remove(p)
+        st, d = self.req("/api/jobs/state")
+        self.assertFalse(d["running"], "a dead runner's lock doesn't count")
 
 
 if __name__ == "__main__":

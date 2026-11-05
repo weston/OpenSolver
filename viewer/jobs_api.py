@@ -85,13 +85,15 @@ class JobsService:
     # ---- operations
     def state(self):
         js = self.q.jobs()
-        running = self.running()
+        # a runner started from the CLI (tools/jobs.py run) works on the same queue: show it as running
+        external = 0 if self.running() else self.q.runner()
+        running = self.running() or bool(external)
         with self.mu:
             cur = self.current
             if running and cur is None:  # between progress reports: the job marked running
                 cur = next((j["id"] for j in js if j["status"] == "running"), None)
             out = {"jobs": js, "running": running, "current": cur, "point": self.point,
-                   "log": list(self.log)[-40:], "error": self.last_error,
+                   "log": list(self.log)[-40:], "error": self.last_error, "external": external,
                    "stopping": os.path.exists(self.q.stop_file)}
         batches = collections.OrderedDict()
         for j in js:
@@ -176,6 +178,8 @@ class JobsService:
     def run(self, b):
         if self.running():
             raise vsrv.SolverError("the queue is already running")
+        if self.q.runner():
+            raise vsrv.SolverError(f"a runner started from the command line is active (pid {self.q.runner()})")
         ids = b.get("ids") or None
         if ids is not None and (not isinstance(ids, list) or not all(isinstance(i, str) for i in ids)):
             raise vsrv.SolverError("bad ids")
@@ -190,7 +194,7 @@ class JobsService:
         return {"started": True}
 
     def stop(self, b):
-        if not self.running():
+        if not self.running() and not self.q.runner():  # ours, or one started from the CLI
             raise vsrv.SolverError("the queue is not running")
         os.makedirs(self.q.root, exist_ok=True)
         with open(self.q.stop_file, "w") as f:
@@ -207,14 +211,11 @@ class JobsService:
             raise vsrv.SolverError(str(e))
 
     def retry(self, b):
-        js = [j for j in self.q.jobs() if j["status"] == "failed"] if b.get("failed") else self._jobs_arg(b)
-        for j in js:
-            if j["status"] == "running":
-                raise vsrv.SolverError(f"job {j['id']} is running")
-        for j in js:
-            j.update(status="queued", started=None, finished=None, error=None, result=None)
-            self.q.save(j)
-        return {"requeued": len(js)}
+        ids = None if b.get("failed") else [j["id"] for j in self._jobs_arg(b)]
+        try:
+            return {"requeued": self.q.retry(ids)}  # under the queue lock, as the job is now
+        except jobs.JobError as e:
+            raise vsrv.SolverError(str(e))
 
     def remove(self, b):
         js = self.q.jobs(str(b["batch"])) if b.get("batch") else self._jobs_arg(b)

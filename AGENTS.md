@@ -310,7 +310,8 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - Legacy commands Pio 3.10 still answers: `set_bet_sizes <n>...` (atoi per token) and `set_donk_bet <n>`
   (true unless atoi is 0) are only stored, `build_tree` ignores them; `show_tree_params` prints
   `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the
-  `set_*` state (not from a loaded tree). `unlock_all` clears every whole-node lock, not combo locks.
+  `set_*` state (not from a loaded tree). `unlock_all` clears every whole-node lock, not combo locks
+  (our extension `combo_unlock_all` clears those; the viewer's *Unlock all* sends both, #255).
 - Displayed strategies for hands that never reach a node come from regrets (v4 algorithm).
 - Preflop: SB is `IP` and acts first; `set_pot <bb> <sb> 0`; preflop and postflop line amounts are
   absolute; subset flops are node tokens exactly as added (`r:0:b25:c:7c7d2h`); postflop subtrees show

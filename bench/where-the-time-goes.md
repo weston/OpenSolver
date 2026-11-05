@@ -124,9 +124,12 @@ This path is close to its CPU ceiling, and the reasons are all measured rather t
    denominator the hardware cannot deliver. Small trees still scale badly (`turn` at 2.01x), but they
    are cheap in absolute terms — the share-is-not-amount rule applies. Note also that the old claim
    of a net *loss* on the smallest trees no longer holds: `turn` is a 2x gain.
-2. **x86 gather (#89) — unknown, needs x86 hardware.** AVX2 `vgatherdps` / AVX-512 gather might
-   vectorize the two `cs[]` lookup loops that NEON cannot. AVX2 gathers are microcoded and often no
-   better than scalar, so this is empirical.
+2. **x86 gather (#89) — answered and already taken.** This entry used to say "unknown, needs x86
+   hardware", which contradicted the measured section above (#270). #89 settled it on a Ryzen 9
+   9950X: hardware gathers **lose** (`cs[]` lookups by gather +40%, entry fields by dword gather
+   +8%), so AVX2 has nothing to offer here; AVX-512 with VBMI permutes wins 1-4% single-threaded and
+   **ships** as `showdown_board_avx512`, compiled when the target has AVX-512F/BW/VBMI. Nothing left
+   to try on this axis.
 3. **GPU (#58) — no-go, and the bar went up.** Unified memory removes the usual blocker on Apple
    Silicon and the parallelism is there, but arithmetic intensity is ~3 flops per 3 memory touches,
    each board carries a serial scan, bit-stability is lost, and it means two permanent backends.

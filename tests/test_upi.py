@@ -7,6 +7,7 @@ By default the multi-street checks run on a small tree (tens of MB) so `make tes
 < 4 GB of RAM. With --big they run on the real 25bb fixture tree instead (~6.4 GB float32,
 ~3.3 GB with small_strats) — use that on a large-RAM machine.
 """
+import math
 import os
 import re
 import time
@@ -500,6 +501,40 @@ def check_output_format(u):
     u.cmd("clear_incentives r:0")
 
 
+def check_calc_ev_zero_reach(u):
+    """calc_ev for an in-range hand that never reaches the node: its counterfactual EV, finite (#247)."""
+    print("[calc_ev: in-range hands with zero reach]")
+    set_small_tree(u)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree")
+    u.cmd("set_accuracy 0")
+    u.cmd("go 60 steps")
+    u.cmd("wait_for_solver")
+    order = u.cmd("show_hand_order").split()
+    kids = re.findall(r"^r:0:(\w+)$", u.cmd("show_children r:0"), re.M)
+    check("c" in kids and len(kids) >= 2, f"root actions {kids}")
+    rows = [floats(l) for l in u.cmd("show_strategy r:0").split("\n")]
+    aa = [i for i, h in enumerate(order) if h[0] == "A" and h[2] == "A"]
+    for i in aa:   # OOP checks AA always: AA reaches every bet node with exactly 0
+        for k, tok in enumerate(kids):
+            rows[k][i] = 1.0 if tok == "c" else 0.0
+    u.cmd("set_strategy r:0 " + " ".join(" ".join(f"{x:.6g}" for x in r) for r in rows))
+    u.cmd("unlock_node r:0")
+    u.cmd("lock_node r:0")
+    u.cmd("go 30 steps")
+    u.cmd("wait_for_solver")
+    bet = "r:0:" + next(t for t in kids if t != "c")
+    reach = floats(u.cmd(f"show_range OOP {bet}"))
+    ev, mu = (floats(l) for l in u.cmd(f"calc_ev OOP {bet}").split("\n"))
+    check(all(reach[i] == 0 and mu[i] == 0 for i in aa), "AA never reaches the bet node (reach and matchups 0)")
+    check(all(math.isfinite(ev[i]) and -300 < ev[i] < 300 for i in aa),
+          f"AA still gets a finite EV there, like Pio (#247): {[round(ev[i], 2) for i in aa[:3]]}")
+    # out of OOP's range (22 without the board's deuce): still cfv / 0 or nan
+    out = [i for i, h in enumerate(order) if h[0] == "2" and h[2] == "2" and "2c" not in h]
+    check(out and all(not math.isfinite(ev[i]) for i in out), "hands outside the range stay inf / nan")
+    u.cmd("unlock_node r:0")
+    u.cmd("free_tree")
+
+
 def check_union_hands(u):
     """set_union_hands: opponent-only hands get a slot, a signed inf and _pp rows (#9)."""
     print("[set_union_hands: hands of either range]")
@@ -569,9 +604,8 @@ def check_union_hands(u):
 
     # Deep node where OOP has 20 in and faces an all-in: the opponent-only hands have a
     # negative counterfactual value, so Pio's signed -inf rather than a bare inf.
-    # Look at exactly the six 88 combos: other hands can also print +-inf there whenever OOP's
-    # average strategy never reaches the node with them (EV = cfv / 0, as in Pio), which depends
-    # on how far the loose solve got, not on union_hands.
+    # Look at exactly the six 88 combos, the opponent-only hands: OOP's own hands that never
+    # reach the node print their counterfactual EV instead (#247).
     order = u.cmd("show_hand_order").split()
     idx88 = [i for i, c in enumerate(order) if c[0] == "8" and c[2] == "8"]
     n_off = sorted(off["deep"][i] for i in idx88)
@@ -836,6 +870,7 @@ def main(exe, big=False):
 
         check_calc_eq_preflop_exact(u)
 
+        check_calc_ev_zero_reach(u)
         check_union_hands(u)
         check_output_format(u)
 

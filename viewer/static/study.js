@@ -951,6 +951,7 @@ export function lockContext() {
   return {
     id: S.id, actor: actorOf(n), lock: lockOf(n), acts: actionsOf(S.cur, S.path.length - 1),
     freq: S.cur.freq, reach: S.cur.reach, board: boardOf(n), rootPot: potOf(S.path[0]), pot: potOf(n),
+    refined: !!S.cur.refined,  // shown from the fast preview's refined street, not the main tree
   };
 }
 

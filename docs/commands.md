@@ -37,7 +37,7 @@ comes from our own generated table; the first use can be expensive.
 ## Commands
 
 
-139 commands: 131 public command names, 4 more that Pio 3.10 answers (`set_bet_sizes`, `set_donk_bet`, `show_tree_params`, `unlock_all`; found by probing), plus 4 local extensions/aliases.
+140 commands: 131 public command names, 4 more that Pio 3.10 answers (`set_bet_sizes`, `set_donk_bet`, `show_tree_params`, `unlock_all`; found by probing), plus 5 local extensions/aliases.
 
 | Command (implementation) | Implemented? | Pio match | Behavior / limits | Regression / comparison input |
 |---|---|---|---|---|
@@ -68,6 +68,7 @@ comes from our own generated table; the first use can be expensive.
 | [`clear_lines`](../src/upi.cpp#L1105) | Yes | Probed | Clears postflop add/remove/force configuration. | [UPI](../tests/test_upi.py#L140), [probe4_preflop](../tests/pio_compare/probe4_preflop.txt), [probe5_preflop_full](../tests/pio_compare/probe5_preflop_full.txt), [probe11_unverified](../tests/pio_compare/probe11_unverified.txt) |
 | [`clear_preflop_lines`](../src/upi.cpp#L1299) | Yes | Probed | Clears preflop line configuration. | [UPI](../tests/test_upi.py#L565), [probe11_unverified](../tests/pio_compare/probe11_unverified.txt) |
 | [`combo_lock_node`](../src/upi_nodes.cpp#L1178) | Yes | Semantic | Locks specified combos; best responses respect the mask. | [probe3_workflow](../tests/pio_compare/probe3_workflow.txt), [probe9_locking](../tests/pio_compare/probe9_locking.txt) |
+| [`combo_unlock_all`](../src/upi_nodes.cpp#L1161) | Yes | Differs | Extension: clears every combo lock (mask and flag), which Pio's `unlock_all` leaves; not a Pio command (the viewer's *Unlock all*, also for locks that came with a loaded save, #255). | [UPI](../tests/test_upi.py) |
 | [`deactivate`](../src/upi.cpp#L1278) | Yes | Differs | Acknowledged no-op; this solver has no license activation. | — |
 | [`dump_tree`](../src/upi.cpp#L1253) | Yes | Differs | Own v5 segmented saves; quantized strategies by default, lossless preserves regrets; not Pio files. | [UPI](../tests/test_upi.py#L237), [probe10_incomplete](../tests/pio_compare/probe10_incomplete.txt), [probe2_flop](../tests/pio_compare/probe2_flop.txt) |
 | [`echo`](../src/upi.cpp#L671) | Yes | Semantic | Returns the first argument, as observed in Pio. | [UPI](../tests/test_upi.py#L458), [probe3_workflow](../tests/pio_compare/probe3_workflow.txt) |

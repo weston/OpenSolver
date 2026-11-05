@@ -188,6 +188,24 @@ class LocksTest(unittest.TestCase):
             diff = max(abs((a or 0) - (b or 0)) for ra, rb in zip(want, got) for a, b in zip(ra, rb))
             self.assertLess(diff, tol, f"{mode or 'default'} save: locked strategy kept (max diff {diff:.2e})")
 
+    def test_3b_unlock_all_clears_a_loaded_saves_combo_locks(self):
+        # #255: a save's locks are not in the session's list (load forgets it), and unlock_all
+        # leaves combo locks (as Pio), so Unlock all needs combo_unlock_all for those
+        self.build_and_solve()
+        d = self.strategy(FACING)
+        order = self.ok("/api/hand_order")["order"]
+        aa = [1 if h[0] == "A" and h[2] == "A" else 0 for h in order]
+        self.ok("/api/lock", "POST", {"id": FACING, "mode": "combos", "freq": d["freq"], "combos": aa})
+        self.ok("/api/lock", "POST", {"id": "r:0", "mode": "current"})
+        path = os.path.join(self.tmp, "combo_locked.cfr")
+        self.solver.cmd(f'dump_tree "{path}" lossless')
+        self.ok("/api/load", "POST", {"path": path})
+        st = self.ok("/api/lock_state?id=" + urllib.parse.quote(FACING))
+        self.assertTrue(st["combo_locked"] and not st["locks"], "the save's combo lock, not in the session list")
+        self.ok("/api/unlock", "POST", {"all": True})
+        self.assertFalse(set(self.flags(FACING)) & {"LOCKED", "COMBO_LOCKED"}, "unlock all clears the save's combo lock")
+        self.assertFalse(set(self.flags("r:0")) & {"LOCKED", "COMBO_LOCKED"}, "and its node lock")
+
     def test_4_locks_invalidate_fast_preview(self):
         """A lock changes the tree the refined streets were solved against."""
         class Stub:

@@ -270,6 +270,60 @@ async function resolveTree() {
   } catch (e) { info(String(e.message || e), true); }
 }
 
+/* ------------------------------------------------------------------ plain English (#200 part 2) */
+
+// The model (Kimi K3 via Sail, server side: viewer/nl_lock.py) answers with a lock spec, the server
+// turns it into a strategy, and it lands here as edits: nothing is locked until Lock is clicked.
+const NL = { status: null, timer: null, seq: 0 };
+const usd = (x) => (x < 0.01 ? `$${x.toFixed(4)}` : `$${x.toFixed(3)}`);
+
+function nlOut(html, err) { $("lk-nl-out").innerHTML = err ? `<span class="err">${html}</span>` : html; }
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+function nlEstimate() {
+  clearTimeout(NL.timer);
+  const text = $("lk-nl-text").value.trim();
+  if (!NL.status || !NL.status.enabled || !text) { $("lk-nl-cost").textContent = ""; return; }
+  NL.timer = setTimeout(async () => {
+    const seq = ++NL.seq;
+    try {
+      const e = await post("/api/nl/estimate", { id: L.ctx.id, text });
+      if (seq === NL.seq) $("lk-nl-cost").textContent = `about ${usd(e.usd_input)} in, at most ${usd(e.usd_max)} with the answer`;
+    } catch (err) { /* the estimate is a hint only */ }
+  }, 500);
+}
+
+async function nlPropose() {
+  const text = $("lk-nl-text").value.trim();
+  if (!text) { nlOut("Describe the strategy first, e.g. “IP never raises”.", true); return; }
+  $("lk-nl-go").disabled = true;
+  nlOut(`Asking ${esc(NL.status.model)}…`);
+  try {
+    const r = await post("/api/nl/propose", { id: L.ctx.id, text });
+    const cost = r.cost ? ` <span class="muted">· ${r.cost.input_tokens} + ${r.cost.output_tokens} tokens, ${usd(r.cost.usd)}</span>` : "";
+    if (!r.ok) {
+      nlOut(`${esc(r.error || "The model could not turn that into a lock.")}${r.explanation ? `<br>${esc(r.explanation)}` : ""}${cost}`, true);
+      return;
+    }
+    L.edit = r.freq;
+    L.edited = new Set(r.classes);
+    L.sel = new Set();
+    refresh();
+    nlOut(`${esc(r.explanation)}${r.notes.length ? `<br><b>${r.notes.map(esc).join(" · ")}</b>` : ""}`
+      + `<br>Proposed for ${r.classes.length} hand classes: compare <i>Solved</i> and <i>Locked</i>, edit if needed, then Lock.${cost}`);
+  } catch (e) { nlOut(esc(e.message || e), true); }
+  finally { $("lk-nl-go").disabled = !(NL.status && NL.status.enabled); }
+}
+
+async function nlInit() {
+  try { NL.status = await get("/api/nl/status"); } catch (e) { NL.status = { enabled: false, reason: "Plain-English locks are not available on this server." }; }
+  const on = !!NL.status.enabled;
+  $("lk-nl-text").disabled = !on;
+  $("lk-nl-go").disabled = !on;
+  $("lk-nl-model").textContent = on ? `(${NL.status.model})` : "";
+  if (!on) nlOut(esc(NL.status.reason || "Plain-English locks are off."));
+}
+
 /* ------------------------------------------------------------------ open */
 
 // for viewer/test_lock_js.mjs
@@ -287,6 +341,7 @@ export async function openLock() {
   $("lk-title").textContent = `Lock ${ctx.actor}'s strategy at ${ctx.id}`;
   $("lk-acc").value = prefs.get("lock-acc", "0.3");
   info("");
+  if (NL.status && NL.status.enabled) { nlOut(""); nlEstimate(); }
   try { L.state = await get("/api/lock_state?id=" + encodeURIComponent(ctx.id)); } catch (e) { fail(e); return; }
   refresh();
   $("lock-dialog").showModal();
@@ -308,4 +363,8 @@ export function initLock({ changed }) {
   $("lk-revert").onclick = doRevert;
   $("lk-tree").onclick = resolveTree;
   $("lk-node").onclick = () => { $("lock-dialog").close(); $("btn-further").click(); };
+  $("lk-nl-go").onclick = nlPropose;
+  $("lk-nl-text").addEventListener("input", nlEstimate);
+  $("lk-nl-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); nlPropose(); } });
+  nlInit();
 }

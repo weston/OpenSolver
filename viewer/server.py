@@ -438,6 +438,14 @@ def set_resolver(resolver):
     _resolver = resolver
 
 
+_nl = None  # nl_lock.NLService (#200 part 2): plain-English locks via Sail; set by main()/tests
+
+
+def set_nl(service):
+    global _nl
+    _nl = service
+
+
 _jobs = None  # jobs_api.JobsService (#196), set by main()/tests; runs the solve queue
 
 
@@ -463,6 +471,11 @@ def api(solver, lib, method, path, query, body):
         if _resolver is None:
             raise SolverError("re-solve support not initialized")
         return _resolver.api(method, path, query, body)
+    if path.startswith("/api/nl/"):
+        if _nl is None:
+            raise SolverError("plain-English locks not initialized")
+        solver.lease()  # it reads the node like a browse click (a no-op unless solving)
+        return _nl.api(sys.modules[__name__], solver, method, path, body)
     if path.startswith("/api/jobs/"):
         if _jobs is None:
             raise SolverError("job queue not initialized")
@@ -1313,6 +1326,8 @@ def main(argv=None):
     solver = Solver(os.path.abspath(args.solver))
     import resolve as vresolve  # local import: server/main <-> resolve module cycle
     set_resolver(vresolve.ResolveManager(solver, Solver, os.path.abspath(args.solver)))
+    import nl_lock
+    set_nl(nl_lock.NLService())   # reads the Sail key, if any; it never leaves this process
     import jobs_api
     set_jobs(jobs_api.JobsService(args.jobs, os.path.abspath(args.solver),
                                   args.flops_dir if args.flops_dir is not None else jobs_api.default_flops_dir()))

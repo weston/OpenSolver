@@ -197,6 +197,15 @@
       </div>
     </div>
     <div class="lock-right">
+      <div id="lk-nl" class="lock-nl">
+        <label class="field"><span>Describe it <i class="muted" id="lk-nl-model"></i></span>
+          <textarea id="lk-nl-text" rows="2" spellcheck="true" placeholder="IP folds 60% to this bet, the weakest hands first"></textarea></label>
+        <div class="btn-row">
+          <button class="btn small" id="lk-nl-go" title="Ask the model for a lock spec; you see it here before anything is locked">Propose</button>
+          <span id="lk-nl-cost" class="muted"></span>
+        </div>
+        <div id="lk-nl-out" class="hint"></div>
+      </div>
       <table class="lock-acts">
         <thead><tr><th>Action</th><th class="num" title="Range-weighted, as solved">Solved</th><th class="num" title="Range-weighted, with your edits">Locked</th>
           <th class="num" title="Mix to give the selected hands">Selected</th><th title="Scale this action to a share of the whole range">Overall</th></tr></thead>

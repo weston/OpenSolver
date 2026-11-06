@@ -350,3 +350,23 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - Schematic `set_pot` is literal (no preflop correction): `set_pot 0 0 200` = 200 dead money (probe11:
   our EVs 95.49 / 107.67 vs Pio MES 95.42 / 107.74). Pio caches `calc_results` / `calc_ev`: after `go`
   it reports stale numbers until `clear_cache`; we always report fresh values.
+
+### PioViewer's aggregation report (3.3), from its own output files
+
+Worked out from the owner's PioViewer report folders (black-box: `report.csv`, `info.txt`, `handsEV.csv`
+and the per-combo `report_*_Full.csv`, recomputed against each other; nothing from them is committed).
+`tools/jobs.py report` implements these (#323, #325, #336, #346):
+- Hands count by **reach × matchups** (the opponent's reach over the combos a hand doesn't block, which is
+  `calc_ev`'s second line). A flop row's frequencies are the matchup-weighted mean of its combos (to 0.005).
+- The **total row** weights each flop by its matchup mass Σ reach·matchups, also for EVs, even when the
+  report says "without weighting flops" (a plain mean is off by up to 1.1 points).
+- **Turn reports** (a line through a dealt card): one row per flop and turn plus a flop row. The flop row's
+  frequencies weight its turns by their matchup mass. Its Global % is the turns' plain mean (Global % is
+  `calc_global_freq`: the node's matchups over the root's, no chance factor). In the total, frequencies
+  and EVs weight flops by the line's mass, and Global % by the root's.
+- **handsEV.csv:** class EV = Σ weight·matchups·EV / Σ weight·matchups over flops and combos (exact to 8e-6),
+  the Matchups column is that Σ, Equity Realization = EV / Equity. EVs are in % of a pot: at the root and
+  after one check both players' EVs sum to 100; at deeper lines each player's EV is averaged over their own
+  range, so the sum varies by row and the base can't be read off the files (ours: % of the node's pot).
+- The Full files hold only combos with weight > 0 (about 450 per turn node; a 102-flop turn report is
+  ~2.2 M rows / 115 MB).

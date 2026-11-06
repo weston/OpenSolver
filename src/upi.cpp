@@ -553,7 +553,7 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   pm.rake_frac = 0;
   pm.rake_cap = 0;
   pm.icm.enabled = false;
-  t->payoff = pm;
+  t->set_payoff(pm);
   std::string err;
   if (!t->build(c, err, false)) throw CmdError{err};
   // Old tree memory is released before allocating the new one, so count it as available.
@@ -623,7 +623,7 @@ void Upi::apply_pcfr_settings() {
 std::string Upi::estimate_text() {
   if (cfg_.board.size() < 3) throw CmdError{"incorrect or missing argument"};
   GameTree t;
-  t.payoff = payoff_;
+  t.set_payoff(payoff_);
   std::string err;
   if (!t.build(cfg_, err, false)) throw CmdError{err};
   uint64_t b = t.memory_bytes_for(false, predictive_), bs = t.memory_bytes_for(true, predictive_);
@@ -1242,7 +1242,7 @@ void Upi::register_commands() {
     if (payoff_.rake_frac > 0) payoff_.icm.enabled = false;
     if (tree_) {
       TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
-      tree_->payoff = payoff_;
+      tree_->set_payoff(payoff_);
       discount_restart_ = tree_->iterations;
     }
     return std::string("set_rake ok!");
@@ -1258,7 +1258,7 @@ void Upi::register_commands() {
     payoff_.rake_cap = 0;
     if (tree_) {
       TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
-      tree_->payoff = payoff_;
+      tree_->set_payoff(payoff_);
       discount_restart_ = tree_->iterations;
     }
     return std::string("set_icm ok!");
@@ -1274,7 +1274,7 @@ void Upi::register_commands() {
     icm_tables_defined_ = true;
     if (tree_) {
       TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
-      tree_->payoff = payoff_;
+      tree_->set_payoff(payoff_);
       discount_restart_ = tree_->iterations;
     }
     return std::string("set_icm_point ok!");
@@ -1284,7 +1284,7 @@ void Upi::register_commands() {
     icm_tables_defined_ = true;  // Pio: reset tables are "defined" (empty table = chip values)
     if (tree_) {
       TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
-      tree_->payoff = payoff_;
+      tree_->set_payoff(payoff_);
       discount_restart_ = tree_->iterations;
     }
     return std::string("reset_icm_tables ok!");

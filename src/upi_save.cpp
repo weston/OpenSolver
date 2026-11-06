@@ -709,7 +709,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
     stats_p = g.saved_stats;
   }
   Writer w;
-  write_config(w, g.cfg, g.payoff, tree_info_, g.iterations, solve_seconds_, stats_p);
+  write_config(w, g.cfg, g.payoff(), tree_info_, g.iterations, solve_seconds_, stats_p);
   out.put(static_cast<uint32_t>(w.buf.size()));
   out.write(w.buf.data(), w.buf.size());
   Writer m;
@@ -779,7 +779,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   GzIn& in = *inp;
   LoadedConfig lc = read_config_section(in);
   auto t = std::make_unique<GameTree>();
-  t->payoff = lc.pm;
+  t->set_payoff(lc.pm);
   std::string err;
   if (!t->build(lc.cfg, err, false)) throw CmdError{"cannot rebuild tree: " + err};
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);

@@ -33,18 +33,35 @@ double GameTree::terminal_payoff(const ActionNode& an, int p, int outcome) const
     int f = an.player;
     double matched = an.inv[f];
     double P = D + 2.0 * matched;
-    double R = std::min(payoff.rake_frac * P, payoff.rake_cap);
+    double R = std::min(payoff_.rake_frac * P, payoff_.rake_cap);
     chips = (p == f) ? -static_cast<double>(an.inv[f]) : D + an.inv[f] - R;
   } else {
     double P = D + an.inv[0] + an.inv[1];
-    double R = std::min(payoff.rake_frac * P, payoff.rake_cap);
+    double R = std::min(payoff_.rake_frac * P, payoff_.rake_cap);
     if (outcome > 0) chips = P - R - an.inv[p];
     else if (outcome < 0) chips = -static_cast<double>(an.inv[p]);
     else chips = (P - R) / 2.0 - an.inv[p];
   }
-  if (!payoff.icm.enabled) return chips;
-  double s = payoff.icm.stacks[p];
-  return payoff.icm.value(p, s + chips) - payoff.icm.value(p, s);
+  if (!payoff_.icm.enabled) return chips;
+  double s = payoff_.icm.stacks[p];
+  return payoff_.icm.value(p, s + chips) - payoff_.icm.value(p, s);
+}
+
+void GameTree::fill_term_pay() {
+  term_pay_.assign(anodes.size(), TermPay{});
+  for (size_t i = 0; i < anodes.size(); ++i) {
+    const ActionNode& an = *anodes[i];
+    TermPay& tp = term_pay_[i];
+    for (int p = 0; p < 2; ++p) {
+      if (an.kind == ANodeKind::Fold) {
+        tp.w[p] = static_cast<float>(terminal_payoff(an, p, p == an.player ? -1 : 1));
+      } else if (an.kind == ANodeKind::Showdown) {
+        tp.w[p] = static_cast<float>(terminal_payoff(an, p, 1));
+        tp.l[p] = static_cast<float>(terminal_payoff(an, p, -1));
+        tp.t[p] = static_cast<float>(terminal_payoff(an, p, 0));
+      }
+    }
+  }
 }
 
 double GameTree::river_showdowns_per_root() const {
@@ -459,6 +476,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
     }
   }
   index_action_tree(aroot.get(), anodes);
+  fill_term_pay();
 
   bool iso = (bl == 3 && cfg.iso_flop) || (bl == 4 && cfg.iso_turn);
   nodes.reserve(1024);

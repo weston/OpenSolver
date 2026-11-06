@@ -10,7 +10,7 @@ public UPI documentation; it contains no PioSOLVER code.
 - Vector-form **Discounted CFR** (α=1.3, γ=4; β=0, then 0.5 after iteration 50) with exact card removal, no abstraction. `set_dcfr` overrides the exponents (`set_dcfr a b g` constant, `set_dcfr a b g b_late t` with the β switch).
 - Multi-threaded over turn/river cards with a nested work-stealing pool.
 - Suit **isomorphism** (flop trees on by default, like Pio's `set_isomorphism 1 0`).
-- Optional 16-bit compressed storage (`small_strats`), roughly halving memory. The strategy sums are rounded stochastically, so it converges like float32 (#272, #293).
+- Optional 16-bit compressed storage (`small_strats`), roughly halving memory. On x86 the strategy sums are rounded stochastically, so it converges like float32 (#272).
 - **Regret-based pruning** on by default (`set_pruning off|on [period]`): a traverser action whose current strategy is exactly zero for every hand is skipped — exactly, so results are bit-identical — and revisited every `period`-th iteration (default 8). Worth about 13% on a deep tree.
 
 New here? **[docs/quickstart.md](docs/quickstart.md)** walks through installing, solving a spot and

@@ -673,7 +673,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
     else throw CmdError{"incorrect or missing argument"};
   }
   const int prec = std::clamp(compression_precision_, 2, 16);
-  TreePause tp(pause_requests_, tree_mu_, pause_cv_);
+  TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   std::string lerr;
   if (!tree_->load_all(lerr)) throw CmdError{"cannot read the loaded tree's file: " + lerr};
   const auto& g = *tree_;

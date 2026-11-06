@@ -547,6 +547,13 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
   .card.sticky { position: static; }
   .money { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+@media (max-width: 640px) {
+  /* phones: the top bar wraps instead of pushing Open / Save / theme off the screen (#329) */
+  .topbar { height: auto; min-height: 52px; flex-wrap: wrap; row-gap: 6px; padding: 8px 16px; }
+  .brand { margin-right: 4px; }
+  .view-tab { padding: 0 10px; }
+  .spark { display: none; }
+}
 @media (max-width: 980px) {
   body { overflow: auto; }
   .view { height: auto; overflow: visible; }

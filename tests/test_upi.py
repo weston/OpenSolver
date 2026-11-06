@@ -1153,7 +1153,7 @@ def check_exit_while_parked(exe):
 
 
 def check_save_robustness(exe):
-    """#359: corrupt or crafted saves give an ERROR, never a crash or a huge allocation, and a tree loaded
+    """#360: corrupt or crafted saves give an ERROR, never a crash or a huge allocation, and a tree loaded
     from a truncated save is dumped no deeper than it has solved data."""
     import gzip
     import struct

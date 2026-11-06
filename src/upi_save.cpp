@@ -58,7 +58,7 @@ struct Reader {
     p += sizeof(T);
     return v;
   }
-  // n bytes must remain: call before allocating anything sized by a count read from the file (#359)
+  // n bytes must remain: call before allocating anything sized by a count read from the file (#360)
   void need(uint64_t n) const {
     if (static_cast<uint64_t>(end - p) < n) throw CmdError{"file format error (truncated)"};
   }
@@ -679,7 +679,7 @@ bool open_lazy(GameTree& t, const std::string& path, uint8_t file_mode, uint8_t 
   }
   L->remaining = remaining;
   // lazy_touch catches std::exception (game.cpp knows nothing of CmdError): convert, or a corrupt
-  // segment read in a pool worker ends in std::terminate (#359)
+  // segment read in a pool worker ends in std::terminate (#360)
   L->load_fn = [](const GameTree& ct, const LazyStore& ls, uint32_t s) {
     try {
       lazy_load_segment(ct, ls, s);
@@ -709,7 +709,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   }
   const int prec = std::clamp(compression_precision_, 2, 16);
   // A tree loaded from a truncated save has no solved data from missing_street on: writing those
-  // streets would present unsolved strategies as solved (#359). Save it as truncated as it is.
+  // streets would present unsolved strategies as solved (#360). Save it as truncated as it is.
   if (tree_->missing_street) {
     const uint32_t have = static_cast<uint32_t>(tree_->missing_street - 1);
     truncate = truncate ? std::min(truncate, have) : have;
@@ -827,7 +827,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   t->allocate_storage();
   uint64_t mlen = in.get<uint64_t>();
   // at most: counts, a flag byte per node, and per decision a combo-lock mask, incentives and an
-  // elimination entry (#359: a small file must not make us allocate gigabytes)
+  // elimination entry (#360: a small file must not make us allocate gigabytes)
   const uint64_t mmax = 64 + t->nodes.size() * (1 + 8 + 8 + NUM_COMBOS + 4 * 64 + 8);
   if (mlen > mmax) throw CmdError{"file format error (metadata size)"};
   std::string mbuf(mlen, '\0');
@@ -837,7 +837,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   if (nn != t->nodes.size() || sf != t->storage_floats) throw CmdError{"file format error (tree shape mismatch)"};
   for (auto& n : t->nodes) n.flags = r.get<uint8_t>();
   // Every entry must name a decision node of this tree and have that node's size, and every lock
-  // flag its entry (#359: a crafted file read out of bounds in show_locked_combos and the walk).
+  // flag its entry (#360: a crafted file read out of bounds in show_locked_combos and the walk).
   auto decision = [&](uint32_t ni) -> const GNode& {
     if (ni >= t->nodes.size() || t->nodes[ni].kind != ANodeKind::Decision)
       throw CmdError{"file format error (node index)"};

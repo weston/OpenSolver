@@ -116,6 +116,30 @@ Process wall time: WSolver 2.67 / 39.8-40.3 s, Pio 7.52 / 74.0-74.5 s. Both tree
 memory bandwidth on this PC from 8 threads up (bench/where-the-time-goes.md), so kernel speedups show
 less here than at 1 thread or on the M4.
 
+### Update after #275 and #277 (2026-11-05)
+
+New on main since the table above:
+- #275: stochastic rounding of the 16-bit strategy sums, so 16-bit no longer stalls short of tight targets;
+- #277: the default thread count is timed per tree (here 16 threads for threebet_mono, 32 for srp_big);
+- everything merged in between.
+
+WSolver main `b513570` is a WSL build, not the native Windows build of the earlier tables. Pio
+3.10.1 runs natively at 32 threads, driven from WSL with ranges converted to Pio's floats. Times are
+seconds to the first report at or below each target, two interleaved reps:
+
+| threebet_mono (pot 200) | to 0.5% | to 0.3% | to 0.1% |
+|---|---|---|---|
+| WSolver (default threads) | **2.46 / 2.47** | **3.08 / 3.06** | **5.16 / 5.09** (290 it) |
+| PioSOLVER 3.10 (32 threads) | 5.66 / 5.60 | 6.86 / 6.77 | 38.68 / 38.50 (995 it) |
+
+srp_big (13 GB, 16-bit): WSolver reaches 1.5% / 1% / 0.5% of pot in 36.5-38.0 / 45.4-46.9 /
+66.6-68.4 s (185 iterations). The 1% time (0.6 chips) compares with Pio's 70.9 s in the table above.
+Pio's own srp_big run this session was stopped by the host for low memory: other jobs were using the
+PC at the same time, so it is not re-measured here.
+
+On threebet_mono Pio needs 995 iterations to reach 0.1% of pot, where WSolver needs 290. At looser
+targets the two converge at about the same rate per iteration (see above), so the gap at 0.1% is
+convergence, not only speed per iteration.
 
 ## Tree memory (2026-11-05)
 

@@ -44,7 +44,7 @@ struct TreePause {
   ~TreePause() {
     lk.unlock();
     // Lowered under pm, or the notify can land between the solver thread's check of req and its
-    // wait, and be lost: the solve then stays parked for good (a lost wake-up; #293).
+    // wait, and be lost: the solve then stays parked for good (a lost wake-up; #294).
     {
       std::lock_guard<std::mutex> g(pm);
       req.fetch_sub(1);

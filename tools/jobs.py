@@ -19,6 +19,7 @@ Usage:
     python3 tools/jobs.py move ID --to POS               # reorder (1 = next to run)
     python3 tools/jobs.py export NAME                    # results as CSV (board, weight, EVs, ...)
     python3 tools/jobs.py report NAME [--csv FILE]       # root strategy per flop + weighted average
+    python3 tools/jobs.py report NAME --line r:0:b198:c:2d [--cards]  # at a line; a card = every card there
 
 TREE is either a UPI script (set_range / set_pot / set_eff_stack / add_line ... as you would send
 the solver) or a PioViewer-style config with `#Key#Value` sizing headers, which is expanded with

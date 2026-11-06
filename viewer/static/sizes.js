@@ -113,9 +113,21 @@ export function readSizes(tbody) {
     const tr = inp.closest("tr");
     const k = inp.dataset.k;
     const sfx = tr.dataset.player === "ip" && k !== "raisecap" ? "_ip" : "";
-    f[`${tr.dataset.street}_${k}${sfx}`] = inp.type === "checkbox" ? inp.checked : inp.value.replace(/\s+/g, "");
+    // the parts comma-joined: "33 75" is two sizes, not 3375 (#354)
+    f[`${tr.dataset.street}_${k}${sfx}`] = inp.type === "checkbox" ? inp.checked : sizeParts(inp.value).join(",");
   }
   return f;
+}
+
+/** The server's limits (viewer/server.py _check_sizes, #354): Ne N <= 99, NeP P <= 100000, Nx N <= 1000,
+ *  a percentage <= 100000. */
+export function inBounds(p) {
+  const t = p.toLowerCase();
+  let m;
+  if ((m = /^(\d*)e(.*)$/.exec(t))) return (!m[1] || Number(m[1]) <= 99) && (!m[2] || Number(m[2]) <= 100000);
+  if (t.endsWith("x")) return Number(t.slice(0, -1)) <= 1000;
+  if (t === "a") return true;
+  return Number(t) <= 100000;
 }
 
 /** Mark invalid size fields; true when all are valid. */
@@ -123,7 +135,7 @@ export function validateSizes(tbody) {
   let ok = true;
   for (const inp of tbody.querySelectorAll("input:not([type=checkbox]):not(.cap)")) {
     const re = inp.dataset.k === "raise" ? RAISE_RE : SIZE_RE;
-    const bad = sizeParts(inp.value).some((p) => !re.test(p));
+    const bad = sizeParts(inp.value).some((p) => !re.test(p) || !inBounds(p));
     inp.classList.toggle("invalid", bad);
     if (bad) ok = false;
   }

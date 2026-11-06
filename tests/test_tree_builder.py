@@ -168,6 +168,28 @@ def test_parse_size_forms():
                                              tb.SizeSpec("geo", None, Decimal(50))], "parse: NeP and eP")
     check(tb.parse_size_list("5e 3e,  2e a") == tb.parse_size_list("5e,3e,2e,a"),
           "parse: entries separated by spaces, commas or both (#313)")
+    for bad in ("0e50", "0e"):  # #354: NeP / Ne need N >= 1 (0e50 used to divide by zero at build)
+        try:
+            tb.parse_size(bad)
+            check(False, f"parse: {bad} refused")
+        except ValueError:
+            check(True, f"parse: {bad} refused")
+
+
+def test_tree_size_bound():
+    """#354: a runaway config stops with an error instead of running for minutes."""
+    cfg = tb.parse_config("#Pot#10\n#EffectiveStacks#10000\n#AllinThreshold#100\n"
+                          "#FlopConfig.BetSize#33, 75\n#FlopConfigIP.BetSize#33, 75\n"
+                          "#FlopConfig.RaiseSize#50, 100\n#FlopConfigIP.RaiseSize#50, 100\n")
+    real = tb.MAX_TREE_ACTIONS
+    tb.MAX_TREE_ACTIONS = 500
+    try:
+        tb.build_lines(cfg)
+        check(False, "tree bound: an oversized tree raises")
+    except ValueError as e:
+        check("tree too large" in str(e), f"tree bound: {e}")
+    finally:
+        tb.MAX_TREE_ACTIONS = real
     for bad in ("2q", "x3", "0e", "-3", "-2x", "xx"):
         try:
             tb.parse_size_list(bad)
@@ -597,7 +619,7 @@ def main():
                test_raise_cap, test_rounding_is_nearest,
                test_branch_ending_on_a_plain_bet,
                test_donk_leads_need_donk_sizes, test_donk_pio_compat_cli,
-               test_full_script):
+               test_full_script, test_tree_size_bound):
         print(fn.__name__)
         fn()
     print()

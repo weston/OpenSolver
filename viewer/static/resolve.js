@@ -5,7 +5,7 @@
 import { el, cardEl, parseCards } from "./cards.js";
 import { get, post, toast, fail, prefs, fmt, fmtChips } from "./api.js";
 import { enterSubgame } from "./study.js";
-import { STREETS, renderSizes, readSizes, validateSizes, SIZE_RE, RAISE_RE, sizeParts } from "./sizes.js";
+import { STREETS, renderSizes, readSizes, validateSizes, SIZE_RE, RAISE_RE, sizeParts, inBounds } from "./sizes.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -46,7 +46,7 @@ function validate() {
   const who = R.ctx ? R.ctx.actor : "";
   $("rs-cand-label").textContent = `Candidate ${raising ? "raise" : "bet"} sizes for ${who}`;
   const cre = raising ? RAISE_RE : SIZE_RE;
-  const cbad = sizeParts(cand.value).some((p) => !cre.test(p));
+  const cbad = sizeParts(cand.value).some((p) => !cre.test(p) || !inBounds(p));
   cand.classList.toggle("invalid", cbad);
   // an empty box reads as 0, and accuracy 0 means "never stop"
   const acc = $("rs-accuracy");

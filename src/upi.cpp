@@ -311,6 +311,14 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
       "show_effective_stack", "show_incentives", "show_locked_combos", "show_node", "show_strategy",
       "show_strategy_pp", "show_win_evs", "solve_all_splits", "solve_partial", "unlock_all", "unlock_node"};
   if (!tree_ && needs_tree.count(cmd)) require_tree();
+  // These change (or read) state the solving thread uses mid-iteration: run them between iterations,
+  // like the commands that take a TreePause themselves (#364: set_dcfr could be read half-written).
+  static const std::set<std::string> pause_while_solving = {
+      "set_dcfr", "set_avg_delay", "set_pruning", "set_first_iteration_player", "set_info_freq", "show_iters"};
+  if (solving_ && pause_while_solving.count(cmd)) {
+    TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+    return it->second(args);
+  }
   return it->second(args);
 }
 
@@ -338,7 +346,11 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   if (!sub) tree_->has_saved_stats = false;
   stop_flag_ = false;
   solving_ = true;
-  solver_thread_ = std::thread([this, seconds, steps, sub = std::move(sub)] { solver_thread_main(seconds, steps, std::move(sub)); });
+  // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)
+  std::string endl_str = end_string_.empty() ? "END" : end_string_;
+  solver_thread_ = std::thread([this, seconds, steps, sub = std::move(sub), endl_str = std::move(endl_str)] {
+    solver_thread_main(seconds, steps, std::move(sub), endl_str);
+  });
 }
 
 void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps) {
@@ -355,22 +367,16 @@ void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps)
   start_solver(seconds, steps, std::move(job));
 }
 
-void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
+void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
+                             const std::string& endl_str) {
   out_raw("SOLVER: started\n");
   double best_e = std::numeric_limits<double>::infinity();  // 16-bit stall detection (#182)
   int stalled = 0;
-  if (info_auto_) {
-    next_report_ = (sub ? 0 : tree_->iterations) + 10;
-    auto_sched_ = AutoReportSchedule{};
-  }
+  bool sched_auto = false;  // the auto report schedule is set up (read under tree_mu_ below, #364)
   auto t0 = std::chrono::steady_clock::now();
   double base = sub ? 0.0 : solve_seconds_;
   long long done = 0;
   std::string reason = "requested";
-  const std::string endl_str = end_string_.empty() ? "END" : end_string_;
-  // A partial solve without an info frequency would never check its stop conditions:
-  // fall back to solve_subtree's every-25-iterations cadence.
-  const long long sub_freq = sub ? (info_freq_ > 0 ? info_freq_ : 25) : info_freq_;
   // Default thread count (#276): with two hardware threads per core, the second one helps big trees and
   // hurts the rest (Zen 5 9950X, seconds to 0.1% of pot, 16 vs 32 threads: srp_big 78.2 vs 71.5,
   // threebet_mono 5.46 vs 6.23, deep 1.47 vs 1.70, flop_3bet 0.23 vs 0.36, turn 0.09 vs 0.18). Results do
@@ -385,6 +391,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   const bool tune_threads = !sub && threads_ == 0 && hw_threads >= 4;
 #endif
   bool pool_set = !tune_threads;  // set under tree_mu_ below: a command may be using the pool now
+  try {
   for (;;) {
     if (stop_flag_) {
       reason = stop_reason_.empty() ? "requested" : stop_reason_;
@@ -400,6 +407,15 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
     RootStats st{};
     {
       std::lock_guard<std::mutex> lk(tree_mu_);
+      // set_info_freq changes info_auto_ under this lock (TreePause): start the auto schedule when it is
+      // on, also if it was turned on mid-solve (#364: read at thread start, it raced the setter)
+      if (info_auto_ != sched_auto) {
+        sched_auto = info_auto_;
+        if (sched_auto) {
+          next_report_ = (sub ? done : tree_->iterations) + 10;
+          auto_sched_ = AutoReportSchedule{};
+        }
+      }
       // DCFR discount clock: the tree's own counter for a whole solve (restarted when the payoff
       // model changes), a fresh 1..N for a subtree solve (exactly what solve_partial does).
       if (sub) {
@@ -433,6 +449,9 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       if (!sub) solve_seconds_ = base + el;
       bool limit = (steps > 0 && done >= steps) || (seconds > 0 && el >= seconds);
       long long tick = sub ? done : tree_->iterations;
+      // read each iteration (set_info_freq pauses the solve to change it, #364). A partial solve without an
+      // info frequency would never check its stop conditions: solve_subtree's every 25 iterations then.
+      const long long sub_freq = sub ? (info_freq_ > 0 ? info_freq_ : 25) : info_freq_;
       if (info_auto_ ? tick >= next_report_ : (sub_freq > 0 && tick % sub_freq == 0)) report = true;
       if (limit) report = true;
       if (report) {
@@ -488,8 +507,15 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       }
     }
   }
-  out_raw("SOLVER: stopped (" + reason + ")\n");
+  } catch (const std::bad_alloc&) {
+    reason = "out of memory";  // #364: the process used to abort here
+  } catch (const std::exception& e) {
+    reason = std::string("error: ") + e.what();
+  }
+  // Not solving any more *before* "stopped" is printed: a go sent on seeing it must start a new solve,
+  // not find this thread still flagged as solving and be dropped (#364).
   solving_ = false;
+  out_raw("SOLVER: stopped (" + reason + ")\n");
 }
 
 // hold / release: see H["hold"]. Every way a solve ends or restarts drops the hold first, so a

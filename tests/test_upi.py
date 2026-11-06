@@ -1009,6 +1009,33 @@ def check_info_freq_auto(u):
     u.cmd("free_tree")
 
 
+def check_mid_solve_settings(u):
+    """#364: settings changed while a solve runs take effect between iterations (no data race), and a
+    report frequency set mid-solve is used: before, the frequency was read once at the start, so a solve
+    started with set_info_freq 0 never reported, so never stopped at its accuracy target."""
+    print("[settings mid-solve]")
+    set_small_tree(u)
+    check(u.cmd("build_tree") == "build_tree ok!", "build_tree for mid-solve settings")
+    u.cmd("set_info_freq 0")
+    u.cmd("set_accuracy 0.01")
+    u.solver_msgs.clear()
+    check(u.cmd("go 30 seconds") == "go ok!", "go with reports off")
+    time.sleep(0.3)
+    for c, want in (("set_dcfr 1.3 0 4 0.5 50", "set_dcfr ok!"), ("set_avg_delay 32", "set_avg_delay ok!"),
+                    ("set_pruning on 8", "set_pruning ok!"), ("set_first_iteration_player OOP",
+                                                               "set_first_iteration_player ok!")):
+        check(u.cmd(c) == want, f"{c} while solving")
+    check(u.cmd("show_iters").strip().isdigit(), "show_iters while solving")
+    check(u.cmd("set_info_freq 5") == "set_info_freq ok!", "set_info_freq 5 while solving")
+    t0 = time.time()
+    u.cmd("wait_for_solver")
+    stopped = [b for b in u.solver_msgs if b and b[0].startswith("SOLVER: stopped")]
+    check(stopped and "required accuracy reached" in stopped[-1][0] and time.time() - t0 < 25,
+          f"the new report frequency is used: the solve stops at its target ({stopped[-1][0] if stopped else None})")
+    u.cmd("set_info_freq 25")
+    u.cmd("free_tree")
+
+
 def check_legacy_params(u):
     """Pio 3.10 behavior, probed black-box: show_tree_params, set_bet_sizes/set_donk_bet, unlock_all,
     atoi-style chip amounts (fractions truncate), partial set_pot, a bad set_board clears the board."""
@@ -1251,6 +1278,7 @@ def main(exe, big=False):
         check_go_partial(u)
         check_go_limits_and_errors(u)
         check_info_freq_auto(u)
+        check_mid_solve_settings(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")

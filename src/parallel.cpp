@@ -27,7 +27,15 @@ void ThreadPool::set_threads(int threads) {
 
 void ThreadPool::start(int workers) {
   quit_ = false;
-  for (int i = 0; i < workers; ++i) workers_.emplace_back([this] { worker_loop(); });
+  for (int i = 0; i < workers; ++i) {
+    try {
+      workers_.emplace_back([this] { worker_loop(); });
+    } catch (const std::exception&) {
+      // no more threads (out of memory, a process limit): carry on with the ones that started (#364)
+      break;
+    }
+  }
+  nthreads_ = static_cast<int>(workers_.size()) + 1;
 }
 
 void ThreadPool::stop_all() {
@@ -59,7 +67,13 @@ bool ThreadPool::run_some(Job* j) {
   for (;;) {
     int i = j->next.fetch_add(1, std::memory_order_acq_rel);
     if (i >= j->n) break;
-    (*j->fn)(i);
+    try {
+      (*j->fn)(i);
+    } catch (...) {
+      // nothing may escape a worker (std::terminate): keep the first error for the caller (#364)
+      bool expected = false;
+      if (j->failed.compare_exchange_strong(expected, true)) j->error = std::current_exception();
+    }
     j->done.fetch_add(1, std::memory_order_acq_rel);
     did = true;
   }
@@ -140,6 +154,7 @@ void ThreadPool::parallel_for(int n, const std::function<void(int)>& f, bool wid
     if (it != jobs_.end()) jobs_.erase(it);
   }
   while (job.active.load(std::memory_order_acquire) > 0) std::this_thread::yield();
+  if (job.failed.load(std::memory_order_acquire)) std::rethrow_exception(job.error);
 }
 
 ThreadPool& pool() {

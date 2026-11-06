@@ -178,31 +178,55 @@ export function openReport(name, line) {
 
 async function showReport(name, line) {
   reportBatch = name;
+  lastReport = null;
+  $("jr-title").textContent = `Report · ${name}`;
+  $("jr-sub").textContent = "";
+  $("jr-table").replaceChildren();
   $("jr-line").value = line != null ? line : prefs.get("jobs-report-line:" + name, "");
   $("jr-cards").checked = prefs.get("jobs-report-cards", "") === "1";
-  if (!(await loadReport())) {
-    // a remembered line that no longer loads: fall back to the first decision
-    if (!$("jr-line").value.trim()) return;
-    $("jr-line").value = "";
-    if (!(await loadReport())) return;
-  }
   $("jobs-report").showModal();
+  if (!(await loadReport()) && $("jr-line").value.trim() && line == null && !lastReport) {
+    // a remembered line that no longer loads: fall back to the first decision
+    $("jr-line").value = "";
+    await loadReport();
+  }
 }
 
-/** (Re)load the open batch's report at the line in the Line field (empty: the first decision, #325). */
+let loadToken = 0;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** (Re)load the open batch's report at the line in the Line field (empty: the first decision, #325).
+ *  The first report at a line reads every save in the background; this polls and shows how far it got
+ *  (#333). A newer load, or closing the dialog, ends the polling (the reading itself carries on and is
+ *  cached). Returns whether a report was shown. */
 async function loadReport() {
   const line = $("jr-line").value.trim();
+  const token = ++loadToken;
   const go = $("jr-line-go");
   go.disabled = true;
-  $("jr-note").textContent = line ? "Reading the saves at this line (the first time, every save is loaded)…" : "";
+  $("jr-note").textContent = line ? "Reading the saves at this line…" : "";
+  let rep;
   try {
-    lastReport = await get("/api/jobs/report?batch=" + encodeURIComponent(reportBatch) + "&line=" + encodeURIComponent(line));
+    const url = "/api/jobs/report?batch=" + encodeURIComponent(reportBatch) + "&line=" + encodeURIComponent(line);
+    rep = await get(url);
+    while (rep.reading) {
+      if (token !== loadToken || !$("jobs-report").open) return false;
+      const p = rep.progress || {};
+      $("jr-note").textContent = p.total
+        ? `Reading the saves at this line: ${p.done} of ${p.total}${p.board ? ` (${p.board})` : ""}… The results are kept, so the next report here is instant.`
+        : "Reading the saves at this line…";
+      await sleep(700);
+      rep = await get(url);
+    }
   } catch (e) {
-    fail(e);
-    $("jr-note").textContent = String(e.message || e);
+    if (token === loadToken) {
+      fail(e);
+      $("jr-note").textContent = String(e.message || e);
+    }
     return false;
-  } finally { go.disabled = false; }
-  const rep = lastReport;
+  } finally { if (token === loadToken) go.disabled = false; }
+  if (token !== loadToken) return false;
+  lastReport = rep;
   // remember the line for this batch, unless no flop has it
   if (!line || rep.rows.some((x) => x.freqs)) prefs.set("jobs-report-line:" + reportBatch, line);
   $("jr-title").textContent = `Report · ${rep.batch}`;

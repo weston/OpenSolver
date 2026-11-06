@@ -749,12 +749,27 @@ def report(q: Queue, name: str, solver_exe: str | None = None) -> dict:
 LINE_CACHE = 8  # line results kept per job (each is a few KB; a turn line has ~49 rows)
 
 
-def line_report(q: Queue, name: str, line: str, solver_exe: str | None) -> dict:
+def line_uncached(q: Queue, name: str, line: str) -> list[dict]:
+    """The done jobs of a batch whose result at this line isn't cached yet (a line report reads their
+    saves). Empty for the root line, which needs no save."""
+    steps = parse_line(line)
+    if not steps:
+        return []
+    key = ":".join(steps)
+    q.batch(name)
+    return [j for j in q.jobs(name)
+            if j["status"] == "done" and key not in ((j.get("result") or {}).get("lines") or {})]
+
+
+def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress=None) -> dict:
     """The batch's report at a line other than the root (#325), like PioViewer's aggregation report
     there: per flop the decision's strategy, both EVs and Global % (calc_global_freq); with a card or
     * in the line, one row per card dealt there under each flop (`cards`), rolled up into the flop's
     row by aggregate_cards. Each job's result is cached in the job, so the saves are read once per
-    line. The batch average weights flops by weight x matchup mass, like the root report."""
+    line. The batch average weights flops by weight x matchup mass, like the root report.
+
+    `progress(done, total, board)` is called before each save is read (total = the saves to read) and
+    once at the end, so a caller can show how far it got (#333)."""
     import server as vserver
     steps = parse_line(line)
     if not steps:
@@ -763,7 +778,10 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None) -> dict:
     b = q.batch(name)
     head = None
     rows = []
-    for j in q.jobs(name):
+    js = q.jobs(name)
+    to_read = sum(j["status"] == "done" and key not in ((j.get("result") or {}).get("lines") or {}) for j in js)
+    read = 0
+    for j in js:
         if j["status"] != "done":
             continue
         r = j.get("result") or {}
@@ -771,6 +789,9 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None) -> dict:
         if res is None:
             if not solver_exe:
                 raise JobError("a report at a line reads the saves: give --solver")
+            if progress:
+                progress(read, to_read, j["board"])
+            read += 1
             s = None
             cache = False  # only results, and lines that don't fit the tree: a failed read may work later
             try:
@@ -821,6 +842,8 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None) -> dict:
                 row["error"] = "a different decision at this line" if res.get("rows") else "the line reaches no node"
         row["texture"] = {k: fn(row["board"]) for k, (_, fn) in TEXTURES.items()}
         rows.append(row)
+    if progress:
+        progress(read, to_read, None)
     head = head or {"player": None, "actions": [], "pot": start_pot(b["setup"]), "facing": 0}
     n = len(head["actions"])
     total = _weighted(rows, n)

@@ -374,6 +374,16 @@ def integration(solver):
               "a flop's row: cards weighted by their mass, Global % their plain mean (PioViewer's turn report)")
         check(len({c["cards"][0] for c in x["cards"]}) == 49 and not set(x["board"][i:i + 2] for i in (0, 2, 4))
               & {c["cards"][0] for c in x["cards"]}, "the turn cards are the 49 cards off the flop")
+        calls = []
+        check(len(jobs.line_uncached(q, "srp", "c")) == 3 and jobs.line_uncached(q, "srp", "") == [],
+              "line_uncached: the done jobs without this line cached")
+        jobs.line_report(q, "srp", "c", solver, progress=lambda d, t, b: calls.append((d, t, b)))
+        check([c[:2] for c in calls] == [(0, 3), (1, 3), (2, 3), (3, 3)] and calls[-1][2] is None
+              and all(c[2] for c in calls[:-1]) and jobs.line_uncached(q, "srp", "c") == [],
+              f"progress: before each save read, then once at the end ({calls})")
+        calls.clear()
+        jobs.line_report(q, "srp", "c", solver, progress=lambda d, t, b: calls.append((d, t, b)))
+        check(calls == [(0, 0, None)], f"a cached line reads no save ({calls})")
         bad = jobs.line_report(q, "srp", "b77", solver)
         check(all(r["freqs"] is None and "no action b77" in r["error"] for r in bad["rows"]) and not bad["total"],
               f"an action not in the tree is reported per flop ({bad['rows'][0]['error']})")

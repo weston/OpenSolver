@@ -189,8 +189,10 @@ async function showReport(name, line) {
   if (!$("jr-hands-mode").value) $("jr-hands-mode").value = "table";
   if (!$("jr-view").value) $("jr-view").value = "flops";
   $("jobs-report").showModal();
-  if (!(await loadReport()) && $("jr-line").value.trim() && line == null && !lastReport) {
-    // a remembered line that no longer loads: fall back to the first decision
+  // a remembered line that no longer loads: fall back to the first decision (only on a real failure:
+  // a load replaced by a newer one, or ended by closing the dialog, is not one, #352)
+  if ((await loadReport()) === "failed" && $("jr-line").value.trim() && line == null && !lastReport &&
+      $("jobs-report").open) {
     $("jr-line").value = "";
     await loadReport();
   }
@@ -202,7 +204,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** (Re)load the open batch's report at the line in the Line field (empty: the first decision, #325).
  *  The first report at a line reads every save in the background; this polls and shows how far it got
  *  (#333). A newer load, or closing the dialog, ends the polling (the reading itself carries on and is
- *  cached). Returns whether a report was shown. */
+ *  cached). Returns true when a report was shown, "failed" on an error, false when cancelled. */
 async function loadReport() {
   const line = $("jr-line").value.trim();
   const token = ++loadToken;
@@ -226,11 +228,10 @@ async function loadReport() {
       rep = await get(url);
     }
   } catch (e) {
-    if (token === loadToken) {
-      fail(e);
-      $("jr-note").textContent = String(e.message || e);
-    }
-    return false;
+    if (token !== loadToken) return false;
+    fail(e);
+    $("jr-note").textContent = String(e.message || e);
+    return "failed";
   } finally { if (token === loadToken) go.disabled = false; }
   if (token !== loadToken) return false;
   lastReport = rep;

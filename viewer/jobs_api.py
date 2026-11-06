@@ -56,8 +56,10 @@ class JobsService:
         self.point = None      # its latest progress point
         self.log = collections.deque(maxlen=200)
         self.last_error = None
-        # line reports reading saves in the background (#333): (batch, line key) -> task
+        # line reports reading saves in the background (#333): (batch, line key) -> task; one reads at a
+        # time (each holds a whole tree in memory, next to a running solve, #352)
         self.reports = {}
+        self.read_lock = threading.Lock()
 
     # ---- runner thread
     def _log(self, msg):
@@ -272,6 +274,7 @@ class JobsService:
         the report is built from the job cache, so it is never older than the queue."""
         key = ":".join(jobs.parse_line(line))
         tid = (name, key)
+        skip = None
         with self.mu:
             t = self.reports.get(tid)
             if t is not None and t["finished"]:
@@ -280,16 +283,24 @@ class JobsService:
                     raise vsrv.SolverError(t["error"])
             elif t is not None:
                 return {"reading": True, "line": key, "progress": dict(t["progress"])}
-        # just read in the background, or all cached: build it now (a save that failed to read isn't
-        # cached and is tried again here, once, rather than starting another task)
-        if t is not None or not jobs.line_uncached(self.q, name, line):
+        uncached = {j["id"] for j in jobs.line_uncached(self.q, name, line)}
+        if t is not None:
+            # just read in the background: this request reads nothing itself (#352). The saves the task
+            # couldn't read are rows with its error; jobs finished since it started get a new task.
+            new = uncached - t["attempted"]
+            if not new:
+                skip = {jid: t["failures"].get(jid, "not read: report again") for jid in uncached}
+                return jobs.line_report(self.q, name, line, self.solver_exe, root=root, skip=skip)
+            uncached = new
+        elif not uncached:
             return jobs.line_report(self.q, name, line, self.solver_exe, root=root)
         if not self.solver_exe:
             raise vsrv.SolverError("no solver to read the saves with")
         with self.mu:
             if tid in self.reports:  # started meanwhile by another request
                 return {"reading": True, "line": key, "progress": dict(self.reports[tid]["progress"])}
-            t = {"progress": {"done": 0, "total": None, "board": None}, "finished": False, "error": None}
+            t = {"progress": {"done": 0, "total": len(uncached), "board": None}, "finished": False, "error": None,
+                 "attempted": set(uncached), "failures": {}}
             self.reports[tid] = t
 
         def prog(done, total, board):
@@ -297,7 +308,9 @@ class JobsService:
 
         def work():
             try:
-                jobs.line_report(self.q, name, line, self.solver_exe, progress=prog, root=root)
+                with self.read_lock:  # one background read at a time; the others wait at "0 of N"
+                    jobs.line_report(self.q, name, line, self.solver_exe, progress=prog, root=root,
+                                     failures=t["failures"])
             except Exception as e:  # noqa: BLE001 - shown to whoever asks next
                 t["error"] = str(e) or type(e).__name__
             t["finished"] = True

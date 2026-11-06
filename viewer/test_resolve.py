@@ -758,7 +758,10 @@ class ResolveIntegrationTest(unittest.TestCase):
         self.assertEqual(self.req("/api/unlock", "POST", {"all": True})[0], 200)
 
     def test_38_solve_refused_while_solving_further(self):
-        # (runs last: it changes the shared tree, and test_37 has just rebuilt it unsolved)
+        # (runs last: it changes the shared tree; it sets up its own from CFG, since earlier tests
+        # leave other settings on the shared solver)
+        self.assertEqual(self.req("/api/generate", "POST", CFG)[0], 200)
+        self.assertEqual(self.req("/api/build", "POST", {})[0], 200)
         # #357: /api/solve during a Solve further used to clear its partial state, so the subtree's
         # progress went into the main convergence series
         st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 1e-9})

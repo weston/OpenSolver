@@ -113,7 +113,28 @@ EquityResult range_equity(const std::vector<int>& board, const std::array<float,
   for (int c = 0; c < NUM_CARDS; ++c)
     if (!(bm & card_bit(c))) avail.push_back(c);
   int need = 5 - static_cast<int>(board.size());
-  if (need == 0) {
+  if (need == 5) {
+    // A preflop node (#371): the exact hand-vs-hand table, counts over the C(48,5) boards of each pair.
+    // (The enumeration below deals at most 2 cards; with no board it read b5[0..2] uninitialized.)
+    const PfTable& T = pf_table();
+    for (size_t i = 0; i < h.combos.size(); ++i) {
+      const int hc = h.combos[i];
+      const uint64_t hm = combo_mask(hc);
+      double w_ = 0, t_ = 0, c_ = 0;
+      for (size_t j = 0; j < v.combos.size(); ++j) {
+        const int vc = v.combos[j];
+        if (combo_mask(vc) & hm) continue;
+        const double wv = v.w[j];
+        const size_t k = static_cast<size_t>(hc) * NUM_COMBOS + vc;
+        w_ += wv * T.win[k];
+        t_ += wv * T.tie[k];
+        c_ += wv * PF_BOARDS_PER_PAIR;
+      }
+      win[i] = w_;
+      tie[i] = t_;
+      compat[i] = c_;
+    }
+  } else if (need == 0) {
     accumulate_board(b5, h, v, win.data(), tie.data(), compat.data());
   } else if (need == 1) {
     for (int c : avail) {

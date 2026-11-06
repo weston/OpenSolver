@@ -294,6 +294,14 @@ bool Upi::execute_line(const std::string& raw, bool silent) {
   return true;
 }
 
+// A chip amount (set_pot, set_eff_stack, lines): atoi-like, as Pio reads them ("30.7" is 30), but bounded so
+// pot sums can't overflow int32 (#371: 4294967346 wrapped to 50, and a 3e9 stack went negative).
+static int32_t chips_arg(const std::string& s) {
+  const long long v = std::atoll(s.c_str());
+  if (v > 100000000LL || v < -100000000LL) throw CmdError{"incorrect or missing argument"};
+  return static_cast<int32_t>(v);
+}
+
 std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exit) {
   if (cmd == "exit" || cmd == "quit") {
     stop_solver();
@@ -1015,7 +1023,7 @@ void Upi::register_commands() {
   // "1e1" is 1. set_eff_stack and set_pot take anything; add_line and friends need a leading digit.
   H["set_eff_stack"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    cfg_.eff_stack = static_cast<int32_t>(std::atoll(a[0].c_str()));
+    cfg_.eff_stack = chips_arg(a[0]);
     return std::string("set_eff_stack ok!");
   };
   H["set_board"] = [this](const Args& a) {
@@ -1030,7 +1038,7 @@ void Upi::register_commands() {
   };
   H["set_pot"] = [this](const Args& a) {
     // Pio: only the given values change; fewer than two is an error, but they are still applied.
-    for (size_t i = 0; i < 3 && i < a.size(); ++i) cfg_.pot[i] = static_cast<int32_t>(std::atoll(a[i].c_str()));
+    for (size_t i = 0; i < 3 && i < a.size(); ++i) cfg_.pot[i] = chips_arg(a[i]);
     if (a.size() < 2) throw CmdError{"incorrect or missing argument"};
     return std::string("set_pot ok!");
   };
@@ -1041,7 +1049,7 @@ void Upi::register_commands() {
       // stays an error here: Pio accepts it but builds something arbitrary (probed: "abc" -> b200).
       size_t i = s[0] == '+' || s[0] == '-' ? 1 : 0;
       if (i >= s.size() || !std::isdigit(static_cast<unsigned char>(s[i]))) throw CmdError{"incorrect or missing argument"};
-      l.push_back(static_cast<int32_t>(std::atoll(s.c_str())));
+      l.push_back(chips_arg(s));
     }
     if (l.empty()) throw CmdError{"incorrect or missing argument"};
     return l;
@@ -1358,7 +1366,7 @@ void Upi::register_preflop_commands() {
   auto& H = handlers_;
   auto parse_line = [](const Args& a) {
     std::vector<int32_t> l;
-    for (auto& s : a) l.push_back(static_cast<int32_t>(std::atoll(s.c_str())));
+    for (auto& s : a) l.push_back(chips_arg(s));
     if (l.empty()) throw CmdError{"incorrect or missing argument"};
     return l;
   };
@@ -1462,6 +1470,10 @@ void Upi::register_preflop_commands() {
   H["add_all_flops"] = [this](const Args&) -> std::string {
     if (!have_pf_) throw CmdError{"no preflop tree", true};
     if (subset_.empty()) throw CmdError{"no flop subset available", true};
+    // all weights 0: the flop deal divides by the total weight, so every flop came out worth nothing (#371)
+    double wsum = 0;
+    for (const auto& f : subset_) wsum += f.weight;
+    if (!(wsum > 0)) throw CmdError{"the flop subset's weights are all 0", true};
     GameConfig c = pf_cfg_;
     c.schematics = schematics_;
     c.subset = subset_;

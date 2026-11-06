@@ -168,22 +168,42 @@ export async function gotoNode(id) {
     }
     if (seq !== S.seq) return;
     Object.assign(S, { id, path: p.nodes, eff: p.eff_stack || 0, cur, dec, decId, range: null, ev: {}, loaded: true });
-    if (S.pinned && !H.byClass[S.pinned]) S.pinned = null;
+    if (S.pinned && !Object.prototype.hasOwnProperty.call(H.byClass, S.pinned)) S.pinned = null;
     // a pinned/hovered category is board-dependent: it does not survive navigation
     S.catPin = null; S.catHl = null;
     if (S.mode !== "strategy") await loadModeData();
     await whenReleased();   // never rebuild the cards under a press (preview.js)
     if (seq !== S.seq) return;
     render();
-    nodeShown(id, cur, { inSubgame: !!S.sub, refresh: () => { if (S.loaded && S.id === id && S.target === id) gotoNode(id); } });
+    nodeShown(id, cur, { inSubgame: !!S.sub, refresh: () => { if (S.loaded && S.id === id && S.target === id) { invalidate(); gotoNode(id); } } });
     if (!S.sub && !document.getElementById("view-study").classList.contains("hidden")) history.replaceState(null, "", "#study=" + id + urlState());
   } catch (e) {
     if (seq === S.seq) fail(e);
   }
 }
 
+/** The current node's ranges, fetched once. A late answer for a node left meanwhile is dropped: assigning
+ *  S.range after the await used to put node A's ranges on node B (#369). */
+async function loadRange() {
+  if (S.range) return S.range;
+  const id = S.id, base = S.base;
+  const r = await get(`${base}/range?id=` + q(id));
+  if (S.id === id && S.base === base) S.range = r;
+  return r;
+}
+
+/** Forget what was read from the tree: the decision above a deal/end node and the categories. A
+ *  refresh (solve finished, a lock, a refine, a new board) must not reuse them (#369). */
+function invalidate() {
+  S.dec = null;
+  S.decId = null;
+  S.cats = null;
+  const box = $("side-cats");
+  if (box) box.dataset.key = "";
+}
+
 async function loadModeData() {
-  if (!S.range) S.range = await get(`${S.base}/range?id=` + q(S.id));
+  await loadRange();
   if (S.mode === "ev") {
     const pl = viewPlayer();
     if (!S.ev[pl]) S.ev[pl] = await get(`${S.base}/ev?id=${q(S.id)}&player=${pl}`);
@@ -687,7 +707,7 @@ async function renderNodePanel() {
     for (const pl of ["OOP", "IP"]) {
       if (!S.ev[pl]) S.ev[pl] = await get(`${S.base}/ev?id=${q(S.id)}&player=${pl}`);
     }
-    if (!S.range) S.range = await get(`${S.base}/range?id=` + q(S.id));
+    await loadRange();
     if (seq !== S.seq || S.side !== "node") return;
     for (const pl of ["OOP", "IP"]) {
       const e = S.ev[pl], w = pl === "OOP" ? S.range.oop : S.range.ip;
@@ -710,7 +730,7 @@ async function renderRangesPanel() {
   const box = $("side-ranges");
   const seq = S.seq;
   try {
-    if (!S.range) S.range = await get(`${S.base}/range?id=` + q(S.id));
+    await loadRange();
   } catch (e) { fail(e); return; }
   if (seq !== S.seq || S.side !== "ranges") return;
   box.textContent = "";
@@ -925,7 +945,7 @@ export function applyUrlState(params) {
   if (["strategy", "range", "ev"].includes(params.mode)) S.mode = params.mode;
   if (["OOP", "IP"].includes(params.player)) S.player = params.player;
   if (["hand", "node", "ranges", "cats"].includes(params.side)) S.side = params.side;
-  if (params.pin && H.byClass[params.pin]) S.pinned = params.pin;
+  if (params.pin && Object.prototype.hasOwnProperty.call(H.byClass, params.pin)) S.pinned = params.pin;
   document.querySelectorAll("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.mode === S.mode));
 }
 
@@ -972,6 +992,6 @@ export const study = {
   get id() { return S.id; },
   get pot() { return S.path.length ? potOf(S.path[S.path.length - 1]) : 0; },
   get inSubgame() { return !!S.sub; },
-  refresh() { return gotoNode(S.loaded ? S.id : "r:0"); },
-  reset() { S.pinned = null; S.decId = null; S.dec = null; S.base = "/api"; S.sub = null; return gotoNode("r:0"); },
+  refresh() { invalidate(); return gotoNode(S.loaded ? S.id : "r:0"); },
+  reset() { S.pinned = null; invalidate(); S.base = "/api"; S.sub = null; return gotoNode("r:0"); },
 };

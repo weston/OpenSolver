@@ -184,10 +184,13 @@ class RefineManager(vresolve.ResolveManager):
         return {"state": "running", "root": root}
 
     def _main_done(self):
-        """The main solve met its target: from then on it is the answer, refined or not."""
+        """No refining: the main tree is the answer as it stands. That is once its solve has met its
+        target, but also once it was stopped, or never ran, and for a tree loaded from a file (#369: a
+        saved or stopped tree used to be re-solved and shown instead of itself)."""
+        if getattr(self.main, "loaded_file", False):
+            return True
         with self.main.state_lock:
-            return not self.main.solving and not self.main.suspended and \
-                "required accuracy" in self.main.solver_status
+            return not self.main.solving and not self.main.suspended
 
     def _stale(self, r):
         """A refine is out of date once its ranges are: the main solve has reported progress

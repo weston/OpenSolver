@@ -18,6 +18,7 @@ symlink escapes (checked with os.path.realpath) are all rejected.
 
 import json
 import os
+import tempfile
 
 SCHEMA = 1
 KINDS = {"range": "ranges", "config": "configs"}
@@ -169,9 +170,12 @@ class Library:
         if len(text.encode("utf-8")) > MAX_CONTENT:
             raise LibraryError("content too large")
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.tmp.{os.getpid()}"
+        # a temp name of its own per write: the viewer's HTTP threads share one pid, so `.tmp.<pid>`
+        # made two saves of one name write the same file and fail (#369). The suffix keeps it out of
+        # listings (they match .txt / .json).
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".save-", suffix=".tmp")
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             os.replace(tmp, path)  # atomic on the same filesystem
         finally:

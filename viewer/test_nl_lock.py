@@ -231,6 +231,59 @@ class NLTest(unittest.TestCase):
         st, r = self.req_s("/api/nl/propose", "POST", {"id": FACING, "text": "  "})
         self.assertEqual(st, 400)
 
+    def test_review_fixes_spec_validation(self):
+        """#373: misspelt or empty selectors, mix + target together, overflowing weights, "ok": "false"."""
+        cases = [
+            ({"hands": {"class": ["AA"]}, "mix": {"f": 1}}, "unknown hands field"),
+            ({"hands": {"classes": []}, "mix": {"f": 1}}, "selects nothing"),
+            ({"hands": "all", "mix": {"f": 1}, "target": {"action": "f", "overall": 0.5}}, "exactly one of mix or target"),
+            ({"hands": "all", "mixx": {"f": 1}}, "unknown field"),
+            ({"hands": "all", "mix": {"f": 10 ** 400, "c": 1}}, "mix weights"),
+        ]
+        for rule, want in cases:
+            st, r = self.propose({"ok": True, "explanation": "x", "rules": [rule]})
+            self.assertEqual(st, 200, r)
+            self.assertFalse(r["ok"], rule)
+            self.assertIn(want, r.get("error", ""), rule)
+        st, r = self.propose({"ok": True, "explanation": "x", "rules": [{"hands": "all", "mix": {"f": 1e308, "c": 1e308}}]})
+        self.assertTrue(r["ok"], r)
+        row = [r["freq"][k][next(i for i, v in enumerate(self.ctx()["reach"]) if v > 0)] for k in range(len(r["freq"]))]
+        self.assertAlmostEqual(sum(row), 1.0, places=6, msg=f"huge equal weights are 50/50, not all 0 ({row})")
+        st, r = self.propose({"ok": "false", "explanation": "x", "rules": [{"hands": "all", "mix": {"f": 1}}]})
+        self.assertFalse(r["ok"], "a string ok is not true")
+        self.assertNotIn("freq", r)
+
+    def test_review_fixes_key_and_transport(self):
+        """#373: a malformed key is no key; no redirects; any failure is an NLError without the key."""
+        with mock.patch.dict(os.environ, {"SAIL_API_KEY": "sk-NEW\nsk-OLD"}):
+            self.assertIsNone(nl_lock.load_key(), "a key with a newline inside is refused")
+        with mock.patch.dict(os.environ, {"SAIL_API_KEY": SECRET}):
+            self.assertEqual(nl_lock.load_key(), SECRET)
+        c = nl_lock.SailClient(SECRET)
+        h = nl_lock._NoRedirect()
+        self.assertIsNone(h.redirect_request(None, None, 302, "Found", {}, "https://evil.example/x"))
+
+        def boom(req, timeout=None):
+            raise ValueError(f"Invalid header value b'Bearer {SECRET}'")
+        c.opener = boom
+        with self.assertRaises(nl_lock.NLError) as cm:
+            c.complete([{"role": "user", "content": "x"}])
+        self.assertNotIn(SECRET, str(cm.exception), "the error text never holds the key")
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        c.opener = lambda req, timeout=None: Resp(json.dumps({"choices": [{"message": {"content": "{}"}}],
+                                                               "usage": []}).encode())
+        text, usage = c.complete([{"role": "user", "content": "x"}])
+        self.assertEqual(usage, {"input_tokens": 0, "output_tokens": 0}, "odd usage fields read as 0")
+        c.opener = lambda req, timeout=None: Resp(b"<html>not json</html>")
+        with self.assertRaises(nl_lock.NLError):
+            c.complete([{"role": "user", "content": "x"}])
+
     # ------------------------------------------------------------------ prompt, cost, key
 
     def test_prompt_is_compact_and_costed(self):

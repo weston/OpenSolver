@@ -532,11 +532,26 @@ def node_summary(s, nid: str) -> dict:
         raise JobError(f"{nid}: {len(rows)} strategy rows for {len(actions)} actions")
     pot = [x for x in node["pot"] if x is not None]
     out = {"player": player, "actions": actions, "pot": sum(pot),
-           "facing": abs(pot[0] - pot[1]) if len(pot) >= 2 else 0}
+           "facing": abs(pot[0] - pot[1]) if len(pot) >= 2 else 0, "hands": {}}
+    order = vserver.hand_order(s)
     for p in ("OOP", "IP"):
         e = vserver.ev_pair(s, p, nid)
         if e["matchups"] is None:
             raise JobError("calc_ev gave no matchups line")
+        eq = vserver.parse_floats(s.cmd(f"calc_eq_node {p} {nid}").split("\n")[0], len(order))
+        # per hand class (#336): sums of matchups, matchups x EV and matchups x equity, as PioViewer's
+        # handsEV.csv aggregates them (each combo counts by reach x matchups)
+        hs = {}
+        for i, m in enumerate(e["matchups"]):
+            v, q = e["ev"][i], eq[i]
+            if m is None or not math.isfinite(m) or m <= 0 or v is None or not math.isfinite(v) \
+                    or q is None or not math.isfinite(q):
+                continue
+            a = hs.setdefault(vserver.combo_class(order[i]), [0.0, 0.0, 0.0])
+            a[0] += m
+            a[1] += m * v
+            a[2] += m * q
+        out["hands"][p] = hs
         num = den = 0.0
         fnum = [0.0] * len(rows)
         fden = 0.0
@@ -564,6 +579,7 @@ def line_result(s, steps: list[str]) -> dict:
     """One job's report at a line: the node summaries, one per dealt card at the * steps."""
     rows = []
     head = None
+    hands = {}
     for nid, cards in walk_line(s, steps):
         n = node_summary(s, nid)
         if head is None:
@@ -571,6 +587,15 @@ def line_result(s, steps: list[str]) -> dict:
         elif n["actions"] != head["actions"] or n["player"] != head["player"]:
             continue  # a different decision under one card (see walk_line): left out
         rows.append({"cards": cards, **{k: n[k] for k in ("freqs", "mass", "ev_oop", "ev_ip", "global")}})
+        for p, hs in n["hands"].items():
+            tot = hands.setdefault(p, {})
+            for c, a in hs.items():
+                t = tot.setdefault(c, [0.0, 0.0, 0.0])
+                for k in range(3):
+                    t[k] += a[k]
+    # over the cards of a * line: their mean, the same scale as the flop's mass (aggregate_cards)
+    k = len(rows) or 1
+    head["hands"] = {p: {c: [float(f"{x / k:.7g}") for x in a] for c, a in hs.items()} for p, hs in hands.items()}
     return {**head, "rows": rows}
 
 
@@ -751,17 +776,23 @@ LINE_CACHE = 8  # line results kept per job (each is a few KB; a turn line has ~
 
 def line_uncached(q: Queue, name: str, line: str) -> list[dict]:
     """The done jobs of a batch whose result at this line isn't cached yet (a line report reads their
-    saves). Empty for the root line, which needs no save."""
+    saves). The empty line is the root as line_report(root=True) reads it, for the per-hand figures."""
     steps = parse_line(line)
-    if not steps:
-        return []
     key = ":".join(steps)
     q.batch(name)
-    return [j for j in q.jobs(name)
-            if j["status"] == "done" and key not in ((j.get("result") or {}).get("lines") or {})]
+    return [j for j in q.jobs(name) if j["status"] == "done" and _cached_line(j, key) is None]
 
 
-def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress=None) -> dict:
+def _cached_line(j: dict, key: str):
+    """A job's cached result at a line, or None. Results from before the per-hand sums (#336) count as
+    missing (a line that doesn't fit the tree, cached as an error, doesn't)."""
+    res = ((j.get("result") or {}).get("lines") or {}).get(key)
+    if res is not None and "error" not in res and "hands" not in res:
+        return None
+    return res
+
+
+def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress=None, root: bool = False) -> dict:
     """The batch's report at a line other than the root (#325), like PioViewer's aggregation report
     there: per flop the decision's strategy, both EVs and Global % (calc_global_freq); with a card or
     * in the line, one row per card dealt there under each flop (`cards`), rolled up into the flop's
@@ -769,23 +800,27 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress
     line. The batch average weights flops by weight x matchup mass, like the root report.
 
     `progress(done, total, board)` is called before each save is read (total = the saves to read) and
-    once at the end, so a caller can show how far it got (#333)."""
+    once at the end, so a caller can show how far it got (#333).
+
+    The empty line is the root report (report()), unless `root` asks for this report at the root, which
+    reads the saves too but has the per-hand figures (`hands`, #336)."""
     import server as vserver
     steps = parse_line(line)
-    if not steps:
+    if not steps and not root:
         return report(q, name, solver_exe)
     key = ":".join(steps)
     b = q.batch(name)
     head = None
     rows = []
     js = q.jobs(name)
-    to_read = sum(j["status"] == "done" and key not in ((j.get("result") or {}).get("lines") or {}) for j in js)
+    to_read = sum(j["status"] == "done" and _cached_line(j, key) is None for j in js)
     read = 0
+    hand_tot = {}
     for j in js:
         if j["status"] != "done":
             continue
         r = j.get("result") or {}
-        res = (r.get("lines") or {}).get(key)
+        res = _cached_line(j, key)
         if res is None:
             if not solver_exe:
                 raise JobError("a report at a line reads the saves: give --solver")
@@ -834,6 +869,12 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress
         if "error" not in res and head and res["actions"] == head["actions"] and res["player"] == head["player"]:
             expanded = any(c["cards"] for c in res["rows"])
             row.update(aggregate_cards(res["rows"]))
+            for p, hs in (res.get("hands") or {}).items():
+                tot = hand_tot.setdefault(p, {})
+                for c, a in hs.items():
+                    t = tot.setdefault(c, [0.0, 0.0, 0.0])
+                    for k in range(3):
+                        t[k] += j["weight"] * a[k]
             if expanded:
                 row["cards"] = res["rows"]
         else:
@@ -862,6 +903,7 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress
         if den > 0:
             total["global"] = num / den
     return {"batch": name, "line": key, "pot": head["pot"], "facing": head["facing"], "player": head["player"],
+            "hands": hand_rows(hand_tot, head["pot"]),
             "actions": head["actions"],
             "labels": [action_label(a, head["pot"], head["facing"]) for a in head["actions"]],
             "rows": rows, "total": total,
@@ -870,11 +912,46 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress
             "pending": sum(j["status"] != "done" for j in q.jobs(name))}
 
 
+def hand_rows(tot: dict, pot: float) -> dict:
+    """Per player, the hand classes over the batch, best EV first (#336): EV in chips and in % of the
+    node's pot, equity, equity realization (EV over equity x pot) and matchups, as in PioViewer's
+    handsEV.csv. `tot` holds per class the weighted sums of matchups, matchups x EV, matchups x equity."""
+    out = {}
+    for p in ("OOP", "IP"):
+        rows = []
+        for c, (m, mev, meq) in (tot.get(p) or {}).items():
+            if m <= 0:
+                continue
+            ev, eq = mev / m, meq / m
+            rows.append({"hand": c, "ev": round(ev, 4), "ev_pct": round(100 * ev / pot, 4) if pot else None,
+                         "equity": round(eq, 6), "eqr": round(ev / (eq * pot), 6) if eq > 0 and pot else None,
+                         "matchups": round(m, 4)})
+        rows.sort(key=lambda x: -x["ev"])
+        out[p] = rows
+    return out
+
+
+def write_hands_csv(rep: dict, path: str) -> None:
+    """PioViewer's handsEV.csv layout: per player a "Preflop Hands <player>" section of hand classes
+    (EV and equity in % of the node's pot, realization in %, matchups), best EV first; plus EV in chips."""
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([f"Report at r:0:{rep['line']}" if rep["line"] else "Report at r:0", f"pot {rep['pot']:g}",
+                    "EV and equity in % of the pot"])
+        for p in ("OOP", "IP"):
+            w.writerow([f"Preflop Hands {p}"])
+            w.writerow(["Hand", "EV", "Equity", "Equity Realization", "Matchups", "EV chips"])
+            for x in (rep.get("hands") or {}).get(p, []):
+                w.writerow([x["hand"], x["ev_pct"], round(100 * x["equity"], 6),
+                            round(100 * x["eqr"], 6) if x["eqr"] is not None else "", x["matchups"], x["ev"]])
+            w.writerow([])
+
+
 def print_line_report(rep: dict, by: str | None = None, cards: bool = False, csv_path: str | None = None) -> None:
     """The CLI table of a line report; the CSV has PioViewer's layout (Flop, Turn, Global %, EVs, freqs:
     a flop row with an empty card, then its cards' rows, then the weighted total)."""
     labels = rep["labels"]
-    print(f"{rep['batch']}: {rep['player'] or '?'} at r:0:{rep['line']}, pot {rep['pot']:g}"
+    print(f"{rep['batch']}: {rep['player'] or '?'} at {'r:0:' + rep['line'] if rep['line'] else 'the root'}, pot {rep['pot']:g}"
           + (f", facing {rep['facing']:g}" if rep["facing"] else ""))
     print(f"{'board':<10} {'weight':>7} {'global %':>9} {'EV OOP':>9} {'EV IP':>9}  " + "  ".join(f"{l:>14}" for l in labels))
 
@@ -1230,6 +1307,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="report at this line instead of the root: a node id like r:0:b198:c:2d:c:b447, where a "
                          "card (or *) means every card dealt there, as in PioViewer's aggregation report")
     rp.add_argument("--cards", action="store_true", help="with --line through a card: also print each card's row")
+    rp.add_argument("--hands", metavar="FILE", help="also write each hand class's EV, equity, realization and "
+                    "matchups over the batch as CSV (PioViewer's handsEV.csv; at the root too, reading the saves)")
 
     args = ap.parse_args(argv)
     q = Queue(args.queue)
@@ -1304,9 +1383,13 @@ def main(argv: list[str] | None = None) -> int:
                 w.writerow(row)
             if args.output:
                 out.close()
-        elif args.cmd == "report" and parse_line(args.line):
+        elif args.cmd == "report" and (parse_line(args.line) or args.hands):
             exe = os.path.abspath(args.solver) if os.path.isfile(args.solver) else None
-            print_line_report(line_report(q, args.name, args.line, exe), args.by, args.cards, args.csv)
+            rep = line_report(q, args.name, args.line, exe, root=True)
+            print_line_report(rep, args.by, args.cards, args.csv)
+            if args.hands:
+                write_hands_csv(rep, args.hands)
+                print(f"hands: {sum(len(v) for v in rep['hands'].values())} classes -> {args.hands}")
         elif args.cmd == "report":
             rep = report(q, args.name, os.path.abspath(args.solver) if os.path.isfile(args.solver) else None)
             labels = rep["labels"]

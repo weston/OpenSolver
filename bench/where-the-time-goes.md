@@ -287,7 +287,10 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
 - **Deferring the decay of unreached rows** (nodes the opponent does not reach: regrets only decay,
   the strategy sum still takes the traverser's reach): `strategy_only` is 9-17% of the
   regret-update elements (threebet_mono 9%, flop_srp_4 17%) and still has to read the regrets and
-  update S, so only the regret write could be deferred. Not pursued.
+  update S, so only the regret write could be deferred. Not pursued. **Its ceiling is zero on the M4**
+  (2026-11-06, threebet_mono, 10 threads, 150 iterations, 4 interleaved runs): a build that skips the
+  unreached nodes' regret decay and regret store altogether (wrong results, valid timing) runs in
+  4.008 s median against 4.009 s for main.
 - **Transparent huge pages** (Linux build in WSL2 on the same PC, THP `always` vs `PR_SET_THP_DISABLE`):
   srp_big 20 iterations at 32 threads take 6.89 / 7.15 s with THP and 7.02 / 6.84 s without, so TLB
   misses are not a factor. (That GCC 13 build is ~7% slower than the mingw `-march=znver5` exe.)
@@ -359,6 +362,14 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
     vectorised call is cheaper than a scalar per-hand loop.
   - **Board-blocked hands are 8.05% of river storage** on every tree (river rows are 98-99% of all
     storage; turn rows 1-3%, 4% of them blocked), so 8% of the bytes streamed per iteration are dead. Compacting them is #239.
+- **Profile at 10 threads** (2026-11-06, M4, threebet_mono float32, `sample` for 8 s; the main thread's
+  wait in `wait_for_solver` left out): the lanes kernel 35%, `current_strategy` 20%, `river_down` 8%,
+  `traverser_update` 8%, `river_cfr` 6%, `strategy_only` 6%, `memset` 2.6%, `Arena::alloc` 2%,
+  `terminal_payoff` 2%. Workers barely wait (`cv_wait` + `swtch_pri` ~1.7%).
+  - **`terminal_payoff` per visit -> a table built with the tree** (#339): kept, bit-identical,
+    -0.7% threebet_mono, -1.4% deep, -1.0% flop_srp_4.
+  - **`Arena::alloc` inline** (the bump in the header, the new-block path out of line): 4.000 vs
+    4.002 s, nothing, so its samples were not call overhead.
 - **Per-street DCFR parameters** (2026-11-05, M4; an env-var prototype giving nodes with 3 / 4 / 5 board
   cards their own alpha / beta / gamma). Iterations to 1 / 0.5 / 0.3 / 0.1 / 0.05 / 0.02% of the pot
   (deterministic counts, checked every 2 iterations; `-` = not reached within 800), one street changed

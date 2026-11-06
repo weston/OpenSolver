@@ -1009,6 +1009,34 @@ def check_info_freq_auto(u):
     u.cmd("free_tree")
 
 
+def check_tree_construction_edges(exe):
+    """#371: preflop calc_eq, a decision left with no actions, chip amounts out of range, an all-zero subset."""
+    print("[tree construction edges]")
+
+    def run(lines):
+        p = subprocess.run([exe], input="\n".join(lines + ["exit"]) + "\n", capture_output=True, text=True, timeout=600)
+        return p.stdout
+
+    out = run(["set_range OOP KK", "set_range IP AA", "set_pot 10 5 0", "set_eff_stack 100", "add_preflop_line 100",
+               "build_preflop_tree", "calc_eq_node OOP r:0:b100:c"])
+    tail = [l for l in out.splitlines() if l.strip()]
+    tot = float(tail[-1]) if tail and re.fullmatch(r"[0-9.]+", tail[-1]) else None
+    vals = {v for l in tail[-3:-1] for v in l.split() if v not in ("nan", "0")}
+    check(tot is not None and abs(tot - 0.1805) < 0.003 and vals and all(abs(float(v) - 0.1805) < 0.003 for v in tail[-3].split()
+                                                                     if v != "nan"),
+          f"preflop calc_eq_node: KK vs AA is about 0.18 (got {tot}; was 0.075 from an unset board)")
+    out = run(["add_line 0 50", "remove_line 0 50 50", "remove_line 0 50 0", "set_board AsKd7c2h3s",
+               "set_range OOP AA,KK,QQ", "set_range IP AA,KK,JJ", "set_pot 0 0 100", "set_eff_stack 200", "build_tree"])
+    check("ERROR: build_tree the removed lines leave a decision with no actions" in out,
+          "build_tree refuses a decision the removed lines left without actions")
+    out = run(["set_eff_stack 3000000000", "set_pot 1500000000 1500000000 0", "add_line 50 4294967346"])
+    check(out.count("incorrect or missing argument") == 3, "chip amounts out of range are refused, not wrapped")
+    out = run(["set_range OOP QQ+,AKs", "set_range IP QQ+,AKs,JTs", "set_pot 10 5 0", "set_eff_stack 100",
+               "add_preflop_line 25 25", "build_preflop_tree", "add_to_subset 0 As Ks Qs", "set_board AsKsQs",
+               "set_pot 0 0 50", "set_eff_stack 75", "add_line 25", "add_schematic_tree 25 25", "add_all_flops"])
+    check("the flop subset's weights are all 0" in out, "add_all_flops refuses an all-zero subset")
+
+
 def check_mid_solve_settings(u):
     """#364: settings changed while a solve runs take effect between iterations (no data race), and a
     report frequency set mid-solve is used: before, the frequency was read once at the start, so a solve
@@ -1237,6 +1265,7 @@ def check_save_robustness(exe):
 def main(exe, big=False):
     check_framing(exe)
     check_save_robustness(exe)
+    check_tree_construction_edges(exe)
     check_exit_while_parked(exe)
     u = Upi(exe)
     try:

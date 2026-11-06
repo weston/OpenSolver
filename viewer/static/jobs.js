@@ -184,6 +184,8 @@ async function showReport(name, line) {
   $("jr-table").replaceChildren();
   $("jr-line").value = line != null ? line : prefs.get("jobs-report-line:" + name, "");
   $("jr-cards").checked = prefs.get("jobs-report-cards", "") === "1";
+  $("jr-view").value = prefs.get("jobs-report-view", "flops");
+  if (!$("jr-view").value) $("jr-view").value = "flops";
   $("jobs-report").showModal();
   if (!(await loadReport()) && $("jr-line").value.trim() && line == null && !lastReport) {
     // a remembered line that no longer loads: fall back to the first decision
@@ -204,10 +206,13 @@ async function loadReport() {
   const token = ++loadToken;
   const go = $("jr-line-go");
   go.disabled = true;
-  $("jr-note").textContent = line ? "Reading the saves at this line…" : "";
+  // the per-hand view (#338) needs the saves read at the root too
+  const hands = $("jr-view").value !== "flops";
+  $("jr-note").textContent = line || hands ? "Reading the saves at this line…" : "";
   let rep;
   try {
-    const url = "/api/jobs/report?batch=" + encodeURIComponent(reportBatch) + "&line=" + encodeURIComponent(line);
+    const url = "/api/jobs/report?batch=" + encodeURIComponent(reportBatch) + "&line=" + encodeURIComponent(line) +
+      (hands ? "&hands=1" : "");
     rep = await get(url);
     while (rep.reading) {
       if (token !== loadToken || !$("jobs-report").open) return false;
@@ -262,9 +267,61 @@ function stratBar(freqs, rep) {
   return bar;
 }
 
+let handSort = { key: "ev", desc: true };
+const RANKS = "23456789TJQKA";
+/** A hand class's strength order for sorting: AA, AKs, AKo, AQs, ... 22 (higher = first). */
+const handRank = (h) => RANKS.indexOf(h[0]) * 1000 + RANKS.indexOf(h[1]) * 10 + (h.length === 2 ? 2 : h[2] === "s" ? 1 : 0);
+
+/** The per-hand view (#338): one player's hand classes over the batch, as PioViewer's handsEV.csv. */
+function renderHands(rep, player) {
+  const t = $("jr-table");
+  t.replaceChildren();
+  const cols = [["hand", "Hand"], ["ev", "EV"], ["ev_pct", "EV % pot"], ["equity", "Equity"], ["eqr", "EQR"],
+    ["matchups", "Matchups"]];
+  const head = el("tr");
+  for (const [k, label] of cols) {
+    const th = el("th", k === "hand" ? "sortable" : "num sortable", label + (handSort.key === k ? (handSort.desc ? " ▾" : " ▴") : ""));
+    th.title = { ev: "Chips, weighted by matchups over the flops", ev_pct: "EV in % of the pot at this node",
+      equity: "Equity against the opponent's range here", eqr: "Equity realization: EV / (equity × pot)",
+      matchups: "Reach × the opponent's unblocked combos, summed over the flops" }[k] || "";
+    th.onclick = () => {
+      handSort = { key: k, desc: handSort.key === k ? !handSort.desc : true };
+      renderHands(rep, player);
+    };
+    head.appendChild(th);
+  }
+  const thead = el("thead"); thead.appendChild(head); t.appendChild(thead);
+  const rows = [...((rep.hands || {})[player] || [])];
+  const k = handSort.key;
+  rows.sort((a, b) => {
+    const x = a[k], y = b[k];
+    const c = k === "hand" ? handRank(x) - handRank(y) : (x ?? -Infinity) - (y ?? -Infinity);
+    return handSort.desc ? -c : c;
+  });
+  const tb = el("tbody");
+  for (const x of rows) {
+    const tr = el("tr");
+    const cells = [x.hand, fmt(x.ev, 2), x.ev_pct == null ? "—" : fmt(x.ev_pct, 1) + "%", fmt(100 * x.equity, 1) + "%",
+      x.eqr == null ? "—" : fmt(100 * x.eqr, 1) + "%", fmt(x.matchups, 1)];
+    cells.forEach((c, i) => tr.appendChild(el("td", i ? "num" : "", c)));
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb);
+  const cmd = "python3 tools/jobs.py report " + JSON.stringify(rep.batch) + (rep.line ? ` --line ${rep.line}` : "") +
+    " --hands FILE";
+  $("jr-note").textContent = `${player}'s hand classes over ${rep.rows.filter((r) => r.freqs).length} flops: each combo ` +
+    "counts by its reach × matchups on every flop, as in PioViewer's handsEV.csv. EV and EQR are at this node " +
+    `(pot ${rep.pot}). ` + (rows.length ? "" : "No hands: this report has no per-hand figures. ") + "Command line: " + cmd;
+}
+
 function renderReport() {
   const rep = lastReport;
   if (!rep) return;
+  const view = $("jr-view").value;
+  prefs.set("jobs-report-view", view);
+  $("jr-by").classList.toggle("hidden", view !== "flops");
+  $("jr-cards-wrap").classList.toggle("hidden", view !== "flops" || !rep.rows.some((x) => x.cards));
+  if (view !== "flops") { renderHands(rep, view); return; }
   const by = $("jr-by").value;
   const cards = $("jr-cards").checked;
   prefs.set("jobs-report-by", by);
@@ -356,6 +413,11 @@ export function initJobs({ opened }) {
   $("jr-close").onclick = () => $("jobs-report").close();
   $("jr-by").onchange = renderReport;
   $("jr-cards").onchange = renderReport;
+  $("jr-view").onchange = () => {
+    // the hands come with a line report; at the root they need the saves read (hands=1)
+    if ($("jr-view").value !== "flops" && lastReport && !lastReport.hands) loadReport();
+    else renderReport();
+  };
   $("jr-line-go").onclick = () => loadReport();
   $("jr-line").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); loadReport(); } };
   $("jb-acc").value = prefs.get("jobs-acc", "0.5");

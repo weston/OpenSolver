@@ -12,6 +12,7 @@
 // Quantised records (the default since v5, `set_compression_precision` bits, 11 by default) store only the
 // displayed strategy, as per-hand frequencies; `lossless` writes the exact records of v4 (regrets too).
 // gzip's CRC32 plus the trailer marker let check_tree_health detect corruption and truncation.
+#include <stdexcept>
 #include <zlib.h>
 
 #include <algorithm>
@@ -56,6 +57,10 @@ struct Reader {
     std::memcpy(&v, p, sizeof(T));
     p += sizeof(T);
     return v;
+  }
+  // n bytes must remain: call before allocating anything sized by a count read from the file (#359)
+  void need(uint64_t n) const {
+    if (static_cast<uint64_t>(end - p) < n) throw CmdError{"file format error (truncated)"};
   }
   void get_bytes(void* dst, size_t n) {
     if (static_cast<size_t>(end - p) < n) throw CmdError{"file format error (truncated)"};
@@ -277,6 +282,7 @@ Header read_header(GzIn& in) {
   h.version = in.get<uint32_t>();
   if (h.version < 2 || h.version > kVersion) throw CmdError{"unsupported save version " + std::to_string(h.version)};
   h.truncate = in.get<uint32_t>();
+  if (h.truncate != 0 && h.truncate != 3 && h.truncate != 4) throw CmdError{"file format error (truncate)"};
   h.mode = in.get<uint8_t>();
   if (h.version >= 5) h.precision = in.get<uint8_t>();
   if ((h.mode & kModeQuant) && (h.precision < 2 || h.precision > 16)) throw CmdError{"file format error (precision)"};
@@ -357,7 +363,13 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
   uint8_t n = r.get<uint8_t>();
   if (n != 0 && (n < 3 || n > 5)) throw CmdError{"file format error (board)"};  // 0 = preflop tree
   c.board.clear();
-  for (int i = 0; i < n; ++i) c.board.push_back(r.get<uint8_t>());
+  uint64_t seen = 0;
+  for (int i = 0; i < n; ++i) {
+    uint8_t card = r.get<uint8_t>();
+    if (card >= 52 || (seen >> card & 1)) throw CmdError{"file format error (board)"};
+    seen |= uint64_t(1) << card;
+    c.board.push_back(card);
+  }
   for (int i = 0; i < 3; ++i) c.pot[i] = r.get<int32_t>();
   c.eff_stack = r.get<int32_t>();
   c.iso_flop = r.get<uint8_t>() != 0;
@@ -369,6 +381,7 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
     uint32_t k = r.get<uint32_t>();
     for (uint32_t i = 0; i < k; ++i) {
       uint32_t len = r.get<uint32_t>();
+      r.need(uint64_t(len) * sizeof(int32_t));
       std::vector<int32_t> l(len);
       for (auto& x : l) x = r.get<int32_t>();
       set->push_back(std::move(l));
@@ -403,7 +416,10 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
   for (uint32_t i = 0; i < ns; ++i) {
     SubsetFlop f;
     f.weight = r.get<float>();
-    for (int k = 0; k < 3; ++k) f.cards[k] = r.get<uint8_t>();
+    for (int k = 0; k < 3; ++k) {
+      f.cards[k] = r.get<uint8_t>();
+      if (f.cards[k] >= 52) throw CmdError{"file format error (subset)"};
+    }
     c.subset.push_back(f);
   }
   uint32_t nsc = r.get<uint32_t>();
@@ -417,6 +433,7 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
       uint32_t kk = r.get<uint32_t>();
       for (uint32_t j = 0; j < kk; ++j) {
         uint32_t len = r.get<uint32_t>();
+        r.need(uint64_t(len) * sizeof(int32_t));
         std::vector<int32_t> l(len);
         for (auto& x : l) x = r.get<int32_t>();
         set->push_back(std::move(l));
@@ -661,7 +678,15 @@ bool open_lazy(GameTree& t, const std::string& path, uint8_t file_mode, uint8_t 
     remaining += in_file;
   }
   L->remaining = remaining;
-  L->load_fn = lazy_load_segment;
+  // lazy_touch catches std::exception (game.cpp knows nothing of CmdError): convert, or a corrupt
+  // segment read in a pool worker ends in std::terminate (#359)
+  L->load_fn = [](const GameTree& ct, const LazyStore& ls, uint32_t s) {
+    try {
+      lazy_load_segment(ct, ls, s);
+    } catch (const CmdError& e) {
+      throw std::runtime_error(e.msg);
+    }
+  };
   L->seg = std::move(sg);
   t.lazy = std::move(L);
   return true;
@@ -683,6 +708,12 @@ std::string Upi::cmd_dump_tree(const Args& a) {
     else throw CmdError{"incorrect or missing argument"};
   }
   const int prec = std::clamp(compression_precision_, 2, 16);
+  // A tree loaded from a truncated save has no solved data from missing_street on: writing those
+  // streets would present unsolved strategies as solved (#359). Save it as truncated as it is.
+  if (tree_->missing_street) {
+    const uint32_t have = static_cast<uint32_t>(tree_->missing_street - 1);
+    truncate = truncate ? std::min(truncate, have) : have;
+  }
   TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   std::string lerr;
   if (!tree_->load_all(lerr)) throw CmdError{"cannot read the loaded tree's file: " + lerr};
@@ -795,16 +826,28 @@ std::string Upi::cmd_load_tree(const Args& a) {
   solver_.reset();
   t->allocate_storage();
   uint64_t mlen = in.get<uint64_t>();
-  if (mlen > (uint64_t(1) << 34)) throw CmdError{"file format error (metadata size)"};
+  // at most: counts, a flag byte per node, and per decision a combo-lock mask, incentives and an
+  // elimination entry (#359: a small file must not make us allocate gigabytes)
+  const uint64_t mmax = 64 + t->nodes.size() * (1 + 8 + 8 + NUM_COMBOS + 4 * 64 + 8);
+  if (mlen > mmax) throw CmdError{"file format error (metadata size)"};
   std::string mbuf(mlen, '\0');
   in.read(mbuf.data(), mlen);
   Reader r{mbuf.data(), mbuf.data() + mbuf.size()};
   uint64_t nn = r.get<uint64_t>(), sf = r.get<uint64_t>();
   if (nn != t->nodes.size() || sf != t->storage_floats) throw CmdError{"file format error (tree shape mismatch)"};
   for (auto& n : t->nodes) n.flags = r.get<uint8_t>();
+  // Every entry must name a decision node of this tree and have that node's size, and every lock
+  // flag its entry (#359: a crafted file read out of bounds in show_locked_combos and the walk).
+  auto decision = [&](uint32_t ni) -> const GNode& {
+    if (ni >= t->nodes.size() || t->nodes[ni].kind != ANodeKind::Decision)
+      throw CmdError{"file format error (node index)"};
+    return t->nodes[ni];
+  };
   uint32_t k = r.get<uint32_t>();
   for (uint32_t i = 0; i < k; ++i) {
     uint32_t ni = r.get<uint32_t>(), len = r.get<uint32_t>();
+    if (len != t->hands[decision(ni).player].size()) throw CmdError{"file format error (combo lock)"};
+    r.need(len);
     std::vector<uint8_t> mk(len);
     r.get_bytes(mk.data(), len);
     t->combo_lock[ni] = std::move(mk);
@@ -812,6 +855,8 @@ std::string Upi::cmd_load_tree(const Args& a) {
   k = r.get<uint32_t>();
   for (uint32_t i = 0; i < k; ++i) {
     uint32_t ni = r.get<uint32_t>(), len = r.get<uint32_t>();
+    if (len != decision(ni).num_children) throw CmdError{"file format error (incentives)"};
+    r.need(uint64_t(len) * sizeof(float));
     std::vector<float> v(len);
     r.get_bytes(v.data(), len * sizeof(float));
     t->incentives[ni] = std::move(v);
@@ -819,7 +864,15 @@ std::string Upi::cmd_load_tree(const Args& a) {
   k = r.get<uint32_t>();
   for (uint32_t i = 0; i < k; ++i) {
     uint32_t ni = r.get<uint32_t>();
+    decision(ni);
     t->eliminated[ni] = r.get<uint32_t>();
+  }
+  for (uint32_t i = 0; i < t->nodes.size(); ++i) {
+    const uint8_t f = t->nodes[i].flags;
+    if (((f & GF_COMBO_LOCKED) && !t->combo_lock.count(i)) || ((f & GF_INCENTIVES) && !t->incentives.count(i)) ||
+        ((f & GF_ELIMINATED) && !t->eliminated.count(i)) ||
+        ((f & (GF_LOCKED | GF_COMBO_LOCKED | GF_INCENTIVES | GF_ELIMINATED)) && t->nodes[i].kind != ANodeKind::Decision))
+      throw CmdError{"file format error (node flags)"};
   }
   uint32_t max_len = lc.h.truncate ? lc.h.truncate : 5;
   std::vector<float> fr, fs;

@@ -2205,6 +2205,7 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
   float* cbr = ar.alloc(static_cast<size_t>(A) * Hp);
   uint8_t* kind = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
   w.nodes.push_back({ni, actor == p, sigma, cev, cbr, kind, ev, br});
+  // dst and compat go to showdown_batch unzeroed: it zeroes what its kernel needs (zero_rows).
   auto showdown_job = [&](const GNode& sd, const float* reach, float* dst, float* compat, const float* xf, float pay) {
     const GameTree::TermPay& tp = g_.term_pay(sd);
     w.sb = &g_.showdowns[sd.aux];
@@ -2223,8 +2224,6 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
     if (ps >= 0) {  // call_and_fold
       float* cs = cev + static_cast<size_t>(ps) * Hp;
       float* cf = cev + static_cast<size_t>(pf) * Hp;
-      std::memset(cs, 0, sizeof(float) * Hp);
-      std::memset(cf, 0, sizeof(float) * Hp);
       showdown_job(g_.nodes[n.first_child + static_cast<uint32_t>(ps)], ro, cs, cf, nullptr, 0.0f);
       w.scale.push_back({cf, g_.term_pay(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]).w[p]});
       kind[ps] = kind[pf] = 1;
@@ -2238,7 +2237,6 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
         fold_value(child, p, ro, ea);
         kind[a] = 1;
       } else if (child.kind == ANodeKind::Showdown) {
-        std::memset(ea, 0, sizeof(float) * Hp);
         showdown_job(child, ro, ea, nullptr, nullptr, 0.0f);
         kind[a] = 1;
       } else {
@@ -2262,7 +2260,6 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
       float* xf = ro2s + static_cast<size_t>(pf) * Ho;
       const float* sf = sigma + static_cast<size_t>(pf) * Ho;
       for (int k = 0; k < Ho; ++k) xf[k] = ro[k] * sf[k];
-      std::memset(ea, 0, sizeof(float) * Hp);
       showdown_job(child, ro2, ea, nullptr, xf,
                    g_.term_pay(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]).w[p]);
       kind[a] = 1;
@@ -2301,7 +2298,6 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
     }
     if (!any) continue;
     if (child.kind == ANodeKind::Showdown) {
-      std::memset(ea, 0, sizeof(float) * Hp);
       showdown_job(child, ro2, ea, nullptr, nullptr, 0.0f);
       kind[a] = 1;
     } else {
@@ -2330,11 +2326,15 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
     for (int a = 0; a < A; ++a)
       if (r.kind[a] == 1) std::memcpy(r.cbr + static_cast<size_t>(a) * Hp, r.cev + static_cast<size_t>(a) * Hp, sizeof(float) * Hp);
     if (r.own) {
-      std::memset(r.ev, 0, sizeof(float) * Hp);
+      // the first row as 0 + x, not added to a zeroed row: the same floats (as in river_cfr)
       for (int a = 0; a < A; ++a) {
         const float* sa = r.sigma + static_cast<size_t>(a) * Hp;
         const float* c = r.cev + static_cast<size_t>(a) * Hp;
-        for (int h = 0; h < Hp; ++h) r.ev[h] += sa[h] * c[h];
+        if (a == 0) {
+          for (int h = 0; h < Hp; ++h) r.ev[h] = 0.0f + sa[h] * c[h];
+        } else {
+          for (int h = 0; h < Hp; ++h) r.ev[h] += sa[h] * c[h];
+        }
       }
       std::memcpy(r.br, r.cbr, sizeof(float) * Hp);
       for (int a = 1; a < A; ++a) {
@@ -2355,14 +2355,23 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
         }
       }
     } else {
-      std::memset(r.ev, 0, sizeof(float) * Hp);
-      std::memset(r.br, 0, sizeof(float) * Hp);
+      bool first = true;
       for (int a = 0; a < A; ++a) {
         if (!r.kind[a]) continue;
         const float* e = r.cev + static_cast<size_t>(a) * Hp;
         const float* b = r.cbr + static_cast<size_t>(a) * Hp;
-        for (int h = 0; h < Hp; ++h) r.ev[h] += e[h];
-        for (int h = 0; h < Hp; ++h) r.br[h] += b[h];
+        if (first) {
+          for (int h = 0; h < Hp; ++h) r.ev[h] = 0.0f + e[h];
+          for (int h = 0; h < Hp; ++h) r.br[h] = 0.0f + b[h];
+          first = false;
+        } else {
+          for (int h = 0; h < Hp; ++h) r.ev[h] += e[h];
+          for (int h = 0; h < Hp; ++h) r.br[h] += b[h];
+        }
+      }
+      if (first) {
+        std::memset(r.ev, 0, sizeof(float) * Hp);
+        std::memset(r.br, 0, sizeof(float) * Hp);
       }
     }
   }

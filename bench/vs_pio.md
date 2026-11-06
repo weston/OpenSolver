@@ -115,3 +115,21 @@ lanes); #219-#226 and #234 speed up the NEON and AVX2-only builds.
 Process wall time: WSolver 2.67 / 39.8-40.3 s, Pio 7.52 / 74.0-74.5 s. Both trees are now limited by
 memory bandwidth on this PC from 8 threads up (bench/where-the-time-goes.md), so kernel speedups show
 less here than at 1 thread or on the M4.
+
+
+## Tree memory (2026-11-05)
+
+Same trees, same machine (Zen 5 9950X). Pio's figures are its own `estimate_schematic_tree` (v4_large =
+float32, v4_small = 16-bit); its measured peak working set for threebet_mono after `build_tree` and two
+iterations was 779 MB, exactly its v4_small estimate. WSolver's are `estimate_schematic_tree` and the
+measured peak RSS (`/usr/bin/time -v`, 16 threads, build + 2 iterations).
+
+| tree | WSolver float32 | WSolver 16-bit | Pio float32 | Pio 16-bit | 16-bit ratio |
+|---|---|---|---|---|---|
+| threebet_mono | 542 MB (574 MB peak) | 282 MB (316 MB peak) | 1152 MB | 779 MB (779 MB peak) | **2.5x smaller** |
+| srp_big | 12937 MB | 6554 MB | 17681 MB | 10771 MB | 1.6x smaller |
+| a real 3-bet-pot PioViewer config (235 lines, #313) | 2280 MB | 1169 MB | 3359 MB | 2104 MB | 1.8x smaller |
+
+Node counts are identical (the real config: 292074 OOP and 259099 IP decisions in both), so the gap is
+per-node storage. A likely part of it: WSolver stores each player's own range at a node, while Pio keeps
+the union of both ranges for each player (AGENTS.md; ours does that only under `set_union_hands on`).

@@ -776,7 +776,7 @@ LINE_CACHE = 8  # line results kept per job (each is a few KB; a turn line has ~
 
 def line_uncached(q: Queue, name: str, line: str) -> list[dict]:
     """The done jobs of a batch whose result at this line isn't cached yet (a line report reads their
-    saves). Empty for the root line, which needs no save."""
+    saves). The empty line is the root as line_report(root=True) reads it, for the per-hand figures."""
     steps = parse_line(line)
     key = ":".join(steps)
     q.batch(name)

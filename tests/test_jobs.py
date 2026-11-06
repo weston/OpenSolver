@@ -375,7 +375,7 @@ def integration(solver):
         check(len({c["cards"][0] for c in x["cards"]}) == 49 and not set(x["board"][i:i + 2] for i in (0, 2, 4))
               & {c["cards"][0] for c in x["cards"]}, "the turn cards are the 49 cards off the flop")
         calls = []
-        check(len(jobs.line_uncached(q, "srp", "c")) == 3 and jobs.line_uncached(q, "srp", "") == [],
+        check(len(jobs.line_uncached(q, "srp", "c")) == 3 and len(jobs.line_uncached(q, "srp", "")) == 3,
               "line_uncached: the done jobs without this line cached")
         jobs.line_report(q, "srp", "c", solver, progress=lambda d, t, b: calls.append((d, t, b)))
         check([c[:2] for c in calls] == [(0, 3), (1, 3), (2, 3), (3, 3)] and calls[-1][2] is None

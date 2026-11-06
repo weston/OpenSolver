@@ -263,7 +263,10 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
   rivers are re-solved when you browse them, and `calc_results` on the save reports this solve's numbers (#195, with #198).
 - **Aggregate report:** each job also records the first decision's strategy over the acting player's whole
   range. `report` lists it per flop with EV and exploitability, plus the flop-weighted average, for
-  example `bet 33 (33%) 48.2% · check 51.8%` over a subset. `export` carries the same columns, and the
+  example `bet 33 (33%) 48.2% · check 51.8%` over a subset. Like PioViewer's aggregation report, hands
+  count by reach × matchups (the opponent's combos they don't block), and each flop counts by its weight
+  times its total matchups, since boards block different numbers of combos (#323). Recomputing from
+  PioViewer's own per-hand report files reproduces its rows to their rounding. `export` carries the same columns, and the
   Jobs tab has a Report button per batch. Saves from jobs that finished before this was recorded are
   read once to fill it in. `--by high|suits|pairing|straight` (a select in the Report dialog) groups the
   flops by texture: top card, rainbow / two-tone / monotone, paired, and whether three ranks fit a

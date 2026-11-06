@@ -104,8 +104,7 @@ double Solver::root_matchups() const {
 }
 
 void Solver::fold_value(const GNode& n, int p, const float* ro, float* out) const {
-  const ActionNode& an = g_.an(n);
-  float pay = static_cast<float>(g_.terminal_payoff(an, p, p == an.player ? -1 : 1));
+  const float pay = g_.term_pay(n).w[p];
   compat_mass(p, ro, out);
   const int Hp = g_.num_hands(p);
   for (int h = 0; h < Hp; ++h) out[h] *= pay;
@@ -863,10 +862,8 @@ void Solver::allin_table_value(const AllinRunouts& ar, const E* e2, float W, flo
 }
 
 void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) const {
-  const ActionNode& an = g_.an(n);
-  const float W = static_cast<float>(g_.terminal_payoff(an, p, 1));
-  const float L = static_cast<float>(g_.terminal_payoff(an, p, -1));
-  const float T = static_cast<float>(g_.terminal_payoff(an, p, 0));
+  const GameTree::TermPay& tp = g_.term_pay(n);
+  const float W = tp.w[p], L = tp.l[p], T = tp.t[p];
   const int Hp = g_.num_hands(p);
   std::memset(out, 0, sizeof(float) * Hp);
   if (n.board_len == 5) {
@@ -910,7 +907,7 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
     for (int h = 0; h < Hp; ++h) body(h);
     return;
   }
-  if (allin_tables && !(ar.e2.empty() && ar.e2b.empty()) && !g_.payoff.icm.enabled) {
+  if (allin_tables && !(ar.e2.empty() && ar.e2b.empty()) && !g_.payoff().icm.enabled) {
     // value(h) = scale * sum_o ro[o] * (W*wins + T*ties + L*losses) over the runouts. Without ICM a
     // tie pays the midpoint, so with e2 = 2*wins + ties and V = runouts per disjoint pair,
     // value(h) = (W - L) / (2V) * sum_o ro[o] * e2[h][o] + L * compat(h). For IP the table is read
@@ -943,16 +940,13 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
 bool Solver::call_and_fold(const GNode& sd, const GNode& fold, int p, const float* ro, float* sd_out,
                            float* fold_out) const {
   if (sd.kind != ANodeKind::Showdown || fold.kind != ANodeKind::Fold || sd.board_len != 5) return false;
-  const ActionNode& an = g_.an(sd);
-  const float W = static_cast<float>(g_.terminal_payoff(an, p, 1));
-  const float L = static_cast<float>(g_.terminal_payoff(an, p, -1));
-  const float T = static_cast<float>(g_.terminal_payoff(an, p, 0));
+  const GameTree::TermPay& tp = g_.term_pay(sd);
+  const float W = tp.w[p], L = tp.l[p], T = tp.t[p];
   const int Hp = g_.num_hands(p);
   std::memset(sd_out, 0, sizeof(float) * Hp);
   std::memset(fold_out, 0, sizeof(float) * Hp);
   showdown_board(g_.showdowns[sd.aux], W, L, T, p, ro, sd_out, fold_out);
-  const ActionNode& fa = g_.an(fold);
-  const float pay = static_cast<float>(g_.terminal_payoff(fa, p, p == fa.player ? -1 : 1));
+  const float pay = g_.term_pay(fold).w[p];
   for (int h = 0; h < Hp; ++h) fold_out[h] *= pay;
   return true;
 }
@@ -960,13 +954,11 @@ bool Solver::call_and_fold(const GNode& sd, const GNode& fold, int p, const floa
 bool Solver::call_with_opp_fold(const GNode& sd, const GNode& fold, int p, const float* xc, const float* ro,
                                 const float* sfold, float* xf, float* out) const {
   if (sd.kind != ANodeKind::Showdown || fold.kind != ANodeKind::Fold || sd.board_len != 5) return false;
-  const ActionNode& an = g_.an(sd);
-  const float W = static_cast<float>(g_.terminal_payoff(an, p, 1));
-  const float L = static_cast<float>(g_.terminal_payoff(an, p, -1));
-  const float T = static_cast<float>(g_.terminal_payoff(an, p, 0));
+  const GameTree::TermPay& tp = g_.term_pay(sd);
+  const float W = tp.w[p], L = tp.l[p], T = tp.t[p];
   const int Ho = g_.num_hands(1 - p);
   for (int k = 0; k < Ho; ++k) xf[k] = ro[k] * sfold[k];
-  const SdFold f{xf, static_cast<float>(g_.terminal_payoff(g_.an(fold), p, 1))};
+  const SdFold f{xf, g_.term_pay(fold).w[p]};
   std::memset(out, 0, sizeof(float) * g_.num_hands(p));
   showdown_board(g_.showdowns[sd.aux], W, L, T, p, xc, out, nullptr, &f);
   return true;
@@ -1348,10 +1340,9 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
   float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
   current_strategy(ni, sigma);
   auto showdown_job = [&](const GNode& sd, const float* reach, float* dst, float* compat, const float* xf, float pay) {
-    const ActionNode& an = g_.an(sd);
+    const GameTree::TermPay& tp = g_.term_pay(sd);
     w.sb = &g_.showdowns[sd.aux];
-    w.jobs.push_back({reach, static_cast<float>(g_.terminal_payoff(an, p, 1)), static_cast<float>(g_.terminal_payoff(an, p, -1)),
-                      static_cast<float>(g_.terminal_payoff(an, p, 0)), dst, compat, xf, pay});
+    w.jobs.push_back({reach, tp.w[p], tp.l[p], tp.t[p], dst, compat, xf, pay});
   };
   if (actor == p) {
     // Start fetching this node's strategy-sum rows now: traverser_update reads and writes them on the
@@ -1389,8 +1380,7 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
         std::memset(cs, 0, sizeof(float) * Hp);
         std::memset(cf, 0, sizeof(float) * Hp);
         showdown_job(g_.nodes[n.first_child + static_cast<uint32_t>(paired_s)], ro, cs, cf, nullptr, 0.0f);
-        const ActionNode& fa = g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(paired_f)]);
-        w.scale.push_back({cf, static_cast<float>(g_.terminal_payoff(fa, p, p == fa.player ? -1 : 1))});
+        w.scale.push_back({cf, g_.term_pay(g_.nodes[n.first_child + static_cast<uint32_t>(paired_f)]).w[p]});
       } else {
         paired_f = paired_s = -1;
       }
@@ -1443,12 +1433,12 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
       for (int k = 0; k < Ho; ++k) xf[k] = ro[k] * sf[k];
       std::memset(tmp, 0, sizeof(float) * Hp);
       showdown_job(child, ro2, tmp, nullptr, xf,
-                   static_cast<float>(g_.terminal_payoff(g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(opp_f)]), p, 1)));
+                   g_.term_pay(g_.nodes[n.first_child + static_cast<uint32_t>(opp_f)]).w[p]);
       used[a] = 1;
       continue;
     }
     if (child.kind == ANodeKind::Fold) {
-      const float pay = static_cast<float>(g_.terminal_payoff(g_.an(child), p, 1));
+      const float pay = g_.term_pay(child).w[p];
       const uint8_t* oc1 = g_.hcard[o][0].data();
       const uint8_t* oc2 = g_.hcard[o][1].data();
       float cs[NUM_CARDS] = {0};
@@ -1744,7 +1734,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     if (g_.nodes[ci].kind == ANodeKind::Fold) {
       // Opponent folds: value = payoff * compatible mass of (ro * sigma_fold), fused into one pass
       // over the opponent's hands (no reach vector, no temporary, no extra add pass).
-      const float pay = static_cast<float>(g_.terminal_payoff(g_.an(g_.nodes[ci]), p, 1));
+      const float pay = g_.term_pay(g_.nodes[ci]).w[p];
       const uint8_t* oc1 = g_.hcard[o][0].data();
       const uint8_t* oc2 = g_.hcard[o][1].data();
       float cs[NUM_CARDS] = {0};
@@ -2182,10 +2172,9 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
   uint8_t* kind = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
   w.nodes.push_back({ni, actor == p, sigma, cev, cbr, kind, ev, br});
   auto showdown_job = [&](const GNode& sd, const float* reach, float* dst, float* compat, const float* xf, float pay) {
-    const ActionNode& an = g_.an(sd);
+    const GameTree::TermPay& tp = g_.term_pay(sd);
     w.sb = &g_.showdowns[sd.aux];
-    w.jobs.push_back({reach, static_cast<float>(g_.terminal_payoff(an, p, 1)), static_cast<float>(g_.terminal_payoff(an, p, -1)),
-                      static_cast<float>(g_.terminal_payoff(an, p, 0)), dst, compat, xf, pay});
+    w.jobs.push_back({reach, tp.w[p], tp.l[p], tp.t[p], dst, compat, xf, pay});
   };
   int pf = -1, ps = -1;
   if (A >= 2) {
@@ -2203,8 +2192,7 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
       std::memset(cs, 0, sizeof(float) * Hp);
       std::memset(cf, 0, sizeof(float) * Hp);
       showdown_job(g_.nodes[n.first_child + static_cast<uint32_t>(ps)], ro, cs, cf, nullptr, 0.0f);
-      const ActionNode& fa = g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]);
-      w.scale.push_back({cf, static_cast<float>(g_.terminal_payoff(fa, p, p == fa.player ? -1 : 1))});
+      w.scale.push_back({cf, g_.term_pay(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]).w[p]});
       kind[ps] = kind[pf] = 1;
     }
     for (int a = 0; a < A; ++a) {
@@ -2242,12 +2230,12 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
       for (int k = 0; k < Ho; ++k) xf[k] = ro[k] * sf[k];
       std::memset(ea, 0, sizeof(float) * Hp);
       showdown_job(child, ro2, ea, nullptr, xf,
-                   static_cast<float>(g_.terminal_payoff(g_.an(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]), p, 1)));
+                   g_.term_pay(g_.nodes[n.first_child + static_cast<uint32_t>(pf)]).w[p]);
       kind[a] = 1;
       continue;
     }
     if (child.kind == ANodeKind::Fold) {
-      const float pay = static_cast<float>(g_.terminal_payoff(g_.an(child), p, 1));
+      const float pay = g_.term_pay(child).w[p];
       const uint8_t* oc1 = g_.hcard[o][0].data();
       const uint8_t* oc2 = g_.hcard[o][1].data();
       float cs[NUM_CARDS] = {0};
@@ -2523,7 +2511,7 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
       return;
     }
     if (g_.nodes[ci].kind == ANodeKind::Fold) {
-      const float pay = static_cast<float>(g_.terminal_payoff(g_.an(g_.nodes[ci]), p, 1));
+      const float pay = g_.term_pay(g_.nodes[ci]).w[p];
       const uint8_t* oc1 = g_.hcard[o][0].data();
       const uint8_t* oc2 = g_.hcard[o][1].data();
       float cs[NUM_CARDS] = {0};

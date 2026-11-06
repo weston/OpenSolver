@@ -215,7 +215,6 @@ struct LazyStore {
 class GameTree {
  public:
   GameConfig cfg;
-  PayoffModel payoff;
   std::unique_ptr<ActionNode> aroot;
   std::vector<ActionNode*> anodes;
   std::vector<GNode> nodes;  // nodes[0] = root decision node (r:0)
@@ -320,9 +319,24 @@ class GameTree {
   // once the feature is on; the flag is for the check that runs *before* allocation.
   uint64_t memory_bytes_for(bool compress, bool with_preds = false) const;
   void allocate_storage();  // uses `compressed`
+  void fill_term_pay();     // term_pay_ from payoff_ and anodes
 
   // Payoff for player p at a terminal given outcome (1 win, 0 tie, -1 lose).
   double terminal_payoff(const ActionNode& an, int p, int outcome) const;
+  // Rake and ICM. Set through set_payoff, which also refreshes term_pay.
+  const PayoffModel& payoff() const { return payoff_; }
+  void set_payoff(const PayoffModel& pm) {
+    payoff_ = pm;
+    fill_term_pay();
+  }
+  // terminal_payoff for every terminal action node, as the floats the solver uses: win / lose / tie
+  // per player for a showdown, the fold payoff in `w` for a fold. Read per terminal visit instead of
+  // calling terminal_payoff (double math, rake, an ICM check, the ActionNode load): 1.7% of
+  // threebet_mono's samples on an M4; the table is 0.6-1.4% faster wall, with identical floats.
+  struct TermPay {
+    float w[2], l[2], t[2];
+  };
+  const TermPay& term_pay(const GNode& n) const { return term_pay_[n.anode]; }
   // Mean number of showdown terminals per river subtree of the action tree (river decision nodes
   // entered from a chance node), i.e. how many jobs Solver::river_cfr can batch per board. 0 if none.
   double river_showdowns_per_root() const;
@@ -349,6 +363,8 @@ class GameTree {
  private:
   std::unordered_map<uint64_t, int> showdown_index_;
   std::unordered_map<uint64_t, int> allin_index_;
+  PayoffModel payoff_;
+  std::vector<TermPay> term_pay_;  // by anode index
 };
 
 }  // namespace pio

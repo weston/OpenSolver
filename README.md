@@ -11,7 +11,7 @@ public UPI documentation; it contains no PioSOLVER code.
 - Multi-threaded over turn/river cards with a nested work-stealing pool.
 - Suit **isomorphism** (flop trees on by default, like Pio's `set_isomorphism 1 0`).
 - Optional 16-bit compressed storage (`small_strats`), roughly halving memory. The strategy sums are rounded stochastically, so it converges like float32 (#272, #293).
-- **Regret-based pruning** on by default (`set_pruning off|on [period]`): a traverser action whose current strategy is exactly zero for every hand is skipped — exactly, so results are bit-identical — and revisited every `period`-th iteration (default 8). Worth about 13% on a deep tree.
+- **Regret-based pruning** on by default (`set_pruning off|on [period]`): a traverser action whose current strategy is exactly zero for every hand is skipped (its regret row frozen, its subtree not walked) and revisited every `period`-th iteration (default 8, at least 2). The iteration's values are exact, but the frozen rows and skipped subtrees change the regrets and averages slightly, so results are close to, not bit-identical with, `set_pruning off` (#380). Worth about 13% on a deep tree.
 
 New here? **[docs/quickstart.md](docs/quickstart.md)** walks through installing, solving a spot and
 reading the output in about five minutes. The rest of this file is reference and internals.

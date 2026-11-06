@@ -1037,6 +1037,46 @@ def check_tree_construction_edges(exe):
     check("the flop subset's weights are all 0" in out, "add_all_flops refuses an all-zero subset")
 
 
+def check_core_review(exe):
+    """#380: 16-bit combo-locked rows hold their values; pruning periods below 2 are refused; set_mes
+    plays the best response for the unlocked hands of a combo-locked node."""
+    print("[solver core: locks under 16-bit, pruning period, set_mes]")
+    setup = ["set_threads 4", "set_range OOP AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s",
+             "set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s", "set_board KhQs7d4c", "set_pot 0 0 100",
+             "set_eff_stack 200", "add_line 50 150 200", "add_line 0 50 150 200"]
+    mask = " ".join("1" if i % 2 == 0 else "0" for i in range(1326))
+
+    def run(lines):
+        p = subprocess.run([exe], input="\n".join(["set_end_string END"] + lines + ["exit"]) + "\n",
+                           capture_output=True, text=True, timeout=900)
+        return [b.strip() for b in p.stdout.split("END") if b.strip()]
+
+    # lock the even combos of r:0 at 0.3 / 0.7 under 16-bit storage, solve 300 iterations, read them back
+    strat = "\n".join([" ".join(["0.3"] * 1326), " ".join(["0.7"] * 1326)])
+    out = run(setup + ["small_strats on", "build_tree", f"set_strategy r:0 {strat.replace(chr(10), ' ')}",
+                       f"combo_lock_node r:0 {mask}", "set_info_freq 1000", "go 300 steps", "wait_for_solver",
+                       "show_range OOP r:0", "show_strategy r:0"])
+    rows = [l.split() for l in out[-1].splitlines() if l.strip()]
+    reach = [float(x) for x in out[-2].split()]
+    dev = max(abs(float(rows[0][i]) - 0.3) for i in range(0, 1326, 2) if reach[i] > 0)
+    check(dev < 0.003, f"16-bit combo-locked rows hold their value after 300 iterations (max |freq - 0.3| {dev:.5f})")
+    out = run(["set_pruning on 1", "set_pruning on 0", "set_pruning on 2"])
+    check(out[1:] == ["ERROR: set_pruning incorrect or missing argument"] * 2 + ["set_pruning ok!"],
+          f"pruning periods below 2 are refused ({out[1:]})")
+    # set_mes at a combo-locked node: unlocked hands become pure, locked ones stay
+    out = run(setup + ["build_tree", "set_info_freq 1000", "go 60 steps", "wait_for_solver",
+                       f"combo_lock_node r:0 {mask}", "show_strategy r:0", "set_mes OOP", "show_range OOP r:0",
+                       "show_strategy r:0"])
+    before = [[float(x) for x in l.split()] for l in out[-4].splitlines() if l.strip()]
+    reach = [float(x) for x in out[-2].split()]
+    after = [[float(x) for x in l.split()] for l in out[-1].splitlines() if l.strip()]
+    unl = [i for i in range(1, 1326, 2) if reach[i] > 0]
+    lck = [i for i in range(0, 1326, 2) if reach[i] > 0]
+    pure = sum(1 for i in unl if max(r[i] for r in after) > 0.999)
+    kept = all(abs(after[k][i] - before[k][i]) < 1e-3 for i in lck for k in range(len(after)))
+    check(unl and pure == len(unl) and kept, f"set_mes: {pure}/{len(unl)} unlocked hands pure, locked kept: {kept}")
+
+
 def check_mid_solve_settings(u):
     """#364: settings changed while a solve runs take effect between iterations (no data race), and a
     report frequency set mid-solve is used: before, the frequency was read once at the start, so a solve
@@ -1306,6 +1346,7 @@ def main(exe, big=False):
     check_framing(exe)
     check_save_robustness(exe)
     check_tree_construction_edges(exe)
+    check_core_review(exe)
     check_exit_while_parked(exe)
     u = Upi(exe)
     try:

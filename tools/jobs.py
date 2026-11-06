@@ -457,13 +457,155 @@ def root_summary(s) -> dict:
             "mass": round(tot, 6)}
 
 
-def action_label(a: str, pot: float) -> str:
-    """'c' -> 'check', 'b50' -> 'bet 50 (50%)' at the root (pot = the starting pot)."""
+LINE_ACTION = re.compile(r"^(c|f|b\d+)$")
+
+
+def parse_line(text: str) -> list[str]:
+    """A report line -> its steps after the root: actions (c, f, b<amount>) and cards, where a card or
+    `*` at a chance node stands for every card dealt there (#325). Takes a node id (r:0:b198:c:2d:c:b447),
+    the same without r:0, or the steps separated by spaces or commas. Empty = the root."""
+    toks = [t for t in re.split(r"[:\s,]+", text.strip()) if t]
+    if toks[:2] == ["r", "0"]:
+        toks = toks[2:]
+    out = []
+    for t in toks:
+        if t == "*":
+            out.append(t)
+        elif LINE_ACTION.match(t.lower()):
+            out.append(t.lower())
+        elif len(t) == 2 and t[0].upper() in RANK_ORDER and t[1].lower() in "cdhs":
+            out.append("*")  # every card here, as PioViewer's report does with the turn
+        else:
+            raise JobError(f"line step {t!r}: expected c, f, b<amount>, a card or *")
+    return out
+
+
+def _child_step(child_id: str) -> str:
+    return child_id.rsplit(":", 1)[1]
+
+
+def walk_line(s, steps: list[str]) -> list[tuple[str, list[str]]]:
+    """The nodes a line reaches in the loaded tree: [(node id, cards dealt at its * steps)]. A * step
+    expands to every card at that chance node. An action missing from the tree is an error at the
+    first node; under an expanded card it only drops that branch."""
+    import server as vserver
+    leaves = [("r:0", [])]
+    for t in steps:
+        nxt = []
+        for nid, cards in leaves:
+            node = vserver.parse_node_block(s.cmd(f"show_node {nid}"))
+            kids = [k["id"] for k in vserver.parse_children(s.cmd(f"show_children {nid}"))]
+            chance = node["type"] == "SPLIT_NODE"
+            if t == "*":
+                if not chance:
+                    raise JobError(f"a card at {nid}, which is not a chance node (its actions: "
+                                   f"{', '.join(_child_step(k) for k in kids) or 'none'})")
+                nxt.extend((k, cards + [_child_step(k)]) for k in kids)
+                continue
+            if chance:
+                raise JobError(f"{t} at {nid}, which deals a card (put the card or * here)")
+            match = [k for k in kids if _child_step(k) == t]
+            if match:
+                nxt.append((match[0], cards))
+            elif len(leaves) == 1:
+                raise JobError(f"no action {t} at {nid} (there: {', '.join(_child_step(k) for k in kids) or 'none'})")
+        leaves = nxt
+    if not leaves:
+        raise JobError("the line reaches no node")
+    return leaves
+
+
+def node_summary(s, nid: str) -> dict:
+    """A decision's strategy over the acting player's range, weighted by reach x matchups like
+    root_summary, plus both players' matchup-weighted EVs (chips), the node's matchup mass and
+    calc_global_freq (the node's matchups over the root's: no chance factor)."""
+    import math
+    import server as vserver
+    node = vserver.parse_node_block(s.cmd(f"show_node {nid}"))
+    player = {"OOP_DEC": "OOP", "IP_DEC": "IP"}.get(node["type"])
+    if player is None:
+        raise JobError(f"{nid} is not a decision ({node['type']})")
+    actions = [_child_step(k["id"]) for k in vserver.parse_children(s.cmd(f"show_children {nid}"))]
+    rows = [[float(x) for x in l.split()] for l in s.cmd(f"show_strategy {nid}").splitlines() if l.strip()]
+    if len(rows) != len(actions):
+        raise JobError(f"{nid}: {len(rows)} strategy rows for {len(actions)} actions")
+    pot = [x for x in node["pot"] if x is not None]
+    out = {"player": player, "actions": actions, "pot": sum(pot),
+           "facing": abs(pot[0] - pot[1]) if len(pot) >= 2 else 0}
+    for p in ("OOP", "IP"):
+        e = vserver.ev_pair(s, p, nid)
+        if e["matchups"] is None:
+            raise JobError("calc_ev gave no matchups line")
+        num = den = 0.0
+        fnum = [0.0] * len(rows)
+        fden = 0.0
+        for i, (v, m) in enumerate(zip(e["ev"], e["matchups"])):
+            if m is None or not math.isfinite(m) or m <= 0:
+                continue
+            if v is not None and math.isfinite(v):
+                num += v * m
+                den += m
+            if p == player:
+                vals = [r[i] for r in rows]
+                if all(math.isfinite(x) for x in vals):
+                    fden += m
+                    for a, x in enumerate(vals):
+                        fnum[a] += m * x
+        out["ev_" + p.lower()] = round(num / den, 6) if den > 0 else None
+        if p == player:
+            out["freqs"] = [round(x / fden, 6) for x in fnum] if fden > 0 else None
+            out["mass"] = round(fden, 6)
+    out["global"] = float(s.cmd(f"calc_global_freq {nid}").split()[0])
+    return out
+
+
+def line_result(s, steps: list[str]) -> dict:
+    """One job's report at a line: the node summaries, one per dealt card at the * steps."""
+    rows = []
+    head = None
+    for nid, cards in walk_line(s, steps):
+        n = node_summary(s, nid)
+        if head is None:
+            head = {k: n[k] for k in ("player", "actions", "pot", "facing")}
+        elif n["actions"] != head["actions"] or n["player"] != head["player"]:
+            continue  # a different decision under one card (see walk_line): left out
+        rows.append({"cards": cards, **{k: n[k] for k in ("freqs", "mass", "ev_oop", "ev_ip", "global")}})
+    return {**head, "rows": rows}
+
+
+def aggregate_cards(rows: list[dict]) -> dict:
+    """A flop's figures from its per-card rows, as PioViewer's turn report rolls them up (#325):
+    frequencies and EVs weighted by each card's matchup mass, Global % their plain mean (it has no
+    chance factor), and the mass their mean (the flop's weight in the batch average)."""
+    out = {"freqs": None, "mass": None, "ev_oop": None, "ev_ip": None, "global": None}
+    if not rows:
+        return out
+    have = [r for r in rows if r["freqs"] is not None and r["mass"]]
+    M = sum(r["mass"] for r in have)
+    out["global"] = sum(r["global"] for r in rows) / len(rows)
+    out["mass"] = M / len(rows)
+    if M > 0:
+        n = len(have[0]["freqs"])
+        out["freqs"] = [sum(r["mass"] * r["freqs"][a] for r in have) / M for a in range(n)]
+    for k in ("ev_oop", "ev_ip"):
+        hv = [r for r in have if r[k] is not None]
+        W = sum(r["mass"] for r in hv)
+        out[k] = sum(r["mass"] * r[k] for r in hv) / W if W > 0 else None
+    return out
+
+
+def action_label(a: str, pot: float, facing: float = 0) -> str:
+    """'c' -> 'check', 'b50' -> 'bet 50 (50%)' (pot = the pot at the node). Facing a bet (`facing` =
+    the chips to call), 'c' is a call and 'bN' a raise to N; its percent is the raise over the pot
+    once the call is in."""
     if a == "c":
-        return "check"
+        return "call" if facing else "check"
     if a == "f":
         return "fold"
     if a.startswith("b") and a[1:].isdigit():
+        if facing:
+            after = pot + facing
+            return f"raise {a[1:]}" + (f" ({100 * (int(a[1:]) - facing) / after:.0f}%)" if after > 0 else "")
         return f"bet {a[1:]}" + (f" ({100 * int(a[1:]) / pot:.0f}%)" if pot > 0 else "")
     return a
 
@@ -601,6 +743,148 @@ def report(q: Queue, name: str, solver_exe: str | None = None) -> dict:
             "groups": {k: group_rows(rows, k, n) for k in TEXTURES} if n else {},
             "group_titles": {k: t for k, (t, _) in TEXTURES.items()},
             "pending": sum(j["status"] != "done" for j in q.jobs(name))}
+
+
+LINE_CACHE = 8  # line results kept per job (each is a few KB; a turn line has ~49 rows)
+
+
+def line_report(q: Queue, name: str, line: str, solver_exe: str | None) -> dict:
+    """The batch's report at a line other than the root (#325), like PioViewer's aggregation report
+    there: per flop the decision's strategy, both EVs and Global % (calc_global_freq); with a card or
+    * in the line, one row per card dealt there under each flop (`cards`), rolled up into the flop's
+    row by aggregate_cards. Each job's result is cached in the job, so the saves are read once per
+    line. The batch average weights flops by weight x matchup mass, like the root report."""
+    import server as vserver
+    steps = parse_line(line)
+    if not steps:
+        return report(q, name, solver_exe)
+    key = ":".join(steps)
+    b = q.batch(name)
+    head = None
+    rows = []
+    for j in q.jobs(name):
+        if j["status"] != "done":
+            continue
+        r = j.get("result") or {}
+        res = (r.get("lines") or {}).get(key)
+        if res is None:
+            if not solver_exe:
+                raise JobError("a report at a line reads the saves: give --solver")
+            s = None
+            cache = False  # only results, and lines that don't fit the tree: a failed read may work later
+            try:
+                if not os.path.isfile(j["out"]):
+                    raise OSError(f"save not found: {j['out']}")
+                s = vserver.Solver(solver_exe)
+                s.cmd(f'load_tree "{j["out"]}"', timeout=3600)
+                res = line_result(s, steps)
+                cache = True
+            except JobError as e:  # the line doesn't fit this tree
+                res = {"error": str(e)[:500]}
+                cache = True
+            except (vserver.SolverError, OSError, ValueError, IndexError) as e:
+                res = {"error": str(e)[:500]}
+            finally:
+                if s is not None:
+                    close_solver(s)
+            if cache:
+                # cache it in the job as it is now, only if it is still the same finished job (not one
+                # removed or retried while the save was read)
+                with q.edit():
+                    try:
+                        cur = q.job(j["id"])
+                    except JobError:
+                        cur = None
+                    if cur and cur["status"] == "done" and cur.get("finished") == j.get("finished"):
+                        cr = cur.get("result") or {}
+                        lines = dict(cr.get("lines") or {})
+                        lines.pop(key, None)
+                        lines[key] = res
+                        while len(lines) > LINE_CACHE:
+                            lines.pop(next(iter(lines)))
+                        cur["result"] = {**cr, "lines": lines}
+                        q.save(cur)
+        row = {"id": j["id"], "board": j["board"], "weight": j["weight"],
+               "exploitability": r.get("exploitability"), "cards": None, "error": res.get("error")}
+        if "error" not in res and head is None and res.get("rows"):
+            head = {k: res[k] for k in ("player", "actions", "pot", "facing")}
+        if "error" not in res and head and res["actions"] == head["actions"] and res["player"] == head["player"]:
+            expanded = any(c["cards"] for c in res["rows"])
+            row.update(aggregate_cards(res["rows"]))
+            if expanded:
+                row["cards"] = res["rows"]
+        else:
+            row.update({"freqs": None, "mass": None, "ev_oop": None, "ev_ip": None, "global": None})
+            if "error" not in res:
+                row["error"] = "a different decision at this line" if res.get("rows") else "the line reaches no node"
+        row["texture"] = {k: fn(row["board"]) for k, (_, fn) in TEXTURES.items()}
+        rows.append(row)
+    head = head or {"player": None, "actions": [], "pot": start_pot(b["setup"]), "facing": 0}
+    n = len(head["actions"])
+    total = _weighted(rows, n)
+    if total:
+        have = [x for x in rows if x["freqs"] is not None and x["global"] is not None]
+        ws = [x["weight"] * (x["mass"] or 0) for x in have]
+        if sum(ws) > 0:
+            total["global"] = sum(w * x["global"] for w, x in zip(ws, have)) / sum(ws)
+    return {"batch": name, "line": key, "pot": head["pot"], "facing": head["facing"], "player": head["player"],
+            "actions": head["actions"],
+            "labels": [action_label(a, head["pot"], head["facing"]) for a in head["actions"]],
+            "rows": rows, "total": total,
+            "groups": {k: group_rows(rows, k, n) for k in TEXTURES} if n else {},
+            "group_titles": {k: t for k, (t, _) in TEXTURES.items()},
+            "pending": sum(j["status"] != "done" for j in q.jobs(name))}
+
+
+def print_line_report(rep: dict, by: str | None = None, cards: bool = False, csv_path: str | None = None) -> None:
+    """The CLI table of a line report; the CSV has PioViewer's layout (Flop, Turn, Global %, EVs, freqs:
+    a flop row with an empty card, then its cards' rows, then the weighted total)."""
+    labels = rep["labels"]
+    print(f"{rep['batch']}: {rep['player'] or '?'} at r:0:{rep['line']}, pot {rep['pot']:g}"
+          + (f", facing {rep['facing']:g}" if rep["facing"] else ""))
+    print(f"{'board':<10} {'weight':>7} {'global %':>9} {'EV OOP':>9} {'EV IP':>9}  " + "  ".join(f"{l:>14}" for l in labels))
+
+    def fmt_row(name, weight, x):
+        g = f"{100 * x['global']:.3f}" if x.get("global") is not None else "-"
+        eo = f"{x['ev_oop']:.2f}" if x.get("ev_oop") is not None else "-"
+        ei = f"{x['ev_ip']:.2f}" if x.get("ev_ip") is not None else "-"
+        fr = "  ".join(f"{100 * f:>13.1f}%" for f in x["freqs"]) if x.get("freqs") else x.get("error") or "-"
+        return f"{name:<10} {weight:>7} {g:>9} {eo:>9} {ei:>9}  {fr}"
+    for x in rep["rows"]:
+        print(fmt_row(x["board"], f"{x['weight']:g}", x))
+        if cards and x["cards"]:
+            for c in x["cards"]:
+                print(fmt_row("  " + " ".join(c["cards"]), "", c))
+    t = rep["total"]
+    if t:
+        print(fmt_row("weighted", f"{t['weight']:g}", t) + f"   ({t['flops']} flops)")
+    if by and rep["groups"].get(by):
+        print(f"\nby {rep['group_titles'][by].lower()}:")
+        for g in rep["groups"][by]:
+            print(fmt_row(g["key"][:10], f"{g['weight']:g}", g) + f"   ({g['flops']} flops)")
+    errs = [x for x in rep["rows"] if x.get("error")]
+    if errs:
+        print(f"({len(errs)} flop(s) without this line: {errs[0]['board']}: {errs[0]['error']})")
+    if rep["pending"]:
+        print(f"({rep['pending']} job(s) not done yet are left out)")
+    if csv_path:
+        with open(csv_path, "w", newline="") as f:
+            w = csv.writer(f)
+            ncard = max((len(c["cards"]) for x in rep["rows"] for c in (x["cards"] or [])), default=0)
+            card_cols = ["Turn", "River"][:ncard] if ncard <= 2 else [f"Card {i + 1}" for i in range(ncard)]
+            w.writerow(["Flop"] + card_cols + ["Weight", "Global %", "OOP EV", "IP EV"] +
+                       [f"{l} freq" for l in labels])
+
+            def cells(x):
+                return ([round(100 * x["global"], 5) if x.get("global") is not None else "",
+                         x.get("ev_oop"), x.get("ev_ip")] +
+                        ([round(100 * v, 4) for v in x["freqs"]] if x.get("freqs") else [""] * len(labels)))
+            for x in rep["rows"]:
+                w.writerow([x["board"]] + [""] * ncard + [x["weight"]] + cells(x))
+                for c in x["cards"] or []:
+                    w.writerow([x["board"]] + c["cards"] + [""] * (ncard - len(c["cards"])) + [""] + cells(c))
+            if t:
+                w.writerow([""] + [""] * ncard + [t["weight"]] + cells(t))
 
 
 def close_solver(s) -> None:
@@ -906,7 +1190,12 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--csv", help="also write it as CSV")
     rp.add_argument("--by", choices=sorted(TEXTURES), help="also group the flops by texture: "
                     "high (top card), suits, pairing, straight")
-    rp.add_argument("--solver", default=default_solver(), help="reads older saves without a root summary")
+    rp.add_argument("--solver", default=default_solver(),
+                    help="reads the saves (a --line report, or older jobs without a root summary)")
+    rp.add_argument("--line", default="",
+                    help="report at this line instead of the root: a node id like r:0:b198:c:2d:c:b447, where a "
+                         "card (or *) means every card dealt there, as in PioViewer's aggregation report")
+    rp.add_argument("--cards", action="store_true", help="with --line through a card: also print each card's row")
 
     args = ap.parse_args(argv)
     q = Queue(args.queue)
@@ -981,6 +1270,9 @@ def main(argv: list[str] | None = None) -> int:
                 w.writerow(row)
             if args.output:
                 out.close()
+        elif args.cmd == "report" and parse_line(args.line):
+            exe = os.path.abspath(args.solver) if os.path.isfile(args.solver) else None
+            print_line_report(line_report(q, args.name, args.line, exe), args.by, args.cards, args.csv)
         elif args.cmd == "report":
             rep = report(q, args.name, os.path.abspath(args.solver) if os.path.isfile(args.solver) else None)
             labels = rep["labels"]

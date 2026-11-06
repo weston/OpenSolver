@@ -1,4 +1,7 @@
-# Probe 4: preflop tree building (formats, who acts first, exits, subsets).
+# Probe 4: preflop tree building (formats, who acts first, exits, subsets). One schematic, at r:0:b25:c; the
+# other exits stay pure preflop exits (Pio 3.10.1 accepts that, #306). The subset takes three card arguments
+# (As Ks Qs); the schematic is attached without build_tree and its root offers a bet (Pio rejects a root
+# that can only check). The first version wrote AsKsQs and so never attached its flops.
 set_range OOP 22+,A2s+,K9s+,Q9s+,J9s+,T9s,ATo+,KJo+
 set_range IP 22+,A2s+,K5s+,Q8s+,J8s+,T8s+,97s+,87s,76s,A2o+,K9o+,QTo+,JTo
 set_pot 10 5 0
@@ -20,16 +23,15 @@ show_node r:0:b25:b100:b1000:c
 show_all_lines
 node_count
 estimate_tree
-add_to_subset 1 AsKsQs
-add_to_subset 0.5 7c7d2h
+add_to_subset 1 As Ks Qs
+add_to_subset 0.5 7c 7d 2h
 show_subset
 set_board AsKsQs
-set_eff_stack 950
+set_eff_stack 975
 set_pot 0 0 50
 clear_lines
-add_line 0 25 25
-build_tree
-show_node r
+add_line 25
+add_line 0 25
 add_schematic_tree r:0:b25:c
 estimate_tree
 add_all_flops

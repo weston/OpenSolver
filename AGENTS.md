@@ -300,6 +300,18 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   later lines are not read. Both are byte-identical to Pio. Pio rejects `quit` (`ERROR: Command quit not
   recognized`), which is our alias for exit. At end of input without `exit`, Pio prints `EOF encountered`
   and we print nothing (not matched: no tool reads past the last answer).
+- Preflop trees with flops (black-box, Pio 3.10.1, #306/#308):
+  - `add_to_subset` takes three card arguments (`add_to_subset 1 As Ks Qs`); `AsKsQs` is refused by both
+    solvers, so a probe written that way silently compares a tree without flops (probes 4 and 14 did).
+  - `add_schematic_tree` uses the session's pot, stack and lines; Pio accepts it with or without a
+    `build_tree` first, but **crashes on a second `build_tree`** once a schematic is attached, so probes use the
+    no-build order. Pio rejects a schematic whose root can only check ("incorrect path").
+  - `add_all_flops` accepts exits without a schematic; they stay `END_NODE` (exact equity).
+  - Pio **never lets AA fold preflop** in its starting strategy (0.5 / 0.5 / 0 against 1/3 for every other hand),
+    so evaluations on an unsolved preflop tree differ through AA; solved trees are unaffected.
+  - Display: Pio's `show_range` inside a flop doesn't zero hands blocked by that flop's cards, and its
+    `show_strategy` at preflop nodes prints the uniform strategy for out-of-range hands.
+  - Pio crashes on `calc_results` after a failed `add_all_flops` (empty subset). Not copied.
 - `calc_global_freq <node>` is the node's matchups (reach x compatible opponent reach) over **all** the
   root's matchups, so the turn and river cards' card removal counts: on probe 13's unsolved tree, after an
   As turn that blocks AA/AK/AQ/AJ combos, Pio 0.0692357 where the strategies alone give 1/12. No chance

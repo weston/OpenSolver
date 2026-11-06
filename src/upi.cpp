@@ -1396,7 +1396,28 @@ void Upi::register_preflop_commands() {
   };
   H["add_schematic_tree"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    if (!tree_ || !tree_->cfg.preflop) throw CmdError{"incorrect path"};
+    // Pio's workflow builds each schematic first (set_board, set_pot, ..., build_tree, then
+    // add_schematic_tree), so the tree in memory is then the postflop one. Resolve the exit in the
+    // preflop tree from build_preflop_tree's config, built without storage, as Pio does (#306).
+    std::unique_ptr<GameTree> pf;
+    bool swapped = false;
+    if (!tree_ || !tree_->cfg.preflop) {
+      if (!have_pf_) throw CmdError{"incorrect path"};
+      if (solving_) throw CmdError{"stop the solver first"};
+      pf = std::make_unique<GameTree>();
+      std::string err;
+      if (!pf->build(pf_cfg_, err, false)) throw CmdError{"incorrect path"};
+      std::swap(tree_, pf);
+      swapped = true;
+    }
+    struct Restore {  // put the tree in memory back (or none), however this returns
+      std::unique_ptr<GameTree>& cur;
+      std::unique_ptr<GameTree>& saved;
+      bool on;
+      ~Restore() {
+        if (on) std::swap(cur, saved);
+      }
+    } restore{tree_, pf, swapped};
     NodeRef r = resolve(a[0]);
     if (r.pseudo_root) throw CmdError{"incorrect path"};
     const ActionNode& an = tree_->an(tree_->nodes[r.node]);

@@ -171,6 +171,10 @@ class RefineManager(vresolve.ResolveManager):
             if self.busy and self.root == root:
                 return {"state": "running", "root": root}
             busy = self.busy
+        if not self._main_running():
+            return {"state": "none"}  # a finished refine above is still served; no new one starts
+        with self.mu:
+            busy = self.busy
             if busy:
                 self.pending = (root, body, pct)
         if busy:
@@ -184,13 +188,20 @@ class RefineManager(vresolve.ResolveManager):
         return {"state": "running", "root": root}
 
     def _main_done(self):
-        """No refining: the main tree is the answer as it stands. That is once its solve has met its
-        target, but also once it was stopped, or never ran, and for a tree loaded from a file (#369: a
-        saved or stopped tree used to be re-solved and shown instead of itself)."""
+        """The main solve met its target: from then on it is the answer, refined or not. A tree loaded
+        from a file is the answer too (#369: it used to be re-solved and shown instead of itself, with
+        the Build form's sizes, as a loaded tree has no built ones)."""
         if getattr(self.main, "loaded_file", False):
             return True
         with self.main.state_lock:
-            return not self.main.solving and not self.main.suspended
+            return not self.main.solving and not self.main.suspended and \
+                "required accuracy" in self.main.solver_status
+
+    def _main_running(self):
+        """A main solve is under way (or parked for a refine): only then does a new refine start (#369:
+        browsing a stopped tree started refines and labelled them as running in the background)."""
+        with self.main.state_lock:
+            return self.main.solving or self.main.suspended
 
     def _stale(self, r):
         """A refine is out of date once its ranges are: the main solve has reported progress

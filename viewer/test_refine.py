@@ -195,10 +195,15 @@ class RefineIntegrationTest(unittest.TestCase):
         self.req("/api/stop", "POST")
         self.main.cmd("wait_for_solver")
         st, d = self.req("/api/refine/view", "POST", dict(CFG, id=TURN, accuracy_pct=0.3))
-        if d["state"] != "ready":   # went stale between the refine and the stop
-            self.view_and_wait(TURN)
-            st, d = self.req("/api/refine/view", "POST", dict(CFG, id=TURN, accuracy_pct=0.3))
-        self.assertEqual(d["state"], "ready")
+        # ready; or, if it went stale between the refine and the stop, none: with the main solve
+        # stopped no new refine starts (#369)
+        self.assertIn(d["state"], ("ready", "none"))
+        # another street of the stopped tree: nothing new starts, the main tree is shown
+        kids = [k["id"] for k in self.req("/api/node?id=r:0:c:c")[1]["children"]]
+        other = next(k for k in kids if k != TURN)
+        st, d = self.req("/api/refine/view", "POST", dict(CFG, id=other, accuracy_pct=0.3))
+        self.assertEqual(d["state"], "none", f"a stopped solve starts no refine at {other} (#369)")
+        self.assertFalse(self.req("/api/refine/status")[1].get("busy"), "and no job runs")
 
     def test_refine_uses_the_built_sizes(self):
         # The client sends the Build form as it is now; edited after the build (turn and river
@@ -249,6 +254,24 @@ class RefineIntegrationTest(unittest.TestCase):
         time.sleep(0.2)
         st, d = self.req("/api/refine/view", "POST", dict(CFG, id=TURN, accuracy_pct=0.3))
         self.assertEqual(d["state"], "none")
+
+    def test_z_loaded_file_is_never_refined(self):
+        # #369: a saved tree is the answer itself, never re-solved over (it has no built sizes either)
+        import tempfile
+        self.build_and_run_forever()
+        self.req("/api/stop", "POST")
+        self.main.cmd("wait_for_solver")
+        path = os.path.join(tempfile.mkdtemp(prefix="wsolver-refine-"), "t.cfr")
+        self.assertEqual(self.req("/api/save", "POST", {"path": path})[0], 200)
+        self.assertEqual(self.req("/api/load", "POST", {"path": path})[0], 200)
+        # even with a solve running on the loaded tree
+        self.main.cmds(["set_accuracy 0", "go"])
+        time.sleep(0.3)
+        st, d = self.req("/api/refine/view", "POST", dict(CFG, id=TURN, accuracy_pct=0.3))
+        self.assertEqual(d["state"], "none", d)
+        self.assertNotIn("refined", self.req("/api/strategy?id=" + TURN)[1])
+        self.req("/api/stop", "POST")
+        self.main.cmd("wait_for_solver")
 
 
 if __name__ == "__main__":

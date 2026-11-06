@@ -293,7 +293,7 @@ class GameTree {
   std::unordered_map<uint32_t, std::vector<float>> incentives;    // per action
   std::unordered_map<uint32_t, uint32_t> eliminated;              // bitmask of removed actions
 
-  long long iterations = 0;  // CFR iterations run on this tree
+  std::atomic<long long> iterations{0};  // CFR iterations run on this tree (atomic: show_iters reads it mid-solve, #367)
   // Thread-count tuning under the default thread count (#276, upi.cpp): 0 = not tuned yet, else the count
   // this tree solves fastest with; tune_k / tune_s are the trial iterations run so far and their seconds
   // (even k: every hardware thread, odd k: half).

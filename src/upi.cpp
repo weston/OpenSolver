@@ -314,7 +314,7 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
   // These change (or read) state the solving thread uses mid-iteration: run them between iterations,
   // like the commands that take a TreePause themselves (#364: set_dcfr could be read half-written).
   static const std::set<std::string> pause_while_solving = {
-      "set_dcfr", "set_avg_delay", "set_pruning", "set_first_iteration_player", "set_info_freq", "show_iters"};
+      "set_dcfr", "set_avg_delay", "set_pruning", "set_first_iteration_player", "set_info_freq"};
   if (solving_ && pause_while_solving.count(cmd)) {
     TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     return it->second(args);

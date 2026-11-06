@@ -137,7 +137,7 @@ python3 tools/tree_builder.py config.txt            # print the add_line command
 python3 tools/tree_builder.py config.txt --full     # a complete UPI script, ready to pipe in
 python3 tools/tree_builder.py config.txt --compare  # diff against add_lines already in the file
 python3 tools/tree_builder.py --rules               # print the sizing rules
-python3 tools/tree_builder.py config.txt --pio-compat   # PioViewer's donk fallback (below)
+python3 tools/tree_builder.py config.txt --pio-compat   # legacy donk fallback (below)
 ```
 
 The input is any file with PioViewer's `#Key#Value` header; everything else in the file is
@@ -155,18 +155,19 @@ ignored, so a PioViewer save file works directly:
 ```
 
 `#<Street>Config.<Field>#` sets OOP, `#<Street>ConfigIP.<Field>#` sets IP; fields are
-`BetSize`, `DonkBetSize`, `RaiseSize` (comma-separated size lists), `AddAllin` and
-`RaiseCap`. Entries of a size list are not just percentages:
+`BetSize`, `DonkBetSize`, `RaiseSize` (size lists, entries separated by commas, spaces or
+both), `AddAllin` and `RaiseCap`. Entries of a size list are not just percentages:
 
 | Form | Meaning |
 |---|---|
 | `75` | a percentage of the pot (bets) or of `pot_if_called` (raises), as before |
 | `2e`, `3e` | geometric over N streets (see below) |
 | `e` | geometric over the streets remaining (3 on the flop, 2 on the turn, 1 on the river) |
-| `3x`, `2.5x` | raise to N times the bet faced, `round(N x facing)` - only in `RaiseSize` |
+| `2e75`, `e50` | geometric, but at most that percentage of the pot |
+| `3x`, `2.5x` | raise by N times the increment faced: `mine + N x (facing - mine)` - only in `RaiseSize` |
 | `a` | the all-in |
 
-and they mix freely: `33, 75, 2e, 3x, a`.
+and they mix freely: `33, 75, 2e, 2e50, 3x, a`.
 
 **Geometric sizes.** `Ne` is the pot fraction f that, bet and called on each of the next
 N streets counting this one, puts the remaining effective stack S in exactly. With P the
@@ -177,11 +178,17 @@ geometric bet on that pot: `raise to facing + round(f x pot_if_called)` (so `1e`
 raise is the all-in). After a called geometric bet or raise, the same fraction continued
 on the remaining streets puts the stack in exactly, up to rounding to whole chips.
 
-**Raise cap.** `#<Street>Config[IP].RaiseCap#N` limits the street to N bets and raises in
-total, counting both players (if the two players' values differ, the smaller applies). At
-the cap only check, call and fold remain - except that a configured all-in (an `a` entry,
-or `AddAllin` whose pot gate below passes) is still offered. An all-in produced by the
-`AllinThreshold` rule is an ordinary computed size and does **not** bypass the cap.
+**Raise cap.** PioViewer's `#CapEnabled#True` with `#CapPerStreet#4\n4\n3` (flop, turn, river;
+a literal backslash-n) makes the N-th bet or raise of that street the all-in only, and the
+all-in is offered there even if no size asks for it; `0` leaves the street uncapped. Our own
+`#<Street>Config[IP].RaiseCap#N` limits the street to N bets and raises in total, counting
+both players (if the two players' values differ, the smaller applies); after that only a
+configured all-in (an `a` entry, or `AddAllin` whose pot gate below passes) is still offered.
+
+**Other PioViewer settings.** `MergeSimilarBets` / `MergeSimilarBetsThreshold`,
+`UseUnifiedRaiseAfterRaise` / `UnifiedRaiseAfterRaise`, `ForceOOPBet` / `ForceIPBet` (no
+check on the flop) and the hand edits `RemovedLines_2` / `ExtraLines_2` are read too; the
+exact rules are in `python3 tools/tree_builder.py --rules`.
 
 Amounts in a line are absolute - the total a player has put in since the hand started - so a
 check or call repeats the amount that player is already matched to. With
@@ -189,39 +196,38 @@ check or call repeats the amount that player is already matched to. With
 
 | Action | Total |
 |---|---|
-| bet | `invested + round(BetSize x pot)`, for BetSize a percentage or geometric fraction, or `DonkBetSize` when OOP leads into the previous street's aggressor |
-| raise | `facing + round(RaiseSize x pot_if_called)`, or `round(N x facing)` for an `Nx` entry |
+| bet | `round(invested + BetSize x pot)`, for BetSize a percentage or geometric fraction, or `DonkBetSize` when OOP leads into the previous street's aggressor |
+| raise | `round(facing + RaiseSize x pot_if_called)`, or `mine + N x (facing - mine)` for an `Nx` entry; at least a min-raise, `facing + (facing - mine)` |
 
-Rounding is to the nearest chip. Two all-in rules sit on top:
+Rounding is half to even, applied to the total (`925 + 33% x 5550 = 2756.5` gives 2756).
+On top of the sizes:
 
-- **`AllinThreshold%`** - a bet or raise whose total reaches that percentage of the effective
-  stack is replaced by the all-in. At 67% of a 230 stack, any size from 154 up becomes 230,
-  which is why the deepest action of every branch is an all-in.
+- **`AllinThreshold%`** - a bet or raise whose total is strictly above that percentage of the
+  effective stack is replaced by the all-in. At 67% of a 230 stack, any size from 155 up
+  becomes 230, which is why the deepest action of every branch is an all-in.
 - **`<Street>Config[IP].AddAllin`** - offers the all-in as an extra size next to the configured
-  ones, but only while `AddAllinOnlyIfLessThanThisTimesThePot%` of `pot_if_called` still exceeds
-  the all-in. On a 40-chip river pot, 300% is 120 and the stack is 230, so no all-in is offered;
-  facing a 26 bet the pot-if-called is 92, 300% of it is 276, and the all-in joins the raise.
+  ones (never on its own), but only while the stack left once the pending bet is called is
+  below `AddAllinOnlyIfLessThanThisTimesThePot%` of `pot_if_called`. On a 40-chip river pot,
+  300% is 120 and 230 is behind, so no all-in is offered; facing a 26 bet the pot-if-called is
+  92, 300% of it is 276, 204 is behind, and the all-in joins the raise.
+- **`MergeSimilarBets`** - from the largest size down, a size is dropped when it is closer to
+  the last size kept than `MergeSimilarBetsThreshold%` of the pot once the smaller size is in.
 
-**Donk rule (#152, differs from PioViewer).** When OOP leads into the previous street's
-aggressor (IP bet or raised and OOP called), only `DonkBetSize` sizes are offered. An empty
-donk list means exactly that - OOP cannot lead at all (check only), and `AddAllin` adds no
-all-in lead either. PioViewer instead falls back to `BetSize` for an empty donk list;
-`--pio-compat` reproduces that for diffing against PioViewer saves whose donk list is
-unset. IP is never in this spot postflop - after OOP checks, IP's bet still uses `BetSize`,
-as PioViewer's recorded lines confirm (the fixture below exercises exactly that).
+**Donk rule (#152).** When OOP leads into the previous street's aggressor (IP bet or raised
+and OOP called), only `DonkBetSize` sizes are offered. An empty donk list means exactly that -
+OOP cannot lead at all (check only), and `AddAllin` adds no all-in lead either. PioViewer
+does the same (all 145 configs below reproduce with it, 25 with a `BetSize` fallback), so the
+fallback, `--pio-compat`, is only kept for old scripts. After OOP checks, IP's bet still uses
+`BetSize`.
 
 Only maximal lines are emitted: the solver fills in check, call and fold at every node it
 creates, so a line only has to reach the deepest bet of its branch.
 
-These rules were inferred from `tests/data/pio_25bbHU_2sizes.txt`, which carries both a config
-header and the 266 lines PioViewer generated from it; `tests/test_tree_builder.py` checks that
-the builder reproduces that set exactly. (The `Ne`/`Nx`/`a` size forms and `RaiseCap` are our
-own extensions, not something PioViewer writes; plain percentage files like the fixture are
-unaffected.) One detail the fixture cannot pin down: the tie-break
-when a size lands exactly on .5 (half-up and half-even both reproduce it). It does pin down
-the donk rule above indirectly: it sets `DonkBetSize` equal to `BetSize` on every street, so
-its donk sizes are indistinguishable from the PioViewer fallback - but its IP check-bet lines
-prove that a bet after the opponent checks is an ordinary `BetSize`, not a donk.
+These rules were inferred black-box from PioViewer's output: `tests/data/pio_25bbHU_2sizes.txt`,
+which carries a config header and the 266 lines PioViewer generated from it (checked by
+`tests/test_tree_builder.py`), and 145 real PioViewer tree configs on the owner's PC, header
+plus generated lines, which the builder reproduces exactly (`--compare`; #313). Those 145 files
+are private and not in the repository; the unit tests use synthetic configs for each rule.
 
 ## Job queue: one tree on many flops
 

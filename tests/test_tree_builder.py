@@ -114,7 +114,7 @@ def test_sizing_arithmetic():
     # Turn after flop bet-call: pot 64, so bets are 12 + 19 and 12 + 38.
     turn = tb.Node(1, (12, 12), tb.OOP, False, tb.OOP)
     check(tb._aggressive_totals(cfg, turn) == [31, 50],
-          "turn bets 31 and 50 (30%/60% of 64, rounded half-up from 19.2/38.4)")
+          "turn bets 31 and 50 (30%/60% of 64, rounded to nearest from 19.2/38.4)")
 
     # River bets 65% of the pot.
     river = tb.Node(2, (0, 0), tb.OOP, False, None)
@@ -163,7 +163,12 @@ def test_parse_size_forms():
     check(tb.parse_size_list("e") == [tb.SizeSpec("geo", None)], "parse: `e` = geometric over the rest")
     check(tb.parse_size_list("2.5x") == [tb.SizeSpec("mult", Decimal("2.5"))],
           "parse: decimal raise multiple")
-    for bad in ("2q", "x3", "e2", "0e", "-3", "-2x", "xx"):
+    # `NeP` / `eP` are PioViewer's geometric sizes with a second parameter (`2e50`, `e50`; #313)
+    check(tb.parse_size_list("2e50 e50") == [tb.SizeSpec("geo", Decimal(2), Decimal(50)),
+                                             tb.SizeSpec("geo", None, Decimal(50))], "parse: NeP and eP")
+    check(tb.parse_size_list("5e 3e,  2e a") == tb.parse_size_list("5e,3e,2e,a"),
+          "parse: entries separated by spaces, commas or both (#313)")
+    for bad in ("2q", "x3", "0e", "-3", "-2x", "xx"):
         try:
             tb.parse_size_list(bad)
             check(False, f"parse: {bad!r} is rejected")
@@ -287,7 +292,7 @@ def test_geometric_raises():
 
 
 def test_raise_multiples():
-    """Nx raises to N times the bet faced."""
+    """Nx raises by N times the increment faced, on top of what the raiser has in (#313)."""
     cfg = tb.parse_config("#Pot#100\n#EffectiveStacks#10000\n#AllinThreshold#100\n"
                           "#FlopConfigIP.RaiseSize#3x,2.5x\n")
     faced = tb.Node(0, (50, 0), tb.IP, True, None)
@@ -296,8 +301,8 @@ def test_raise_multiples():
     cfg = tb.parse_config("#Pot#100\n#EffectiveStacks#10000\n#AllinThreshold#100\n"
                           "#FlopConfig.RaiseSize#3x\n")
     rer = tb.Node(0, (12, 38), tb.OOP, True, None)
-    check(tb._aggressive_totals(cfg, rer) == [114],
-          "3x vs a raise to 38 re-raises to 114 (3 times the bet faced)")
+    check(tb._aggressive_totals(cfg, rer) == [90],
+          "3x vs 12 -> 38 re-raises to 12 + 3 x 26 = 90 (PioViewer, #313; not 3 x 38)")
     tiny = tb.parse_config("#Pot#100\n#EffectiveStacks#200\n#AllinThreshold#100\n"
                            "#FlopConfigIP.RaiseSize#30x\n")
     check(tb._aggressive_totals(tiny, faced) == [200],
@@ -374,7 +379,7 @@ def test_rounding_is_nearest():
     finally:
         tb._round = orig
     got = {tuple(l) for l in tb.build_lines(tb.parse_config(text))}
-    check(got == want, "half-up rounding restored and still matches")
+    check(got == want, "half-even rounding restored and still matches")
 
 
 SYNTHETIC = """\
@@ -526,8 +531,67 @@ def test_full_script():
           "--full script forwards both ranges verbatim")
 
 
+def opts(header, node):
+    return tb._aggressive_totals(tb.parse_config(header), node)
+
+
+def test_pioviewer_corpus_rules():
+    """Rules inferred from 145 real PioViewer configs (#313), each on a small synthetic config."""
+    base = "#Pot#1750\n#EffectiveStacks#9200\n#AllinThreshold#67\n"
+    root = tb.Node(0, (0, 0), tb.OOP, False, None)
+    check(opts(base + "#FlopConfig.BetSize#75\n", root) == [1312], "75% of 1750 = 1312.5 rounds half to even: 1312")
+    raise_node = tb.Node(0, (0, 925), tb.OOP, True, None)
+    check(opts("#Pot#3700\n#EffectiveStacks#8900\n#AllinThreshold#67\n#FlopConfig.RaiseSize#33\n", raise_node)
+          == [2756], "the total is rounded: 925 + 33% x 5550 = 2756.5 -> 2756 (not 925 + 1832)")
+    mr = tb.Node(1, (0, 2500), tb.OOP, True, None)
+    check(opts("#Pot#5000\n#EffectiveStacks#7500\n#AllinThreshold#67\n#TurnConfig.RaiseSize#2e\n", mr) == [5000],
+          "min-raise: facing 0 -> 2500, a 2e raise of 4571 becomes 5000")
+    check(opts(base + "#FlopConfig.BetSize#2e75\n", root) == [1312], "2e75: 2e is 120% here, so 75% (1312)")
+    check(opts(base + "#FlopConfig.BetSize#e200 2e\n", root) == sorted(set(opts(base + "#FlopConfig.BetSize#e 2e\n", root))),
+          "eP with P above the geometric size is just the geometric size")
+    strict = "#Pot#12060\n#EffectiveStacks#9000\n#AllinThreshold#67\n"
+    check(opts(strict + "#FlopConfig.BetSize#50\n", root) == [6030], "exactly 67% of the stack (6030) is not an all-in")
+    check(opts(strict + "#FlopConfig.BetSize#51\n", root) == [9000], "just above 67% is the all-in")
+    gate = tb.Node(2, (1155, 0), tb.IP, True, None)
+    check(opts(base + "#AddAllinOnlyIfLessThanThisTimesThePot#200\n#RiverConfigIP.RaiseSize#50\n"
+                      "#RiverConfigIP.AddAllin#True\n", gate) == [3185, 9200],
+          "AddAllin gate on the stack behind: 9200 - 1155 = 8045 < 200% x 4060")
+    check(opts(base + "#AddAllinOnlyIfLessThanThisTimesThePot#500\n#FlopConfig.AddAllin#True\n", root) == [],
+          "AddAllin adds nothing to an empty size list")
+    merge = tb.Node(1, (1468, 1468), tb.IP, True, None)
+    hdr = "#Pot#4450\n#EffectiveStacks#8000\n#AllinThreshold#67\n#TurnConfigIP.BetSize#4e, 3e, 2e\n"
+    check(opts(hdr, merge) == [2539, 2961, 3920], "4e/3e/2e unmerged: 2539, 2961, 3920")
+    check(opts(hdr + "#MergeSimilarBets#True\n#MergeSimilarBetsThreshold#12\n", merge) == [2539, 3920],
+          "MergeSimilarBets: 2961 merges into 3920 (10.8%), then 2539 stays (16.3%)")
+    cap = base + "#CapEnabled#True\n#CapPerStreet#4\\n4\\n3\n#FlopConfigIP.RaiseSize#50\n"
+    three = tb.Node(0, (2099, 1262), tb.IP, True, None, aggr=3)
+    check(opts(cap, three) == [9200], "CapPerStreet 4: after three bets the fourth is the all-in only, even without `a`")
+    check(opts(cap, tb.Node(0, (2099, 1262), tb.IP, True, None, aggr=2)) == [5073],
+          "below the cap, sizes as usual (2099 + 50% x 5948)")
+    check(opts(base + "#CapEnabled#True\n#CapPerStreet#0\\n4\\n3\n#FlopConfigIP.RaiseSize#50\n", three) == [5073],
+          "CapPerStreet 0 leaves the street uncapped")
+    check(opts(base + "#FlopConfig.RaiseSize#2.5x\n", tb.Node(0, (96, 240), tb.OOP, True, None)) == [456],
+          "2.5x facing 96 -> 240 is 96 + 2.5 x 144 = 456")
+    check(opts(base + "#FlopConfig.BetSize#15,2e.a\n", root) == [262, 9200], "a malformed `2e.a` is the all-in")
+    forced = tb.parse_config(base + "#ForceOOPBet#True\n#FlopConfig.BetSize#33\n")
+    check(all(line[0] != 0 for line in tb.build_lines(forced)), "ForceOOPBet: no line starts with an OOP check")
+    uni = ("#Pot#500\n#EffectiveStacks#9750\n#AllinThreshold#67\n#UseUnifiedRaiseAfterRaise#True\n"
+           "#UnifiedRaiseAfterRaise#75\n#FlopConfigIP.RaiseSize#50\n#RiverConfigIP.RaiseSize#150\n")
+    check(opts(uni, tb.Node(0, (1000, 250), tb.IP, True, None, aggr=2)) == [2875],
+          "unified raise after a raise: 1000 + 75% x 2500 = 2875, not RaiseSize's 50%")
+    check(opts(uni, tb.Node(2, (875, 500), tb.IP, True, None, aggr=1, raised=True)) == [2562],
+          "a raise earlier in the hand makes the next street's raise unified too (75%, not 150%)")
+    edits = tb.parse_config(base + "#FlopConfig.BetSize#25,75\n#FlopConfigIP.RaiseSize#50\n"
+                            "#RemovedLines_2#Bet 75, Raise 50\\\\0\n#ExtraLines_2#\\\\0Check, Bet 10\\\\0\n")
+    lines = {tuple(l) for l in tb.build_lines(edits)}
+    check((1312,) in lines and not any(l[:2] == (1312, 3593) for l in lines),
+          "RemovedLines: the raise after the 75% bet is gone, the bet stays")
+    check(any(l[:2] == (438, 1751) for l in lines), "the raise after the 25% bet is untouched (438 + 50% x 2626)")
+    check((0, 175) in lines or any(l[:2] == (0, 175) for l in lines), "ExtraLines: IP's 10% bet after a check is added")
+
+
 def main():
-    for fn in (test_parse, test_matches_pioviewer, test_no_redundant_lines,
+    for fn in (test_parse, test_matches_pioviewer, test_no_redundant_lines, test_pioviewer_corpus_rules,
                test_sizing_arithmetic, test_add_allin_gate, test_parse_size_forms,
                test_geometric_bets_spr3, test_geometric_raises, test_raise_multiples,
                test_raise_cap, test_rounding_is_nearest,

@@ -10,6 +10,7 @@ import { get, post, prefs, fmt, toast } from "./api.js";
 const $ = (id) => document.getElementById(id);
 const P = {
   watching: false, t0: 0, timer: null,                // after Solve: the loading modal
+  gen: 0,                                             // bumped by startPreview: an older tick chain stops (#386)
   ringBest: 0,                                        // the ring's furthest point this solve (0..1)
   solving: false,                                     // main solve running (incl. parked for a refine)
   shown: null, refineRoot: null, refineTimer: null,   // node on screen and its refine
@@ -55,8 +56,12 @@ function drawRing(pg) {
 
 async function tick() {
   if (!P.watching) return;
+  const gen = P.gen;
   let st;
-  try { st = await get("/api/progress"); } catch (e) { P.timer = setTimeout(tick, 600); return; }
+  try { st = await get("/api/progress"); } catch (e) { if (gen === P.gen && P.watching) P.timer = setTimeout(tick, 600); return; }
+  // dismissed ("keep solving in the background") or restarted while the request was out: this answer is
+  // not for the modal any more, and must not hand off to Study (#386)
+  if (!P.watching || gen !== P.gen) return;
   const pg = st.preview || {};
   const secs = (performance.now() - P.t0) / 1000;
   const status = $("sm-status");
@@ -89,6 +94,7 @@ async function tick() {
  *  Shows the solving-period modal and opens the Study view when the solve is close enough. */
 export function startPreview(on) {
   clearTimeout(P.timer);
+  P.gen++;
   P.watching = false;
   if (!previewOn() || !on) return;
   Object.assign(P, { watching: true, t0: performance.now(), ringBest: 0 });

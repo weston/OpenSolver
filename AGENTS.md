@@ -348,8 +348,9 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `show_range`, `calc_ev` (signs need union lists), `calc_eq_node`, `calc_line_freq`, `calc_global_freq`,
   `calc_matchups_line`, `calc_results` and `explo_partial`. Use them to test evaluation code apart from
   solve noise.
-- `show_settings` before any `set_info_freq`: Pio `info_freq: 0` (it reports by time), ours 25 (ours checks
-  the accuracy target at reports, so 0 would never stop on accuracy). Not changed.
+- `show_settings` before any `set_info_freq`: Pio `info_freq: 0` (it reports by time), ours 25 (the default
+  is not changed). An explicit `set_info_freq 0` reports by time in both: Pio at about 0.33 s then 0.6 s
+  apart, ours every 0.5 s, and both stop there on the accuracy target (#378; ours used to never report).
 - Legacy commands Pio 3.10 still answers: `set_bet_sizes <n>...` (atoi per token) and `set_donk_bet <n>`
   (true unless atoi is 0) are only stored, `build_tree` ignores them; `show_tree_params` prints
   `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the

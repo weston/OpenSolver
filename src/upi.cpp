@@ -394,6 +394,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   int stalled = 0;
   bool sched_auto = false;  // the auto report schedule is set up (read under tree_mu_ below, #364)
   auto t0 = std::chrono::steady_clock::now();
+  double last_report_t = 0.0;  // solve time of the last report (info_freq 0 reports by time)
   double base = sub ? 0.0 : solve_seconds_;
   long long done = 0;
   std::string reason = "requested";
@@ -473,6 +474,10 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       // info frequency would never check its stop conditions: solve_subtree's every 25 iterations then.
       const long long sub_freq = sub ? (info_freq_ > 0 ? info_freq_ : 25) : info_freq_;
       if (info_auto_ ? tick >= next_report_ : (sub_freq > 0 && tick % sub_freq == 0)) report = true;
+      // info_freq 0: report (and check the target) by time, like Pio 3.10.1 (#378: reports at 0.33 s, 0.94 s
+      // there; ours never reported, so a target never stopped the solve)
+      if (!info_auto_ && sub_freq == 0 && el - last_report_t >= 0.5) report = true;
+      if (report) last_report_t = el;
       if (limit) report = true;
       if (report) {
         double target;

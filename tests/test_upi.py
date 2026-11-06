@@ -1061,6 +1061,19 @@ def check_mid_solve_settings(u):
     check(stopped and "required accuracy reached" in stopped[-1][0] and time.time() - t0 < 25,
           f"the new report frequency is used: the solve stops at its target ({stopped[-1][0] if stopped else None})")
     u.cmd("set_info_freq 25")
+    # #378: info_freq 0 reports by time (like Pio), so the target still stops the solve
+    u.cmd("build_tree")
+    u.cmd("set_info_freq 0")
+    u.cmd("set_accuracy 0.02")
+    u.solver_msgs.clear()
+    t0 = time.time()
+    u.cmd("go 30 seconds")
+    u.cmd("wait_for_solver")
+    stopped = [b for b in u.solver_msgs if b and b[0].startswith("SOLVER: stopped")]
+    check(stopped and "required accuracy reached" in stopped[-1][0] and time.time() - t0 < 20,
+          f"info_freq 0 still stops on the target, by time ({time.time() - t0:.1f} s, "
+          f"{stopped[-1][0] if stopped else None})")
+    u.cmd("set_info_freq 25")
     u.cmd("free_tree")
 
 

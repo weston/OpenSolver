@@ -154,6 +154,15 @@ class Solver {
   // every run past the delay is bit-identical to the skipping version.
   bool avg_reset = true;
   void reset_strategy_sums();  // zero every unlocked strategy sum (locked strategies are kept)
+  // #300: average player p's regrets and strategy sums over each hand's orbit under the board's suit
+  // symmetries (GameTree::perm_all), at the decisions on the root street.
+  void symmetrize_root_street(int p);
+  // Built on first use: the root-street decisions of each player, and each player's hand orbits of two
+  // or more (flattened: sym_orbits_[p] holds the hands, sym_orbit_end_[p] where each orbit ends).
+  bool sym_ready_ = false;
+  std::vector<uint32_t> sym_nodes_[2];
+  std::vector<uint16_t> sym_orbits_[2];
+  std::vector<uint32_t> sym_orbit_end_[2];
 
   // Regret-based pruning (set_pruning, #51; Brown & Sandholm, "Regret-Based Pruning in
   // Extensive-Form Games", NIPS 2015). During a CFR walk only, an action of the traverser whose

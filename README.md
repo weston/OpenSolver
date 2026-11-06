@@ -279,6 +279,11 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
   first report at a line loads every save once; the results are kept in the jobs. `--csv` writes PioViewer's layout
   (Flop, Turn, Global %, EVs, frequencies). With a job's save open in Study (*Open* in Jobs), **Report…** next to
   Lock… runs this report at the node you are on (#331).
+- **Per hand** (#336): `report NAME [--line L] --hands FILE` writes each hand class's EV, equity, equity realization
+  (EV over equity × pot) and matchups for both players over the batch, in PioViewer's handsEV.csv layout (EV and
+  equity in % of the node's pot, plus EV in chips). Each combo counts by reach × matchups on every flop, which
+  reproduces PioViewer's own handsEV figures from its per-combo files exactly. It works at the root too (the saves
+  are read once, like a line).
 - A job that fails (the solver errors or exits) is marked `failed` with the error and the run goes on.
   Ctrl-C or `stop --now` puts the current job back in the queue, also mid-build (the job's solver is ended); a
   stop once the solve is over lets its save finish first, so the solve is kept. One runner at a time (a lock in the queue directory).

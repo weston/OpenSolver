@@ -384,6 +384,53 @@ def integration(solver):
         calls.clear()
         jobs.line_report(q, "srp", "c", solver, progress=lambda d, t, b: calls.append((d, t, b)))
         check(calls == [(0, 0, None)], f"a cached line reads no save ({calls})")
+        print("[report: per hand (#336)]")
+        hr = jobs.line_report(q, "srp", "", solver, root=True)
+        check(hr["line"] == "" and len(hr["rows"]) == 3 and hr["hands"]["OOP"] and hr["hands"]["IP"],
+              "the root through the line path, with hands")
+        check({x["hand"] for x in hr["hands"]["OOP"]} <= {"AA", "KK", "QQ", "AKs", "AKo", "AQs"}
+              and {x["hand"] for x in hr["hands"]["IP"]} <= {"JJ", "TT", "AQs", "AQo", "KQs", "KQo"},
+              f"classes from the ranges ({[x['hand'] for x in hr['hands']['OOP']]})")
+        # one job's sums, independently: per combo from show_hand_order, calc_ev and calc_eq_node
+        s = vserver.Solver(solver)
+        try:
+            s.cmd(f'load_tree "{q.job("00001")["out"]}"')
+            order = s.cmd("show_hand_order").split()
+            ev = [l.split() for l in s.cmd("calc_ev OOP r:0").splitlines()]
+            eq = s.cmd("calc_eq_node OOP r:0").splitlines()[0].split()
+        finally:
+            jobs.close_solver(s)
+        want = {}
+        for i, h in enumerate(order):
+            m, v, e = float(ev[1][i]), float(ev[0][i]), float(eq[i])
+            if m > 0:
+                a = want.setdefault(vserver.combo_class(h), [0.0, 0.0, 0.0])
+                a[0] += m
+                a[1] += m * v
+                a[2] += m * e
+        got = q.job("00001")["result"]["lines"][""]["hands"]["OOP"]
+        check(set(got) == set(want) and all(abs(got[c][k] - want[c][k]) <= 1e-5 * max(1, abs(want[c][k]))
+                                            for c in want for k in range(3)),
+              f"per-class sums of matchups, matchups x EV, matchups x equity ({list(want)[:3]})")
+        # over the batch: weight x matchups, EQR = EV / (equity x pot)
+        cache = [(j["weight"], j["result"]["lines"][""]["hands"]["OOP"]) for j in q.jobs("srp")]
+        x = hr["hands"]["OOP"][0]
+        m = sum(w * hs[x["hand"]][0] for w, hs in cache if x["hand"] in hs)
+        mev = sum(w * hs[x["hand"]][1] for w, hs in cache if x["hand"] in hs)
+        check(abs(x["ev"] - mev / m) < 1e-3 and abs(x["matchups"] - m) < 1e-3 * m
+              and abs(x["eqr"] - x["ev"] / (x["equity"] * hr["pot"])) < 1e-5
+              and abs(x["ev_pct"] - 100 * x["ev"] / hr["pot"]) < 1e-3,
+              f"class figures over the batch ({x})")
+        check([y["ev"] for y in hr["hands"]["OOP"]] == sorted((y["ev"] for y in hr["hands"]["OOP"]), reverse=True),
+              "best EV first")
+        tl2 = jobs.line_report(q, "srp", "c c *", solver)
+        check(tl2["hands"]["OOP"] and tl2["hands"]["IP"], "a turn line has hands too")
+        rc, out = cli("report", "srp", "--hands", os.path.join(td, "h.csv"), "--solver", solver)
+        with open(os.path.join(td, "h.csv")) as f:
+            hl = f.read().splitlines()
+        check(rc == 0 and "at the root" in out and "Preflop Hands OOP" in hl and "Preflop Hands IP" in hl
+              and hl[hl.index("Preflop Hands OOP") + 1].startswith("Hand,EV,Equity,Equity Realization,Matchups"),
+              f"--hands writes PioViewer's handsEV layout ({rc}, {hl[:3]})")
         bad = jobs.line_report(q, "srp", "b77", solver)
         check(all(r["freqs"] is None and "no action b77" in r["error"] for r in bad["rows"]) and not bad["total"],
               f"an action not in the tree is reported per flop ({bad['rows'][0]['error']})")

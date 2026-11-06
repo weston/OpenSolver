@@ -313,6 +313,9 @@
         <option value="flops">Flops</option><option value="OOP">Hands · OOP</option><option value="IP">Hands · IP</option>
       </select>
       <select id="jr-by" title="Group the flops by texture"></select>
+      <select id="jr-hands-mode" class="hidden" title="The hands as a table, or a 13×13 grid colored by a figure">
+        <option value="table">Table</option><option value="eqr">Grid · EQR</option><option value="ev">Grid · EV</option>
+      </select>
     </div>
   </div>
   <div class="jr-head jr-line-row">
@@ -322,6 +325,7 @@
     <label id="jr-cards-wrap" class="hidden"><input type="checkbox" id="jr-cards"> Show each card</label>
   </div>
   <div class="jobs-table-wrap"><table class="jobs-table" id="jr-table"></table></div>
+  <div id="jr-grid" class="jr-grid hidden"></div>
   <p id="jr-note" class="hint"></p>
 </dialog>
 

@@ -503,7 +503,7 @@ function setSegments(fill, parts) {
   });
 }
 
-function evColor(v, scale) {
+export function evColor(v, scale) {
   const t = Math.max(-1, Math.min(1, scale > 0 ? v / scale : 0));
   // red (losing) .. slate (zero) .. green (winning)
   const neg = [224, 82, 82], mid = [110, 120, 138], pos = [66, 190, 128];

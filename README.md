@@ -271,6 +271,13 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
   read once to fill it in. `--by high|suits|pairing|straight` (a select in the Report dialog) groups the
   flops by texture: top card, rainbow / two-tone / monotone, paired, and whether three ranks fit a
   straight. Each group gets its flop-weighted strategy and EVs, and the CSV carries the four texture columns.
+- **Report at a line** (#325): `report NAME --line r:0:b198:c:2d:c:b447` (or the Line field in the Report dialog,
+  which takes a node id from Study) reports the decision at that line on every flop: the strategy, both EVs and Global %
+  (how often the line is reached: its matchups over the root's, `calc_global_freq`). A card in the line (or `*`)
+  means every card dealt there, as in PioViewer's turn report. Each flop then gets one row per card (`--cards`, *Show
+  each card*), and the flop's row rolls them up: cards weighted by their matchups, Global % their plain mean. The
+  first report at a line loads every save once; the results are kept in the jobs. `--csv` writes PioViewer's layout
+  (Flop, Turn, Global %, EVs, frequencies).
 - A job that fails (the solver errors or exits) is marked `failed` with the error and the run goes on.
   Ctrl-C or `stop --now` puts the current job back in the queue, also mid-build (the job's solver is ended); a
   stop once the solve is over lets its save finish first, so the solve is kept. One runner at a time (a lock in the queue directory).

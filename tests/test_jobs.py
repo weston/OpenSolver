@@ -334,6 +334,58 @@ def integration(solver):
         check(len(lines) == 5 and lines[-1].startswith("weighted"), "report CSV")
         check(lines[0].endswith("high,suits,pairing,straight"), f"report CSV has the texture columns ({lines[0]})")
 
+        print("[report at a line (#325)]")
+        check(jobs.parse_line("r:0:b50:c:2d") == ["b50", "c", "*"] and jobs.parse_line("B50, c *") == ["b50", "c", "*"]
+              and jobs.parse_line("") == [] and jobs.parse_line("r:0") == [] and raises(jobs.parse_line, "b50 x7"),
+              "line parsing: node ids, spaces/commas, a card means every card")
+        root = jobs.report(q, "srp", solver)
+        check(raises(jobs.line_report, q, "srp", "b50", None), "a line report needs the solver (it reads the saves)")
+        lr = jobs.line_report(q, "srp", "r:0:b50", solver)
+        check(lr["player"] == "IP" and lr["facing"] == 50 and lr["labels"] == ["raise 100 (25%)", "call", "fold"], f"facing a bet: fold, call, raise ({lr['labels']})")
+        check(len(lr["rows"]) == 3 and all(abs(sum(x["freqs"]) - 1) < 1e-4 and x["cards"] is None for x in lr["rows"]),
+              "one row per flop, frequencies sum to 1")
+        bi = root["actions"].index("b50")
+        by_board = {x["board"]: x for x in root["rows"]}
+        # the node right after OOP's bet: its Global % is the matchup-weighted bet frequency at the root
+        check(all(abs(x["global"] - by_board[x["board"]]["freqs"][bi]) < 2e-3 for x in lr["rows"]),
+              f"Global % after the first action = its root frequency "
+              f"({[(x['global'], by_board[x['board']]['freqs'][bi]) for x in lr['rows']]})")
+        w = [x["weight"] * x["mass"] for x in lr["rows"]]
+        check(abs(lr["total"]["freqs"][1] - sum(wi * x["freqs"][1] for wi, x in zip(w, lr["rows"])) / sum(w)) < 1e-9,
+              "the line's total weights flops by weight x the line's mass")
+        rm = [x["weight"] * x["root_mass"] for x in lr["rows"]]
+        check(abs(lr["total"]["global"] - sum(r * x["global"] for r, x in zip(rm, lr["rows"])) / sum(rm)) < 1e-9,
+              "the total Global % weights flops by their root mass")
+        check(all(abs(x["global"] * x["root_mass"] - x["mass"]) < 1e-3 * x["root_mass"] for x in lr["rows"]),
+              "Global % = the line's matchups over the root's")
+        check(all("r:0" not in k and "b50" in k for k in q.job("00001")["result"]["lines"]), "the result is cached in the job")
+        lr2 = jobs.line_report(q, "srp", "b50", None)  # cached: no solver needed
+        check(lr2["rows"] == lr["rows"], "a second report at the line reads the cache")
+
+        tl = jobs.line_report(q, "srp", "c c 2d", solver)
+        x = tl["rows"][0]
+        check(tl["line"] == "c:c:*" and tl["player"] == "OOP" and all(len(r["cards"]) == 49 for r in tl["rows"]),
+              f"a turn line: one row per turn card ({[len(r['cards'] or []) for r in tl['rows']]})")
+        m = sum(c["mass"] for c in x["cards"])
+        check(abs(x["global"] - sum(c["global"] for c in x["cards"]) / 49) < 1e-9 and
+              all(abs(x["freqs"][a] - sum(c["mass"] * c["freqs"][a] for c in x["cards"]) / m) < 1e-9
+                  for a in range(len(tl["actions"]))) and
+              abs(x["ev_oop"] - sum(c["mass"] * c["ev_oop"] for c in x["cards"]) / m) < 1e-6,
+              "a flop's row: cards weighted by their mass, Global % their plain mean (PioViewer's turn report)")
+        check(len({c["cards"][0] for c in x["cards"]}) == 49 and not set(x["board"][i:i + 2] for i in (0, 2, 4))
+              & {c["cards"][0] for c in x["cards"]}, "the turn cards are the 49 cards off the flop")
+        bad = jobs.line_report(q, "srp", "b77", solver)
+        check(all(r["freqs"] is None and "no action b77" in r["error"] for r in bad["rows"]) and not bad["total"],
+              f"an action not in the tree is reported per flop ({bad['rows'][0]['error']})")
+        check(jobs.line_report(q, "srp", "", solver)["rows"] == root["rows"], "the empty line is the root report")
+        rc, out = cli("report", "srp", "--line", "r:0:c:c:Ts", "--solver", solver, "--cards",
+                      "--csv", os.path.join(td, "l.csv"))
+        with open(os.path.join(td, "l.csv")) as f:
+            lines = f.read().strip().splitlines()
+        check(rc == 0 and "OOP at r:0:c:c:*" in out and lines[0].startswith("Flop,Turn,Weight,Global %,OOP EV,IP EV")
+              and len(lines) == 1 + 3 * 50 + 1 and lines[-1].startswith(","),
+              f"line report CLI and PioViewer-shaped CSV ({rc}, {len(lines)} lines)")
+
         print("[report: flop textures]")
         T = jobs.TEXTURES
         cases = {"Kh9h4h": ("K", "monotone", "unpaired", "no straight"),

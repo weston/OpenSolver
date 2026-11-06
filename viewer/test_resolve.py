@@ -193,9 +193,11 @@ class SizeFormsTest(unittest.TestCase):
                 "turn_bet": "50", "turn_bet_ip": "50", "river_bet": "50", "river_bet_ip": "50",
                 "allin_threshold": 67, "add_allin_limit": 300}
         _, lines = vsrv.setup_from_body(body)
-        self.assertIn("add_line 50", [l.strip() for l in lines], lines)
+        leads = lambda ls: [l for l in ls if l.strip().split()[1] == "50"]  # OOP's bet at the turn root
+        self.assertTrue(leads(lines), lines)
         _, lines2 = vsrv.setup_from_body({**body, "pio_extra": ["#RemovedLines_2#Bet 50"]})
-        self.assertNotIn("add_line 50", [l.strip() for l in lines2], lines2)
+        self.assertFalse(leads(lines2), lines2)
+        self.assertTrue(lines2, "the rest of the tree stays")
 
     def test_allin_numbers_exact_and_positive(self):
         tb = vsrv.load_tree_builder()

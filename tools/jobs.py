@@ -57,7 +57,8 @@ sys.path.insert(0, os.path.join(REPO, "viewer"))
 
 STATUSES = ("queued", "running", "done", "failed")
 SAVE_MODES = ("no_rivers", "no_turns", "full")
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+-]{0,99}$")
+# not ending in "." or " ": Windows maps folder "x." and "x " onto "x", so two batches would share saves (#362)
+NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9 _.+-]{0,98}[A-Za-z0-9_+-])?$")
 CARD = r"[2-9TJQKAtjqka][cdhsCDHS]"
 BOARD_RE = re.compile(rf"((?:{CARD}\s*){{3,5}})(?::\s*([0-9]*\.?[0-9]+))?")
 # Commands the queue issues itself; dropped from a batch's setup.
@@ -94,6 +95,17 @@ def parse_flops(text: str) -> list[tuple[str, float]]:
     for raw in text.replace(",", "\n").replace(";", "\n").splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
+            continue
+        # `Ks5h2s Td7h2c`: whole boards separated by spaces (BOARD_RE alone would read one 5-card board)
+        toks = line.split()
+        if len(toks) > 1 and all(re.fullmatch(rf"(?:{CARD}){{3,5}}(?::[0-9]*\.?[0-9]+)?", t) for t in toks):
+            for t in toks:
+                b, _, w = t.partition(":")
+                board = normalize_board(b)
+                if board in seen:
+                    raise JobError(f"board {board} listed twice")
+                seen.add(board)
+                out.append((board, float(w) if w else 1.0))
             continue
         pos = 0
         while pos < len(line):
@@ -140,13 +152,41 @@ def tree_setup(text: str) -> tuple[list[str], list[str]]:
 
 # ------------------------------------------------------------------ the queue on disk
 
+def _retry_shared(fn):
+    """fn(), retried for ~2 s on PermissionError: on Windows a file being read by another process can't be
+    replaced (and is briefly unreadable while being replaced), which is a wait, not a failure (#362)."""
+    for k in range(100):
+        try:
+            return fn()
+        except PermissionError:
+            if os.name != "nt" or k == 99:
+                raise
+            time.sleep(0.02)
+
+
 def _write_json(path: str, data) -> None:
-    """Atomic write: a crash never leaves a half-written job file."""
+    """Atomic write: a crash never leaves a half-written job file (fsynced before the rename, #362)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=1, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        _retry_shared(lambda: os.replace(tmp, path))
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _read_json(path: str):
+    def rd():
+        with open(path) as f:
+            return json.load(f)
+    return _retry_shared(rd)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -223,10 +263,11 @@ class Queue:
     # ---- batches and jobs
     def batch(self, name: str) -> dict:
         try:
-            with open(os.path.join(self.batches_dir, name + ".json")) as f:
-                return json.load(f)
+            return _read_json(os.path.join(self.batches_dir, name + ".json"))
         except FileNotFoundError:
             raise JobError(f"no batch {name!r}") from None
+        except ValueError:
+            raise JobError(f"batch {name!r}: its file is damaged") from None
 
     def jobs(self, batch: str | None = None) -> list[dict]:
         out = []
@@ -234,10 +275,13 @@ class Queue:
             for fn in os.listdir(self.jobs_dir):
                 if fn.endswith(".json"):
                     try:
-                        with open(os.path.join(self.jobs_dir, fn)) as f:
-                            j = json.load(f)
+                        j = _read_json(os.path.join(self.jobs_dir, fn))
                     except FileNotFoundError:
                         continue  # removed since the listing
+                    except ValueError:
+                        # a damaged file (cut short by a crash): left out, not the end of the queue (#362)
+                        print(f"warning: skipping damaged job file {fn}", file=sys.stderr)
+                        continue
                     if batch is None or j["batch"] == batch:
                         out.append(j)
         out.sort(key=lambda j: (j["order"], j["id"]))
@@ -248,10 +292,11 @@ class Queue:
         if not re.fullmatch(r"\d{1,9}", jid):
             raise JobError(f"no job {jid!r}")
         try:
-            with open(path) as f:
-                return json.load(f)
+            return _read_json(path)
         except FileNotFoundError:
             raise JobError(f"no job {jid!r}") from None
+        except ValueError:
+            raise JobError(f"job {jid}: its file is damaged") from None
 
     def save(self, job: dict) -> None:
         _write_json(os.path.join(self.jobs_dir, job["id"] + ".json"), job)
@@ -286,7 +331,7 @@ class Queue:
                   max_iters: int | None, max_seconds: float | None, save: str, out_dir: str | None,
                   source: str = "") -> list[dict]:
         if not NAME_RE.match(name):
-            raise JobError("batch names: letters, digits, space, _ . + - (max 100)")
+            raise JobError("batch names: letters, digits, space, _ . + - (max 100), not ending in . or space")
         if save not in SAVE_MODES:
             raise JobError(f"save mode must be one of {SAVE_MODES}")
         if not accuracy > 0:
@@ -299,8 +344,9 @@ class Queue:
             return self._add_batch(name, setup, flops, accuracy, max_iters, max_seconds, save, out_dir, source)
 
     def _add_batch(self, name, setup, flops, accuracy, max_iters, max_seconds, save, out_dir, source):
-        if os.path.exists(os.path.join(self.batches_dir, name + ".json")):
+        if os.path.exists(os.path.join(self.batches_dir, name + ".json")) and self.jobs(name):
             raise JobError(f"batch {name!r} exists (remove it first, or pick another name)")
+        # (a batch file with no jobs is left from a crash between the writes below: reused, #362)
         out_dir = os.path.abspath(os.path.expanduser(out_dir)) if out_dir else \
             os.path.join(self.root, "saves", name)
         _write_json(os.path.join(self.batches_dir, name + ".json"),
@@ -368,39 +414,43 @@ class Queue:
 
     # ---- runner lock
     def lock(self) -> None:
+        """Become the queue's runner. Checked and taken under the edit lock, so of two runners started
+        at once exactly one gets it (#362: the pid used to be written after the file was created, and a
+        contender reading it in between took the empty file for a stale lock)."""
         os.makedirs(self.root, exist_ok=True)
-        for _ in range(2):
-            try:
-                fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                try:
-                    with open(self.lock_file) as f:
-                        pid = int(f.read().strip() or 0)
-                except (OSError, ValueError):
-                    pid = 0
-                if _pid_alive(pid):
-                    raise JobError(f"another runner is active (pid {pid})") from None
-                os.remove(self.lock_file)  # stale
-                continue
+        with self.edit():
+            pid = self.runner_pid()
+            if pid and _pid_alive(pid):
+                raise JobError(f"another runner is active (pid {pid})")
+            fd, tmp = tempfile.mkstemp(dir=self.root, suffix=".tmp")
             with os.fdopen(fd, "w") as f:
                 f.write(str(os.getpid()))
-            return
-        raise JobError("could not take the runner lock")
+            _retry_shared(lambda: os.replace(tmp, self.lock_file))  # the pid is never seen half-written
+
+    def runner_pid(self) -> int:
+        try:
+            with open(self.lock_file) as f:
+                text = f.read().strip()
+        except OSError:
+            return 0
+        try:
+            return int(text or 0)
+        except ValueError:
+            return 0
 
     def runner(self) -> int:
         """The pid of the live runner holding the lock (this process or another), else 0."""
-        try:
-            with open(self.lock_file) as f:
-                pid = int(f.read().strip() or 0)
-        except (OSError, ValueError):
-            return 0
+        pid = self.runner_pid()
         return pid if _pid_alive(pid) else 0
 
     def unlock(self) -> None:
-        try:
-            os.remove(self.lock_file)
-        except FileNotFoundError:
-            pass
+        """Release the runner lock if this process holds it (never another runner's)."""
+        with self.edit():
+            if self.runner_pid() == os.getpid():
+                try:
+                    os.remove(self.lock_file)
+                except FileNotFoundError:
+                    pass
 
 
 # ------------------------------------------------------------------ running

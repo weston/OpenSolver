@@ -193,12 +193,18 @@ Keep solving and the last 3% goes too.
 python3 tools/jobs.py add srp tree.txt --flops "Kh9h4h, As7d2c" --accuracy 0.5
 python3 tools/jobs.py run                 # everything queued, one solve at a time
 python3 tools/jobs.py report srp --by suits   # root strategy per flop, grouped and weighted
+python3 tools/jobs.py report srp --line r:0:c:b40   # the same at any node: here OOP checked, IP bet 40
+python3 tools/jobs.py report srp --line r:0:c:c:2d --cards --csv turn.csv   # every turn card, like PioViewer
+python3 tools/jobs.py report srp --hands hands.csv   # EV, equity and realization per hand class
 ```
 
 - `tree.txt` is a UPI script with ranges, pot, stacks and lines (a PioViewer tree script works).
   Each job sets its own board.
 - `--flops-file` takes a weighted flop subset: one `board:weight` per line, like PioSOLVER's preflop_subsets files.
 - Saves leave out the rivers by default. `--save full` keeps them.
+- Reports average the way PioViewer's aggregation report does: hands count by reach × matchups, and each
+  flop by its weight times its matchups. A card in `--line` means every card dealt there (one row per turn).
+  The first report at a line reads every save once; later ones come from the queue.
 
 As a guide, the 25bb test tree on 9 flops took 3 min 40 s on a 32-thread PC, about 20 s per flop
 at 0.5% of the pot. Peak memory was one tree's worth (5.7 GB), and the saves came to 40 MB.
@@ -213,7 +219,8 @@ Then open `http://localhost:8000`. It has:
 - tree navigation, 13x13 strategy and EV matrices, and range display;
 - node locking: edit a strategy by hand, or describe it in plain English;
 - subgame re-solves and bet-size searches;
-- a Jobs tab for the queue above;
+- a Jobs tab for the queue above, with the same reports: per flop, at any line, or per hand;
+  with a job's save open, **Report…** in Study runs it at the node you are on;
 - a library of saved spots.
 
 It's the same engine, without writing UPI by hand.

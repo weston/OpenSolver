@@ -237,9 +237,49 @@ def integration(solver):
               f"root actions {rep['labels']}")
         check(len(rep["rows"]) == 3 and all(abs(sum(x["freqs"]) - 1) < 1e-4 for x in rep["rows"]),
               "each flop's root frequencies sum to 1")
-        w = [x["weight"] for x in rep["rows"]]
-        want = sum(x["weight"] * x["freqs"][0] for x in rep["rows"]) / sum(w)
-        check(abs(rep["total"]["freqs"][0] - want) < 1e-9 and rep["total"]["flops"] == 3, "weighted average")
+        w = [x["weight"] * x["mass"] for x in rep["rows"]]
+        want = sum(wi * x["freqs"][0] for wi, x in zip(w, rep["rows"])) / sum(w)
+        check(abs(rep["total"]["freqs"][0] - want) < 1e-9 and rep["total"]["flops"] == 3 and
+              rep["total"]["weight"] == sum(x["weight"] for x in rep["rows"]),
+              "the average weights each flop by weight x matchup mass (#323)")
+        want_ev = sum(wi * x["ev_oop"] for wi, x in zip(w, rep["rows"])) / sum(w)
+        check(abs(rep["total"]["ev_oop"] - want_ev) < 1e-9, "EVs are averaged with the same weights")
+        check(len({round(x["mass"], 3) for x in rep["rows"]}) > 1, "boards block different numbers of matchups")
+        # independently: freqs = sum over hands of reach x (opponent reach over unblocked combos) x strategy
+        import server as vserver
+        s = vserver.Solver(solver)
+        try:
+            j = q.job("00001")
+            s.cmd(f'load_tree "{j["out"]}"')
+            order = s.cmd("show_hand_order").split()
+            ro = [float(x) for x in s.cmd("show_range OOP r:0").split()]
+            ri = [float(x) for x in s.cmd("show_range IP r:0").split()]
+            st = [[float(x) for x in l.split()] for l in s.cmd("show_strategy r:0").splitlines() if l.strip()]
+        finally:
+            jobs.close_solver(s)
+        card_mass = {}
+        for h, r in zip(order, ri):
+            for c in (h[:2], h[2:]):
+                card_mass[c] = card_mass.get(c, 0.0) + r
+        tot_ip = sum(ri)
+        num, den = [0.0] * len(st), 0.0
+        for i, h in enumerate(order):
+            if ro[i] <= 0:
+                continue
+            # opponent mass not sharing a card: total - each card's mass + the identical combo (counted twice)
+            m = ro[i] * (tot_ip - card_mass.get(h[:2], 0) - card_mass.get(h[2:], 0) + ri[i])
+            den += m
+            for a in range(len(st)):
+                num[a] += m * st[a][i]
+        got = q.job("00001")["result"]["root"]
+        check(abs(got["mass"] - den) < 1e-3 * den and max(abs(num[a] / den - got["freqs"][a]) for a in range(len(st))) < 1e-5,
+              f"root freqs are reach x matchups weighted ({got['freqs']} vs {[n / den for n in num]})")
+        # a summary from before #323 (no mass, reach-weighted freqs) is re-read from the save
+        j = q.job("00003")
+        j["result"]["root"].pop("mass")
+        q.save(j)
+        jobs.report(q, "srp", solver)
+        check("mass" in q.job("00003")["result"]["root"], "a summary without a matchup mass is re-read")
         # a job finished before root summaries existed: the report reads it from the save
         j = q.job("00001")
         before = j["result"].pop("root")

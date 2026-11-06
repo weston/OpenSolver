@@ -757,7 +757,8 @@ class ResolveIntegrationTest(unittest.TestCase):
         self.assertEqual(st, 400, "a mask of strings is refused")
         self.assertEqual(self.req("/api/unlock", "POST", {"all": True})[0], 200)
 
-    def test_36_solve_refused_while_solving_further(self):
+    def test_09b_solve_refused_while_solving_further(self):
+        # (runs first: later tests change the shared main tree)
         # #357: /api/solve during a Solve further used to clear its partial state, so the subtree's
         # progress went into the main convergence series
         st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 1e-9})

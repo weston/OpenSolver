@@ -657,6 +657,8 @@ def _api_main(solver, lib, method, path, query, body):
         return 200, op_pio_import(need_body(body))
 
     if path == "/api/build":
+        if _resolver is not None:
+            _resolver.main_tree_changed()  # #357: its subgame came from the old tree
         solver.cmd("build_tree")
         solver.forget_locks()
         solver.tree_present = True
@@ -670,6 +672,10 @@ def _api_main(solver, lib, method, path, query, body):
         acc = b.get("accuracy", 0.05)
         if isinstance(acc, bool) or not isinstance(acc, (int, float)) or not math.isfinite(acc) or acc < 0:
             raise SolverError("bad accuracy")
+        if solver.state()["solving"]:
+            # the solver ignores a second go, but clearing the partial state would file a running
+            # Solve further's progress under the main solve (#357)
+            raise SolverError("the solver is running (stop it first)")
         # Report (and check the target) every 10 iterations: a smoother convergence chart (#115)
         # and less overshoot past the target than the default 25.
         solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go"])
@@ -693,6 +699,8 @@ def _api_main(solver, lib, method, path, query, body):
         b = need_body(body)
         path_arg = safe_path(b.get("path", ""))
         solver.cmds(["stop", "wait_for_solver", f'load_tree "{path_arg}"'])
+        if _resolver is not None:
+            _resolver.main_tree_changed()  # #357
         solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = True
@@ -1054,10 +1062,15 @@ def op_lock(solver, b):
         cmds.append(f"unlock_node {node_id}")  # lock_node freezes the strategy just set
         if mode == "combos":
             mask = b.get("combos")
-            if not isinstance(mask, list) or len(mask) != NUM_COMBOS:
+            if (not isinstance(mask, list) or len(mask) != NUM_COMBOS
+                    or any(m not in (0, 1) or isinstance(m, float) and m != int(m) for m in mask)):
                 raise SolverError(f"combos must be {NUM_COMBOS} 0/1 values")
             if not any(mask):
                 raise SolverError("no combos selected to lock")
+            # combo_lock_node replaces the node's mask: keep the combos locked earlier (their
+            # strategies are in `freq` as shown, i.e. as locked), so locking more hands adds (#357)
+            old = parse_floats(solver.cmd("show_locked_combos " + node_id), NUM_COMBOS)
+            mask = [1 if m or (o or 0) > 0 else 0 for m, o in zip(mask, old)]
             cmds.append(f"combo_lock_node {node_id} " + " ".join("1" if m else "0" for m in mask))
         else:
             cmds.append(f"lock_node {node_id}")

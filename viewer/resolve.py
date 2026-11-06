@@ -289,7 +289,7 @@ def _accuracy(b, default=DEFAULT_ACCURACY):
         acc = float(b.get("accuracy", default))
     except (TypeError, ValueError):
         raise vsrv.SolverError("bad accuracy")
-    if acc < 0 or acc > 1e9:
+    if not (0 < acc <= 1e9):  # 0 or NaN would solve until the 24 h timeout (#357)
         raise vsrv.SolverError("bad accuracy")
     return acc
 
@@ -322,6 +322,7 @@ class ResolveManager:
         self.result = None               # summary of the finished (re-)solve
         self.tree_ok = False             # rsolver currently holds a browsable tree
         self.carried = None              # main-tree locks set on the last subgame (#200)
+        self.gen = 0                     # bumped when the main tree changes: older jobs' results are dropped
 
     # ---- jobs (run on a daemon thread) ----
 
@@ -338,7 +339,17 @@ class ResolveManager:
             self.result, self.tree_ok = None, False
             self.allin = False
             self.abort = False
+            self.job_gen = self.gen
         threading.Thread(target=self._entry, args=(job,), daemon=True).start()
+
+    def main_tree_changed(self):
+        """The main solver built or loaded another tree (#357): a re-solve of the old one no longer
+        belongs to anything shown. Stop a running job and forget the last result and subgame."""
+        self.stop()
+        with self.mu:
+            self.gen += 1
+            self.result, self.tree_ok, self.node, self.ctx = None, False, None, None
+            self.rows, self.best, self.error, self.carried = [], None, None, None
 
     def _entry(self, job):
         try:
@@ -364,13 +375,15 @@ class ResolveManager:
         """Cancel a running job. The job thread's pending read dies with the process;
         it restarts the subgame solver before reporting back."""
         with self.mu:
-            self.abort = True
             busy = self.busy
-        if busy:
-            try:
-                self.rsolver.proc.kill()
-            except Exception:
-                pass
+            if busy:
+                self.abort = True
+                # under the lock: a job finishing now can't clear busy in between, so an idle,
+                # healthy subgame solver is never killed (#357)
+                try:
+                    self.rsolver.proc.kill()
+                except Exception:
+                    pass
         return {"ok": True, "was_busy": busy}
 
     def _build_and_solve(self, ctx, body, acc, bet_override=None, locks=None):
@@ -408,6 +421,8 @@ class ResolveManager:
         if extra:
             result.update(extra)
         with self.mu:
+            if self.job_gen != self.gen:  # the main tree changed meanwhile: not this tree's subgame
+                return
             self.result = result
             self.tree_ok = True
 

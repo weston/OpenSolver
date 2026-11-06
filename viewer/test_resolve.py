@@ -717,7 +717,7 @@ class ResolveIntegrationTest(unittest.TestCase):
         self.assertIsNone(first["error"])
         self.assertIsNotNone(first["result"])
         self.assertTrue(first["tree"])
-        st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", accuracy=0))  # runs until stopped
+        st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", accuracy=1e-9))  # runs until stopped
         self.assertEqual(st, 200, d)
         st, now = self.req("/api/resolve/status")
         self.assertTrue(now["busy"])
@@ -729,6 +729,78 @@ class ResolveIntegrationTest(unittest.TestCase):
         self.assertFalse(after["tree"])
         st, d = self.req("/api/resolve/strategy?id=r:0")
         self.assertEqual(st, 400, d)   # nothing to browse until a job finishes
+
+    def test_34_accuracy_must_be_positive(self):
+        # 0 or NaN would solve until the 24 h timeout (#357)
+        for acc in (0, float("nan"), -1):
+            st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", accuracy=acc))
+            self.assertEqual(st, 400, (acc, d))
+
+    def test_35_combo_locks_add_up(self):
+        # #357: locking more hands keeps the hands locked before (combo_lock_node replaces the mask)
+        st, ls = self.req("/api/lock_state?id=r:0")
+        self.assertEqual(st, 200, ls)
+        rows = [[float(x) for x in l.split()] for l in self.main.cmd("show_strategy r:0").splitlines() if l.strip()]
+        acts = [k["id"].rsplit(":", 1)[1] for k in vsrv.parse_children(self.main.cmd("show_children r:0"))]
+        reach = [float(x) for x in self.main.cmd("show_range OOP r:0").split()]
+        live = [i for i, r in enumerate(reach) if r > 0]
+        first, second = live[:4], live[4:8]
+        for pick in (first, second):
+            mask = [1 if i in pick else 0 for i in range(1326)]
+            st, d = self.req("/api/lock", "POST", {"id": "r:0", "mode": "combos", "freq": rows,
+                                                   "actions": acts, "combos": mask})
+            self.assertEqual(st, 200, d)
+        locked = [i for i, v in enumerate(self.main.cmd("show_locked_combos r:0").split()) if float(v) > 0]
+        self.assertEqual(sorted(locked), sorted(first + second), "both locks are kept")
+        st, d = self.req("/api/lock", "POST", {"id": "r:0", "mode": "combos", "freq": rows, "actions": acts,
+                                               "combos": ["0"] * 1326})
+        self.assertEqual(st, 400, "a mask of strings is refused")
+        self.assertEqual(self.req("/api/unlock", "POST", {"all": True})[0], 200)
+
+    def test_38_solve_refused_while_solving_further(self):
+        # (runs last: it changes the shared tree; it sets up its own from CFG, since earlier tests
+        # leave other settings on the shared solver)
+        self.assertEqual(self.req("/api/generate", "POST", CFG)[0], 200)
+        self.assertEqual(self.req("/api/build", "POST", {})[0], 200)
+        # #357: /api/solve during a Solve further used to clear its partial state, so the subtree's
+        # progress went into the main convergence series
+        st, d = self.req("/api/solve_node", "POST", {"id": "r:0:c", "accuracy": 1e-9})
+        self.assertEqual(st, 200, d)
+        import time
+        for _ in range(100):
+            if self.req("/api/progress")[1].get("solving"):
+                break
+            time.sleep(0.05)
+        before = self.req("/api/progress")[1]
+        st, d = self.req("/api/solve", "POST", {"accuracy": 1e-9})
+        self.assertEqual(st, 400, (d, {k: before.get(k) for k in ("solving", "partial", "dead")}))
+        st, p = self.req("/api/progress")
+        self.assertTrue(p.get("partial"), p)
+        self.req("/api/stop", "POST", {})
+        self.main.cmd("wait_for_solver", timeout=120)
+
+    def test_37_new_main_tree_drops_the_resolve(self):
+        # #357: a re-solve of the old main tree must not survive a rebuild (or load) of it
+        st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", accuracy=ACC))
+        self.assertEqual(st, 200, d)
+        done = self.wait_job()
+        self.assertTrue(done["tree"] and done["result"])
+        st, d = self.req("/api/build", "POST", {})
+        self.assertEqual(st, 200, d)
+        st, now = self.req("/api/resolve/status")
+        self.assertFalse(now["tree"])
+        self.assertIsNone(now["result"])
+        self.assertIsNone(now["node"])
+        st, d = self.req("/api/resolve/strategy?id=r:0")
+        self.assertEqual(st, 400, d)
+        # a job running when the main tree changes doesn't come back as this tree's subgame either
+        st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", accuracy=1e-9))
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/build", "POST", {})
+        self.assertEqual(st, 200, d)
+        after = self.wait_job()
+        self.assertFalse(after["tree"])
+        self.assertIsNone(after["result"])
 
 if __name__ == "__main__":
     unittest.main(argv=["test_resolve.py", "-v"] if sys.argv[1:] and not sys.argv[1].startswith("-")

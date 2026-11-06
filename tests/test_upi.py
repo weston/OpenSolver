@@ -1152,8 +1152,64 @@ def check_exit_while_parked(exe):
             check(False, f"{what} after hold during a solve ends the process (hung for 30 s)")
 
 
+def check_save_robustness(exe):
+    """#360: corrupt or crafted saves give an ERROR, never a crash or a huge allocation, and a tree loaded
+    from a truncated save is dumped no deeper than it has solved data."""
+    import gzip
+    import struct
+    print("[save robustness]")
+    setup = ["set_threads 2", "set_board Kh9h4h2c",
+             "set_range OOP 22+,A2s+,K7s+,Q9s+,J9s+,T9s,ATo+,KJo+",
+             "set_range IP 22+,A4s+,K8s+,Q9s+,J9s+,T9s,98s,A9o+,KTo+,QJo",
+             "set_pot 0 0 100", "set_eff_stack 400", "clear_lines", "add_line 0 0 33 33", "add_line 0 33 33 100 100",
+             "build_tree"]
+
+    def run(lines):
+        p = subprocess.run([exe], input="\n".join(lines + ["exit"]) + "\n", capture_output=True, text=True, timeout=300)
+        return p.returncode, p.stdout
+
+    with tempfile.TemporaryDirectory() as td:
+        full, nr, b = (os.path.join(td, n) for n in ("full.cfr", "nr.cfr", "b.cfr"))
+        rc, out = run(setup + ["go 200 steps", "wait_for_solver", f'dump_tree "{full}"', f'dump_tree "{nr}" no_rivers',
+                               f'load_tree "{nr}"', f'dump_tree "{b}"', f'load_tree "{b}"', "calc_results"])
+        ex = [float(l.split(":")[1]) for l in out.splitlines() if l.startswith("Exploitable for:")]
+        check(rc == 0 and ex and ex[-1] < 1.0,
+              f"a full dump of a no_rivers load keeps it truncated: re-solved, not unsolved rivers (exploitable {ex[-1:]})")
+        raw = bytearray(gzip.open(full).read())
+        cfglen = struct.unpack_from("<I", raw, 18)[0]
+        mlen_off = 22 + cfglen
+        flags_off = mlen_off + 8 + 16
+
+        def crafted(name, fn):
+            d = bytearray(raw)
+            fn(d)
+            path = os.path.join(td, name + ".cfr")
+            with gzip.open(path, "wb") as f:
+                f.write(bytes(d))
+            rc, out = run([f'load_tree "{path}"', "show_locked_combos r:0", "go 2 steps", "wait_for_solver"])
+            first = next((l for l in out.splitlines() if "load_tree" in l), "")
+            check(rc == 0 and first.startswith("ERROR") and "file format error" in first,
+                  f"crafted save ({name}): {first[:70]} (rc {rc})")
+        crafted("truncate field 7", lambda d: struct.pack_into("<I", d, 12, 7))
+        crafted("metadata size 2^34", lambda d: struct.pack_into("<Q", d, mlen_off, 1 << 34))
+        crafted("combo-lock flag without a mask", lambda d: d.__setitem__(flags_off, d[flags_off] | 2))
+        # a lazily loaded save that disappears: its segments can't be read -> ERROR, not std::terminate
+        gone = os.path.join(td, "gone.cfr")
+        with open(full, "rb") as src, open(gone, "wb") as dst:
+            dst.write(src.read())
+        p = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        p.stdin.write(f'load_tree "{gone}"\nis_ready\n')
+        p.stdin.flush()
+        time.sleep(1.0)
+        os.remove(gone)
+        o, _ = p.communicate("load_all_nodes\ncalc_results\nexit\n", timeout=120)
+        check(p.returncode == 0 and "ERROR" in o and "terminate" not in o,
+              f"a lazy load whose file is gone answers ERROR (rc {p.returncode})")
+
+
 def main(exe, big=False):
     check_framing(exe)
+    check_save_robustness(exe)
     check_exit_while_parked(exe)
     u = Upi(exe)
     try:

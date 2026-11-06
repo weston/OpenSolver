@@ -817,6 +817,10 @@ void GameTree::lazy_touch(uint32_t node) const {
     std::lock_guard<std::mutex> eg(L.err_mu);
     if (!L.failed.exchange(true)) L.error = e.what();
     return;
+  } catch (...) {  // nothing may escape into a pool worker (#360)
+    std::lock_guard<std::mutex> eg(L.err_mu);
+    if (!L.failed.exchange(true)) L.error = "segment read failed";
+    return;
   }
   L.loaded[s].store(1, std::memory_order_release);
   L.remaining.fetch_sub(1);

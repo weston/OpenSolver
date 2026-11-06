@@ -168,6 +168,8 @@ class StreetConfig:
     add_allin: bool = False
     # Max bets+raises on this street (counting both players); None = uncapped.
     raise_cap: int | None = None
+    # PioViewer's CapPerStreet: at the cap the all-in is offered even if no size asks for it
+    cap_allin: bool = False
 
 
 @dataclass
@@ -207,6 +209,7 @@ def parse_config(text: str) -> Config:
     """Read the `#Key#Value` header of a PioViewer save file."""
     cfg = Config(streets=[[StreetConfig(), StreetConfig()] for _ in STREETS])
     merge_on, merge_threshold = False, Decimal(12)  # 12: the threshold most PioViewer configs carry
+    cap_on, caps = False, []
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("set_range OOP "):
@@ -233,6 +236,11 @@ def parse_config(text: str) -> Config:
             cfg.allin_threshold = Decimal(value)
         elif key == "AddAllinOnlyIfLessThanThisTimesThePot":
             cfg.add_allin_max_pot_mult = Decimal(value)
+        elif key == "CapEnabled":
+            cap_on = value.strip().lower() == "true"
+        elif key == "CapPerStreet":
+            # PioViewer writes the three street caps with a literal backslash-n between them: `4\n4\n3`
+            caps = [int(x) for x in re.split(r"(?:\\n|\s|,)+", value.strip()) if x]
         elif key == "MergeSimilarBets":
             merge_on = value.strip().lower() == "true"
             cfg.merge_threshold = (merge_threshold if merge_on else None)
@@ -269,6 +277,14 @@ def parse_config(text: str) -> Config:
                         raise ValueError
                 except ValueError:
                     raise ValueError(f"bad RaiseCap {value!r} (want a non-negative integer)")
+    if cap_on:
+        # CapPerStreet N: the N-th bet of a street can only be the all-in (#313: with a flop cap of 4,
+        # bet / raise / 3-bet leave the all-in alone), i.e. RaiseCap N - 1 in this module's terms.
+        for street, cap in enumerate(caps[:len(STREETS)]):
+            cap = max(0, cap - 1)
+            for sc in cfg.streets[street]:
+                sc.raise_cap = cap if sc.raise_cap is None else min(sc.raise_cap, cap)
+                sc.cap_allin = True  # PioViewer offers the all-in at its cap even without an `a` size
     return cfg
 
 
@@ -303,9 +319,17 @@ def _size_total(spec: SizeSpec, *, geo_streets: int, mine: int, facing: int,
             # The raise increment is a geometric bet on the pot you make by calling;
             # S is what remains after calling.
             f = _geo_fraction(allin - facing, pot_if_called, n)
-            return None if f is None else _round(facing + f * pot_if_called)
-        f = _geo_fraction(allin - max(mine, facing), pot, n)
-        return None if f is None else _round(mine + f * pot)
+            base, ref = facing, pot_if_called
+        else:
+            f = _geo_fraction(allin - max(mine, facing), pot, n)
+            base, ref = mine, pot
+        if f is None:
+            return None
+        if spec.param is not None:
+            # `NeP`: the geometric size, but at most P% of the pot (#313: `2e75` on a 1750 pot with
+            # 9200 behind is 75%, not 2e's 120%; `2e50` with 2e at 57% is 50%).
+            f = min(f, spec.param / 100)
+        return _round(base + f * ref)
     if spec.kind == "mult":
         if facing <= mine:
             return None  # rejected at parse time; defensive
@@ -364,9 +388,13 @@ def _aggressive_totals(cfg: Config, node: Node) -> list[int]:
     if facing > mine:
         totals = [max(t, 2 * facing - mine) for t in totals]
 
-    # A bet/raise that gets close enough to the stack is replaced by the all-in.
+    if capped and sc.cap_allin:
+        totals.append(allin)
+
+    # A bet/raise that gets past the threshold is replaced by the all-in. Strictly past: a 5e river
+    # bet of exactly 6030 = 67% of 9000 stays (#313).
     threshold = cfg.allin_threshold * Decimal(allin) / Decimal(100)
-    totals = [allin if Decimal(t) >= threshold else t for t in totals]
+    totals = [allin if Decimal(t) > threshold else t for t in totals]
     totals = [min(t, allin) for t in totals]
 
     if sc.add_allin and not no_donk_lead:

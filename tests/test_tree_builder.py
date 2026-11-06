@@ -163,7 +163,12 @@ def test_parse_size_forms():
     check(tb.parse_size_list("e") == [tb.SizeSpec("geo", None)], "parse: `e` = geometric over the rest")
     check(tb.parse_size_list("2.5x") == [tb.SizeSpec("mult", Decimal("2.5"))],
           "parse: decimal raise multiple")
-    for bad in ("2q", "x3", "e2", "0e", "-3", "-2x", "xx"):
+    # `NeP` / `eP` are PioViewer's geometric sizes with a second parameter (`2e50`, `e50`; #313)
+    check(tb.parse_size_list("2e50 e50") == [tb.SizeSpec("geo", Decimal(2), Decimal(50)),
+                                             tb.SizeSpec("geo", None, Decimal(50))], "parse: NeP and eP")
+    check(tb.parse_size_list("5e 3e,  2e a") == tb.parse_size_list("5e,3e,2e,a"),
+          "parse: entries separated by spaces, commas or both (#313)")
+    for bad in ("2q", "x3", "0e", "-3", "-2x", "xx"):
         try:
             tb.parse_size_list(bad)
             check(False, f"parse: {bad!r} is rejected")

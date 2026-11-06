@@ -23,9 +23,10 @@ The inferred rules are documented in `README.md` (section "Tree builder") and in
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal, InvalidOperation
 
 OOP, IP = 0, 1
 STREETS = ("Flop", "Turn", "River")
@@ -86,7 +87,7 @@ Raise cap:
 
 
 def _round(x: Decimal) -> int:
-    return int(x.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    return int(x.quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
 
 
 def _pct(pct: Decimal, pot: int) -> int:
@@ -103,6 +104,7 @@ class SizeSpec:
     """
     kind: str
     value: Decimal | None = None
+    param: Decimal | None = None  # geo only: the P of `NeP`
 
 
 def parse_size_list(value: str) -> list[SizeSpec]:
@@ -111,12 +113,17 @@ def parse_size_list(value: str) -> list[SizeSpec]:
     Raises ValueError on malformed entries.
     """
     out: list[SizeSpec] = []
-    for part in value.replace(" ", "").split(","):
+    # PioViewer separates entries with commas, spaces or both (`5e 3e 2e a`, `33,50, 75, a`).
+    for part in re.split(r"[,\s]+", value):
         if not part:
             continue
         token = part.lower()
+        m = re.fullmatch(r"(\d*)e(\d+(?:\.\d+)?)", token)
         if token == "a":
             out.append(SizeSpec("allin"))
+        elif m:
+            # `NeP`: geometric over N streets with a second parameter P (see SIZING_RULES).
+            out.append(SizeSpec("geo", Decimal(m.group(1)) if m.group(1) else None, Decimal(m.group(2))))
         elif token.endswith("e"):
             n = token[:-1]
             try:
@@ -169,6 +176,8 @@ class Config:
     stack: int = 0
     allin_threshold: Decimal = Decimal(100)
     add_allin_max_pot_mult: Decimal = Decimal("inf")
+    # MergeSimilarBets: percentage points of the pot within which sizes merge (None: off)
+    merge_threshold: Decimal | None = None
     # streets[street][player]
     streets: list[list[StreetConfig]] = field(default_factory=list)
     board: str = ""
@@ -197,6 +206,7 @@ def _sizes(value: str, field_name: str) -> list[SizeSpec]:
 def parse_config(text: str) -> Config:
     """Read the `#Key#Value` header of a PioViewer save file."""
     cfg = Config(streets=[[StreetConfig(), StreetConfig()] for _ in STREETS])
+    merge_on, merge_threshold = False, Decimal(12)  # 12: the threshold most PioViewer configs carry
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("set_range OOP "):
@@ -223,6 +233,13 @@ def parse_config(text: str) -> Config:
             cfg.allin_threshold = Decimal(value)
         elif key == "AddAllinOnlyIfLessThanThisTimesThePot":
             cfg.add_allin_max_pot_mult = Decimal(value)
+        elif key == "MergeSimilarBets":
+            merge_on = value.strip().lower() == "true"
+            cfg.merge_threshold = (merge_threshold if merge_on else None)
+        elif key == "MergeSimilarBetsThreshold":
+            merge_threshold = Decimal(value)
+            if merge_on:
+                cfg.merge_threshold = merge_threshold
         elif key == "Board":
             cfg.board = value.replace(" ", "")
         elif key.startswith("Range"):
@@ -276,18 +293,19 @@ def _street_cap(cfg: Config, street: int) -> int | None:
 def _size_total(spec: SizeSpec, *, geo_streets: int, mine: int, facing: int,
                 pot: int, pot_if_called: int, allin: int) -> int | None:
     """The not-yet-clamped total a size entry asks for (None: not computable here)."""
+    # The total is rounded, not the increment (#313: 925 + 33% x 5550 = 2756.5 -> 2756).
     if spec.kind == "pct":
         base = pot_if_called if facing > mine else pot
-        return (facing if facing > mine else mine) + _pct(spec.value, base)
+        return _round((facing if facing > mine else mine) + spec.value * Decimal(base) / 100)
     if spec.kind == "geo":
         n = int(spec.value) if spec.value is not None else geo_streets
         if facing > mine:
             # The raise increment is a geometric bet on the pot you make by calling;
             # S is what remains after calling.
             f = _geo_fraction(allin - facing, pot_if_called, n)
-            return None if f is None else facing + _round(f * pot_if_called)
+            return None if f is None else _round(facing + f * pot_if_called)
         f = _geo_fraction(allin - max(mine, facing), pot, n)
-        return None if f is None else mine + _round(f * pot)
+        return None if f is None else _round(mine + f * pot)
     if spec.kind == "mult":
         if facing <= mine:
             return None  # rejected at parse time; defensive
@@ -341,19 +359,42 @@ def _aggressive_totals(cfg: Config, node: Node) -> list[int]:
         if total is not None:
             totals.append(total)
 
+    # A raise is at least a min-raise: the previous increment again (#313: facing 2500 from 0, a 2e
+    # raise of 4571 becomes 5000; facing 776 -> 3702, a 2e of 5869 becomes 6628, then the all-in).
+    if facing > mine:
+        totals = [max(t, 2 * facing - mine) for t in totals]
+
     # A bet/raise that gets close enough to the stack is replaced by the all-in.
     threshold = cfg.allin_threshold * Decimal(allin) / Decimal(100)
     totals = [allin if Decimal(t) >= threshold else t for t in totals]
     totals = [min(t, allin) for t in totals]
 
     if sc.add_allin and not no_donk_lead:
+        # The gate compares the stack left once the pending bet is called (#313; the 145-config
+        # corpus): facing a 1155 river bet with 9200 behind, 8045 < 200% x 4060 adds the all-in.
         limit = cfg.add_allin_max_pot_mult * Decimal(pot_if_called) / Decimal(100)
-        if Decimal(allin) < limit:
+        if Decimal(allin - max(mine, facing)) < limit:
             totals.append(allin)
 
     # Must actually be a raise over what we are facing, and we must have chips behind.
-    totals = [t for t in totals if t > facing and t > mine]
-    return sorted(set(totals))
+    totals = sorted(set(t for t in totals if t > facing and t > mine))
+    if cfg.merge_threshold is not None:
+        totals = _merge_similar(totals, cfg.merge_threshold, pot, mine)
+    return totals
+
+
+def _merge_similar(totals: list[int], threshold: Decimal, pot: int, mine: int) -> list[int]:
+    """MergeSimilarBets, inferred from 145 PioViewer configs (#313). From the largest size down, a size
+    is dropped when the gap to the last size kept is under `threshold` percent of the pot once the
+    smaller size is put in (pot + t - mine). Over the corpus's 9640 adjacent size pairs this never
+    merges a pair PioViewer keeps. E.g. 4e/3e/2e at 2539/2961/3920 on a 7386 pot: 2961 merges into
+    3920 (959 / 8880 = 10.8%), then 2539 stays (1381 / 8457 = 16.3%)."""
+    kept: list[int] = []
+    for t in reversed(totals):  # largest first
+        if kept and Decimal(kept[-1] - t) * 100 < threshold * (pot + t - mine):
+            continue
+        kept.append(t)
+    return sorted(kept)
 
 
 def _children(cfg: Config, node: Node) -> list[tuple[int, Node | None, bool]]:

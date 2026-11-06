@@ -595,21 +595,22 @@ on one thread; at 32 threads it was about even on `deep` and 1.8x faster on `flo
 there are only upper bounds). Method, history and per-tree numbers: [bench/vs_pio.md](bench/vs_pio.md);
 where the time goes: [bench/where-the-time-goes.md](bench/where-the-time-goes.md).
 
-On an Apple M4 (10 threads):
+On an Apple M4 (10 threads, re-measured 2026-11-06 on main `6227df9`):
 
-| Tree | Memory | Time |
+| Tree | Memory (peak RSS) | Time |
 |---|---|---|
-| Wide SRP flop, 498 vs 322 combos, 1-2 sizes | 149 MB | 100 iterations in 0.9 s -> 0.025% pot |
-| Real Pio 25bb HU script, 2 sizes everywhere | 6.4 GB (3.3 GB with `small_strats`) | ~1 s / iteration |
+| Wide SRP flop (`bench/trees/flop_srp_2`), 498 vs 322 combos, 1-2 sizes | 175 MB | 100 iterations in 0.97 s including the build -> 0.015 chips (0.025% of pot) |
+| Real Pio 25bb HU script (`tests/data/pio_25bbHU_2sizes.txt`), 2 sizes everywhere | 6.5 GB float32 | 1% of pot in 51 s, 0.1% in 144 s (320 iterations) |
+| the same, `small_strats on` | 3.3 GB | 1% of pot in 51 s, 0.1% in 149 s (325 iterations) |
 
-The M4 row above **predates the NEON lanes kernel** (#219, which reports -22% on an M4), so it
-understates current speed and wants re-measuring on an M4. For a figure that is current, the same
-wide-SRP tree on an M1 Ultra at 20 threads runs 100 iterations in **0.63 s** to the same 0.025% of
-pot (0.015 chips on a 60 pot), 163 MB peak. Full per-tree numbers, including the larger `srp_big` and
-`threebet_mono` trees, are in `bench/results.md`; regenerate with `make bench`.
+The 25bb times are `bench/run.py --include-25bb --threads 10`, reporting every 5 iterations, two
+runs each within 1%. 16-bit storage needs about as many iterations as float32 here because its
+strategy sums are rounded stochastically (#293): rounded to nearest it took 440 iterations to 0.1%.
+Full per-tree numbers, including the larger `srp_big` and `threebet_mono` trees, are in
+`bench/results.md`; regenerate with `make bench`.
 
 Single-threaded on the same tree (`tests/pio_compare/bench_flop.txt`), PioSOLVER-edge 3.10.1 on a Zen 5
-runs 60 iterations in 4.63 s vs 4.73 s here (Apple M4), and this solver's DCFR reaches **0.042 chips of
+runs 60 iterations in 4.63 s vs 3.37 s here (Apple M4, 2026-11-06; 4.73 s when first measured), and this solver's DCFR reaches **0.042 chips of
 exploitability after 60 iterations against Pio's 0.182** — about 4x closer to equilibrium for the same
 iteration count, so it reaches a given accuracy considerably sooner. (That figure is a convergence
 property, so it does not depend on the machine; it has improved from 0.119 as the DCFR schedule was

@@ -83,8 +83,9 @@ struct SdFold {
 };
 void showdown_board_scalar(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
                            float* compat = nullptr, const SdFold* fold = nullptr);
-// One showdown terminal for showdown_batch (#186): out (and compat) start zeroed; compat set: also the
-// compatible mass (call_and_fold); xf set: the opponent's fused fold (call_with_opp_fold).
+// One showdown terminal for showdown_batch (#186): out and compat need not be zeroed, showdown_batch
+// zeroes what its kernel needs (zero_rows); compat set: also the compatible mass (call_and_fold); xf
+// set: the opponent's fused fold (call_with_opp_fold).
 struct SdJob {
   const float* ro;
   float W, L, T;

@@ -659,21 +659,24 @@ static void showdown_lanes_neon(const ShowdownBoard& sb, int p, int n, const SdJ
 }
 #endif
 
-// showdown_batch's callers hand it unzeroed rows. The lanes kernels store every unblocked hand's value,
-// so before them only the board-blocked hands need a zero; the other kernels add into `out`, which then
-// has to start at zero. Every kernel stores `compat` at the unblocked hands. (M4, 25bb fixture: zeroing
-// whole rows in the walk was 2.7% of the samples.)
+// showdown_batch's callers hand it unzeroed rows. The lanes kernels store `out` and `compat` at every
+// unblocked hand, with no early exit, so before them only the board-blocked hands need a zero. The other
+// kernels add into `out` and skip a job whose opponent mass is zero without writing anything, so their
+// rows are zeroed whole, as the walk used to. (M4, 25bb fixture: zeroing whole rows in the walk was 2.7%
+// of the samples.)
 static void zero_rows(const ShowdownBoard& sb, int p, const SdJob* job, int n, bool store) {
   const auto& bl = sb.blocked[p];
   const size_t hp = sb.ent[p].size() + bl.size();
   for (int t = 0; t < n; ++t) {
+    float* c = job[t].compat;
     if (store) {
       for (uint16_t h : bl) job[t].out[h] = 0.0f;
+      if (c)
+        for (uint16_t h : bl) c[h] = 0.0f;
     } else {
       std::memset(job[t].out, 0, sizeof(float) * hp);
+      if (c) std::memset(c, 0, sizeof(float) * hp);
     }
-    if (float* c = job[t].compat)
-      for (uint16_t h : bl) c[h] = 0.0f;
   }
 }
 

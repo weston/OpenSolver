@@ -114,10 +114,35 @@ export function previewStatus(st) {
   drawBadge();
 }
 
+// A live refresh rebuilds the node's action cards and matrix. Landing between a press and its
+// release, it swallows the click (the button pressed is gone): during a solve about 1 press in 15
+// was lost. So a refresh neither starts nor renders while a pointer is down; it carries on after
+// the release, once the click has run (setTimeout), so a click's own navigation wins.
+let pressed = false, deferred = false, waiters = [];
+const release = () => {
+  pressed = false;
+  setTimeout(() => {
+    const w = waiters; waiters = [];
+    w.forEach((f) => f());
+    if (deferred) { deferred = false; liveRefresh(); }
+  }, 0);
+};
+// Registered only in a page: the JS unit tests import this module without a DOM (#286 review).
+if (typeof document !== "undefined") {
+  document.addEventListener("pointerdown", () => { pressed = true; }, true);
+  document.addEventListener("pointerup", release, true);
+  document.addEventListener("pointercancel", release, true);
+  // a press released outside the window sends no pointerup: losing focus counts as the release
+  window.addEventListener("blur", () => { if (pressed) release(); });
+}
+/** Resolves now, or once a pressed pointer is released and its click has run. */
+export const whenReleased = () => (pressed ? new Promise((r) => waiters.push(r)) : Promise.resolve());
+
 function liveRefresh() {
   if (!P.refresh || !P.shown || P.shown.sub) return;
   if (document.hidden || document.querySelector("dialog[open]")) return;
   if ($("view-study").classList.contains("hidden")) return;
+  if (pressed) { deferred = true; return; }
   P.refresh();
 }
 

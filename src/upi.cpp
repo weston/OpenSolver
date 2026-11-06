@@ -361,6 +361,7 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   // Solving touches every node: read a lazily loaded tree completely first (in parallel).
   std::string lerr;
   if (!tree_->load_all(lerr)) throw CmdError{"cannot read the tree's file: " + lerr};
+  tree_->ensure_combo_lock_copies();  // 16-bit combo locks (#380): before the walk, which only reads them
   // Solving the whole tree again makes its own results current (#195); go_partial, like solve_partial,
   // keeps reporting the saved ones while other streets are still missing.
   if (!sub) tree_->has_saved_stats = false;
@@ -1011,7 +1012,8 @@ void Upi::register_commands() {
   H["set_pruning"] = [this](const Args& a) {
     if (a.empty() || (a[0] != "on" && a[0] != "off")) throw CmdError{"incorrect or missing argument"};
     const long long period = a.size() > 1 ? arg_int(a, 1, "period") : prune_period_;  // parse first:
-    if (period < 0 || period > 1000000000) throw CmdError{"incorrect or missing argument"};  // an error changes nothing
+    // below 2 no iteration is measured in full, so a pruned action could never come back (#380)
+    if (period < 2 || period > 1000000000) throw CmdError{"incorrect or missing argument"};  // an error changes nothing
     pruning_ = a[0] == "on";
     prune_period_ = static_cast<int>(period);
     if (solver_) {

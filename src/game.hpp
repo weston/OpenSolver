@@ -290,6 +290,11 @@ class GameTree {
 
   // Per-node extras (keyed by node index)
   std::unordered_map<uint32_t, std::vector<uint8_t>> combo_lock;  // per local hand: 1 = locked
+  // 16-bit storage: the exact strategy rows (A x H) of combo-locked nodes. Their locked entries are
+  // quantized from these at every strat_commit, so they don't random-walk under stochastic rounding
+  // (#380). Filled on the command thread only (combo_lock_node, before a solve); the walk only reads.
+  std::unordered_map<uint32_t, std::vector<float>> combo_lock_s;
+  void ensure_combo_lock_copies();
   std::unordered_map<uint32_t, std::vector<float>> incentives;    // per action
   std::unordered_map<uint32_t, uint32_t> eliminated;              // bitmask of removed actions
 

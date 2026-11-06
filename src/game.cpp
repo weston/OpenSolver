@@ -359,6 +359,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   strat.clear();
   strat.shrink_to_fit();
   combo_lock.clear();
+  combo_lock_s.clear();
   incentives.clear();
   storage_floats = 0;
   num_decisions = 0;
@@ -721,10 +722,38 @@ static const float* rounding_uniforms() {
   return t.data();
 }
 
+void GameTree::ensure_combo_lock_copies() {
+  if (!compressed) return;
+  std::vector<float> buf;
+  for (auto& [ni, mask] : combo_lock) {
+    if (combo_lock_s.count(ni) || ni >= nodes.size()) continue;
+    const GNode& n = nodes[ni];
+    buf.resize(node_size(n));
+    const float* s = strat_ro(n, buf.data());
+    combo_lock_s[ni].assign(s, s + node_size(n));
+  }
+}
+
 void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   if (!compressed) return;
   ensure_loaded(n);
   const size_t len = node_size(n);
+  std::vector<float> fixed;
+  if (n.flags & GF_COMBO_LOCKED) {
+    // locked entries from their exact copy, not re-rounded from last iteration's quantized value (#380)
+    const size_t ni = static_cast<size_t>(&n - nodes.data());
+    auto c = ni < nodes.size() ? combo_lock_s.find(static_cast<uint32_t>(ni)) : combo_lock_s.end();
+    auto mk = ni < nodes.size() ? combo_lock.find(static_cast<uint32_t>(ni)) : combo_lock.end();
+    if (c != combo_lock_s.end() && mk != combo_lock.end() && c->second.size() == len) {
+      const size_t H = hands[n.player].size();
+      fixed.assign(data, data + len);
+      for (size_t h = 0; h < H && h < mk->second.size(); ++h)
+        if (mk->second[h])
+          for (size_t a = 0; a < static_cast<size_t>(n.num_children); ++a) fixed[a * H + h] = c->second[a * H + h];
+      data = fixed.data();
+      maxval = -1.0f;
+    }
+  }
   float m = maxval;
   if (m < 0) {
     uint32_t mb = 0;

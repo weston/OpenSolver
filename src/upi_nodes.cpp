@@ -1163,6 +1163,7 @@ void Upi::register_node_commands() {
     TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~GF_COMBO_LOCKED);
     tree_->combo_lock.clear();
+    tree_->combo_lock_s.clear();
     return std::string("combo_unlock_all ok!");
   };
   auto line_nodes = [this](const std::string& id) {
@@ -1208,6 +1209,10 @@ void Upi::register_node_commands() {
         for (int k = 0; k < A; ++k) S[static_cast<size_t>(k) * Hn + h] = sig[static_cast<size_t>(k) * Hn + h];
       }
     }
+    if (any && tree_->compressed)  // the exact rows, before they are quantized (#380)
+      tree_->combo_lock_s[r.node].assign(S, S + static_cast<size_t>(A) * Hn);
+    else
+      tree_->combo_lock_s.erase(r.node);
     tree_->strat_commit(n, S);
     if (any) {
       tree_->combo_lock[r.node] = mask;
@@ -1241,6 +1246,7 @@ void Upi::register_node_commands() {
     tree_->clear_storage();
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~(GF_LOCKED | GF_COMBO_LOCKED));
     tree_->combo_lock.clear();
+    tree_->combo_lock_s.clear();
     return std::string("set_equal_strats ok!");
   };
   H["set_mes"] = [this](const Args& a) { return cmd_set_mes(a); };

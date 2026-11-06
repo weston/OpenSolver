@@ -1702,6 +1702,25 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
           for (int a = 0; a < A; ++a) v += sigma[static_cast<size_t>(a) * Hp + h] * cfv[static_cast<size_t>(a) * Hp + h];
           out[h] = v;
         }
+        // set_mes: the unlocked hands of a combo-locked node play their best response too (#380: it
+        // returned before writing anything here)
+        if (write_best_response && lockmask) {
+          float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+          float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+          for (int h = 0; h < Hp; ++h) {
+            if (lockmask[h]) continue;
+            int best = 0;
+            for (int a = 1; a < A; ++a)
+              if (cfv[static_cast<size_t>(a) * Hp + h] >= cfv[static_cast<size_t>(best) * Hp + h]) best = a;
+            for (int a = 0; a < A; ++a) {
+              float v = a == best ? 1.0f : 0.0f;
+              R[static_cast<size_t>(a) * Hp + h] = v;
+              S[static_cast<size_t>(a) * Hp + h] = v;
+            }
+          }
+          g_.regrets_commit(n, R);
+          g_.strat_commit(n, S);
+        }
         return;
       }
       if (write_best_response && !(n.flags & GF_LOCKED)) {
@@ -2016,7 +2035,7 @@ void Solver::iterate(int t) {
   // Every prune_period-th iteration is measured in full (the RBP revisiting schedule), and
   // pruning activates only after two full periods (see Solver::pruning): pruning from t=1
   // destroys convergence (flop_3bet to 0.2% pot: 50 -> 230 iterations at period 32).
-  prune_this_iter_ = pruning && t > 2 * prune_period && !(prune_period > 1 && t % prune_period == 0);
+  prune_this_iter_ = pruning && prune_period > 1 && t > 2 * prune_period && t % prune_period != 0;  // #380
   for (int k = 0; k < 2; ++k) {
     int p = k == 0 ? first_player : 1 - first_player;
     ArenaScope sc;
@@ -2149,7 +2168,7 @@ void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r
   // delay: a global reset would wipe the rest of the tree, and skipping would leave the subtree's
   // average empty (#135 review). That is exactly their behaviour before the default became 32.
   accumulate_ = avg_reset ? true : t > avg_delay;
-  prune_this_iter_ = pruning && t > 2 * prune_period && !(prune_period > 1 && t % prune_period == 0);
+  prune_this_iter_ = pruning && prune_period > 1 && t > 2 * prune_period && t % prune_period != 0;  // #380
   const float* r[2] = {r0, r1};
   for (int k = 0; k < 2; ++k) {
     int p = k == 0 ? first_player : 1 - first_player;

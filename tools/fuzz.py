@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Randomised checks of the solver over UPI: invariants, concurrency, saves, preflop trees and locks.
+"""Randomised checks of the solver over UPI: invariants, concurrency, saves, preflop trees, locks, truncated saves.
 
 Each mode runs random cases for a time budget and prints one FAIL line per failing case, with its seed
 and the script that reproduces it, then a summary. Exit status is 1 if anything failed. Not part of
@@ -11,11 +11,13 @@ Usage:
     python3 tools/fuzz.py roundtrip ./solver --seconds 300    # dump_tree / load_tree, lossless is exact
     python3 tools/fuzz.py preflop ./solver --seconds 300      # preflop trees: finite, MES >= EV, threads
     python3 tools/fuzz.py locks ./solver --seconds 300        # locked strategies stay put, MES >= EV
+    python3 tools/fuzz.py truncated ./solver --seconds 300    # no_rivers/no_turns saves: re-solved streets
     add --seed N to replay one case, --iso11 to force set_isomorphism 1 1 (invariants)
 
 What each mode found when it was written (2026-11-05): invariants, flop isomorphism with a flop all-in
 breaking suit symmetry and the EV sum (#300); concurrency, a lost wake-up that left a solve parked for
-good (#294); roundtrip, set_union_hands not recorded in saves (#302).
+good (#294); roundtrip, set_union_hands not recorded in saves (#302). truncated (added later): nothing
+in 2,127 cases on main; checked to fail with impossible tolerances, so its comparisons are live.
 """
 import argparse
 import math
@@ -270,8 +272,101 @@ def case_locks(exe, rng, args):
     return setup + lock, msgs
 
 
+def floats(b):
+    t = b.split()
+    return [float(x) for x in t] if len(t) >= 1326 and all(re.match(r"^[-0-9.e]+$|^nan$|^-?inf$", x) for x in t[:3]) else None
+
+
+def case_truncated(exe, rng, args):
+    """dump_tree no_rivers / no_turns, load it back, browse the missing street. Ranges there depend only on the
+    saved streets, so they must match the full tree (within save quantization); the re-solved strategies must be
+    distributions; the loaded root must say INCOMPLETE_TREE; and the re-solve must not depend on the thread count."""
+    setup, pot = spot(rng)
+    board_len = len(re.search(r"set_board (\S+)", " ".join(setup)).group(1)) // 2
+    if board_len == 5:
+        return None, []
+    stack = int(re.search(r"set_eff_stack (\d+)", " ".join(setup)).group(1))
+    s = max(1, min(pot // 2, stack))
+    setup += [f"add_line 0 0 {s}", f"add_line {s} {s} {min(stack, 3 * s)}"]  # bets on the next street too
+    trunc = "no_rivers" if board_len == 4 or rng.random() < 0.6 else "no_turns"
+    need = (5 if trunc == "no_rivers" else 4) - board_len  # deal tokens up to the missing street
+    pre = setup + ["build_tree", "set_accuracy 0", f"go {rng.choice([10, 30])} steps", "wait_for_solver"]
+    rc, a = run(exe, ["set_threads 2"] + pre + ["show_all_lines"], timeout=300)
+    if rc != 0:
+        return setup, [f"exit status {rc}"]
+    if any(b.startswith("ERROR") for b in a):
+        return None, []
+    nodes = set()
+    for line in a[-2].split():
+        toks = line.split(":")
+        q = [i for i, t in enumerate(toks) if t == "?"]
+        if len(q) >= need:
+            nodes.add(":".join(toks[:q[need - 1] + 1]))
+    if not nodes:
+        return None, []
+    nodes = rng.sample(sorted(nodes), min(3, len(nodes)))
+    rng_reads = [f"show_range {p} {n}" for n in nodes for p in ("OOP", "IP")]
+    msgs = []
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "t.cfr")
+        rc, full = run(exe, ["set_threads 2"] + pre + rng_reads + [f'dump_tree "{path}" {trunc}'], timeout=300)
+        if rc != 0:
+            return setup, [f"exit status {rc} (full)"]
+        browse = ["show_node r"] + rng_reads + [f"show_strategy {n}" for n in nodes] + [f"show_node {n}" for n in nodes]
+        outs = {}
+        for th in ((1, 3) if rng.random() < 0.3 else (2,)):
+            rc, b = run(exe, [f"set_threads {th}", f'load_tree "{path}"'] + browse + ["calc_results"], timeout=300)
+            if rc != 0:
+                return setup + [trunc], [f"exit status {rc} after load"]
+            outs[th] = b
+    # Index answers from the end: the solve's progress reports are extra END-terminated blocks earlier on.
+    # The last part is what follows the final END (empty).
+    full = full[-(len(rng_reads) + 2):-1]
+    b = outs[min(outs)]
+    errs = [x.strip()[:100] for x in b[1:] if x.startswith("ERROR")]
+    if errs:
+        return setup + [trunc], [f"after load: {errs[0]}"]
+    b = b[-(len(browse) + 2):-1]  # browse answers, then calc_results
+    want = [floats(x) for x in full[:len(rng_reads)]]
+    got = [floats(x) for x in b[1:1 + len(rng_reads)]]
+    if "INCOMPLETE_TREE" not in b[0]:
+        msgs.append("loaded root lacks INCOMPLETE_TREE")
+    for read, w, g in zip(rng_reads, want, got):
+        if w is None or g is None:
+            msgs.append(f"{read}: no 1326 values")
+            continue
+        dev = max(abs(x - y) for x, y in zip(w, g))
+        if dev > 4e-3:
+            msgs.append(f"{read}: range differs from the full tree by {dev:.2e}")
+    k = 1 + len(rng_reads)
+    for n, st in zip(nodes, b[k:k + len(nodes)]):
+        rows = [[float(v) for v in l.split()] for l in st.strip().split("\n") if l.strip()]
+        if not rows or any(len(r) != 1326 for r in rows):
+            msgs.append(f"show_strategy {n}: bad shape")
+            continue
+        for h in range(1326):
+            col = [r[h] for r in rows]
+            if any(not math.isfinite(v) or v < -1e-6 or v > 1 + 1e-6 for v in col):
+                msgs.append(f"show_strategy {n}: hand {h} has {col}")
+                break
+            if abs(sum(col) - 1) > 1e-3 and sum(col) > 1e-6:
+                msgs.append(f"show_strategy {n}: hand {h} sums to {sum(col):.4f}")
+                break
+    for n, nd in zip(nodes, b[k + len(nodes):k + 2 * len(nodes)]):
+        if "ALREADY_RECALCED" not in nd:
+            msgs.append(f"show_node {n}: no ALREADY_RECALCED after browsing")
+    r = results(b)
+    if r is None:
+        msgs.append("no calc_results answer after load")
+    elif not all(map(math.isfinite, r)):
+        msgs.append(f"non-finite results after load {r}")
+    if len(outs) == 2 and outs[1][2:] != outs[3][2:]:  # all but the banner and set_threads answers
+        msgs.append("re-solve differs between 1 and 3 threads")
+    return setup + [trunc], msgs
+
+
 MODES = {"invariants": case_invariants, "concurrency": case_concurrency, "roundtrip": case_roundtrip,
-         "preflop": case_preflop, "locks": case_locks}
+         "preflop": case_preflop, "locks": case_locks, "truncated": case_truncated}
 
 
 def main(argv=None):

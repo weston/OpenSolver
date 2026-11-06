@@ -341,8 +341,7 @@ def integration(solver):
         root = jobs.report(q, "srp", solver)
         check(raises(jobs.line_report, q, "srp", "b50", None), "a line report needs the solver (it reads the saves)")
         lr = jobs.line_report(q, "srp", "r:0:b50", solver)
-        check(lr["player"] == "IP" and lr["facing"] == 50 and lr["labels"][:2] == ["fold", "call"]
-              and lr["labels"][2].startswith("raise 100"), f"facing a bet: fold, call, raise ({lr['labels']})")
+        check(lr["player"] == "IP" and lr["facing"] == 50 and lr["labels"] == ["raise 100 (25%)", "call", "fold"], f"facing a bet: fold, call, raise ({lr['labels']})")
         check(len(lr["rows"]) == 3 and all(abs(sum(x["freqs"]) - 1) < 1e-4 and x["cards"] is None for x in lr["rows"]),
               "one row per flop, frequencies sum to 1")
         bi = root["actions"].index("b50")

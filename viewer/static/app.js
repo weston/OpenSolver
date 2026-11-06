@@ -3,19 +3,19 @@
 
 import { initHands } from "./cards.js";
 import { get, post, toast, fail, prefs, fmt } from "./api.js";
-import { initStudy, gotoNode, showEmpty, study, applyUrlState } from "./study.js";
+import { initStudy, gotoNode, showEmpty, study, applyUrlState, setReportBatch } from "./study.js";
 import { initBuild, updateProgress, treeLoadedElsewhere } from "./build.js";
 import { drawSpark } from "./chart.js";
 import { initLibrary } from "./library.js";
 import { initResolve, openResolve } from "./resolve.js";
 import { initFurther, pollFurther } from "./further.js";
 import { initLock } from "./lock.js";
-import { initJobs, showJobs } from "./jobs.js";
+import { initJobs, showJobs, openReport } from "./jobs.js";
 import { initPreview, previewStatus } from "./preview.js";
 
 const $ = (id) => document.getElementById(id);
 
-const app = { view: "study", tree: false, solving: false, rootPot: 0, series: [], lastEvents: -1 };
+const app = { view: "study", tree: false, solving: false, rootPot: 0, series: [], lastEvents: -1, loadedPath: null, loadedBatch: null };
 
 /* ------------------------------------------------------------------ views */
 
@@ -74,6 +74,14 @@ async function poll() {
   drawSpark($("pill-spark"), app.series, app.rootPot);
   updateProgress(st, app.series, app.rootPot);
   pollFurther(st, app.series);
+  // the open save's job batch, for Study's Report button (#331); asked again only when the file changes
+  if ((st.loaded_path || null) !== app.loadedPath) {
+    app.loadedPath = st.loaded_path || null;
+    let job = null;
+    if (app.loadedPath) { try { job = await get("/api/jobs/loaded"); } catch (e) { job = null; } }
+    app.loadedBatch = job && job.batch ? job.batch : null;
+    setReportBatch(app.loadedBatch);
+  }
   previewStatus(st);
 
   if (wasSolving && !st.solving) {
@@ -154,6 +162,12 @@ async function boot() {
     study.reset();
   });
   $("btn-resolve").onclick = () => openResolve(study.id);
+  $("btn-report").onclick = async () => {
+    if (!app.loadedBatch) return;
+    const line = study.id;
+    setView("jobs");
+    try { await openReport(app.loadedBatch, line); } catch (e) { fail(e); }
+  };
   initBuild({ built: async () => { app.tree = true; await refreshRootPot(); study.reset(); } });
   initJobs({ opened: async () => {
     app.tree = true;

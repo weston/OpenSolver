@@ -277,7 +277,8 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
   means every card dealt there, as in PioViewer's turn report. Each flop then gets one row per card (`--cards`, *Show
   each card*), and the flop's row rolls them up: cards weighted by their matchups, Global % their plain mean. The
   first report at a line loads every save once; the results are kept in the jobs. `--csv` writes PioViewer's layout
-  (Flop, Turn, Global %, EVs, frequencies).
+  (Flop, Turn, Global %, EVs, frequencies). With a job's save open in Study (*Open* in Jobs), **Report…** next to
+  Lock… runs this report at the node you are on (#331).
 - A job that fails (the solver errors or exits) is marked `failed` with the error and the run goes on.
   Ctrl-C or `stop --now` puts the current job back in the queue, also mid-build (the job's solver is ended); a
   stop once the solve is over lets its save finish first, so the solve is kept. One runner at a time (a lock in the queue directory).

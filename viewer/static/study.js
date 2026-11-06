@@ -405,6 +405,7 @@ function renderTitle() {
   $("btn-resolve").classList.toggle("hidden", !(isDec(n) && !S.sub && S.cur && S.cur.freq));
   syncFurther(isDec(n) && !S.sub && S.cur && S.cur.freq);
   $("btn-lock").classList.toggle("hidden", !(isDec(n) && !S.sub && S.cur && S.cur.freq));
+  $("btn-report").classList.toggle("hidden", !(reportBatch && isDec(n) && !S.sub));
   const lk = isDec(n) ? lockOf(n) : null;
   $("lock-tag").classList.toggle("hidden", !lk);
   $("lock-tag").textContent = lk === "combos" ? "Some hands locked" : "Locked";
@@ -861,6 +862,14 @@ function goUp() {
 }
 
 /* ------------------------------------------------------------------ wiring */
+
+// The job batch the open save belongs to (#331): its aggregate report can be run at the current node.
+let reportBatch = null;
+export function setReportBatch(name) {
+  reportBatch = name || null;
+  const n = S.path && S.path[S.path.length - 1];
+  $("btn-report").classList.toggle("hidden", !(reportBatch && n && isDec(n) && !S.sub));
+}
 
 export function initStudy() {
   $("view-seg").querySelectorAll("button").forEach((b) => {

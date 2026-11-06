@@ -173,6 +173,11 @@ class JobsApiTest(unittest.TestCase):
         st, n = self.req("/api/node?id=r")
         self.assertEqual(st, 200, n)
         self.assertIn("Ks", json.dumps(n))
+        # which batch the open save belongs to (Study's Report button, #331)
+        st, p = self.req("/api/progress")
+        self.assertTrue(p["loaded_path"] and p["loaded_path"].endswith(".cfr"), p)
+        st, lj = self.req("/api/jobs/loaded")
+        self.assertEqual((st, lj.get("id"), lj.get("batch")), (200, "00003", "srp"), lj)
         st, d = self.req("/api/jobs/open", "POST", {"id": "00004"})
         self.assertEqual(st, 400, "no save yet")
 

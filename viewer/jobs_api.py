@@ -263,6 +263,18 @@ class JobsService:
             raise vsrv.SolverError("that job has no save yet")
         return vsrv.api(solver, None, "POST", "/api/load", {}, {"path": j["out"]})[1] | {"board": j["board"]}
 
+    def loaded(self, solver):
+        """The finished job whose save the viewer has open, if any: {id, batch, board} or {} (the Study
+        tab's Report button, #331: an aggregate report at the node you are looking at)."""
+        path = getattr(solver, "loaded_path", None) if getattr(solver, "loaded_file", False) else None
+        if not path:
+            return {}
+        want = os.path.realpath(path)
+        for j in self.q.jobs():
+            if j["status"] == "done" and j.get("out") and os.path.realpath(j["out"]) == want:
+                return {"id": j["id"], "batch": j["batch"], "board": j["board"]}
+        return {}
+
     # ---- HTTP
     def api(self, solver, method, path, query, body):
         sub = path[len("/api/jobs"):]
@@ -270,6 +282,8 @@ class JobsService:
             return 200, self.state()
         if sub == "/flop_files":
             return 200, self.flop_files()
+        if sub == "/loaded":
+            return 200, self.loaded(solver)
         if sub == "/report":
             name = query.get("batch", [""])[0]
             line = query.get("line", [""])[0]

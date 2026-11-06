@@ -202,7 +202,7 @@ class JobsApiTest(unittest.TestCase):
 
         # #352: the request after a background read never reads saves itself
         q = self.service.q
-        L = a0 + ":c"   # cached above for every job
+        L = a0   # a decision (IP facing the bet), cached above for every job
         def drop(jid):
             j = q.job(jid)
             j["result"]["lines"].pop(L, None)

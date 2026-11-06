@@ -67,6 +67,29 @@ class LibraryUnitTest(unittest.TestCase):
         self.lib.save("range", name, "AA")
         self.assertEqual(self.lib.get("range", name), "AA\n")
 
+    def test_concurrent_saves_of_one_name(self):
+        # #369: the HTTP threads share a pid, so a `.tmp.<pid>` temp name made two saves of one name
+        # write the same file and fail (FileNotFoundError, a 500)
+        import threading
+        errs = []
+
+        def saver(k):
+            for i in range(100):
+                try:
+                    self.lib.save("range", "BTN/open", f"AA:{(k * 100 + i) % 7 / 7 + 0.1:.3f}")
+                except Exception as e:  # noqa: BLE001
+                    errs.append(repr(e))
+        ts = [threading.Thread(target=saver, args=(k,)) for k in range(3)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(errs, [], errs[:3])
+        self.assertTrue(self.lib.get("range", "BTN/open").startswith("AA:"))
+        left = [f for _, _, fs in os.walk(self.lib.root) for f in fs if f.endswith(".tmp")]
+        self.assertEqual(left, [], "no temp files left behind")
+        self.assertEqual([e["name"] for e in self.lib.list("range")], ["BTN/open"])
+
     def test_range_rename_move_delete(self):
         self.lib.save("range", "a/b", RANGE)
         self.lib.save("range", "a/c", RANGE)

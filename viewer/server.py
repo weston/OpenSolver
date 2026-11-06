@@ -199,7 +199,7 @@ class Solver:
             return {"solving": self.solving, "suspended": "refine" in self.holds,
                     "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
-                    "tree": self.tree_present, "version": self.version,
+                    "tree": self.tree_present and not self.dead, "version": self.version,
                     "partial": partial, "loaded_file": self.loaded_file,
                     "loaded_path": self.loaded_path if self.loaded_file else None}
 

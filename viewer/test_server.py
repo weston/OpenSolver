@@ -540,6 +540,24 @@ class ViewerTest(unittest.TestCase):
         self.assertEqual(via_lib, direct)  # same line count and same first lines
 
 
+class SolverTimeoutTest(unittest.TestCase):
+    def test_a_timed_out_answer_is_skipped(self):
+        """#382: a command that times out still gets its answer later; the next command must read its
+        own answer, not that one (before, every later command read the one before's)."""
+        s = vsrv.Solver(SOLVER)
+        try:
+            s.cmds(["set_range OOP AA,KK", "set_range IP QQ,JJ", "set_board Kh9h4c2d", "set_pot 0 0 100",
+                    "set_eff_stack 200", "add_line 50", "build_tree", "set_accuracy 0", "go 3 seconds"])
+            with self.assertRaises(vsrv.SolverError):
+                s.cmd("wait_for_solver", timeout=0.5)  # still solving: times out, its answer comes later
+            self.assertEqual(s.unread, 1)
+            self.assertEqual(s.cmd("is_ready", timeout=60), "is_ready ok!")
+            self.assertEqual(s.unread, 0)
+            self.assertEqual(s.cmd("echo next"), "next")
+        finally:
+            s.proc.kill()
+
+
 if __name__ == "__main__":
     unittest.main(argv=["test_server.py", "-v"] if sys.argv[1:] and not sys.argv[1].startswith("-")
                      else sys.argv)

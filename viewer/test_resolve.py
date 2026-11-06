@@ -199,6 +199,15 @@ class SizeFormsTest(unittest.TestCase):
         self.assertFalse(leads(lines2), lines2)
         self.assertTrue(lines2, "the rest of the tree stays")
 
+    def test_pio_import_drops_a_board_that_is_not_one(self):
+        """#384: the import echoed any #Board# text into the form, and from there into an error shown as HTML."""
+        base = "#Pot#100\n#EffectiveStacks#300\n#FlopConfig.BetSize#50\n#FlopConfigIP.BetSize#50\n"
+        for bad in ("<img/src/onerror=window.__x=1>", "AsAs7c", "Xx9h4c", "AsKdQh2c3d4s"):
+            r = vsrv.op_pio_import({"text": base + f"#Board#{bad}\n"})
+            self.assertEqual(r["form"]["board"], "", bad)
+        r = vsrv.op_pio_import({"text": base + "#Board#Kh9h4c\n"})
+        self.assertEqual(r["form"]["board"], "Kh9h4c")
+
     def test_allin_numbers_exact_and_positive(self):
         tb = vsrv.load_tree_builder()
         h = vsrv.sizing_header({"allin_threshold": 123456789, "add_allin_limit": 300}, tb)

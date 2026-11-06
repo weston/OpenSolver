@@ -1341,7 +1341,11 @@ def op_pio_import(b):
                 return format(v, "f") if v == v.to_integral() or "." in format(v, "f") else str(v)
             return s.text
         return ",".join(one(s) for s in specs)
-    form = {"pot": cfg.pot, "stack": cfg.stack, "board": cfg.board,
+    bd = (cfg.board or "").replace(" ", "")
+    cards = [bd[i:i + 2] for i in range(0, len(bd), 2)]
+    if len(bd) % 2 or len(cards) > 5 or len(set(cards)) != len(cards) or not all(card_token(c) for c in cards):
+        bd = ""  # not a board: dropped, never echoed into the form (#384)
+    form = {"pot": cfg.pot, "stack": cfg.stack, "board": bd,
             "allin_threshold": float(cfg.allin_threshold),
             "add_allin_limit": float(cfg.add_allin_max_pot_mult) if cfg.add_allin_max_pot_mult.is_finite() else 100000}
     ranges = {"range_oop": cfg.ranges.get("Range0") or cfg.raw_set_range.get("OOP", ""),

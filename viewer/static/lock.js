@@ -201,7 +201,13 @@ function renderState() {
 
 function refresh() { renderGrid(); renderActs(); renderSel(true); renderState(); }
 
-function info(html, err) { $("lk-info").innerHTML = err ? `<span class="err">${html}</span>` : html; }
+function info(html, err) {  // an error is plain text (#384)
+  if (!err) { $("lk-info").innerHTML = html; return; }
+  const s = document.createElement("span");
+  s.className = "err";
+  s.textContent = html;
+  $("lk-info").replaceChildren(s);
+}
 
 /* ------------------------------------------------------------------ actions */
 

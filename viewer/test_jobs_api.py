@@ -176,7 +176,9 @@ class JobsApiTest(unittest.TestCase):
         st, r1 = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote("r:0:" + a0 + ":c"))
         st, r2 = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(a0 + " c"))
         self.assertTrue(r1.get("reading") and (r2.get("reading") or r2.get("rows") is not None), (r1, r2))
-        self.assertEqual(len([t for t in threading.enumerate() if t.name.startswith("report srp")]) <= 1, True)
+        self.assertLessEqual(len([t for t in threading.enumerate() if t.name == "report srp " + a0 + ":c"]), 1,
+                             "one task per batch and line")
+        self.assertLessEqual(len(self.service.reports), 1, "one task per batch and line")
         line_report(a0 + ":c")
         if "c" in rep["actions"]:
             tl, _ = line_report("r:0:c:c:*")

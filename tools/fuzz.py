@@ -119,7 +119,9 @@ NODES = ["r:0", "r:0:c", "r:0:b50", "r:0:b30", "r:0:b20", "r:0:c:b50", "r:0:b20:
 READS = ["show_strategy {n}", "calc_ev OOP {n}", "calc_ev IP {n}", "calc_results", "show_node {n}", "show_children {n}",
          "calc_eq_node IP {n}", "show_range OOP {n}", "explo_partial {n}", "calc_line_freq {n}", "show_iters",
          "show_tree_info", "is_ready", "show_strategy_pp {n}", "calc_global_freq {n}", "lock_node {n}",
-         "unlock_node {n}", "show_all_freqs local", "set_accuracy 0", "set_info_freq 3", "set_info_freq auto"]
+         "unlock_node {n}", "show_all_freqs local", "set_accuracy 0", "set_info_freq 3", "set_info_freq auto",
+         "set_accuracy 0.001 fraction", "set_accuracy 0", "set_dcfr 1.3 0 4", "set_avg_delay 32", "set_pruning on",
+         "set_first_iteration_player OOP", "small_strats auto", "small_strats on", "set_end_string END"]
 CTRL = ["go {k} steps", "go 0.05 seconds", "go_partial {n} {k} steps", "go_partial {n} 0.05 seconds", "stop", "hold",
         "release", "hold", "wait_for_solver"]
 SMALL = [

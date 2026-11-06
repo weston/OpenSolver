@@ -1064,6 +1064,18 @@ def check_mid_solve_settings(u):
     u.cmd("free_tree")
 
 
+def check_setting_errors(u):
+    """A setting command that errors leaves the setting as it was (it used to assign, then reject)."""
+    print("[setting errors change nothing]")
+    u.cmd("set_accuracy 0.3 fraction")
+    check(u.cmd("set_accuracy 5 foo").startswith("ERROR"), "set_accuracy with a bad mode errors")
+    st = u.cmd("show_settings").split("\n")
+    check("accuracy: 0.300000" in st and "accuracy mode: fraction" in st, "a bad set_accuracy keeps the old one")
+    check(u.cmd("set_pruning on -5").startswith("ERROR"), "set_pruning with a negative period errors")
+    check(u.cmd("set_pruning on") == "set_pruning ok!", "set_pruning on still takes the old period")
+    u.cmd("set_accuracy 0")
+
+
 def check_legacy_params(u):
     """Pio 3.10 behavior, probed black-box: show_tree_params, set_bet_sizes/set_donk_bet, unlock_all,
     atoi-style chip amounts (fractions truncate), partial set_pot, a bad set_board clears the board."""
@@ -1307,6 +1319,7 @@ def main(exe, big=False):
         check_go_partial(u)
         check_go_limits_and_errors(u)
         check_info_freq_auto(u)
+        check_setting_errors(u)
         check_mid_solve_settings(u)
 
         print("[river tree + set_mes + rake]")

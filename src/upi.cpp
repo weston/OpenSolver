@@ -322,7 +322,10 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
   // These change (or read) state the solving thread uses mid-iteration: run them between iterations,
   // like the commands that take a TreePause themselves (#364: set_dcfr could be read half-written).
   static const std::set<std::string> pause_while_solving = {
-      "set_dcfr", "set_avg_delay", "set_pruning", "set_first_iteration_player", "set_info_freq"};
+      "set_dcfr", "set_avg_delay", "set_pruning", "set_first_iteration_player", "set_info_freq",
+      // the solver thread reads accuracy_ with accuracy_fraction_ at each report: written apart, a solve
+      // could test 5 x pot after "set_accuracy 5" following "... fraction" and stop at once
+      "set_accuracy", "small_strats"};
   if (solving_ && pause_while_solving.count(cmd)) {
     TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     return it->second(args);
@@ -899,9 +902,10 @@ void Upi::register_commands() {
     return std::string("set_info_freq ok!");
   };
   H["set_accuracy"] = [this](const Args& a) {
-    accuracy_ = arg_double(a, 0, "accuracy");
-    accuracy_fraction_ = a.size() > 1 && a[1] == "fraction";
+    const double acc = arg_double(a, 0, "accuracy");  // parse first: a bad argument changes nothing
     if (a.size() > 1 && a[1] != "fraction" && a[1] != "chips") throw CmdError{"incorrect or missing argument"};
+    accuracy_ = acc;
+    accuracy_fraction_ = a.size() > 1 && a[1] == "fraction";
     return std::string("set_accuracy ok!");
   };
   H["set_recalc_accuracy"] = [this](const Args& a) {
@@ -978,9 +982,10 @@ void Upi::register_commands() {
   // convergence-speed knob, not an abstraction.
   H["set_pruning"] = [this](const Args& a) {
     if (a.empty() || (a[0] != "on" && a[0] != "off")) throw CmdError{"incorrect or missing argument"};
+    const long long period = a.size() > 1 ? arg_int(a, 1, "period") : prune_period_;  // parse first:
+    if (period < 0 || period > 1000000000) throw CmdError{"incorrect or missing argument"};  // an error changes nothing
     pruning_ = a[0] == "on";
-    if (a.size() > 1) prune_period_ = static_cast<int>(arg_int(a, 1, "period"));
-    if (prune_period_ < 0) throw CmdError{"incorrect or missing argument"};
+    prune_period_ = static_cast<int>(period);
     if (solver_) {
       solver_->pruning = pruning_;
       solver_->prune_period = prune_period_;

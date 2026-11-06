@@ -175,7 +175,12 @@ async function showReport(name) {
   reportBatch = name;
   $("jr-line").value = prefs.get("jobs-report-line:" + name, "");
   $("jr-cards").checked = prefs.get("jobs-report-cards", "") === "1";
-  if (!(await loadReport())) return;
+  if (!(await loadReport())) {
+    // a remembered line that no longer loads: fall back to the first decision
+    if (!$("jr-line").value.trim()) return;
+    $("jr-line").value = "";
+    if (!(await loadReport())) return;
+  }
   $("jobs-report").showModal();
 }
 
@@ -192,10 +197,12 @@ async function loadReport() {
     $("jr-note").textContent = String(e.message || e);
     return false;
   } finally { go.disabled = false; }
-  prefs.set("jobs-report-line:" + reportBatch, line);
   const rep = lastReport;
+  // remember the line for this batch, unless no flop has it
+  if (!line || rep.rows.some((x) => x.freqs)) prefs.set("jobs-report-line:" + reportBatch, line);
   $("jr-title").textContent = `Report · ${rep.batch}`;
-  const where = rep.line ? `${rep.player || "?"} at r:0:${rep.line} · pot ${rep.pot}` + (rep.facing ? ` · facing ${rep.facing}` : "")
+  const where = rep.line && !rep.player ? `r:0:${rep.line}: no flop has this line`
+    : rep.line ? `${rep.player} at r:0:${rep.line} · pot ${rep.pot}` + (rep.facing ? ` · facing ${rep.facing}` : "")
     : `${rep.player || "?"} acts first · starting pot ${rep.pot}`;
   $("jr-sub").textContent = `${where} · ${rep.rows.length} flops done` + (rep.pending ? ` · ${rep.pending} not done yet (left out)` : "");
   const by = $("jr-by");

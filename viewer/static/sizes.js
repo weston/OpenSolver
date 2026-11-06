@@ -9,8 +9,8 @@ export const STREETS = ["flop", "turn", "river"];
 
 // tools/tree_builder.py grammar (#114, #315), no zero sizes: % of pot, Ne / e, NeP / eP (geometric,
 // at most P% of the pot), Nx (raises only), a. Entries are separated by commas, spaces or both.
-export const SIZE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e(([1-9]\d*|0)(\.\d+)?)?|a)$/i;
-export const RAISE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e(([1-9]\d*|0)(\.\d+)?)?|[1-9]\d*(\.\d+)?x|a)$/i;
+export const SIZE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*)?|a)$/i;
+export const RAISE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*)?|[1-9]\d*(\.\d+)?x|a)$/i;
 /** The entries of a size field: split on commas and whitespace, as tools/tree_builder.py does. */
 export const sizeParts = (v) => String(v).split(/[,\s]+/).filter(Boolean);
 

@@ -178,10 +178,12 @@ def case_roundtrip(exe, rng, args):
     if mode == "lossless":
         return setup, ([] if crs[-2] == crs[-1] and dev <= 1e-6 else
                        [f"lossless round trip differs (strategy by {dev:.2e})"])
-    # default saves quantize frequencies (11 bits): EVs move by up to ~1e-4 of the stack
+    # default saves quantize frequencies to 11 bits: a step of 1/2047 (~4.9e-4). Each hand's frequency moves
+    # by up to half a step, and over a few decisions with big bets the EVs move by up to about one step of
+    # the stack + pot (#388: 2e-4 was under half a step; a 500-chip-bet river spot moved 0.2 of 700)
     a, b = RESULTS.search(crs[-2]).groups(), RESULTS.search(crs[-1]).groups()
     stack = int(re.search(r"set_eff_stack (\d+)", " ".join(setup)).group(1))
-    tol = 2e-4 * (stack + pot) + 1e-3
+    tol = (stack + pot) / 2047 + 1e-3
     bad = [i for i in (0, 1) if abs(float(a[i]) - float(b[i])) > tol] if dev <= 2e-3 else [0]
     return setup, ([f"default round trip too far: EVs {a[:2]} -> {b[:2]}, strategy by {dev:.2e}"] if bad else [])
 

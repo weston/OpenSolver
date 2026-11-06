@@ -659,6 +659,24 @@ static void showdown_lanes_neon(const ShowdownBoard& sb, int p, int n, const SdJ
 }
 #endif
 
+// showdown_batch's callers hand it unzeroed rows. The lanes kernels store every unblocked hand's value,
+// so before them only the board-blocked hands need a zero; the other kernels add into `out`, which then
+// has to start at zero. Every kernel stores `compat` at the unblocked hands. (M4, 25bb fixture: zeroing
+// whole rows in the walk was 2.7% of the samples.)
+static void zero_rows(const ShowdownBoard& sb, int p, const SdJob* job, int n, bool store) {
+  const auto& bl = sb.blocked[p];
+  const size_t hp = sb.ent[p].size() + bl.size();
+  for (int t = 0; t < n; ++t) {
+    if (store) {
+      for (uint16_t h : bl) job[t].out[h] = 0.0f;
+    } else {
+      std::memset(job[t].out, 0, sizeof(float) * hp);
+    }
+    if (float* c = job[t].compat)
+      for (uint16_t h : bl) c[h] = 0.0f;
+  }
+}
+
 void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int ho) {
 #if PIO_SHOWDOWN_AVX512
   // Packs of up to 8 lanes (a job, plus one more for a fused fold) go to showdown_lanes_256. Packs of
@@ -672,6 +690,7 @@ void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int
       lanes += 1 + (job[k + m].xf ? 1 : 0);
       ++m;
     }
+    zero_rows(sb, p, job + k, m, lanes >= 4);
     switch (lanes >= 4 ? 0 : m) {
       case 1: showdown_batch_avx512<1>(sb, p, job + k, fi); break;
       case 2: showdown_batch_avx512<2>(sb, p, job + k, fi); break;
@@ -690,6 +709,7 @@ void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int
       lanes += 1 + (job[k + m].xf ? 1 : 0);
       ++m;
     }
+    zero_rows(sb, p, job + k, m, lanes >= 2);
     if (lanes >= 2) {
 #if PIO_SHOWDOWN_NEON
       // Half width for up to 4 lanes. On Zen 5 the same split (a 128-bit showdown_lanes_256) measured
@@ -710,6 +730,7 @@ void showdown_batch(const ShowdownBoard& sb, int p, int n, const SdJob* job, int
   }
 #else
   (void)ho;
+  zero_rows(sb, p, job, n, false);
   for (int i = 0; i < n; ++i) {
     const SdFold f{job[i].xf, job[i].pay};
     showdown_board_scalar(sb, job[i].W, job[i].L, job[i].T, p, job[i].ro, job[i].out, job[i].compat,
@@ -1339,6 +1360,7 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
   const int Ha = g_.num_hands(actor);
   float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
   current_strategy(ni, sigma);
+  // dst and compat go to showdown_batch unzeroed: it zeroes what its kernel needs (zero_rows).
   auto showdown_job = [&](const GNode& sd, const float* reach, float* dst, float* compat, const float* xf, float pay) {
     const GameTree::TermPay& tp = g_.term_pay(sd);
     w.sb = &g_.showdowns[sd.aux];
@@ -1377,8 +1399,6 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
       if (paired_f >= 0 && paired_s >= 0 && !(pruned && (pruned[paired_f] || pruned[paired_s]))) {
         float* cs = cfv + static_cast<size_t>(paired_s) * Hp;
         float* cf = cfv + static_cast<size_t>(paired_f) * Hp;
-        std::memset(cs, 0, sizeof(float) * Hp);
-        std::memset(cf, 0, sizeof(float) * Hp);
         showdown_job(g_.nodes[n.first_child + static_cast<uint32_t>(paired_s)], ro, cs, cf, nullptr, 0.0f);
         w.scale.push_back({cf, g_.term_pay(g_.nodes[n.first_child + static_cast<uint32_t>(paired_f)]).w[p]});
       } else {
@@ -1394,7 +1414,6 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
       if (child.kind == ANodeKind::Fold) {
         fold_value(child, p, ro, ca);
       } else if (child.kind == ANodeKind::Showdown) {
-        std::memset(ca, 0, sizeof(float) * Hp);
         showdown_job(child, ro, ca, nullptr, nullptr, 0.0f);
       } else {
         const float* sa = sigma + static_cast<size_t>(a) * Hp;
@@ -1431,7 +1450,6 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
       float* xf = ro2s + static_cast<size_t>(opp_f) * Ho;
       const float* sf = sigma + static_cast<size_t>(opp_f) * Ho;
       for (int k = 0; k < Ho; ++k) xf[k] = ro[k] * sf[k];
-      std::memset(tmp, 0, sizeof(float) * Hp);
       showdown_job(child, ro2, tmp, nullptr, xf,
                    g_.term_pay(g_.nodes[n.first_child + static_cast<uint32_t>(opp_f)]).w[p]);
       used[a] = 1;
@@ -1476,7 +1494,6 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
       continue;
     }
     if (child.kind == ANodeKind::Showdown) {
-      std::memset(tmp, 0, sizeof(float) * Hp);
       showdown_job(child, ro2, tmp, nullptr, nullptr, 0.0f);
     } else {
       river_down(ci, p, rp, ro2, tmp);
@@ -1501,21 +1518,35 @@ void Solver::river_cfr(uint32_t root, int p, const float* rp, const float* ro, f
     const RNode& r = w.nodes[i];
     const GNode& n = g_.nodes[r.ni];
     const int A = n.num_children;
-    std::memset(r.out, 0, sizeof(float) * Hp);
+    // The first summed row is written as 0 + x rather than added to a zeroed row: the same floats
+    // (0 + x also turns -0 into +0), one pass fewer.
+    bool first = true;
     if (r.own) {
       for (int a = 0; a < A; ++a) {
         if (r.flag && r.flag[a]) continue;
         const float* sa = r.sigma + static_cast<size_t>(a) * Hp;
         const float* c = r.rows + static_cast<size_t>(a) * Hp;
-        for (int h = 0; h < Hp; ++h) r.out[h] += sa[h] * c[h];
+        if (first) {
+          for (int h = 0; h < Hp; ++h) r.out[h] = 0.0f + sa[h] * c[h];
+          first = false;
+        } else {
+          for (int h = 0; h < Hp; ++h) r.out[h] += sa[h] * c[h];
+        }
       }
+      if (first) std::memset(r.out, 0, sizeof(float) * Hp);
       if (!(n.flags & GF_LOCKED)) traverser_update(n, r.ni, p, r.rp, r.ro, r.sigma, r.rows, r.flag, r.out);
     } else {
       for (int a = 0; a < A; ++a) {
         if (!r.flag[a]) continue;
         const float* c = r.rows + static_cast<size_t>(a) * Hp;
-        for (int h = 0; h < Hp; ++h) r.out[h] += c[h];
+        if (first) {
+          for (int h = 0; h < Hp; ++h) r.out[h] = 0.0f + c[h];
+          first = false;
+        } else {
+          for (int h = 0; h < Hp; ++h) r.out[h] += c[h];
+        }
       }
+      if (first) std::memset(r.out, 0, sizeof(float) * Hp);
     }
   }
   w.busy = false;

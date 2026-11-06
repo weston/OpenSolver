@@ -154,6 +154,9 @@ struct ShowdownBoard {
   // "strictly weaker" mass for p's hands, adds the group's opponent hands, then queries "weaker or
   // equal", so every opponent hand is touched once and the loops have no data-dependent branches.
   std::vector<std::pair<uint16_t, uint16_t>> groups[2];
+  // Per player: the hands the board blocks (not in ent), so a row the lanes kernels store into needs
+  // zeroing only there (showdown_batch).
+  std::vector<uint16_t> blocked[2];
 };
 
 // Allocator for big zero-initialised arrays: calloc memory and no per-element construction, so the OS

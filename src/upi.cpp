@@ -314,7 +314,7 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
   // These change (or read) state the solving thread uses mid-iteration: run them between iterations,
   // like the commands that take a TreePause themselves (#364: set_dcfr could be read half-written).
   static const std::set<std::string> pause_while_solving = {
-      "set_dcfr", "set_avg_delay", "set_pruning", "set_first_iteration_player", "set_info_freq", "show_iters"};
+      "set_dcfr", "set_avg_delay", "set_pruning", "set_first_iteration_player", "set_info_freq"};
   if (solving_ && pause_while_solving.count(cmd)) {
     TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     return it->second(args);
@@ -412,7 +412,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       if (info_auto_ != sched_auto) {
         sched_auto = info_auto_;
         if (sched_auto) {
-          next_report_ = (sub ? done : tree_->iterations) + 10;
+          next_report_ = (sub ? done : tree_->iterations.load()) + 10;
           auto_sched_ = AutoReportSchedule{};
         }
       }
@@ -448,7 +448,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       if (!sub) solve_seconds_ = base + el;
       bool limit = (steps > 0 && done >= steps) || (seconds > 0 && el >= seconds);
-      long long tick = sub ? done : tree_->iterations;
+      long long tick = sub ? done : tree_->iterations.load();
       // read each iteration (set_info_freq pauses the solve to change it, #364). A partial solve without an
       // info frequency would never check its stop conditions: solve_subtree's every 25 iterations then.
       const long long sub_freq = sub ? (info_freq_ > 0 ? info_freq_ : 25) : info_freq_;
@@ -991,7 +991,7 @@ void Upi::register_commands() {
     return std::string("change_step ok!");
   };
   H["show_step"] = [this](const Args&) { return pfmt("%f", step_); };
-  H["show_iters"] = [this](const Args&) { return std::to_string(tree_ ? tree_->iterations : 0); };
+  H["show_iters"] = [this](const Args&) { return std::to_string(tree_ ? tree_->iterations.load() : 0LL); };
   H["set_first_iteration_player"] = [this](const Args& a) {
     if (a.empty() || (a[0] != "OOP" && a[0] != "IP" && a[0] != "oop" && a[0] != "ip"))
       throw CmdError{"incorrect or missing argument"};  // Pio: not "incorrect player" here

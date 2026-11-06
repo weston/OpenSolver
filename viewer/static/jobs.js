@@ -4,7 +4,7 @@
 import { get, post, toast, fail, prefs, fmt } from "./api.js";
 import { el, cardEl } from "./cards.js";
 import { currentTree } from "./build.js";
-import { tokenColor } from "./study.js";
+import { tokenColor, evColor } from "./study.js";
 
 const $ = (id) => document.getElementById(id);
 let onOpened = async () => {};
@@ -185,6 +185,8 @@ async function showReport(name, line) {
   $("jr-line").value = line != null ? line : prefs.get("jobs-report-line:" + name, "");
   $("jr-cards").checked = prefs.get("jobs-report-cards", "") === "1";
   $("jr-view").value = prefs.get("jobs-report-view", "flops");
+  $("jr-hands-mode").value = prefs.get("jobs-report-hands-mode", "table");
+  if (!$("jr-hands-mode").value) $("jr-hands-mode").value = "table";
   if (!$("jr-view").value) $("jr-view").value = "flops";
   $("jobs-report").showModal();
   if (!(await loadReport()) && $("jr-line").value.trim() && line == null && !lastReport) {
@@ -272,8 +274,50 @@ const RANKS = "23456789TJQKA";
 /** A hand class's strength order for sorting: AA, AKs, AKo, AQs, ... 22 (higher = first). */
 const handRank = (h) => RANKS.indexOf(h[0]) * 1000 + RANKS.indexOf(h[1]) * 10 + (h.length === 2 ? 2 : h[2] === "s" ? 1 : 0);
 
+const GRID_RANKS = "AKQJT98765432";
+
+/** The per-hand grid (#343): 13×13 classes (pairs on the diagonal, suited above it), each colored by
+ *  EQR around 100% or by EV % of the pot around the range's matchup-weighted mean. */
+function renderHandGrid(rep, player, mode) {
+  const g = $("jr-grid");
+  g.replaceChildren();
+  const rows = (rep.hands || {})[player] || [];
+  const by = Object.fromEntries(rows.map((x) => [x.hand, x]));
+  let mean = 0, scale = 0;
+  if (mode === "ev") {
+    const m = rows.reduce((a, x) => a + x.matchups, 0);
+    mean = m > 0 ? rows.reduce((a, x) => a + x.matchups * (x.ev_pct || 0), 0) / m : 0;
+    scale = Math.max(1e-9, ...rows.map((x) => Math.abs((x.ev_pct || 0) - mean)));
+  }
+  for (let a = 0; a < 13; a++) {
+    for (let b = 0; b < 13; b++) {
+      const hand = a === b ? GRID_RANKS[a] + GRID_RANKS[b]
+        : a < b ? GRID_RANKS[a] + GRID_RANKS[b] + "s" : GRID_RANKS[b] + GRID_RANKS[a] + "o";
+      const x = by[hand];
+      const c = el("div", x ? "gc" : "gc blank");
+      c.appendChild(el("b", "", hand));
+      if (x) {
+        const v = mode === "eqr" ? x.eqr : x.ev_pct;
+        c.style.background = v == null ? "var(--surface-3)"
+          : mode === "eqr" ? evColor(v - 1, 0.5) : evColor(v - mean, scale);
+        c.appendChild(el("i", "", v == null ? "—" : mode === "eqr" ? fmt(100 * v, 0) + "%" : fmt(v, 0) + "%"));
+        c.title = `${hand}: EV ${fmt(x.ev, 2)} (${x.ev_pct == null ? "—" : fmt(x.ev_pct, 1) + "% pot"}) · equity ` +
+          `${fmt(100 * x.equity, 1)}% · EQR ${x.eqr == null ? "—" : fmt(100 * x.eqr, 1) + "%"} · matchups ${fmt(x.matchups, 1)}`;
+      } else {
+        c.title = `${hand}: not in ${player}'s range here`;
+      }
+      g.appendChild(c);
+    }
+  }
+}
+
 /** The per-hand view (#338): one player's hand classes over the batch, as PioViewer's handsEV.csv. */
 function renderHands(rep, player) {
+  const mode = $("jr-hands-mode").value || "table";
+  prefs.set("jobs-report-hands-mode", mode);
+  $("jr-table").classList.toggle("hidden", mode !== "table");
+  $("jr-grid").classList.toggle("hidden", mode === "table");
+  if (mode !== "table") renderHandGrid(rep, player, mode);
   const t = $("jr-table");
   t.replaceChildren();
   const cols = [["hand", "Hand"], ["ev", "EV"], ["ev_pct", "EV % pot"], ["equity", "Equity"], ["eqr", "EQR"],
@@ -320,6 +364,8 @@ function renderReport() {
   const view = $("jr-view").value;
   prefs.set("jobs-report-view", view);
   $("jr-by").classList.toggle("hidden", view !== "flops");
+  $("jr-hands-mode").classList.toggle("hidden", view === "flops");
+  if (view === "flops") { $("jr-table").classList.remove("hidden"); $("jr-grid").classList.add("hidden"); }
   $("jr-cards-wrap").classList.toggle("hidden", view !== "flops" || !rep.rows.some((x) => x.cards));
   if (view !== "flops") { renderHands(rep, view); return; }
   const by = $("jr-by").value;
@@ -413,6 +459,7 @@ export function initJobs({ opened }) {
   $("jr-close").onclick = () => $("jobs-report").close();
   $("jr-by").onchange = renderReport;
   $("jr-cards").onchange = renderReport;
+  $("jr-hands-mode").onchange = renderReport;
   $("jr-view").onchange = () => {
     // the hands come with a line report; at the root they need the saves read (hands=1)
     if ($("jr-view").value !== "flops" && lastReport && !lastReport.hands) loadReport();

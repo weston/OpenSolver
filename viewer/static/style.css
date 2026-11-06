@@ -726,6 +726,20 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
 .jr-selects { display: flex; gap: 8px; }
 .jr-selects select { width: auto; }
 .jobs-table th.sortable { cursor: pointer; user-select: none; }
+/* the per-hand grid (#343) */
+.jr-grid {
+  width: min(100%, 560px); aspect-ratio: 1; margin: 4px auto 0;
+  display: grid; grid-template-columns: repeat(13, minmax(0, 1fr)); grid-template-rows: repeat(13, minmax(0, 1fr)); gap: 2px;
+  container-type: inline-size;
+}
+.jr-grid .gc { position: relative; overflow: hidden; border-radius: 3px; background: var(--cell-empty); }
+.jr-grid .gc b, .jr-grid .gc i {
+  position: absolute; left: 3px; line-height: 1; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
+  font-style: normal; white-space: nowrap; pointer-events: none;
+}
+.jr-grid .gc b { top: 3px; font-size: max(8px, 2.1cqw); font-weight: 650; }
+.jr-grid .gc i { bottom: 3px; font-size: max(7px, 1.75cqw); font-weight: 600; }
+.jr-grid .gc.blank b { color: var(--cell-text-dim); text-shadow: none; }
 .jobs-table th.sortable:hover { color: var(--text); }
 /* fast preview (viewer/static/preview.js) */
 label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); margin: 10px 0 2px; cursor: pointer; }

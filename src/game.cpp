@@ -98,7 +98,10 @@ int GameTree::showdown_board_id(const std::vector<int>& board) {
     std::vector<std::pair<uint32_t, uint16_t>> v;
     v.reserve(hands[p].size());
     for (size_t h = 0; h < hands[p].size(); ++h) {
-      if (combo_mask(hands[p][h]) & mask) continue;
+      if (combo_mask(hands[p][h]) & mask) {
+        sb.blocked[p].push_back(static_cast<uint16_t>(h));
+        continue;
+      }
       cs[5] = hcard[p][0][h];
       cs[6] = hcard[p][1][h];
       v.push_back({evaluate(cs, 7), static_cast<uint16_t>(h)});

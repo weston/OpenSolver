@@ -51,6 +51,7 @@ class JobsService:
         self.solver_exe = solver_exe
         self.flops_dir = os.path.abspath(os.path.expanduser(flops_dir)) if flops_dir else ""
         self.mu = threading.Lock()
+        self.start_mu = threading.Lock()
         self.thread = None
         self.current = None    # id of the running job
         self.point = None      # its latest progress point
@@ -198,6 +199,10 @@ class JobsService:
         return {"added": len(added), "estimate": est.splitlines()}
 
     def run(self, b):
+        with self.start_mu:  # two Run clicks at once must not start two runner threads (#362)
+            return self._start_run(b)
+
+    def _start_run(self, b):
         if self.running():
             raise vsrv.SolverError("the queue is already running")
         if self.q.runner():

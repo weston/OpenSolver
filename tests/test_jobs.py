@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import redirect_stdout
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -101,6 +102,46 @@ def unit():
         check(open(q.lock_file).read() == str(os.getpid()), "a stale lock is taken over")
         q.unlock()
         check(raises(q.job, "../../etc"), "job ids are numbers")
+
+    print("[queue robustness (#362)]")
+    with tempfile.TemporaryDirectory() as td:
+        # four processes released together race for the runner lock: exactly one may hold it
+        prog = ("import sys, time; sys.path.insert(0, sys.argv[1]); import jobs\n"
+                "q = jobs.Queue(sys.argv[2]); t = float(sys.argv[3])\n"
+                "time.sleep(max(0, t - time.time()))\n"
+                "try:\n    q.lock(); print('HELD'); time.sleep(1.5); q.unlock()\n"
+                "except jobs.JobError:\n    print('REFUSED')\n")
+        wins = []
+        for trial in range(5):
+            go = time.time() + 1.0
+            ps = [subprocess.Popen([sys.executable, "-c", prog, os.path.join(REPO, "tools"), td, str(go)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
+            outs = [p.communicate(timeout=60) for p in ps]
+            wins.append(sum(o.strip() == "HELD" for o, _ in outs))
+            if any(e.strip() for _, e in outs):
+                wins.append(f"stderr: {[e[-200:] for _, e in outs if e.strip()]}")
+        check(wins == [1] * 5, f"exactly one of four simultaneous runners takes the lock ({wins})")
+        q = jobs.Queue(td)
+        check(not os.path.exists(q.lock_file), "the holder released the lock")
+        setup, _ = jobs.tree_setup(TREE)
+        q.add_batch("a", setup, [("Kh9h4h", 1), ("As7d2c", 1)], 0.5, None, None, "no_rivers", None)
+        with open(os.path.join(q.jobs_dir, "00002.json"), "w") as f:
+            f.write("")  # cut short by a crash
+        js = q.jobs()
+        check([j["id"] for j in js] == ["00001"], f"a damaged job file is left out, the rest still list ({js})")
+        check(raises(q.job, "00002"), "reading the damaged job itself is a JobError")
+        os.remove(os.path.join(q.jobs_dir, "00002.json"))
+        for bad in ("x.", "x ", "a b."):
+            check(raises(q.add_batch, bad, setup, [("Kh9h4h", 1)], 0.5, None, None, "no_rivers", None),
+                  f"batch name {bad!r} refused (Windows maps it onto another folder)")
+        with open(os.path.join(q.batches_dir, "orph.json"), "w") as f:
+            json.dump({"name": "orph"}, f)  # a batch file whose jobs were never written
+        added = q.add_batch("orph", setup, [("Kh9h4h", 1)], 0.5, None, None, "no_rivers", None)
+        check(len(added) == 1, "a batch file with no jobs doesn't hold its name")
+    check(jobs.parse_flops("Ks5h2s Td7h2c") == [("Ks5h2s", 1.0), ("Td7h2c", 1.0)]
+          and jobs.parse_flops("Ks5h2s:2 Td7h2c:0.5") == [("Ks5h2s", 2.0), ("Td7h2c", 0.5)]
+          and jobs.parse_flops("Ks 5h 2s") == [("Ks5h2s", 1.0)],
+          "boards separated by spaces (and a board with spaced cards)")
 
     print("[queue edits racing the runner]")
     with tempfile.TemporaryDirectory() as td:

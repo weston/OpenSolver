@@ -121,9 +121,15 @@ class JobsApiTest(unittest.TestCase):
         self.assertEqual([j["board"] for j in d["jobs"]][:2], ["7c7d2s", "QsJs4h"], "moved to the front")
         self.assertEqual([b["name"] for b in d["batches"]], ["pick", "srp"])
 
-        # one job by id
-        st, d = self.req("/api/jobs/run", "POST", {"ids": ["00002"]})
-        self.assertEqual(st, 200, d)
+        # one job by id; two Run clicks at once start one runner (#362)
+        res = []
+        ts = [threading.Thread(target=lambda: res.append(self.req("/api/jobs/run", "POST", {"ids": ["00002"]})))
+              for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(sorted(st for st, _ in res), [200, 400], res)
         d = self.wait_idle()
         status = {j["id"]: j["status"] for j in d["jobs"]}
         self.assertEqual(status["00002"], "done", d["log"])

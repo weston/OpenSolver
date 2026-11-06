@@ -322,7 +322,8 @@ class ResolveManager:
         self.result = None               # summary of the finished (re-)solve
         self.tree_ok = False             # rsolver currently holds a browsable tree
         self.carried = None              # main-tree locks set on the last subgame (#200)
-        self.gen = 0                     # bumped when the main tree changes: older jobs' results are dropped
+        self.tree_gen = 0                # bumped by main_tree_changed: older jobs' results are dropped (#357)
+        self.job_tree_gen = 0
 
     # ---- jobs (run on a daemon thread) ----
 
@@ -339,7 +340,7 @@ class ResolveManager:
             self.result, self.tree_ok = None, False
             self.allin = False
             self.abort = False
-            self.job_gen = self.gen
+            self.job_tree_gen = self.tree_gen
         threading.Thread(target=self._entry, args=(job,), daemon=True).start()
 
     def main_tree_changed(self):
@@ -347,7 +348,7 @@ class ResolveManager:
         belongs to anything shown. Stop a running job and forget the last result and subgame."""
         self.stop()
         with self.mu:
-            self.gen += 1
+            self.tree_gen += 1
             self.result, self.tree_ok, self.node, self.ctx = None, False, None, None
             self.rows, self.best, self.error, self.carried = [], None, None, None
 
@@ -421,7 +422,7 @@ class ResolveManager:
         if extra:
             result.update(extra)
         with self.mu:
-            if self.job_gen != self.gen:  # the main tree changed meanwhile: not this tree's subgame
+            if self.job_tree_gen != self.tree_gen:  # the main tree changed meanwhile: not this tree's subgame
                 return
             self.result = result
             self.tree_ok = True

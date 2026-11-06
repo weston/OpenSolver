@@ -101,6 +101,7 @@ class Solver:
                                      text=True, bufsize=1)
         self.generation += 1
         self.q = queue.Queue()
+        self.unread = 0  # answers of timed-out commands still to skip (#382)
         threading.Thread(target=self._pump, args=(self.generation, self.proc.stdout, self.q),
                          daemon=True).start()
         self.send_raw("set_end_string " + END)
@@ -166,6 +167,9 @@ class Solver:
             try:
                 line = self.q.get(timeout=timeout)
             except queue.Empty:
+                # the answer still comes, later: the next command must skip it, or every command after
+                # this one would read the one before's answer (#382)
+                self.unread = getattr(self, "unread", 0) + 1
                 raise SolverError("timeout waiting for solver response")
             if line is None:
                 raise SolverError("solver exited")
@@ -173,9 +177,28 @@ class Solver:
                 return "\n".join(out)
             out.append(line)
 
+    def _drain_unread(self, timeout):
+        """Skip the answers of commands that timed out (caller holds cmd_lock). The solver answers in
+        order, so these come before the next command's own answer."""
+        while getattr(self, "unread", 0) > 0:
+            out = []
+            while True:
+                try:
+                    l = self.q.get(timeout=timeout)
+                except queue.Empty:
+                    raise SolverError("the solver is still busy with an earlier command") from None
+                if l is None:
+                    self.unread = 0
+                    raise SolverError("solver exited")
+                if l == END:
+                    break
+                out.append(l)
+            self.unread -= 1
+
     def cmd(self, line, timeout=600):
         """Run one UPI command. Raises SolverError on an ERROR: response."""
         with self.cmd_lock:
+            self._drain_unread(timeout)
             self.send_raw(line)
             resp = self._read_response(timeout)
         if resp.startswith("ERROR"):
@@ -185,6 +208,7 @@ class Solver:
     def cmds(self, lines, timeout=600):
         """Several commands in one lock hold; stops at the first ERROR."""
         with self.cmd_lock:
+            self._drain_unread(timeout)
             for line in lines:
                 self.send_raw(line)
                 resp = self._read_response(timeout)
@@ -692,13 +716,13 @@ def _api_main(solver, lib, method, path, query, body):
         b = need_body(body)
         path_arg = safe_path(b.get("path", ""))
         mode = " no_rivers" if b.get("no_rivers") else " no_turns" if b.get("no_turns") else ""
-        solver.cmd(f'dump_tree "{path_arg}"{mode}')
+        solver.cmd(f'dump_tree "{path_arg}"{mode}', timeout=7200)  # big trees: minutes (#382)
         return 200, {"ok": True}
 
     if path == "/api/load":
         b = need_body(body)
         path_arg = safe_path(b.get("path", ""))
-        solver.cmds(["stop", "wait_for_solver", f'load_tree "{path_arg}"'])
+        solver.cmds(["stop", "wait_for_solver", f'load_tree "{path_arg}"'], timeout=7200)  # (#382)
         if _resolver is not None:
             _resolver.main_tree_changed()  # #357
         solver.forget_locks()

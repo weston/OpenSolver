@@ -313,8 +313,11 @@ async function nlPropose() {
   if (!text) { nlOut("Describe the strategy first, e.g. “IP never raises”.", true); return; }
   $("lk-nl-go").disabled = true;
   nlOut(`Asking ${esc(NL.status.model)}…`);
+  const asked = L.ctx.id;
   try {
-    const r = await post("/api/nl/propose", { id: L.ctx.id, text });
+    const r = await post("/api/nl/propose", { id: asked, text });
+    // the call can take minutes: a reply for a node the dialog has left must not land on this one (#373)
+    if (!$("lock-dialog").open || !L.ctx || L.ctx.id !== asked || r.id !== asked) return;
     const cost = r.cost ? ` <span class="muted">· ${r.cost.input_tokens} + ${r.cost.output_tokens} tokens, ${usd(r.cost.usd)}</span>` : "";
     if (!r.ok) {
       nlOut(`${esc(r.error || "The model could not turn that into a lock.")}${r.explanation ? `<br>${esc(r.explanation)}` : ""}${cost}`, true);

@@ -31,6 +31,7 @@ import json
 import math
 import os
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -54,15 +55,28 @@ def key_path():
     return os.path.join(os.path.expanduser("~"), ".config", "sailresearch", "api_key")
 
 
+def _valid_key(k):
+    """A key is one token of printable ASCII: a key file with two lines (`sk-NEW\nsk-OLD`) made
+    http.client raise an error whose text held the key, which reached the browser (#373)."""
+    return k if k and re.fullmatch(r"[\x21-\x7e]{8,512}", k) else None
+
+
 def load_key():
-    """The Sail key, or None. Never logged or returned."""
+    """The Sail key, or None (also for a malformed one). Never logged or returned."""
     k = os.environ.get("SAIL_API_KEY", "").strip()
     if k:
-        return k
+        return _valid_key(k)
     try:
         with open(key_path(), encoding="utf-8") as f:
-            return f.read().strip() or None
+            return _valid_key(f.read().strip())
     except OSError:
+        return None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib copies the Authorization header to the new host (#373)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
@@ -72,7 +86,8 @@ class SailClient:
     def __init__(self, key, timeout=180):
         self._key = key
         self.timeout = timeout
-        self.opener = urllib.request.urlopen   # tests swap in a fake
+        # no redirects: a 3xx is an HTTPError, the key goes to HOST only (#373). Tests swap in a fake.
+        self.opener = urllib.request.build_opener(_NoRedirect).open
 
     def complete(self, messages):
         body = json.dumps({"model": MODEL, "messages": messages, "max_tokens": MAX_TOKENS,
@@ -94,13 +109,20 @@ class SailClient:
             raise NLError(f"Sail returned HTTP {e.code}{': ' + detail[:300] if detail else ''}") from None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise NLError(f"could not reach {HOST}: {getattr(e, 'reason', e)}") from None
+        except Exception:  # noqa: BLE001 - e.g. a bad header value: its text may hold the key (#373)
+            raise NLError(f"the request to {HOST} failed") from None
         try:
             text = data["choices"][0]["message"]["content"] or ""
+            if not isinstance(text, str):
+                raise TypeError
         except (KeyError, IndexError, TypeError):
             raise NLError("unexpected response from Sail") from None
-        u = data.get("usage") or {}
-        return text, {"input_tokens": int(u.get("prompt_tokens") or 0),
-                      "output_tokens": int(u.get("completion_tokens") or 0)}
+
+        def tokens(v):
+            return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0 else 0
+        u = data.get("usage") if isinstance(data, dict) else None
+        u = u if isinstance(u, dict) else {}
+        return text, {"input_tokens": tokens(u.get("prompt_tokens")), "output_tokens": tokens(u.get("completion_tokens"))}
 
 
 def cost_usd(input_tokens, output_tokens):
@@ -276,9 +298,15 @@ def _select(ctx, sel):
         return live
     if not isinstance(sel, dict):
         raise NLError("hands must be \"all\" or an object with classes / categories")
+    fields = ("classes", "categories", "exclude_classes", "exclude_categories")
+    extra = sorted(set(sel) - set(fields))
+    if extra:  # a misspelt field ("class") used to be ignored, selecting the whole range (#373)
+        raise NLError(f"unknown hands field: {', '.join(map(str, extra[:4]))} (use {', '.join(fields)})")
+    if not any(sel.get(f) for f in ("classes", "categories")) and not any(sel.get(f) for f in fields[2:]):
+        raise NLError("hands selects nothing: name classes or categories, or use \"all\"")
     known_cats = set(ctx["made_names"]) | set(ctx["draw_names"])
     def names(field):
-        v = sel.get(field) or []
+        v = sel.get(field, [])
         if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
             raise NLError(f"{field} must be a list of names")
         return v
@@ -351,6 +379,11 @@ def apply_spec(ctx, spec):
     for n, rule in enumerate(rules, 1):
         if not isinstance(rule, dict):
             raise NLError(f"rule {n} is not an object")
+        extra = sorted(set(rule) - {"hands", "mix", "target"})
+        if extra:
+            raise NLError(f"rule {n}: unknown field {', '.join(map(str, extra[:4]))}")
+        if ("mix" in rule) == ("target" in rule):
+            raise NLError(f"rule {n} needs exactly one of mix or target")
         combos = _select(ctx, rule.get("hands", "all"))
         if not combos:
             raise NLError(f"rule {n} selects no hands in the range")
@@ -362,8 +395,15 @@ def apply_spec(ctx, spec):
             if bad:
                 raise NLError(f"rule {n}: no action {', '.join(map(str, bad))} here (actions: {', '.join(keys)})")
             w = [mix.get(k, 0) for k in keys]
-            if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or x < 0 for x in w) or sum(w) <= 0:
+            try:
+                ok = not any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in w)
+                w = [float(x) for x in w] if ok else w
+            except OverflowError:  # an int like 10**400
+                ok = False
+            if not ok or any(not math.isfinite(x) or x < 0 for x in w) or max(w) <= 0:
                 raise NLError(f"rule {n}: mix weights must be non-negative numbers, not all 0")
+            top = max(w)
+            w = [x / top for x in w]  # scaled first: the sum can't overflow (#373)
             s = sum(w)
             for i in combos:
                 for k in range(len(keys)):
@@ -412,6 +452,7 @@ class NLService:
             key = load_key()
             client = SailClient(key) if key else None
         self.client = client
+        self._busy = threading.Lock()
 
     def status(self):
         if self.client is None:
@@ -431,14 +472,22 @@ class NLService:
         node_id = srv.node_id_arg({"id": [str(b.get("id", ""))]})
         ctx = node_context(srv, solver, node_id)
         messages = build_messages(ctx, text)
-        reply, usage = self.client.complete(messages)
+        if not self._busy.acquire(blocking=False):  # one paid model call at a time (#373)
+            raise NLError("a request is already running: wait for its answer")
+        try:
+            reply, usage = self.client.complete(messages)
+        finally:
+            self._busy.release()
         cost = {**usage, "usd": round(cost_usd(usage["input_tokens"], usage["output_tokens"]), 5)}
         spec = parse_reply(reply)
         before, _ = _overall(ctx, ctx["freq"])
         out = {"id": node_id, "spec": spec, "explanation": str(spec.get("explanation", ""))[:1000], "cost": cost,
                "actions": [a["key"] for a in ctx["acts"]], "overall_before": before}
-        if not spec.get("ok"):
+        if spec.get("ok") is not True:  # "false" (a string) used to count as true (#373)
             return {**out, "ok": False}
+        extra = sorted(set(spec) - {"ok", "explanation", "rules"})
+        if extra:
+            return {**out, "ok": False, "error": f"unknown spec field: {', '.join(map(str, extra[:4]))}"}
         try:
             freq, notes = apply_spec(ctx, spec)
         except NLError as e:

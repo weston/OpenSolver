@@ -43,6 +43,10 @@ own, when the changes look correct, relevant checks pass, and review concerns ar
 4. **Open a PR** to `main` with `gh pr create --fill` or the web UI. Title: `<summary> (#<issue>)`.
    Fill in the template: what changed, how you verified it (paste test output), numeric impact,
    anything left undone. Link the issue with `Closes #<n>`.
+   **Check the file list first** (`gh pr diff <n> --name-only`, or `git diff --stat origin/main...`):
+   every file in it should be one you meant to change. A stray file is usually a stale copy carried
+   over from an older checkout, and squash-merging it silently reverts whoever changed that file
+   since. #295 rolled back five merged PRs that way (restored in #326). Reviewers check the same list.
 5. **Review and merge.** Review the diff and relevant test results. Address review comments by pushing
    more commits to the same branch and replying to each comment. Agents may squash-merge when the
    changes look correct, relevant checks pass, and review concerns are resolved; maintainer approval

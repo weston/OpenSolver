@@ -300,6 +300,14 @@ std::unique_ptr<ActionNode> build_action_tree(const ActionTreeParams& p, const L
   b.complete(*root);
   std::vector<ActionNode*> all;
   index_action_tree(root.get(), all);
+  // Every decision needs an action. remove_line refuses to remove a node's last child, but lines removed
+  // while no tree can be built yet (no board, or a pending line that doesn't fit) skip that check, and
+  // a decision with no children was then built and solved: wrong EVs, nan strategies (#371).
+  for (const ActionNode* n : all)
+    if (n->kind == ANodeKind::Decision && n->children.empty()) {
+      err = "the removed lines leave a decision with no actions";
+      return nullptr;
+    }
   return root;
 }
 

@@ -183,6 +183,22 @@ class JobsApiTest(unittest.TestCase):
         if "c" in rep["actions"]:
             tl, _ = line_report("r:0:c:c:*")
             self.assertTrue(all(len(x["cards"]) == 49 for x in tl["rows"]), [len(x["cards"] or []) for x in tl["rows"]])
+        # per hand at the root (#338): hands=1 reads the saves like a line, then carries both players' classes
+        seen = []
+        for _ in range(600):
+            st, hr = self.req("/api/jobs/report?batch=srp&line=&hands=1")
+            self.assertEqual(st, 200, hr)
+            if not hr.get("reading"):
+                break
+            seen.append(hr["progress"])
+            time.sleep(0.05)
+        self.assertTrue(seen, "the root with hands reads the saves in the background")
+        self.assertEqual((hr["line"], len(hr["rows"])), ("", 3), hr)
+        self.assertTrue(hr["hands"]["OOP"] and hr["hands"]["IP"], hr.get("hands"))
+        x = hr["hands"]["OOP"][0]
+        self.assertAlmostEqual(x["eqr"], x["ev"] / (x["equity"] * hr["pot"]), places=4)
+        st, plain = self.req("/api/jobs/report?batch=srp")
+        self.assertNotIn("hands", plain, "without hands=1 the root report stays the quick one")
         st, d = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote("b50 x7"))
         self.assertEqual(st, 400, "a malformed line is refused")
 

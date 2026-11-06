@@ -8,7 +8,7 @@ thread, each in its own solver process: the viewer's own solver stays free for b
 Endpoints (GET unless marked POST):
     /api/jobs/state                     queue, batches, runner state, current job progress, log
     /api/jobs/flop_files                flop files in the --flops-dir folder (name, board count)
-    /api/jobs/report?batch=NAME[&line=L] strategy per flop at the root or a line (#325), weighted average
+    /api/jobs/report?batch=NAME[&line=L][&hands=1] per flop at the root or a line (#325), per hand (#338)
     /api/jobs/add          POST         {name, tree: <Build form body>, flops | flops_file,
                                          accuracy (% pot), max_iters?, save?}
     /api/jobs/run          POST         {ids?: [...], batch?}  start the runner
@@ -265,7 +265,7 @@ class JobsService:
             raise vsrv.SolverError("that job has no save yet")
         return vsrv.api(solver, None, "POST", "/api/load", {}, {"path": j["out"]})[1] | {"board": j["board"]}
 
-    def line_report(self, name, line):
+    def line_report(self, name, line, root=False):
         """A report at a line (#325). If every save's result at the line is cached it is answered at
         once; otherwise the saves are read in a background task (one per batch and line) and this
         answers {"reading": true, "progress": {done, total, board}} until it has finished (#333). Then
@@ -283,7 +283,7 @@ class JobsService:
         # just read in the background, or all cached: build it now (a save that failed to read isn't
         # cached and is tried again here, once, rather than starting another task)
         if t is not None or not jobs.line_uncached(self.q, name, line):
-            return jobs.line_report(self.q, name, line, self.solver_exe)
+            return jobs.line_report(self.q, name, line, self.solver_exe, root=root)
         if not self.solver_exe:
             raise vsrv.SolverError("no solver to read the saves with")
         with self.mu:
@@ -297,7 +297,7 @@ class JobsService:
 
         def work():
             try:
-                jobs.line_report(self.q, name, line, self.solver_exe, progress=prog)
+                jobs.line_report(self.q, name, line, self.solver_exe, progress=prog, root=root)
             except Exception as e:  # noqa: BLE001 - shown to whoever asks next
                 t["error"] = str(e) or type(e).__name__
             t["finished"] = True
@@ -328,9 +328,11 @@ class JobsService:
         if sub == "/report":
             name = query.get("batch", [""])[0]
             line = query.get("line", [""])[0]
+            hands = query.get("hands", [""])[0] in ("1", "true")
             try:
-                if jobs.parse_line(line):
-                    return 200, self.line_report(name, line)
+                # a line, or the root with the per-hand figures (#338): both read the saves
+                if jobs.parse_line(line) or hands:
+                    return 200, self.line_report(name, line, root=True)
                 return 200, jobs.report(self.q, name, self.solver_exe)
             except jobs.JobError as e:
                 raise vsrv.SolverError(str(e))

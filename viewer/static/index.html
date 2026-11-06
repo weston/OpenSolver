@@ -307,7 +307,14 @@
 
 <dialog id="jobs-report" class="dialog wide">
   <div class="card-head"><h2 id="jr-title">Report</h2><button class="btn ghost small" id="jr-close">Close</button></div>
-  <div class="jr-head"><p id="jr-sub" class="muted"></p><select id="jr-by" title="Group the flops by texture"></select></div>
+  <div class="jr-head"><p id="jr-sub" class="muted"></p>
+    <div class="jr-selects">
+      <select id="jr-view" title="Per flop, or per hand class for one player (like PioViewer's handsEV.csv)">
+        <option value="flops">Flops</option><option value="OOP">Hands · OOP</option><option value="IP">Hands · IP</option>
+      </select>
+      <select id="jr-by" title="Group the flops by texture"></select>
+    </div>
+  </div>
   <div class="jr-head jr-line-row">
     <input id="jr-line" type="text" spellcheck="false" placeholder="Line, e.g. r:0:b198:c:2d:c:b447 (empty: the first decision)"
       title="A node id from Study. A card (or *) means every card dealt there, like PioViewer's turn report">

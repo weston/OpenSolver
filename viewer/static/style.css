@@ -723,6 +723,10 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
 .jobs-table tr.sub td { color: var(--text-2); font-size: 0.92em; }
 .jobs-table tr.sub td:first-child { padding-left: 22px; }
 .jr-card { display: inline-flex; gap: 2px; }
+.jr-selects { display: flex; gap: 8px; }
+.jr-selects select { width: auto; }
+.jobs-table th.sortable { cursor: pointer; user-select: none; }
+.jobs-table th.sortable:hover { color: var(--text); }
 /* fast preview (viewer/static/preview.js) */
 label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); margin: 10px 0 2px; cursor: pointer; }
 label.check input { accent-color: var(--accent); }

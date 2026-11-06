@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 
@@ -151,6 +152,18 @@ class JobsApiTest(unittest.TestCase):
         self.assertAlmostEqual(sum(rep["total"]["freqs"]), 1.0, places=4)
         st, d = self.req("/api/jobs/report?batch=nope")
         self.assertEqual(st, 400)
+        # at a line (#325): the first action's child, then every turn under a check-check flop
+        a0 = rep["actions"][0]
+        st, lr = self.req("/api/jobs/report?batch=srp&line=" + a0)
+        self.assertEqual(st, 200, lr)
+        self.assertEqual((lr["line"], len(lr["rows"])), (a0, 3), lr)
+        self.assertTrue(all(x["global"] is not None and x["freqs"] for x in lr["rows"]), lr["rows"])
+        if "c" in rep["actions"]:
+            st, tl = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote("r:0:c:c:*"))
+            self.assertEqual(st, 200, tl)
+            self.assertTrue(all(len(x["cards"]) == 49 for x in tl["rows"]), [len(x["cards"] or []) for x in tl["rows"]])
+        st, d = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote("b50 x7"))
+        self.assertEqual(st, 400, "a malformed line is refused")
 
         # open a finished save in the viewer's own solver
         st, d = self.req("/api/jobs/open", "POST", {"id": "00003"})

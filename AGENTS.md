@@ -86,6 +86,19 @@ python3 tests/test_upi.py ./solver
 `tests/test_categories.cpp` compares the range explorer byte-for-byte against recorded Pio output in
 `tests/data/pio_categories/`.
 
+**Sanitizers.** After touching threading, the UPI layer or memory handling, run a sanitizer build in a
+scratch worktree, since it overwrites `build/` and `./solver`. `tools/fuzz.py` treats a sanitizer abort
+as a failure.
+
+```sh
+make -j8 test CXXFLAGS="-std=c++20 -O1 -g -mcpu=native -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+make -j8 solver CXXFLAGS="-std=c++20 -O1 -g -mcpu=native -fsanitize=thread -fno-omit-frame-pointer"
+TSAN_OPTIONS="log_path=$PWD/tsan/t" python3 tools/fuzz.py concurrency ./solver --seconds 300   # one report file per racing run
+```
+
+(`-march=native` on x86.) On 2026-11-06, ASan and UBSan were clean over `make test` and every fuzz
+mode. TSan with the concurrency fuzz found setters racing the solver thread, fixed in #366 and #365.
+
 ## Benchmarking
 
 The owner's metric is **wall time to reach a target exploitability**, not iterations per second: a

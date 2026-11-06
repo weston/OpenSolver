@@ -268,6 +268,9 @@ function stratBar(freqs, rep) {
 }
 
 let handSort = { key: "ev", desc: true };
+const RANKS = "23456789TJQKA";
+/** A hand class's strength order for sorting: AA, AKs, AKo, AQs, ... 22 (higher = first). */
+const handRank = (h) => RANKS.indexOf(h[0]) * 1000 + RANKS.indexOf(h[1]) * 10 + (h.length === 2 ? 2 : h[2] === "s" ? 1 : 0);
 
 /** The per-hand view (#338): one player's hand classes over the batch, as PioViewer's handsEV.csv. */
 function renderHands(rep, player) {
@@ -282,7 +285,7 @@ function renderHands(rep, player) {
       equity: "Equity against the opponent's range here", eqr: "Equity realization: EV / (equity × pot)",
       matchups: "Reach × the opponent's unblocked combos, summed over the flops" }[k] || "";
     th.onclick = () => {
-      handSort = { key: k, desc: handSort.key === k ? !handSort.desc : k !== "hand" };
+      handSort = { key: k, desc: handSort.key === k ? !handSort.desc : true };
       renderHands(rep, player);
     };
     head.appendChild(th);
@@ -292,7 +295,7 @@ function renderHands(rep, player) {
   const k = handSort.key;
   rows.sort((a, b) => {
     const x = a[k], y = b[k];
-    const c = typeof x === "string" ? x.localeCompare(y) : (x ?? -Infinity) - (y ?? -Infinity);
+    const c = k === "hand" ? handRank(x) - handRank(y) : (x ?? -Infinity) - (y ?? -Infinity);
     return handSort.desc ? -c : c;
   });
   const tb = el("tbody");

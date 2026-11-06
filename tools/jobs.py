@@ -71,6 +71,11 @@ class JobError(Exception):
     """Bad input or queue state."""
 
 
+class LineError(JobError):
+    """A report line that doesn't fit a job's tree (no such action, a card where none is dealt, not a
+    decision). A fact about the tree, so it is cached like a result (#352)."""
+
+
 # ------------------------------------------------------------------ input parsing
 
 def normalize_board(text: str) -> str:
@@ -455,7 +460,7 @@ def root_summary(s) -> dict:
     if tot <= 0 or len(actions) != len(rows):
         return {}
     return {"player": player, "actions": actions, "freqs": [round(x / tot, 6) for x in num],
-            "mass": round(tot, 6)}
+            "mass": float(f"{tot:.9g}")}
 
 
 LINE_ACTION = re.compile(r"^(c|f|b\d+)$")
@@ -499,20 +504,20 @@ def walk_line(s, steps: list[str]) -> list[tuple[str, list[str]]]:
             chance = node["type"] == "SPLIT_NODE"
             if t == "*":
                 if not chance:
-                    raise JobError(f"a card at {nid}, which is not a chance node (its actions: "
+                    raise LineError(f"a card at {nid}, which is not a chance node (its actions: "
                                    f"{', '.join(_child_step(k) for k in kids) or 'none'})")
                 nxt.extend((k, cards + [_child_step(k)]) for k in kids)
                 continue
             if chance:
-                raise JobError(f"{t} at {nid}, which deals a card (put the card or * here)")
+                raise LineError(f"{t} at {nid}, which deals a card (put the card or * here)")
             match = [k for k in kids if _child_step(k) == t]
             if match:
                 nxt.append((match[0], cards))
             elif len(leaves) == 1:
-                raise JobError(f"no action {t} at {nid} (there: {', '.join(_child_step(k) for k in kids) or 'none'})")
+                raise LineError(f"no action {t} at {nid} (there: {', '.join(_child_step(k) for k in kids) or 'none'})")
         leaves = nxt
     if not leaves:
-        raise JobError("the line reaches no node")
+        raise LineError("the line reaches no node")
     return leaves
 
 
@@ -525,7 +530,7 @@ def node_summary(s, nid: str) -> dict:
     node = vserver.parse_node_block(s.cmd(f"show_node {nid}"))
     player = {"OOP_DEC": "OOP", "IP_DEC": "IP"}.get(node["type"])
     if player is None:
-        raise JobError(f"{nid} is not a decision ({node['type']})")
+        raise LineError(f"{nid} is not a decision ({node['type']})")
     actions = [_child_step(k["id"]) for k in vserver.parse_children(s.cmd(f"show_children {nid}"))]
     rows = [[float(x) for x in l.split()] for l in s.cmd(f"show_strategy {nid}").splitlines() if l.strip()]
     if len(rows) != len(actions):
@@ -570,7 +575,7 @@ def node_summary(s, nid: str) -> dict:
         out["ev_" + p.lower()] = round(num / den, 6) if den > 0 else None
         if p == player:
             out["freqs"] = [round(x / fden, 6) for x in fnum] if fden > 0 else None
-            out["mass"] = round(fden, 6)
+            out["mass"] = float(f"{fden:.9g}")
     out["global"] = float(s.cmd(f"calc_global_freq {nid}").split()[0])
     return out
 
@@ -752,7 +757,18 @@ def report(q: Queue, name: str, solver_exe: str | None = None) -> dict:
             # the load can take minutes: write it only to the same finished job (not one removed or
             # retried meanwhile), and as the job is now
             fin = j.get("finished")
-            q.update(j["id"], expect=lambda x: x["status"] == "done" and x.get("finished") == fin, result=r)
+            with q.edit():
+                try:
+                    cur = q.job(j["id"])
+                except JobError:
+                    cur = None
+                if cur and cur["status"] == "done" and cur.get("finished") == fin:
+                    cr = dict(cur.get("result") or {})
+                    for k in ("root", "root_error"):
+                        if k in r:
+                            cr[k] = r[k]
+                    cur["result"] = cr
+                    q.save(cur)
         root = r.get("root") or {}
         if root and actions is None:
             actions, player = root["actions"], root["player"]
@@ -792,7 +808,8 @@ def _cached_line(j: dict, key: str):
     return res
 
 
-def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress=None, root: bool = False) -> dict:
+def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress=None, root: bool = False,
+                skip: dict | None = None, failures: dict | None = None) -> dict:
     """The batch's report at a line other than the root (#325), like PioViewer's aggregation report
     there: per flop the decision's strategy, both EVs and Global % (calc_global_freq); with a card or
     * in the line, one row per card dealt there under each flop (`cards`), rolled up into the flop's
@@ -803,7 +820,11 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress
     once at the end, so a caller can show how far it got (#333).
 
     The empty line is the root report (report()), unless `root` asks for this report at the root, which
-    reads the saves too but has the per-hand figures (`hands`, #336)."""
+    reads the saves too but has the per-hand figures (`hands`, #336).
+
+    `skip` ({job id: message}) leaves those uncached jobs unread, as rows with that error; `failures`
+    (a dict) collects {job id: message} for the saves that couldn't be read (#352: the viewer's
+    background task reads, the request that follows doesn't)."""
     import server as vserver
     steps = parse_line(line)
     if not steps and not root:
@@ -821,7 +842,9 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress
             continue
         r = j.get("result") or {}
         res = _cached_line(j, key)
-        if res is None:
+        if res is None and skip is not None and j["id"] in skip:
+            res = {"error": skip[j["id"]]}
+        elif res is None:
             if not solver_exe:
                 raise JobError("a report at a line reads the saves: give --solver")
             if progress:
@@ -836,11 +859,13 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None, progress
                 s.cmd(f'load_tree "{j["out"]}"', timeout=3600)
                 res = line_result(s, steps)
                 cache = True
-            except JobError as e:  # the line doesn't fit this tree
+            except LineError as e:  # the line doesn't fit this tree
                 res = {"error": str(e)[:500]}
                 cache = True
-            except (vserver.SolverError, OSError, ValueError, IndexError) as e:
+            except (JobError, vserver.SolverError, OSError, ValueError, IndexError) as e:
                 res = {"error": str(e)[:500]}
+                if failures is not None:
+                    failures[j["id"]] = res["error"]
             finally:
                 if s is not None:
                     close_solver(s)
@@ -962,6 +987,7 @@ def write_full(q: Queue, name: str, line: str, solver_exe: str, prefix: str, pro
     files = {p: open(f"{prefix}_{p}_Full.csv", "w", newline="") for p in ("OOP", "IP")}
     writers = {p: csv.writer(f) for p, f in files.items()}
     head = None
+    header_written = False
     counts = {"OOP": 0, "IP": 0}
     skipped = []
     done = 0
@@ -974,6 +1000,7 @@ def write_full(q: Queue, name: str, line: str, solver_exe: str, prefix: str, pro
                 s = vserver.Solver(solver_exe)
                 s.cmd(f'load_tree "{j["out"]}"', timeout=3600)
                 order = vserver.hand_order(s)
+                buf = {"OOP": [], "IP": []}  # this job's rows: written only once all its nodes are read
                 for nid, cards in walk_line(s, steps):
                     node = vserver.parse_node_block(s.cmd(f"show_node {nid}"))
                     actor = {"OOP_DEC": "OOP", "IP_DEC": "IP"}.get(node["type"])
@@ -984,16 +1011,13 @@ def write_full(q: Queue, name: str, line: str, solver_exe: str, prefix: str, pro
                     pot = sum(potv)
                     facing = abs(potv[0] - potv[1]) if len(potv) >= 2 else 0
                     if head is None:
-                        head = {"actor": actor, "actions": acts}
-                        labels = [action_label(a, pot, facing) for a in acts]
-                        for p in ("OOP", "IP"):
-                            writers[p].writerow(["Flop"] + card_cols + ["Hand", f"Weight {p}", f"{p} EV"] +
-                                                ([f"{l} freq" for l in labels] if p == actor else []) + ["EV chips"])
+                        head = {"actor": actor, "actions": acts, "labels": [action_label(a, pot, facing) for a in acts]}
                     elif acts != head["actions"] or actor != head["actor"]:
                         continue  # a different decision under one card: left out, as in the line report
                     board = set(node["board"].split())
                     strat = [[float(x) for x in l.split()] for l in s.cmd(f"show_strategy {nid}").splitlines() if l.strip()]
-                    flop = " ".join(j["board"][k:k + 2] for k in range(0, 6, 2))
+                    # the job's whole board (a batch of turn boards keeps them apart), as PioViewer spaces it
+                    flop = " ".join(j["board"][k:k + 2] for k in range(0, len(j["board"]), 2))
                     for p in ("OOP", "IP"):
                         reach = vserver.parse_floats(s.cmd(f"show_range {p} {nid}"), len(order))
                         ev = vserver.ev_pair(s, p, nid)["ev"]
@@ -1008,8 +1032,13 @@ def write_full(q: Queue, name: str, line: str, solver_exe: str, prefix: str, pro
                             if p == actor:
                                 row += [round(100 * r[h], 2) for r in strat]
                             row.append(round(v, 4) if okv else "")
-                            writers[p].writerow(row)
-                            counts[p] += 1
+                            buf[p].append(row)
+                if not header_written:
+                    _full_header(writers, card_cols, head)
+                    header_written = True
+                for p in ("OOP", "IP"):
+                    writers[p].writerows(buf[p])
+                    counts[p] += len(buf[p])
                 done += 1
             except (JobError, vserver.SolverError, OSError, ValueError, IndexError) as e:
                 skipped.append({"board": j["board"], "error": str(e)[:300]})
@@ -1018,10 +1047,18 @@ def write_full(q: Queue, name: str, line: str, solver_exe: str, prefix: str, pro
                     close_solver(s)
         if progress:
             progress(len(js), len(js), None)
+        if not header_written:  # every job failed: still a header, without the actions
+            _full_header(writers, card_cols, None)
     finally:
         for f in files.values():
             f.close()
     return {"rows": counts, "flops": done, "skipped": skipped}
+
+
+def _full_header(writers: dict, card_cols: list, head: dict | None) -> None:
+    for p in ("OOP", "IP"):
+        acts = [f"{l} freq" for l in head["labels"]] if head and p == head["actor"] else []
+        writers[p].writerow(["Flop"] + card_cols + ["Hand", f"Weight {p}", f"{p} EV"] + acts + ["EV chips"])
 
 
 def print_line_report(rep: dict, by: str | None = None, cards: bool = False, csv_path: str | None = None) -> None:
@@ -1478,6 +1515,8 @@ def main(argv: list[str] | None = None) -> int:
                       f"{args.full}_OOP_Full.csv, {args.full}_IP_Full.csv")
                 for x in res["skipped"]:
                     print(f"  skipped {x['board']}: {x['error']}")
+                if not res["flops"]:
+                    raise JobError("--full: no flop could be read (see above)")
         elif args.cmd == "report":
             rep = report(q, args.name, os.path.abspath(args.solver) if os.path.isfile(args.solver) else None)
             labels = rep["labels"]

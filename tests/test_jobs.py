@@ -461,6 +461,40 @@ def integration(solver):
             ft = list(csv.reader(f))
         check(rc == 0 and ft[0][:3] == ["Flop", "Turn", "Hand"] and all(len(r[1]) == 2 for r in ft[1:])
               and len({(r[0], r[1]) for r in ft[1:]}) == 3 * 49, f"a turn line: one block per flop and turn ({ft[0]})")
+        print("[report: review fixes (#352)]")
+        # re-reading an old root summary keeps line results cached meanwhile
+        j = q.job("00002")
+        j["result"]["root"].pop("mass")
+        q.save(j)
+        real = jobs.root_summary
+
+        def cache_meanwhile(s):
+            x = q.job("00002")
+            x["result"]["lines"]["meanwhile"] = {"error": "cached during the read"}
+            q.save(x)
+            return real(s)
+        jobs.root_summary = cache_meanwhile
+        try:
+            jobs.report(q, "srp", solver)
+        finally:
+            jobs.root_summary = real
+        r2 = q.job("00002")["result"]
+        check("mass" in r2["root"] and "meanwhile" in r2["lines"], "the root re-read doesn't drop lines cached meanwhile")
+        r2["lines"].pop("meanwhile")
+        x = q.job("00002")
+        x["result"] = r2
+        q.save(x)
+        # Full files: every save failing still gives headers, and the CLI says so
+        with tempfile.TemporaryDirectory() as td2:
+            q2 = jobs.Queue(td2)
+            setup, _ = jobs.tree_setup(TREE)
+            q2.add_batch("gone", setup, [("Kh9h4h", 1)], 0.5, None, None, "no_rivers", None)
+            q2.update("00001", status="done", finished=1.0, out=os.path.join(td2, "missing.cfr"), result={})
+            res = jobs.write_full(q2, "gone", "", solver, os.path.join(td2, "g"))
+            with open(os.path.join(td2, "g_OOP_Full.csv")) as f:
+                hdr = f.read().splitlines()
+            check(res["flops"] == 0 and res["skipped"] and hdr == ["Flop,Hand,Weight OOP,OOP EV,EV chips"],
+                  f"no flop read: headers only ({hdr}, {res})")
         bad = jobs.line_report(q, "srp", "b77", solver)
         check(all(r["freqs"] is None and "no action b77" in r["error"] for r in bad["rows"]) and not bad["total"],
               f"an action not in the tree is reported per flop ({bad['rows'][0]['error']})")

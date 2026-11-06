@@ -199,6 +199,52 @@ class JobsApiTest(unittest.TestCase):
         self.assertAlmostEqual(x["eqr"], x["ev"] / (x["equity"] * hr["pot"]), places=4)
         st, plain = self.req("/api/jobs/report?batch=srp")
         self.assertNotIn("hands", plain, "without hands=1 the root report stays the quick one")
+
+        # #352: the request after a background read never reads saves itself
+        q = self.service.q
+        L = a0   # a decision (IP facing the bet), cached above for every job
+        def drop(jid):
+            j = q.job(jid)
+            j["result"]["lines"].pop(L, None)
+            q.save(j)
+        def wait_task():
+            for _ in range(600):
+                t = self.service.reports.get(("srp", L))
+                if t is None or t["finished"]:
+                    return
+                time.sleep(0.05)
+        srp_ids = [j["id"] for j in q.jobs("srp")]
+        drop(srp_ids[0])
+        st, r = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(L))
+        self.assertTrue(r.get("reading") and r["progress"]["total"] == 1, r)
+        wait_task()
+        drop(srp_ids[1])  # a job that "finished" after the task started
+        st, r = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(L))
+        self.assertTrue(r.get("reading") and r["progress"]["total"] == 1,
+                        f"a job uncached since the task started gets a new task, not an inline read ({r})")
+        wait_task()
+        st, r = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(L))
+        self.assertTrue(not r.get("reading") and all(x["freqs"] for x in r["rows"]), r)
+        # a save the task couldn't read: its error, and the request doesn't read it again
+        j = q.job(srp_ids[2])
+        good = j["out"]
+        j["out"] = good + ".missing"
+        j["result"]["lines"].pop(L, None)
+        q.save(j)
+        st, r = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(L))
+        self.assertTrue(r.get("reading"), r)
+        wait_task()
+        st, r = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(L))
+        bad = [x for x in r["rows"] if x["id"] == srp_ids[2]][0]
+        self.assertTrue(not r.get("reading") and bad["freqs"] is None and "save not found" in (bad["error"] or ""),
+                        bad)
+        j = q.job(srp_ids[2])
+        j["out"] = good
+        q.save(j)
+        st, r = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(L))
+        self.assertTrue(r.get("reading"), "the failed read wasn't cached: asked again, it is read again")
+        wait_task()
+        self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(L))
         st, d = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote("b50 x7"))
         self.assertEqual(st, 400, "a malformed line is refused")
 

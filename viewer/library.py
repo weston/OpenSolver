@@ -19,9 +19,22 @@ symlink escapes (checked with os.path.realpath) are all rejected.
 import json
 import os
 import tempfile
+import time
 
 SCHEMA = 1
 KINDS = {"range": "ranges", "config": "configs"}
+def _replace(src, dst):
+    """os.replace, retried for ~2 s on Windows sharing violations: there a file another thread is replacing
+    or reading at that moment can't be replaced, which is a wait, not a failure (#369)."""
+    for k in range(100):
+        try:
+            return os.replace(src, dst)
+        except PermissionError:
+            if os.name != "nt" or k == 99:
+                raise
+            time.sleep(0.02)
+
+
 EXT = {"range": ".txt", "config": ".json"}
 MAX_NAME = 200
 MAX_COMPONENT = 100
@@ -177,7 +190,7 @@ class Library:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
-            os.replace(tmp, path)  # atomic on the same filesystem
+            _replace(tmp, path)  # atomic on the same filesystem
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)

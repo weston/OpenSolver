@@ -154,6 +154,14 @@ class SizeFormsTest(unittest.TestCase):
             with self.assertRaises(vsrv.SolverError, msg=bad):
                 vresolve._field_sizes({"flop_bet": bad}, "flop_bet")
 
+    def test_field_sizes_pioviewer_forms(self):
+        """#315: PioViewer's spaces as separators and NeP entries; `2e.a` is not accepted in a form."""
+        self.assertEqual(vresolve._field_sizes({"flop_bet": "5e 3e  2e,a"}, "flop_bet"), "5e,3e,2e,a")
+        self.assertEqual(vresolve._field_sizes({"flop_bet": "2e75, e50 33"}, "flop_bet"), "2e75,e50,33")
+        for bad in ("2e.a", "2e0"):
+            with self.assertRaises(vsrv.SolverError, msg=bad):
+                vresolve._field_sizes({"flop_bet": bad}, "flop_bet")
+
     def test_size_key_orders_mixed_forms(self):
         self.assertEqual(sorted(["a", "3x", "2e", "75", "33", "e"],
                                 key=vresolve._size_key),

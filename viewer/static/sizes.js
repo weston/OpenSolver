@@ -7,9 +7,12 @@ import { el } from "./cards.js";
 
 export const STREETS = ["flop", "turn", "river"];
 
-// tools/tree_builder.py grammar (#114), no zero sizes: % of pot, Ne / e, Nx (raises only), a.
-export const SIZE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|a)$/i;
-export const RAISE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e|[1-9]\d*(\.\d+)?x|a)$/i;
+// tools/tree_builder.py grammar (#114, #315), no zero sizes: % of pot, Ne / e, NeP / eP (geometric,
+// at most P% of the pot), Nx (raises only), a. Entries are separated by commas, spaces or both.
+export const SIZE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e(([1-9]\d*|0)(\.\d+)?)?|a)$/i;
+export const RAISE_RE = /^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*|([1-9]\d*)?e(([1-9]\d*|0)(\.\d+)?)?|[1-9]\d*(\.\d+)?x|a)$/i;
+/** The entries of a size field: split on commas and whitespace, as tools/tree_builder.py does. */
+export const sizeParts = (v) => String(v).split(/[,\s]+/).filter(Boolean);
 
 const DEFAULTS = {
   flop_bet: "30,60", flop_raise: "50", turn_bet: "60", turn_raise: "50",
@@ -120,7 +123,7 @@ export function validateSizes(tbody) {
   let ok = true;
   for (const inp of tbody.querySelectorAll("input:not([type=checkbox]):not(.cap)")) {
     const re = inp.dataset.k === "raise" ? RAISE_RE : SIZE_RE;
-    const bad = inp.value.split(",").map((x) => x.trim()).filter(Boolean).some((p) => !re.test(p));
+    const bad = sizeParts(inp.value).some((p) => !re.test(p));
     inp.classList.toggle("invalid", bad);
     if (bad) ok = false;
   }

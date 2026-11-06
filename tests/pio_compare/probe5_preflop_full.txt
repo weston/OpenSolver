@@ -1,4 +1,9 @@
 # Probe 5: full preflop tree (preflop lines + flop subset + schematic postflop trees).
+# set_board comes before the schematics: without a board, Pio 3.10.1 accepts add_schematic_tree but crashes
+# (access violation) in add_all_flops, so earlier runs of this probe compared nothing after that point.
+# No calc_results before the solve: in a preflop tree Pio keeps the first calc_results answer and repeats it
+# after any number of steps, and clear_cache does not refresh it (#11: "stayed at EV OOP 12.411 / EV IP
+# 15.714 before and after 300 iterations"). Called only after the solve, it agrees with ours.
 set_range OOP QQ+,AKs,AKo,KQs
 set_range IP QQ+,AK,AQs,KQs,JTs
 set_pot 10 5 0
@@ -9,6 +14,7 @@ build_preflop_tree
 add_to_subset 1 As Ks Qs
 add_to_subset 0.5 7c 7d 2h
 show_subset
+set_board AsKsQs
 clear_lines
 set_pot 0 0 50
 set_eff_stack 975
@@ -37,12 +43,11 @@ show_node r:0:b25:c:7d7c2h
 show_children r:0:b25:c:AsKsQs
 show_node r:0:b25:c:AsKsQs:c:c:2c
 show_node r:0:b25:c:AsKsQs:b25
-show_node r:0:b25:b100:c:AsKsQs:b100:c
+show_node r:0:b25:b100:c:AsKsQs:c:b100:c
 show_effective_stack
 node_count
-calc_results
 set_info_freq 50
-go 100 steps
+go 400 steps
 wait_for_solver
 calc_results
 show_strategy r:0

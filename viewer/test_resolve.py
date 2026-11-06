@@ -767,8 +767,9 @@ class ResolveIntegrationTest(unittest.TestCase):
             if self.req("/api/progress")[1].get("solving"):
                 break
             time.sleep(0.05)
+        before = self.req("/api/progress")[1]
         st, d = self.req("/api/solve", "POST", {"accuracy": 1e-9})
-        self.assertEqual(st, 400, d)
+        self.assertEqual(st, 400, (d, {k: before.get(k) for k in ("solving", "partial", "dead")}))
         st, p = self.req("/api/progress")
         self.assertTrue(p.get("partial"), p)
         self.req("/api/stop", "POST", {})

@@ -205,7 +205,44 @@ function readForm() {
     pot: Number($("f-pot").value), stack: Number($("f-stack").value),
     allin_threshold: Number($("f-allin-threshold").value), add_allin_limit: Number($("f-allin-limit").value),
   };
-  return Object.assign(f, readSizes(sizesBody()));
+  Object.assign(f, readSizes(sizesBody()));
+  if (pioExtra.length) f.pio_extra = pioExtra;
+  return f;
+}
+
+/* PioViewer settings the form has no field for (#317), kept from an imported tree file and sent
+ * with every build: merge similar bets, street caps, forced bets, unified re-raises, hand edits. */
+let pioExtra = [];
+
+function describePioExtra(lines) {
+  const kv = Object.fromEntries(lines.map((l) => { const m = l.match(/^#([^#]+)#(.*)$/); return m ? [m[1], m[2]] : ["", ""]; }));
+  const out = [];
+  if (/^true$/i.test(kv.MergeSimilarBets || "")) out.push(`merge similar bets (${kv.MergeSimilarBetsThreshold || 12}%)`);
+  if (/^true$/i.test(kv.CapEnabled || "") && kv.CapPerStreet) out.push(`street caps ${kv.CapPerStreet.split(/\\n/).join("/")}`);
+  if (/^true$/i.test(kv.ForceOOPBet || "")) out.push("OOP must bet the flop");
+  if (/^true$/i.test(kv.ForceIPBet || "")) out.push("IP must bet the flop");
+  if (/^true$/i.test(kv.UseUnifiedRaiseAfterRaise || "")) out.push(`re-raises ${kv.UnifiedRaiseAfterRaise || ""}`);
+  const edits = lines.filter((l) => /^#(Removed|Extra)Lines/.test(l))
+    .reduce((n, l) => n + l.replace(/^#[^#]+#/, "").split(/\\+0/).filter((p) => p.trim()).length, 0);
+  if (edits) out.push(`${edits} hand-edited line${edits === 1 ? "" : "s"}`);
+  return out.length ? out.join(", ") : `${lines.length} PioViewer setting${lines.length === 1 ? "" : "s"}`;
+}
+
+function renderPioExtra() {
+  $("pio-extra").classList.toggle("hidden", !pioExtra.length);
+  $("pio-extra-text").textContent = pioExtra.length ? `Also from PioViewer: ${describePioExtra(pioExtra)}.` : "";
+}
+
+async function importPio(file) {
+  try {
+    const text = await file.text();
+    const r = await post("/api/pio_import", { text });
+    applyForm(r.form);
+    saveForm();
+    const how = r.matches ? `the same ${r.file_lines} lines PioViewer generated`
+      : r.file_lines ? `${r.lines} lines (the file has ${r.file_lines}: not an exact match)` : `${r.lines} lines`;
+    toast(`Imported ${file.name}: builds ${how}.`);
+  } catch (e) { fail(e); }
 }
 
 function saveForm() {
@@ -235,6 +272,8 @@ function applyForm(f) {
     set("f-allin-threshold", f.allin_threshold); set("f-allin-limit", f.add_allin_limit);
   }
   renderSizes(sizesBody(), STREETS, f || {});
+  pioExtra = f && Array.isArray(f.pio_extra) ? f.pio_extra.map(String) : [];
+  renderPioExtra();
   drawBoard();
   updateSpr();
 }
@@ -482,6 +521,9 @@ export function initBuild({ built }) {
 
   $("spot-open").onclick = openSpot;
   $("spot-save").onclick = saveSpot;
+  $("pio-import").onclick = () => $("pio-import-file").click();
+  $("pio-import-file").onchange = (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) importPio(f); };
+  $("pio-extra-clear").onclick = () => { pioExtra = []; renderPioExtra(); saveForm(); };
   $("btn-build").onclick = () => { if (!busy) build(); };
   $("btn-solve").onclick = () => { if (!busy) buildAndSolve(); };
   $("btn-resume").onclick = () => { if (!busy && treeReady) solve(); };

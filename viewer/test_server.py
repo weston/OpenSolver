@@ -476,6 +476,44 @@ class ViewerTest(unittest.TestCase):
                 else [turn + suffix for suffix in turn_children]
             self.assertEqual([c["id"] for c in d["children"]], want)
 
+    def test_10f_pio_import(self):
+        # #317: a PioViewer tree file fills the Build form; the fixture's own 266 lines come back exactly
+        with open(os.path.join(REPO, "tests", "data", "pio_25bbHU_2sizes.txt")) as fh:
+            st, d = self.req("/api/pio_import", "POST", {"text": fh.read()})
+        self.assertEqual(st, 200, d)
+        self.assertTrue(d["matches"], d)
+        self.assertEqual(d["file_lines"], 266)
+        f = d["form"]
+        self.assertEqual((f["pot"], f["stack"], f["board"]), (40, 230, "QhQc2c"))
+        self.assertEqual(f["pio_extra"], [])
+        # settings without a form field travel as pio_extra and change the build: ForceOOPBet takes
+        # OOP's flop check away, MergeSimilarBets folds 30% into 33%
+        text = ("#Pot#100\n#EffectiveStacks#1000\n#AllinThreshold#67\n#ForceOOPBet#True\n"
+                "#MergeSimilarBets#True\n#MergeSimilarBetsThreshold#12\n#FlopConfig.BetSize#30 33\n")
+        st, d = self.req("/api/pio_import", "POST", {"text": text})
+        self.assertEqual(st, 200, d)
+        f = d["form"]
+        self.assertEqual(f["flop_bet"], "30,33")
+        self.assertEqual(sorted(f["pio_extra"]), sorted(["#ForceOOPBet#True", "#MergeSimilarBets#True",
+                                                         "#MergeSimilarBetsThreshold#12"]))
+        st, d = self.req("/api/generate", "POST",
+                         dict(CFG, **{k: f[k] for k in f if k not in ("range_oop", "range_ip", "board")}))
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/build", "POST", {})
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/node?id=r:0")
+        self.assertEqual([c["id"] for c in d["children"]], ["r:0:b33", "r:0:c"])  # 30% merged into 33%
+        # ForceOOPBet: no line starts with a check, so after one (which the solver adds everywhere,
+        # as Pio does from the same lines) IP has no bet
+        st, d = self.req("/api/node?id=r:0:c")
+        self.assertEqual([c["id"] for c in d["children"]], ["r:0:c:c"])
+        # only the listed PioViewer keys pass, one line each
+        for bad in (["#Pot#1"], ["set_board AhKhQh"], ["#MergeSimilarBets#True\nset_pot 0 0 1"], "x"):
+            st, d = self.req("/api/generate", "POST", dict(CFG, pio_extra=bad))
+            self.assertEqual(st, 400, (bad, d))
+        st, d = self.req("/api/pio_import", "POST", {"text": "hello"})
+        self.assertEqual(st, 400, d)
+
     def test_11_restart_solver(self):
         st, d = self.req("/api/restart", "POST", {})
         self.assertEqual(st, 200, d)

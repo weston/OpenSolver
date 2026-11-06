@@ -100,6 +100,8 @@
         <div class="spot-name"><span class="muted">Spot</span> <b id="spot-name">Unsaved</b> <span id="spot-dirty" class="tag hidden">edited</span></div>
         <button class="btn small" id="spot-open">Open spot…</button>
         <button class="btn small" id="spot-save">Save spot…</button>
+        <button class="btn small" id="pio-import" title="Fill the form from a PioViewer tree file (TreeBuilding\*.txt)">Import PioViewer tree…</button>
+        <input type="file" id="pio-import-file" accept=".txt" hidden>
       </div>
       <section class="card">
         <div class="card-head">
@@ -150,6 +152,7 @@
             <thead><tr><th></th><th></th><th>Bet</th><th>Raise</th><th>Donk <small>(OOP lead)</small></th><th title="Maximum bets + raises on the street">Cap</th><th>All-in</th></tr></thead>
             <tbody id="sizes-body"></tbody>
           </table>
+          <div id="pio-extra" class="pio-extra hidden"><span id="pio-extra-text"></span> <button class="btn small ghost" id="pio-extra-clear" title="Build without these PioViewer settings">Remove</button></div>
         </div>
       </section>
     </div>

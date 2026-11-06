@@ -316,7 +316,8 @@ class Queue:
 
     def remove(self, jobs: list[dict]) -> None:
         with self.edit():
-            jobs = [self.job(j["id"]) for j in jobs]  # as they are now: one may have started meanwhile
+            # as they are now (one may have started meanwhile), each once: a repeated id would be removed twice
+            jobs = list({j["id"]: self.job(j["id"]) for j in jobs}.values())
             for j in jobs:
                 if j["status"] == "running" and _pid_alive(j.get("runner_pid") or 0):
                     raise JobError(f"job {j['id']} is running (stop it first)")

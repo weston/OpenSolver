@@ -451,12 +451,15 @@ async function solve() {
   if (bad.length) { info(`Fix ${bad.join(", ")}.`, true); return; }
   const pot = rootPotNow || Number($("f-pot").value);
   const pct = Number($("f-accuracy").value);
+  if (solveStarting) return;  // a double click sent two solves; the second failed with "solver is running" (#386)
+  solveStarting = true;
   try {
     const r = await post("/api/solve", { accuracy: (pct / 100) * pot, preview: previewOn() });
     if (!r.preview) toast("Solving…");
     startPreview(!!r.preview);
-  } catch (e) { fail(e); }
+  } catch (e) { fail(e); } finally { solveStarting = false; }
 }
+let solveStarting = false;
 
 /** The Study view's board picker: the same tree (ranges, sizes, everything in the form) on other
  *  root cards, rebuilt and solved like Build & solve. False if a build or solve start is busy. */

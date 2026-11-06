@@ -129,6 +129,8 @@ function fileDialog(mode) {
   dlg.returnValue = "";
   dlg.onclose = async () => {
     if (dlg.returnValue !== "ok") return;
+    if (app.fileBusy) { toast("A load or save is still running", "err"); return; }  // (#386)
+    app.fileBusy = true;
     const path = $("file-path").value.trim();
     prefs.set("path", path);
     try {
@@ -146,7 +148,7 @@ function fileDialog(mode) {
         await post("/api/save", { path, no_rivers: m === "no_rivers", no_turns: m === "no_turns" });
         toast("Saved " + path);
       }
-    } catch (e) { fail(e); }
+    } catch (e) { fail(e); } finally { app.fileBusy = false; }
   };
   dlg.showModal();
   $("file-path").select();

@@ -81,6 +81,7 @@ class Solver:
         self.series = []         # convergence points of the current tree: {t, explo, ev_oop, ev_ip}
         self.partial = None      # live/last subtree solve (#153): {node, pot, accuracy, done, ...}
         self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
+        self.loaded_path = None   # ... from this file (meaningful while loaded_file; the Study report button)
         # The Build form the current tree's lines came from (op_generate): street refines rebuild
         # their subgames with these sizes, not with whatever the form holds by the time you browse.
         self.built_sizes = None
@@ -199,7 +200,8 @@ class Solver:
                     "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
                     "tree": self.tree_present, "version": self.version,
-                    "partial": partial, "loaded_file": self.loaded_file}
+                    "partial": partial, "loaded_file": self.loaded_file,
+                    "loaded_path": self.loaded_path if self.loaded_file else None}
 
     # ---- parking a running solve (UPI hold / release, an extension) ----
 
@@ -694,6 +696,7 @@ def _api_main(solver, lib, method, path, query, body):
         solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = True
+        solver.loaded_path = path_arg
         solver.built_sizes = None
         solver.reset_series()
         solver.clear_partial()

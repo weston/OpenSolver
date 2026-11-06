@@ -171,9 +171,14 @@ async function addBatch() {
 let lastReport = null;
 let reportBatch = null;
 
-async function showReport(name) {
+/** Open a batch's report at a line, from Study's Report button (#331). */
+export function openReport(name, line) {
+  return showReport(name, line);
+}
+
+async function showReport(name, line) {
   reportBatch = name;
-  $("jr-line").value = prefs.get("jobs-report-line:" + name, "");
+  $("jr-line").value = line != null ? line : prefs.get("jobs-report-line:" + name, "");
   $("jr-cards").checked = prefs.get("jobs-report-cards", "") === "1";
   if (!(await loadReport())) {
     // a remembered line that no longer loads: fall back to the first decision

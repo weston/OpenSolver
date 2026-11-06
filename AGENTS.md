@@ -305,7 +305,16 @@ where relevant). The maintainer can run probes on request; ask in the issue.
     solvers, so a probe written that way silently compares a tree without flops (probes 4 and 14 did).
   - `add_schematic_tree` uses the session's pot, stack and lines; Pio accepts it with or without a
     `build_tree` first, but **crashes on a second `build_tree`** once a schematic is attached, so probes use the
-    no-build order. Pio rejects a schematic whose root can only check ("incorrect path").
+    no-build order. A schematic whose root can only check was refused ("incorrect path") in probe 14's
+    first version but is accepted in probe 5's no-build order; probes give each root a bet to be safe.
+  - **Set a board before `add_schematic_tree`.** Without one, Pio accepts the schematics and then crashes
+    (access violation) in `add_all_flops`; probe 5 compared nothing after that point until #309.
+  - In a preflop tree Pio's **first `calc_results` answer sticks**: later calls repeat it after any number of
+    steps, and `clear_cache` doesn't refresh it (#11's "stayed at 12.411 before and after 300 iterations").
+    Probes call it only after the solve; then it agrees with ours. Not copied.
+  - Pio's `show_effective_stack` in a preflop tree prints the largest per-player amount among the preflop
+    lines (lines `25 25` and `25 100 100` with stacks of 1000 print `100`), not the stack. Ours prints the
+    stack. Not copied: a tool showing 100 for a 1000-deep tree would mislead.
   - `add_all_flops` accepts exits without a schematic; they stay `END_NODE` (exact equity).
   - Pio **never lets AA fold preflop** in its starting strategy (0.5 / 0.5 / 0 against 1/3 for every other hand),
     so evaluations on an unsolved preflop tree differ through AA; solved trees are unaffected.

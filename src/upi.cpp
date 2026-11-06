@@ -344,6 +344,15 @@ std::string Upi::stats_block(const RootStats& st, double running_time) {
   return buf;
 }
 
+// What starting a solve needs and can fail at: a tree, and a lazily loaded one read completely. go and
+// go_partial call it before they answer, so a failure is their one ERROR response, not a second
+// response after "go ok!" (#376).
+void Upi::prepare_solve() {
+  require_tree();
+  std::string lerr;
+  if (!tree_->load_all(lerr)) throw CmdError{"cannot read the tree's file: " + lerr};
+}
+
 void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
   require_tree();
   release_hold();  // every way a solve starts (go, go_partial, ...) drops a pending hold
@@ -821,8 +830,15 @@ void Upi::register_commands() {
       else throw CmdError{"incorrect or missing argument"};
     }
     if (solving_) return std::string("go ok!");
+    prepare_solve();  // what can fail, before the answer: one response per command (#376)
     out_raw(std::string("go ok!\n") + (end_string_.empty() ? "" : end_string_ + "\n"));
-    start_solver(secs, steps);
+    try {
+      start_solver(secs, steps);
+    } catch (const std::exception& e) {  // answered already: report it as the solver would
+      out_raw(std::string("SOLVER: stopped (error: ") + e.what() + ")\n");
+    } catch (const CmdError& e) {
+      out_raw("SOLVER: stopped (error: " + e.msg + ")\n");
+    }
     return std::string("\x01");
   };
   // Ours (#153): continue solving a subtree asynchronously, exactly like `go` but iterating
@@ -845,8 +861,15 @@ void Upi::register_commands() {
     NodeRef r = resolve(a[0]);
     if (r.pseudo_root) r = resolve("r:0");
     if (solving_) return std::string("go_partial ok!");
+    prepare_solve();  // (#376)
     out_raw(std::string("go_partial ok!\n") + (end_string_.empty() ? "" : end_string_ + "\n"));
-    start_subtree_solve(r, secs, steps);
+    try {
+      start_subtree_solve(r, secs, steps);
+    } catch (const std::exception& e) {
+      out_raw(std::string("SOLVER: stopped (error: ") + e.what() + ")\n");
+    } catch (const CmdError& e) {
+      out_raw("SOLVER: stopped (error: " + e.msg + ")\n");
+    }
     return std::string("\x01");
   };
   H["stop"] = [this](const Args&) {

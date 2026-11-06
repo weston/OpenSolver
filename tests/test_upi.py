@@ -1272,6 +1272,21 @@ def check_save_robustness(exe):
         o, _ = p.communicate("load_all_nodes\ncalc_results\nexit\n", timeout=120)
         check(p.returncode == 0 and "ERROR" in o and "terminate" not in o,
               f"a lazy load whose file is gone answers ERROR (rc {p.returncode})")
+        # #376: go on such a tree answers once (the ERROR), not "go ok!" and then an ERROR
+        with open(full, "rb") as src, open(gone, "wb") as dst:
+            dst.write(src.read())
+        p = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        p.stdin.write(f'set_end_string END\nload_tree "{gone}"\nis_ready\n')
+        p.stdin.flush()
+        time.sleep(1.0)
+        os.remove(gone)
+        o, _ = p.communicate("go 2 steps\ngo_partial r:0 2 steps\nis_ready\nexit\n", timeout=120)
+        tail = o[o.index("is_ready ok!") + len("is_ready ok!"):] if "is_ready ok!" in o else o
+        blocks = [b.strip() for b in tail.split("END") if b.strip()]
+        check(p.returncode == 0 and "go ok!" not in tail and "go_partial ok!" not in tail
+              and len(blocks) == 3 and blocks[0].startswith("ERROR: go ") and blocks[1].startswith("ERROR: go_partial")
+              and blocks[2] == "is_ready ok!",
+              f"go / go_partial on an unreadable lazy tree answer once each ({blocks[:3]})")
 
 
 def main(exe, big=False):

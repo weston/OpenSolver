@@ -853,12 +853,13 @@ def no_newlines(value, name):
 
 
 def _check_sizes(tb, b, key, allow_mult=True):
-    """A comma-separated size list in tools/tree_builder.py's grammar (#114): percentages,
-    geometric Ne, raise multiples Nx (raise fields only), a. Returns the normalized list."""
+    """A size list in tools/tree_builder.py's grammar (#114, #315): percentages, geometric Ne / NeP,
+    raise multiples Nx (raise fields only), a; entries separated by commas, spaces or both, as
+    PioViewer writes them. Returns the normalized comma-separated list."""
     val = no_newlines(str(b.get(key, "") if b.get(key) is not None else ""), key).strip()
     if not val:
         return ""
-    parts = [p.strip() for p in val.split(",") if p.strip()]
+    parts = [p for p in re.split(r"[,\s]+", val) if p]
     try:
         specs = tb.parse_size_list(val)
     except ValueError:
@@ -866,13 +867,17 @@ def _check_sizes(tb, b, key, allow_mult=True):
                           "(want percentages, geometric Ne, raise multiples Nx, or a)")
     if len(specs) != len(parts):
         raise SolverError(f"bad sizes in {key}")
-    for spec in specs:
+    for part, spec in zip(parts, specs):
         if spec.kind == "mult":
             if not allow_mult or spec.value > 1000:
                 raise SolverError(f"bad sizes in {key} (Nx is for raise fields, N <= 1000)")
         elif spec.kind == "geo":
             if spec.value is not None and spec.value > 99:
                 raise SolverError(f"bad sizes in {key} (Ne takes N <= 99)")
+            if spec.param is not None and (spec.param <= 0 or spec.param > 100000):
+                raise SolverError(f"bad sizes in {key} (NeP takes 0 < P <= 100000)")
+        elif spec.kind == "allin" and part.lower() not in ("a", "allin"):
+            raise SolverError(f"bad sizes in {key}")  # tree_builder reads `2e.a` as a; the form doesn't
         elif spec.kind == "pct" and spec.value > 100000:
             raise SolverError(f"bad sizes in {key}")
     return ",".join(parts)

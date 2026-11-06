@@ -70,31 +70,9 @@ def _tree_builder():
 # ---------------------------------------------------------------- config -> lines
 
 def _field_sizes(b, key, allow_mult=False):
-    """Comma-separated size list from a JSON body (same grammar as /api/generate:
-    percentages, geometric Ne, raise multiples Nx, a - see tools/tree_builder.py)."""
-    val = vsrv.no_newlines(str(b.get(key, "")), key).strip()
-    if not val:
-        return ""
-    parts = [p.strip() for p in val.split(",") if p.strip()]
-    try:
-        specs = _tree_builder().parse_size_list(val)
-    except ValueError:
-        raise vsrv.SolverError(f"bad sizes in {key} "
-                               "(want percentages, geometric Ne, raise multiples "
-                               "Nx, or a)")
-    if len(specs) != len(parts):
-        raise vsrv.SolverError(f"bad sizes in {key}")
-    for spec in specs:
-        if spec.kind == "mult":
-            if not allow_mult or spec.value > 1000:
-                raise vsrv.SolverError(
-                    f"bad sizes in {key} (Nx is for raise fields, N <= 1000)")
-        elif spec.kind == "geo":
-            if spec.value is not None and spec.value > 99:
-                raise vsrv.SolverError(f"bad sizes in {key} (Ne takes N <= 99)")
-        elif spec.kind == "pct" and spec.value > 100000:
-            raise vsrv.SolverError(f"bad sizes in {key}")
-    return ",".join(parts)
+    """Size list from a JSON body, normalized to comma-separated entries: the same grammar and
+    checks as /api/generate (viewer/server.py _check_sizes; tools/tree_builder.py)."""
+    return vsrv._check_sizes(_tree_builder(), b, key, allow_mult)
 
 
 def _config_header(b):

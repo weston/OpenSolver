@@ -805,7 +805,8 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None) -> dict:
                         cur["result"] = {**cr, "lines": lines}
                         q.save(cur)
         row = {"id": j["id"], "board": j["board"], "weight": j["weight"],
-               "exploitability": r.get("exploitability"), "cards": None, "error": res.get("error")}
+               "exploitability": r.get("exploitability"), "cards": None, "error": res.get("error"),
+               "root_mass": (r.get("root") or {}).get("mass")}
         if "error" not in res and head is None and res.get("rows"):
             head = {k: res[k] for k in ("player", "actions", "pot", "facing")}
         if "error" not in res and head and res["actions"] == head["actions"] and res["player"] == head["player"]:
@@ -823,10 +824,19 @@ def line_report(q: Queue, name: str, line: str, solver_exe: str | None) -> dict:
     n = len(head["actions"])
     total = _weighted(rows, n)
     if total:
-        have = [x for x in rows if x["freqs"] is not None and x["global"] is not None]
-        ws = [x["weight"] * (x["mass"] or 0) for x in have]
-        if sum(ws) > 0:
-            total["global"] = sum(w * x["global"] for w, x in zip(ws, have)) / sum(ws)
+        # Global % over the batch: the line's matchups over the root's, summed over the flops (each
+        # weighted). So flops average by their root mass, not the line's: what PioViewer's total row
+        # shows. The root mass is the root summary's, else the line's mass over its Global %.
+        num = den = 0.0
+        for x in rows:
+            if x["freqs"] is None or x["global"] is None:
+                continue
+            rm = x.get("root_mass") or (x["mass"] / x["global"] if x["global"] > 0 else None)
+            if rm:
+                num += x["weight"] * rm * x["global"]
+                den += x["weight"] * rm
+        if den > 0:
+            total["global"] = num / den
     return {"batch": name, "line": key, "pot": head["pot"], "facing": head["facing"], "player": head["player"],
             "actions": head["actions"],
             "labels": [action_label(a, head["pot"], head["facing"]) for a in head["actions"]],

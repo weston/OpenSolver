@@ -2,6 +2,7 @@
 // most recently pushed job first, which keeps execution depth-first) and a per-thread bump arena.
 #pragma once
 #include <atomic>
+#include <exception>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +35,9 @@ class ThreadPool {
     std::atomic<int> next{0};
     std::atomic<int> done{0};
     std::atomic<int> active{0};
+    // the first exception a task threw (any thread), rethrown by parallel_for on its caller (#364)
+    std::atomic<bool> failed{false};
+    std::exception_ptr error;
   };
   void start(int workers);
   void stop_all();

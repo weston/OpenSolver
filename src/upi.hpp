@@ -137,7 +137,8 @@ class Upi {
   void require_tree() const;
   void stop_solver(const char* reason = "requested");
   void start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub = nullptr);
-  void solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub);
+  void solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
+                          const std::string& endl_str);
   void start_subtree_solve(const NodeRef& r, double seconds, long long steps);
   std::string stats_block(const RootStats& st, double running_time);
   std::string fmt(double v) const;

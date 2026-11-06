@@ -283,7 +283,7 @@ void Upi::from_1326(int p, int frame, const float* in, float* local) const {
 
 std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
   if (a.empty()) throw CmdError{"incorrect or missing argument"};
-  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+  TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   NodeRef r = resolve(a[0]);
   if (r.pseudo_root || tree_->nodes[r.node].kind != ANodeKind::Decision) throw CmdError{"incorrect node"};
   ensure_recalced(r);
@@ -357,7 +357,7 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
 std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
   if (a.size() < 2) throw CmdError{"incorrect or missing argument"};
   int p = player_arg(a[0]);
-  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+  TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   NodeRef r = resolve(a[1]);
   if (r.pseudo_root) r = resolve("r:0");
   ensure_recalced(r);
@@ -417,7 +417,7 @@ std::string Upi::cmd_calc_eq(const Args& a, bool pp, bool node) {
   std::vector<int> board;
   if (node) {
     if (a.size() < 2) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     NodeRef r = resolve(a[1]);
     if (r.pseudo_root) r = resolve("r:0");
     ensure_recalced(r);
@@ -617,7 +617,7 @@ std::string Upi::cmd_show_all_freqs(const Args& a) {
   if (a.empty() || (a[0] != "global" && a[0] != "local")) throw CmdError{"incorrect or missing argument"};
   bool local = a[0] == "local";
   bool pp = a.size() > 1 && a[1] == "pp";
-  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+  TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   std::string lines = cmd_show_all_lines();
   std::istringstream in(lines);
   std::string line;
@@ -692,7 +692,7 @@ void Upi::lock_node_impl(uint32_t ni, bool lock) {
 
 std::string Upi::cmd_set_strategy(const Args& a) {
   if (a.empty()) throw CmdError{"incorrect or missing argument"};
-  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+  TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   NodeRef r = resolve(a[0]);
   if (r.pseudo_root || tree_->nodes[r.node].kind != ANodeKind::Decision) throw CmdError{"incorrect node"};
   const GNode& n = tree_->nodes[r.node];
@@ -710,7 +710,7 @@ std::string Upi::cmd_set_mes(const Args& a) {
   if (a.empty()) throw CmdError{"incorrect or missing argument"};
   int p = player_arg(a[0]);
   require_tree();
-  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+  TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   int Hp = tree_->num_hands(p);
   std::vector<float> out(Hp);
   solver_->write_best_response = true;
@@ -726,7 +726,7 @@ std::string Upi::cmd_round_up_to(const Args& a) {
   if (N <= 0) throw CmdError{"incorrect or missing argument"};
   int street = street_arg(a[2]);
   require_tree();
-  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+  TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   for (uint32_t ni = 0; ni < tree_->nodes.size(); ++ni) {
     const GNode& n = tree_->nodes[ni];
     if (n.kind != ANodeKind::Decision || n.player != p || n.board_len != street) continue;
@@ -849,7 +849,7 @@ std::string Upi::cmd_solve_partial(const Args& a) {
 
 std::string Upi::cmd_explo_partial(const Args& a) {
   if (a.empty()) throw CmdError{"incorrect or missing argument"};
-  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+  TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   NodeRef r = resolve(a[0]);
   if (r.pseudo_root) r = resolve("r:0");
   ensure_recalced(r);
@@ -919,7 +919,7 @@ std::string Upi::cmd_node_count() {
 
 std::string Upi::cmd_print_all_strats() {
   require_tree();
-  TreePause np(pause_requests_, tree_mu_, pause_cv_);
+  TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   std::string s;
   std::function<void(const NodeRef&)> rec = [&](const NodeRef& r) {
     s += r.id + "\n";
@@ -954,12 +954,12 @@ void Upi::register_node_commands() {
 
   H["show_node"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     return show_node_text(resolve(a[0]));
   };
   H["show_children"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     auto kids = children_of(resolve(a[0]));
     std::string s;
     for (size_t i = 0; i < kids.size(); ++i) s += "child " + std::to_string(i) + ":\n" + show_node_text(kids[i].second);
@@ -977,7 +977,7 @@ void Upi::register_node_commands() {
       for (int i = 0; i < NUM_COMBOS; ++i) out[i] = cfg_.range[p][i];
       return floats_line(out.data(), NUM_COMBOS);
     }
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     NodeRef r = resolve(a[1]);
     std::vector<float> r0, r1;
     if (r.pseudo_root) {
@@ -999,7 +999,7 @@ void Upi::register_node_commands() {
   H["calc_eq_preflop"] = [this](const Args& a) { return cmd_calc_eq_preflop(a); };
   H["calc_results"] = [this](const Args&) {
     require_tree();
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     RootStats st;
     if (tree_->missing_street && tree_->has_saved_stats) {
       // A truncated save whose streets are still missing: those are unsolved until browsed, so report
@@ -1017,18 +1017,18 @@ void Upi::register_node_commands() {
   };
   H["calc_matchups_line"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     return fmt(line_matchups(a[0]));
   };
   H["calc_line_freq"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     double root = solver_->root_matchups();
     return fmt(root > 0 ? line_matchups(a[0]) / root : 0.0);
   };
   H["calc_global_freq"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     NodeRef r = resolve(a[0]);
     if (r.pseudo_root) return std::string("1");
     std::vector<float> r0, r1;
@@ -1044,7 +1044,7 @@ void Upi::register_node_commands() {
     return fmt(den > 0 ? num / den : 0.0);
   };
   H["show_all_lines"] = [this](const Args&) {
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     return cmd_show_all_lines();
   };
   H["show_all_freqs"] = [this](const Args& a) { return cmd_show_all_freqs(a); };
@@ -1135,7 +1135,7 @@ void Upi::register_node_commands() {
   // ---- locking / strategies ----
   H["lock_node"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     NodeRef r = resolve(a[0]);
     if (r.pseudo_root) throw CmdError{"incorrect node"};
     lock_node_impl(r.node, true);
@@ -1143,7 +1143,7 @@ void Upi::register_node_commands() {
   };
   H["unlock_node"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     NodeRef r = resolve(a[0]);
     if (r.pseudo_root) throw CmdError{"incorrect node"};
     lock_node_impl(r.node, false);
@@ -1152,7 +1152,7 @@ void Upi::register_node_commands() {
   // Pio: clears every whole-node lock; combo locks stay (as with unlock_node).
   H["unlock_all"] = [this](const Args&) {
     require_tree();
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~GF_LOCKED);
     return std::string("unlock_all ok!");
   };
@@ -1160,7 +1160,7 @@ void Upi::register_node_commands() {
   // could not clear the ones that came with a loaded save. This clears every combo lock.
   H["combo_unlock_all"] = [this](const Args&) {
     require_tree();
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~GF_COMBO_LOCKED);
     tree_->combo_lock.clear();
     return std::string("combo_unlock_all ok!");
@@ -1174,19 +1174,19 @@ void Upi::register_node_commands() {
   };
   H["lock_line"] = [this, line_nodes](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     for (uint32_t ni : line_nodes(a[0])) lock_node_impl(ni, true);
     return std::string("lock_line ok!");
   };
   H["unlock_line"] = [this, line_nodes](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     for (uint32_t ni : line_nodes(a[0])) lock_node_impl(ni, false);
     return std::string("unlock_line ok!");
   };
   H["combo_lock_node"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     NodeRef r = resolve(a[0]);
     if (r.pseudo_root || tree_->nodes[r.node].kind != ANodeKind::Decision) throw CmdError{"incorrect node"};
     auto v = parse_floats(a, 1);
@@ -1220,7 +1220,7 @@ void Upi::register_node_commands() {
   };
   H["show_locked_combos"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     NodeRef r = resolve(a[0]);
     if (r.pseudo_root) throw CmdError{"incorrect node"};
     const GNode& n = tree_->nodes[r.node];
@@ -1237,7 +1237,7 @@ void Upi::register_node_commands() {
   H["set_strategy"] = [this](const Args& a) { return cmd_set_strategy(a); };
   H["set_equal_strats"] = [this](const Args&) {
     require_tree();
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     tree_->clear_storage();
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~(GF_LOCKED | GF_COMBO_LOCKED));
     tree_->combo_lock.clear();
@@ -1249,7 +1249,7 @@ void Upi::register_node_commands() {
     // Pio semantics: a one-time edit that sets the action's frequency to 0 (renormalising the other
     // actions) on every runout of the line; further solving may bring the action back.
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     std::set<std::pair<uint32_t, int>> done;
     for_each_runout(a[0], [&](const NodeRef& r, double) {
       if (r.steps.empty()) return;
@@ -1285,7 +1285,7 @@ void Upi::register_node_commands() {
   };
   H["set_incentives_node"] = [this, set_inc](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     NodeRef r = resolve(a[0]);
     if (r.pseudo_root) throw CmdError{"incorrect node"};
     set_inc(r.node, parse_floats(a, 1));
@@ -1293,7 +1293,7 @@ void Upi::register_node_commands() {
   };
   H["set_incentives_line"] = [this, set_inc, line_nodes](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     auto v = parse_floats(a, 1);
     for (uint32_t ni : line_nodes(a[0])) set_inc(ni, v);
     return std::string("set_incentives_line ok!");
@@ -1312,7 +1312,7 @@ void Upi::register_node_commands() {
   };
   H["clear_incentives"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    TreePause np(pause_requests_, tree_mu_, pause_cv_);
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     NodeRef r = resolve(a[0]);
     if (r.pseudo_root) throw CmdError{"incorrect node"};
     tree_->incentives.erase(r.node);

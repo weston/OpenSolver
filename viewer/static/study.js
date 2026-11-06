@@ -3,7 +3,7 @@
 // data inside these regions, so nothing moves while you click through a line.
 
 import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy } from "./cards.js";
-import { nodeShown } from "./preview.js";
+import { nodeShown, whenReleased } from "./preview.js";
 import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
 import { syncFurther } from "./further.js";
@@ -150,6 +150,7 @@ function overallFreqs(d, acts) {
 
 export async function gotoNode(id) {
   const seq = ++S.seq;
+  S.target = id;   // the latest navigation's node (a live refresh must not override a click in flight)
   try {
     const p = await get(`${S.base}/path?id=` + q(id));
     const node = p.nodes[p.nodes.length - 1];
@@ -171,9 +172,10 @@ export async function gotoNode(id) {
     // a pinned/hovered category is board-dependent: it does not survive navigation
     S.catPin = null; S.catHl = null;
     if (S.mode !== "strategy") await loadModeData();
+    await whenReleased();   // never rebuild the cards under a press (preview.js)
     if (seq !== S.seq) return;
     render();
-    nodeShown(id, cur, { inSubgame: !!S.sub, refresh: () => { if (S.loaded && S.id === id) gotoNode(id); } });
+    nodeShown(id, cur, { inSubgame: !!S.sub, refresh: () => { if (S.loaded && S.id === id && S.target === id) gotoNode(id); } });
     if (!S.sub && !document.getElementById("view-study").classList.contains("hidden")) history.replaceState(null, "", "#study=" + id + urlState());
   } catch (e) {
     if (seq === S.seq) fail(e);

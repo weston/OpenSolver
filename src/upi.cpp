@@ -146,7 +146,7 @@ Upi::Upi() {
 }
 
 Upi::~Upi() {
-  stop_flag_ = true;
+  signal_stop();
   if (solver_thread_.joinable()) solver_thread_.join();
   if (redirected_ && out_) std::fclose(out_);
 }
@@ -229,7 +229,8 @@ int Upi::run() {
   while (next_line(line)) {
     if (!execute_line(line)) break;
   }
-  stop_flag_ = true;
+  release_hold();  // exit with a solve parked by hold: let it see the stop
+  signal_stop();
   if (solver_thread_.joinable()) solver_thread_.join();
   return 0;
 }
@@ -496,7 +497,20 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
 void Upi::release_hold() {
   if (!held_) return;
   held_ = false;
-  pause_requests_.fetch_sub(1);
+  {
+    std::lock_guard<std::mutex> g(pause_mu_);  // see TreePause: no lost wake-up
+    pause_requests_.fetch_sub(1);
+  }
+  pause_cv_.notify_all();
+}
+
+// Stops a running solve wherever it is, a parked one too: the flag is set under pause_mu_ and the
+// solver thread woken, so a solve waiting for its pause to end sees it.
+void Upi::signal_stop() {
+  {
+    std::lock_guard<std::mutex> g(pause_mu_);
+    stop_flag_ = true;
+  }
   pause_cv_.notify_all();
 }
 
@@ -505,8 +519,7 @@ void Upi::stop_solver(const char* reason) {
   if (solver_thread_.joinable()) {
     if (solving_) {
       stop_reason_ = reason;
-      stop_flag_ = true;
-      pause_cv_.notify_all();
+      signal_stop();
     }
     solver_thread_.join();
     stop_reason_.clear();
@@ -1228,7 +1241,7 @@ void Upi::register_commands() {
     // Rake and ICM are exclusive; like Pio, the last one set wins (setting rake turns ICM off).
     if (payoff_.rake_frac > 0) payoff_.icm.enabled = false;
     if (tree_) {
-      TreePause tp(pause_requests_, tree_mu_, pause_cv_);
+      TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
       tree_->payoff = payoff_;
       discount_restart_ = tree_->iterations;
     }
@@ -1244,7 +1257,7 @@ void Upi::register_commands() {
     payoff_.rake_frac = 0;  // the last of rake / ICM wins
     payoff_.rake_cap = 0;
     if (tree_) {
-      TreePause tp(pause_requests_, tree_mu_, pause_cv_);
+      TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
       tree_->payoff = payoff_;
       discount_restart_ = tree_->iterations;
     }
@@ -1260,7 +1273,7 @@ void Upi::register_commands() {
     std::sort(pts.begin(), pts.end());
     icm_tables_defined_ = true;
     if (tree_) {
-      TreePause tp(pause_requests_, tree_mu_, pause_cv_);
+      TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
       tree_->payoff = payoff_;
       discount_restart_ = tree_->iterations;
     }
@@ -1270,7 +1283,7 @@ void Upi::register_commands() {
     payoff_.icm = IcmModel{};  // rake (if any) is left as it is
     icm_tables_defined_ = true;  // Pio: reset tables are "defined" (empty table = chip values)
     if (tree_) {
-      TreePause tp(pause_requests_, tree_mu_, pause_cv_);
+      TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
       tree_->payoff = payoff_;
       discount_restart_ = tree_->iterations;
     }

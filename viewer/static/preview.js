@@ -10,7 +10,6 @@ import { get, post, prefs, fmt, toast } from "./api.js";
 const $ = (id) => document.getElementById(id);
 const P = {
   watching: false, t0: 0, timer: null,                // after Solve: the loading modal
-  ringBest: 0,                                        // the ring's furthest point this solve (0..1)
   solving: false,                                     // main solve running (incl. parked for a refine)
   shown: null, refineRoot: null, refineTimer: null,   // node on screen and its refine
   events: null, refresh: null,                        // last solver event count seen
@@ -31,9 +30,7 @@ function closeModal() {
 
 /** The ring: how far the solve's exploitability has come from its first report toward the
  *  point where the Study view opens (PREVIEW_FACTOR x the target), on a log scale - the scale
- *  exploitability falls on. Spins until the first report. It never goes back: exploitability is
- *  not monotone (threebet_mono: 15.8 -> 21.7 chips right after the average restarts at iteration
- *  33, #135), so it shows the best point so far; the status line keeps the current number. */
+ *  exploitability falls on. Spins until the first report. */
 function drawRing(pg) {
   const ring = document.querySelector("#solve-modal .sm-ring");
   const arc = $("sm-arc");
@@ -47,8 +44,7 @@ function drawRing(pg) {
   }
   ring.classList.remove("spin");
   let f = first > goal ? Math.log(first / explo) / Math.log(first / goal) : 1;
-  f = Math.max(P.ringBest, Math.min(1, f));
-  P.ringBest = f;
+  f = Math.max(0, Math.min(1, f));
   arc.style.strokeDashoffset = String(RING * (1 - f));
   if (pct) pct.textContent = `${Math.round(f * 100)}%`;
 }
@@ -91,7 +87,7 @@ export function startPreview(on) {
   clearTimeout(P.timer);
   P.watching = false;
   if (!previewOn() || !on) return;
-  Object.assign(P, { watching: true, t0: performance.now(), ringBest: 0 });
+  Object.assign(P, { watching: true, t0: performance.now() });
   const m = modal();
   if (m) {
     drawRing(null);
@@ -114,10 +110,35 @@ export function previewStatus(st) {
   drawBadge();
 }
 
+// A live refresh rebuilds the node's action cards and matrix. Landing between a press and its
+// release, it swallows the click (the button pressed is gone): during a solve about 1 press in 15
+// was lost. So a refresh neither starts nor renders while a pointer is down; it carries on after
+// the release, once the click has run (setTimeout), so a click's own navigation wins.
+let pressed = false, deferred = false, waiters = [];
+const release = () => {
+  pressed = false;
+  setTimeout(() => {
+    const w = waiters; waiters = [];
+    w.forEach((f) => f());
+    if (deferred) { deferred = false; liveRefresh(); }
+  }, 0);
+};
+// Registered only in a page: the JS unit tests import this module without a DOM (#286 review).
+if (typeof document !== "undefined") {
+  document.addEventListener("pointerdown", () => { pressed = true; }, true);
+  document.addEventListener("pointerup", release, true);
+  document.addEventListener("pointercancel", release, true);
+  // a press released outside the window sends no pointerup: losing focus counts as the release
+  window.addEventListener("blur", () => { if (pressed) release(); });
+}
+/** Resolves now, or once a pressed pointer is released and its click has run. */
+export const whenReleased = () => (pressed ? new Promise((r) => waiters.push(r)) : Promise.resolve());
+
 function liveRefresh() {
   if (!P.refresh || !P.shown || P.shown.sub) return;
   if (document.hidden || document.querySelector("dialog[open]")) return;
   if ($("view-study").classList.contains("hidden")) return;
+  if (pressed) { deferred = true; return; }
   P.refresh();
 }
 

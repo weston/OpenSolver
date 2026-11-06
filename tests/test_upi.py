@@ -609,6 +609,26 @@ def check_schematic_after_build(u):
     u.cmd("free_tree")
 
 
+def check_iso_symmetry(u):
+    """#300: on a board with a suit symmetry (4c2d6c: hearts and spades are interchangeable), suit-swapped hands
+    stay equal and EV OOP + EV IP stays the pot. With a flop all-in, rounding asymmetry used to grow into
+    different strategies (KsQs 0.246 vs KhQh 1.000) and an EV sum of 60.311 on a 60 pot."""
+    print("[isomorphism keeps suit-symmetric hands symmetric]")
+    for c in ("set_range OOP AQo,KK,KQs", "set_range IP TT,KQo", "set_board 4c2d6c", "set_pot 0 0 60", "set_eff_stack 10",
+              "clear_lines", "add_line 10", "add_line 0 10"):
+        u.cmd(c)
+    u.cmd("build_tree")
+    u.cmd("set_accuracy 0")
+    u.cmd("go 100 steps")
+    u.cmd("wait_for_solver")
+    res = u.cmd("calc_results").splitlines()
+    ev = float(res[0].split(": ")[1]) + float(res[1].split(": ")[1])
+    check(abs(ev - 60) < 1e-3, f"EV OOP + EV IP = pot on a symmetric flop with an all-in ({ev:.3f})")
+    pp = u.cmd("show_strategy_pp r:0")
+    row = lambda c: re.search(r"^" + c + r":\s+(.*)$", pp, re.M).group(1).split()
+    check(row("KsQs") == row("KhQh") and row("KsKc") == row("KhKc"), "suit-swapped hands get the same strategy")
+
+
 def check_union_hands(u):
     """set_union_hands: opponent-only hands get a slot, a signed inf and _pp rows (#9)."""
     print("[set_union_hands: hands of either range]")
@@ -691,6 +711,21 @@ def check_union_hands(u):
     n_on = sorted(on["deep"][i] for i in idx88)
     check(n_off == ["inf"] * 6, f"without union_hands the six hands print unsigned inf ({n_off[:2]}...)")
     check(n_on == ["-inf"] * 6, f"with union_hands they print -inf, the sign of their cfv ({n_on[:2]}...)")
+
+    # #302: a save of a union-hands tree records the setting, so it loads (the hand lists, and the storage,
+    # depend on it), even with the session's setting off; it used to fail with "tree shape mismatch".
+    res = u.cmd("calc_results")
+    strat = u.cmd("show_strategy r:0")
+    with tempfile.TemporaryDirectory() as td:
+        for mode in ("lossless", ""):
+            path = os.path.join(td, f"union{mode}.cfr")
+            check(u.cmd(f'dump_tree "{path}" {mode}'.strip()) == "dump_tree ok!", f"dump_tree {mode or 'default'} of a union-hands tree")
+            u.cmd("set_union_hands off")
+            check(u.cmd(f'load_tree "{path}"') == "load_tree ok!", f"a {mode or 'default'} union-hands save loads (#302)")
+            if mode == "lossless":
+                check(u.cmd("calc_results") == res and u.cmd("show_strategy r:0") == strat,
+                      "lossless union-hands round trip: identical results and strategy")
+            u.cmd("set_union_hands on")
 
     u.cmd("set_union_hands off")
     u.cmd("free_tree")
@@ -1101,8 +1136,25 @@ def check_framing(exe):
     check(out == "set_end_string ok!\nEND\n" and rc == 0, f"quit exits like exit ({out!r}, rc {rc})")
 
 
+def check_exit_while_parked(exe):
+    """The input ending while a solve is parked by hold must end the process (#293). run() set the stop
+    flag without waking the parked solver thread, then joined it forever: a viewer that died mid-burst
+    left its solver, and the whole tree's memory, behind. exit itself was fine (stop_solver releases)."""
+    print("[input ends while a solve is parked]")
+    setup = ["set_range OOP AA,KK,QQ,AK", "set_range IP AA,KK,JJ,AQ", "set_board KhQs7d4c2s", "set_pot 0 0 100",
+             "set_eff_stack 100", "add_line 50 100", "add_line 0 50 100", "build_tree", "set_accuracy 0", "go", "hold"]
+    for tail, what in ((["exit"], "exit"), ([], "end of input")):
+        try:
+            p = subprocess.run([exe], input="".join(l + "\n" for l in setup + tail), capture_output=True,
+                               text=True, timeout=30)
+            check(p.returncode == 0 and "hold ok!" in p.stdout, f"{what} after hold during a solve ends the process")
+        except subprocess.TimeoutExpired:
+            check(False, f"{what} after hold during a solve ends the process (hung for 30 s)")
+
+
 def main(exe, big=False):
     check_framing(exe)
+    check_exit_while_parked(exe)
     u = Upi(exe)
     try:
         print("[basics]")
@@ -1133,6 +1185,7 @@ def main(exe, big=False):
         check_calc_ev_zero_reach(u)
         check_union_hands(u)
         check_schematic_after_build(u)
+        check_iso_symmetry(u)
         check_threads_auto(u)
         check_output_format(u)
 

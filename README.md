@@ -10,7 +10,7 @@ public UPI documentation; it contains no PioSOLVER code.
 - Vector-form **Discounted CFR** (α=1.3, γ=4; β=0, then 0.5 after iteration 50) with exact card removal, no abstraction. `set_dcfr` overrides the exponents (`set_dcfr a b g` constant, `set_dcfr a b g b_late t` with the β switch).
 - Multi-threaded over turn/river cards with a nested work-stealing pool.
 - Suit **isomorphism** (flop trees on by default, like Pio's `set_isomorphism 1 0`).
-- Optional 16-bit compressed storage (`small_strats`), roughly halving memory. The strategy sums are rounded stochastically, so it converges like float32 (#272, #293).
+- Optional 16-bit compressed storage (`small_strats`), roughly halving memory. On x86 the strategy sums are rounded stochastically, so it converges like float32 (#272).
 - **Regret-based pruning** on by default (`set_pruning off|on [period]`): a traverser action whose current strategy is exactly zero for every hand is skipped — exactly, so results are bit-identical — and revisited every `period`-th iteration (default 8). Worth about 13% on a deep tree.
 
 New here? **[docs/quickstart.md](docs/quickstart.md)** walks through installing, solving a spot and
@@ -23,6 +23,7 @@ make            # builds ./solver (-O3, native CPU optimizations)
 make release    # builds ./solver-release: LTO, native arch (add PGO=1 to also train a profile)
 make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
 make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
+python3 tools/fuzz.py invariants ./solver --seconds 300   # randomised checks; also concurrency, roundtrip, preflop, locks
 make install    # installs the binary as `wsolver` under /usr/local (see below)
 ./solver        # talk UPI on stdin/stdout
 ```
@@ -445,7 +446,7 @@ UPI probe matches the macOS build up to floating-point rounding).
 | Node IDs | `r`, `r:0`, then `c` / `f` / `b<amount>` where the amount is the **cumulative** chips invested by the bettor (e.g. `r:0:c:b20:c:7s:b60`), and card tokens at chance nodes. `?` means the first runout in display order (the highest card). |
 | Node types | `ROOT`, `OOP_DEC`, `IP_DEC`, `SPLIT_NODE`, `END_NODE`. All-ins before the river are `END_NODE`s whose value averages over every runout (no chance nodes), exactly like Pio. |
 | Children order | Bets/raises largest first, then check/call, then fold; dealt cards from `As` down to `2c`. `show_all_lines` walks the reverse order with `?` card markers. |
-| EVs | Chips relative to the tree start: payoff = share of the final pot - own chips invested in the tree, so `EV OOP + EV IP = starting pot`. `calc_ev` matchups are weighted by the hand's own reach (Pio semantics); out-of-range hands print `nan`/`inf`, and an in-range hand that never reaches the node prints its counterfactual EV with matchups 0, as Pio does (#247). |
+| EVs | Chips relative to the tree start: payoff = share of the final pot - own chips invested in the tree, so `EV OOP + EV IP` = the dead money (`set_pot`'s third number: the players' own chips there are investments, so `set_pot 10 5 0` sums to 0). It held only approximately on boards with a suit symmetry and a flop all-in until #300. `calc_ev` matchups are weighted by the hand's own reach (Pio semantics); out-of-range hands print `nan`/`inf`, and an in-range hand that never reaches the node prints its counterfactual EV with matchups 0, as Pio does (#247). |
 | Hands of either range | By default each player's hand list is their own range. `set_union_hands on` (before `build_tree`) makes it the union of both, like Pio: a hand only in the opponent's range gets a slot with reach 0, so `calc_ev` reports the **sign** of its counterfactual value (`inf`/`-inf` rather than a bare `inf`) and `calc_ev_pp`/`show_strategy_pp` list it. The equilibrium is unchanged; vectors get wider (about +23% solve time on `bench_flop`), which is why it is off by default. |
 | SOLVER output | `SOLVER: started`, periodic `SOLVER:` blocks (running time, EVs, MES, `Exploitable for`) ending in END, and `SOLVER: stopped (<reason>)`. Command responses never interleave with these. |
 | Isomorphism | Querying a non-canonical card (e.g. `7s` when it mirrors `7d`) returns the suit-swapped strategy; node IDs keep the card you asked for. |
@@ -617,7 +618,8 @@ src/equity.*       calc_eq family
 src/categories.*   range explorer
 src/upi*.cpp       command processor, node queries, save/load
 tests/             unit tests (eval, range, categories, solver, tree builder) + end-to-end UPI test
-tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue)
+tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue;
+                   fuzz.py: randomised invariant / concurrency / save / preflop / lock checks over UPI)
 ```
 
 ## Contributing

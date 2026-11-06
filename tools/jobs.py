@@ -423,11 +423,15 @@ def start_pot(setup: list[str]) -> float:
 
 
 def root_summary(s) -> dict:
-    """The first decision's strategy over the acting player's whole range: {player, actions, freqs}.
+    """The first decision's strategy over the acting player's whole range: {player, actions, freqs, mass}.
 
-    Frequencies are range-weighted (sum of reach x action probability / sum of reach), the numbers an
-    aggregate flop report shows. Actions are the last step of each child id ("c", "b50", ...): the
-    same on every flop of a batch, because line amounts do not depend on the board."""
+    Frequencies weight each hand by reach x matchups (its reach times the opponent's reach over the
+    combos it doesn't block: calc_ev's second line, which already includes the hand's reach). That is
+    how often the deal happens, and it is what PioViewer's aggregation report uses: recomputed from
+    its own per-hand report files, flop rows match to the files' rounding (#323). `mass` is the
+    root's total, sum of reach x matchups, which weights this flop in the batch average. Actions are
+    the last step of each child id ("c", "b50", ...): the same on every flop of a batch, because line
+    amounts do not depend on the board."""
     import math
     import server as vserver
     node = vserver.parse_node_block(s.cmd("show_node r:0"))
@@ -436,18 +440,21 @@ def root_summary(s) -> dict:
         return {}
     actions = [k["id"].rsplit(":", 1)[1] for k in vserver.parse_children(s.cmd("show_children r:0"))]
     rows = [l.split() for l in s.cmd("show_strategy r:0").splitlines() if l.strip()]
-    reach = [float(x) for x in s.cmd(f"show_range {player} r:0").split()]
+    mus = vserver.ev_pair(s, player, "r:0")["matchups"]
+    if mus is None:
+        raise ValueError("calc_ev gave no matchups line")
     num = [0.0] * len(rows)
     tot = 0.0
-    for i, r in enumerate(reach):
+    for i, m in enumerate(mus):
         vals = [float(row[i]) for row in rows]
-        if r > 0 and all(math.isfinite(v) for v in vals):
-            tot += r
+        if m is not None and math.isfinite(m) and m > 0 and all(math.isfinite(v) for v in vals):
+            tot += m
             for a, v in enumerate(vals):
-                num[a] += r * v
+                num[a] += m * v
     if tot <= 0 or len(actions) != len(rows):
         return {}
-    return {"player": player, "actions": actions, "freqs": [round(x / tot, 6) for x in num]}
+    return {"player": player, "actions": actions, "freqs": [round(x / tot, 6) for x in num],
+            "mass": round(tot, 6)}
 
 
 def action_label(a: str, pot: float) -> str:
@@ -504,16 +511,28 @@ GROUP_ORDER = {"high": ["A", "K", "Q", "J", "T", "9 or lower"], "suits": ["rainb
 
 
 def _weighted(rows: list, n_actions: int) -> dict:
-    """Weight-averaged root frequencies and EVs of report rows that have a root summary."""
+    """Frequencies and EVs of report rows that have a root summary, averaged over the flops.
+
+    Each flop counts by its weight times its matchup mass (sum of reach x matchups at the root), as
+    PioViewer's aggregation report does (#323): boards differ in how many combos they block. A row
+    without a mass (a summary recorded before #323) counts by its weight alone. `weight` is still
+    the plain sum of the flop weights."""
     have = [x for x in rows if x["freqs"] is not None]
     wsum = sum(x["weight"] for x in have)
     if not have or wsum <= 0:
         return {}
-    out = {"freqs": [sum(x["weight"] * x["freqs"][a] for x in have) / wsum for a in range(n_actions)],
+    if all(x.get("mass") for x in have):
+        ws = [x["weight"] * x["mass"] for x in have]
+    else:
+        ws = [x["weight"] for x in have]
+    W = sum(ws)
+    if W <= 0:
+        return {}
+    out = {"freqs": [sum(w * x["freqs"][a] for w, x in zip(ws, have)) / W for a in range(n_actions)],
            "weight": wsum, "flops": len(have)}
     for k in ("ev_oop", "ev_ip"):
         if all(x[k] is not None for x in have):
-            out[k] = sum(x["weight"] * x[k] for x in have) / wsum
+            out[k] = sum(w * x[k] for w, x in zip(ws, have)) / W
     return out
 
 
@@ -548,7 +567,9 @@ def report(q: Queue, name: str, solver_exe: str | None = None) -> dict:
             continue
         r = j.get("result") or {}
         # read once: a summary ({} when the root has nothing to show) or the reason it failed is kept
-        if "root" not in r and "root_error" not in r and solver_exe and os.path.isfile(j["out"]):
+        # summaries from before #323 have no matchup mass (their freqs were reach-weighted): re-read
+        stale = "root" not in r or (r["root"] and "mass" not in r["root"])
+        if stale and "root_error" not in r and solver_exe and os.path.isfile(j["out"]):
             import server as vserver
             s = None
             try:
@@ -569,7 +590,8 @@ def report(q: Queue, name: str, solver_exe: str | None = None) -> dict:
             actions, player = root["actions"], root["player"]
         rows.append({"id": j["id"], "board": j["board"], "weight": j["weight"], "ev_oop": r.get("ev_oop"),
                      "ev_ip": r.get("ev_ip"), "exploitability": r.get("exploitability"),
-                     "freqs": root.get("freqs") if root.get("actions") == actions else None})
+                     "freqs": root.get("freqs") if root.get("actions") == actions else None,
+                     "mass": root.get("mass") if root.get("actions") == actions else None})
     n = len(actions or [])
     for x in rows:
         x["texture"] = {k: fn(x["board"]) for k, (_, fn) in TEXTURES.items()}

@@ -651,6 +651,9 @@ def _api_main(solver, lib, method, path, query, body):
         out = op_generate(solver, b)
         return 200, out
 
+    if path == "/api/pio_import":
+        return 200, op_pio_import(need_body(body))
+
     if path == "/api/build":
         solver.cmd("build_tree")
         solver.forget_locks()
@@ -1200,6 +1203,7 @@ def setup_from_body(b):
     if board:
         header.append(f"#Board#{board}")
     header += sizing_header(b, tb)
+    header += pio_extra_lines(b)
 
     try:
         cfg = tb.parse_config("\n".join(header))
@@ -1226,6 +1230,80 @@ def setup_from_body(b):
              "set_isomorphism 1 1", "clear_lines"]
     cmds += lines
     return cmds, lines
+
+
+# PioViewer settings the Build form has no field for (#317): they travel with the form as raw
+# `#Key#Value` lines (`pio_extra`) and go into the tree builder's header as they are.
+PIO_EXTRA_KEYS = ("MergeSimilarBets", "MergeSimilarBetsThreshold", "CapEnabled", "CapPerStreet",
+                  "ForceOOPBet", "ForceIPBet", "UseUnifiedRaiseAfterRaise", "UnifiedRaiseAfterRaise",
+                  "RemovedLines_", "ExtraLines_")
+
+
+def pio_extra_lines(b):
+    """The form's `pio_extra` header lines, checked: each a `#Key#Value` line of a PIO_EXTRA_KEYS key."""
+    extra = b.get("pio_extra") or []
+    if not isinstance(extra, list) or len(extra) > 64:
+        raise SolverError("bad pio_extra")
+    out = []
+    for line in extra:
+        line = no_newlines(str(line), "pio_extra").strip()
+        m = re.fullmatch(r"#([A-Za-z_0-9]+)#.*", line)
+        if not m or not any(m.group(1) == k or (k.endswith("_") and m.group(1).startswith(k))
+                            for k in PIO_EXTRA_KEYS):
+            raise SolverError(f"bad pio_extra line: {line[:60]}")
+        if len(line) > 200000:
+            raise SolverError("pio_extra line too long")
+        out.append(line)
+    return out
+
+
+def op_pio_import(b):
+    """POST /api/pio_import (#317): a PioViewer tree file -> Build form values.
+
+    Sizes, pot, stack, board, all-in settings and ranges fill the form; what the form has no field
+    for comes back as `pio_extra`. `matches` says whether the builder reproduces the file's own
+    add_lines (it does for all 145 configs of #313)."""
+    text = b.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise SolverError("empty file")
+    if len(text) > 5_000_000:
+        raise SolverError("file too large")
+    tb = load_tree_builder()
+    try:
+        cfg = tb.parse_config(text)
+    except (ValueError, ArithmeticError) as e:
+        raise SolverError(f"not a PioViewer tree file: {e}")
+    if cfg.pot <= 0 and cfg.stack <= 0:
+        raise SolverError("not a PioViewer tree file (no #Pot# / #EffectiveStacks# header)")
+    def size_list(specs):
+        return ",".join("a" if s.kind == "allin" else s.text for s in specs)
+    form = {"pot": cfg.pot, "stack": cfg.stack, "board": cfg.board,
+            "allin_threshold": float(cfg.allin_threshold),
+            "add_allin_limit": float(cfg.add_allin_max_pot_mult) if cfg.add_allin_max_pot_mult.is_finite() else 100000}
+    ranges = {"range_oop": cfg.ranges.get("Range0") or cfg.raw_set_range.get("OOP", ""),
+              "range_ip": cfg.ranges.get("Range1") or cfg.raw_set_range.get("IP", "")}
+    form.update({k: v.strip() for k, v in ranges.items() if v.strip()})
+    for i, street in enumerate(("flop", "turn", "river")):
+        oop, ip = cfg.streets[i]
+        form[f"{street}_bet"], form[f"{street}_raise"] = size_list(oop.bet), size_list(oop.raise_)
+        form[f"{street}_donk"], form[f"{street}_allin"] = size_list(oop.donk), oop.add_allin
+        form[f"{street}_bet_ip"], form[f"{street}_raise_ip"] = size_list(ip.bet), size_list(ip.raise_)
+        form[f"{street}_allin_ip"] = ip.add_allin
+    extra = []
+    for raw in text.splitlines():
+        m = re.fullmatch(r"#([A-Za-z_0-9]+)#.*", raw.strip())
+        if m and any(m.group(1) == k or (k.endswith("_") and m.group(1).startswith(k)) for k in PIO_EXTRA_KEYS):
+            extra.append(raw.strip())
+    form["pio_extra"] = extra
+    want = {tuple(l) for l in tb.extract_lines(text)}
+    try:
+        cmds, lines = setup_from_body(dict(form, range_oop=form.get("range_oop") or "AA",
+                                           range_ip=form.get("range_ip") or "AA"))
+        got = {tuple(int(x) for x in l.split()[1:]) for l in lines}
+    except SolverError as e:
+        raise SolverError(f"could not build this config: {e}")
+    return {"form": form, "lines": len(got), "file_lines": len(want),
+            "matches": bool(want) and got == want}
 
 
 def op_generate(solver, b):

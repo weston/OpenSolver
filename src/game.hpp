@@ -240,17 +240,12 @@ class GameTree {
   // 16-bit strategy sums are rounded stochastically when the solver commits them (#272): rounded to the
   // nearest step, a low-reach hand's increment late in a solve is below its node's 16-bit step and is
   // lost, which is full 16-bit's exploitability floor (threebet_mono stalled at 0.35% of pot). Rounding
-  // up with probability equal to the fraction makes every increment count on average. The random bits
-  // are a hash of the slot and round_seed, which the solver sets per iteration: results stay identical
-  // for any thread count. x86 only: on the compute-bound M4 an earlier version cost ~24% per iteration
-  // (bench/where-the-time-goes.md), and Apple silicon uses 16-bit only when float32 does not fit, so it
-  // keeps rounding to nearest (and #182's switch to float32) until someone measures it there.
-#if defined(__aarch64__) || defined(_M_ARM64)
-  static constexpr bool kStochasticSums = false;
-#else
-  static constexpr bool kStochasticSums = true;
-#endif
+  // up with probability equal to the fraction makes every increment count on average. The uniforms come
+  // from a fixed table read at an offset hashed from the node and round_seed, which the solver sets per
+  // iteration: results stay identical for any thread count. On every platform: the table costs ~2% per
+  // iteration on the M4 where a per-slot hash cost ~9% (threebet_mono, 10 threads, #293).
   uint32_t round_seed = 0;
+  static constexpr size_t kRoundTable = 4096;
   ZVec<float> regrets;
   ZVec<float> strat;      // cumulative strategy (or locked strategy for locked nodes)
   // Predictive CFR (#71): the last instantaneous regret per slot, allocated on demand by

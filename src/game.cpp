@@ -676,10 +676,33 @@ void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
   }
 }
 
+// The kRoundTable points (k + 0.5) / kRoundTable of [0, 1) in a fixed shuffled order, repeated once so a
+// block of up to kRoundTable reads never wraps. An exact grid, not random draws: a table of random
+// draws has a fixed empirical bias (4096 draws: about 5% in the share above 0.9), which every rounding
+// would then inherit; the grid's bias is at most half a grid step.
+static const float* rounding_uniforms() {
+  static const std::vector<float> t = [] {
+    constexpr size_t N = GameTree::kRoundTable;
+    std::vector<float> v(2 * N);
+    for (size_t k = 0; k < N; ++k) v[k] = (static_cast<float>(k) + 0.5f) / static_cast<float>(N);
+    uint64_t s = 0x243F6A8885A308D3ull;
+    for (size_t k = N - 1; k > 0; --k) {  // Fisher-Yates with splitmix64
+      s += 0x9E3779B97F4A7C15ull;
+      uint64_t z = s;
+      z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+      z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+      z ^= z >> 31;
+      std::swap(v[k], v[z % (k + 1)]);
+    }
+    for (size_t k = 0; k < N; ++k) v[k + N] = v[k];
+    return v;
+  }();
+  return t.data();
+}
+
 void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   if (!compressed) return;
   ensure_loaded(n);
-  if constexpr (!kStochasticSums) return strat_store(n, data, maxval);
   const size_t len = node_size(n);
   float m = maxval;
   if (m < 0) {
@@ -695,17 +718,22 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   }
   sscale[n.aux] = m / 65535.0f;
   const float inv = 65535.0f / m;
-  // Stochastic rounding (see round_seed): floor(x + u), u uniform in [0, 1) from a hash of the slot.
-  const uint32_t seed = round_seed, base = static_cast<uint32_t>(n.storage);
-  for (size_t i = 0; i < len; ++i) {
-    uint32_t h = (base + static_cast<uint32_t>(i)) * 0x9E3779B1u ^ seed;
-    h ^= h >> 16;
-    h *= 0x85EBCA6Bu;
-    h ^= h >> 13;
-    h *= 0xC2B2AE35u;
-    h ^= h >> 16;
-    const float u = static_cast<float>(h >> 8) * (1.0f / 16777216.0f);
-    q[i] = static_cast<uint16_t>(std::min(65535.0f, std::max(0.0f, data[i]) * inv + u));
+  // Stochastic rounding (see round_seed): floor(x + u), u uniform in [0, 1) read from a fixed table of
+  // uniforms at an offset that a hash of the node's slot and the iteration's seed picks.
+  const float* U = rounding_uniforms();
+  uint32_t h = static_cast<uint32_t>(n.storage) * 0x9E3779B1u ^ round_seed;
+  h ^= h >> 16;
+  h *= 0x85EBCA6Bu;
+  h ^= h >> 13;
+  h *= 0xC2B2AE35u;
+  h ^= h >> 16;
+  size_t i = 0;
+  while (i < len) {
+    const size_t start = (h + i) & (kRoundTable - 1), blk = std::min(len - i, kRoundTable);
+    const float* u = U + start;
+    for (size_t k = 0; k < blk; ++k)
+      q[i + k] = static_cast<uint16_t>(std::min(65535.0f, std::max(0.0f, data[i + k]) * inv + u[k]));
+    i += blk;
   }
 }
 

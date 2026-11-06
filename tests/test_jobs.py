@@ -255,6 +255,7 @@ def integration(solver):
             ro = [float(x) for x in s.cmd("show_range OOP r:0").split()]
             ri = [float(x) for x in s.cmd("show_range IP r:0").split()]
             st = [[float(x) for x in l.split()] for l in s.cmd("show_strategy r:0").splitlines() if l.strip()]
+            got = jobs.root_summary(s)  # from the save, as the checks below read it
         finally:
             jobs.close_solver(s)
         card_mass = {}
@@ -271,7 +272,6 @@ def integration(solver):
             den += m
             for a in range(len(st)):
                 num[a] += m * st[a][i]
-        got = q.job("00001")["result"]["root"]
         check(abs(got["mass"] - den) < 1e-3 * den and max(abs(num[a] / den - got["freqs"][a]) for a in range(len(st))) < 1e-5,
               f"root freqs are reach x matchups weighted ({got['freqs']} vs {[n / den for n in num]})")
         # a summary from before #323 (no mass, reach-weighted freqs) is re-read from the save
@@ -351,8 +351,8 @@ def integration(solver):
               "the texture groups cover every flop once")
         for x in g:
             mine = [r for r in rep["rows"] if jobs.texture_suits(r["board"]) == x["key"]]
-            want = sum(r["weight"] * r["freqs"][0] for r in mine) / sum(r["weight"] for r in mine)
-            check(abs(x["freqs"][0] - want) < 1e-9, f"group {x['key']}: weighted average of its {len(mine)} flops")
+            want = sum(r["weight"] * r["mass"] * r["freqs"][0] for r in mine) / sum(r["weight"] * r["mass"] for r in mine)
+            check(abs(x["freqs"][0] - want) < 1e-9, f"group {x['key']}: weight x mass average of its {len(mine)} flops")
         rows = [{"board": "Kh9h4h", "weight": 1, "freqs": [1, 0], "ev_oop": 1, "ev_ip": 0},
                 {"board": "Qh8h3h", "weight": 1, "freqs": None, "ev_oop": None, "ev_ip": None}]
         g1 = jobs.group_rows(rows, "suits", 2)

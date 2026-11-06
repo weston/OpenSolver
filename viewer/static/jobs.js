@@ -169,13 +169,35 @@ async function addBatch() {
 }
 
 let lastReport = null;
+let reportBatch = null;
 
 async function showReport(name) {
-  lastReport = await get("/api/jobs/report?batch=" + encodeURIComponent(name));
+  reportBatch = name;
+  $("jr-line").value = prefs.get("jobs-report-line:" + name, "");
+  $("jr-cards").checked = prefs.get("jobs-report-cards", "") === "1";
+  if (!(await loadReport())) return;
+  $("jobs-report").showModal();
+}
+
+/** (Re)load the open batch's report at the line in the Line field (empty: the first decision, #325). */
+async function loadReport() {
+  const line = $("jr-line").value.trim();
+  const go = $("jr-line-go");
+  go.disabled = true;
+  $("jr-note").textContent = line ? "Reading the saves at this line (the first time, every save is loaded)…" : "";
+  try {
+    lastReport = await get("/api/jobs/report?batch=" + encodeURIComponent(reportBatch) + "&line=" + encodeURIComponent(line));
+  } catch (e) {
+    fail(e);
+    $("jr-note").textContent = String(e.message || e);
+    return false;
+  } finally { go.disabled = false; }
+  prefs.set("jobs-report-line:" + reportBatch, line);
   const rep = lastReport;
   $("jr-title").textContent = `Report · ${rep.batch}`;
-  $("jr-sub").textContent = `${rep.player || "?"} acts first · starting pot ${rep.pot} · ${rep.rows.length} flops done` +
-    (rep.pending ? ` · ${rep.pending} not done yet (left out)` : "");
+  const where = rep.line ? `${rep.player || "?"} at r:0:${rep.line} · pot ${rep.pot}` + (rep.facing ? ` · facing ${rep.facing}` : "")
+    : `${rep.player || "?"} acts first · starting pot ${rep.pot}`;
+  $("jr-sub").textContent = `${where} · ${rep.rows.length} flops done` + (rep.pending ? ` · ${rep.pending} not done yet (left out)` : "");
   const by = $("jr-by");
   by.replaceChildren(el("option", "", "Every flop"));
   by.firstChild.value = "";
@@ -186,11 +208,12 @@ async function showReport(name) {
   }
   by.value = prefs.get("jobs-report-by", "");
   if (by.value && !(rep.groups || {})[by.value]) by.value = "";
+  $("jr-cards-wrap").classList.toggle("hidden", !rep.rows.some((x) => x.cards));
   renderReport();
-  $("jobs-report").showModal();
+  return true;
 }
 
-/** A stacked bar of a root strategy, in the Study colours. */
+/** A stacked bar of a strategy, in the Study colours. */
 function stratBar(freqs, rep) {
   const bar = el("span", "jr-bar");
   freqs.forEach((f, i) => {
@@ -207,18 +230,25 @@ function renderReport() {
   const rep = lastReport;
   if (!rep) return;
   const by = $("jr-by").value;
+  const cards = $("jr-cards").checked;
   prefs.set("jobs-report-by", by);
+  prefs.set("jobs-report-cards", cards ? "1" : "");
+  const atLine = !!rep.line;
   const t = $("jr-table");
   t.replaceChildren();
   const head = el("tr");
   const first = by ? rep.group_titles[by] : "Board";
-  for (const h of [first, by ? "Flops" : "Weight", by ? "Weight" : "EV OOP", by ? "EV OOP" : "Exploitable"])
-    head.appendChild(el("th", h === first ? "" : "num", h));
+  const heads = atLine
+    ? [first, ...(by ? ["Flops"] : []), "Weight", ...(by ? [] : ["Global"]), "EV OOP", "EV IP"]
+    : [first, by ? "Flops" : "Weight", by ? "Weight" : "EV OOP", by ? "EV OOP" : "Exploitable"];
+  for (const h of heads) head.appendChild(el("th", h === first ? "" : "num", h));
   for (const l of rep.labels) head.appendChild(el("th", "num", l));
   head.appendChild(el("th", "", "Strategy"));
   const thead = el("thead"); thead.appendChild(head); t.appendChild(thead);
   const tb = el("tbody");
   const pct = (v) => (v == null ? "—" : fmt(100 * v, 1) + "%");
+  const gl = (v) => (v == null ? "—" : fmt(100 * v, 2) + "%");
+  const freqCells = (x) => (x.freqs ? x.freqs.map(pct) : rep.labels.map(() => "—"));
   const addRow = (cells, freqs, cls, title) => {
     const tr = el("tr", cls || "");
     if (title) tr.title = title;
@@ -230,24 +260,48 @@ function renderReport() {
   };
   if (by) {
     for (const g of rep.groups[by] || []) {
-      addRow([g.key, String(g.flops), fmt(g.weight, 2), fmt(g.ev_oop, 2), ...g.freqs.map(pct)], g.freqs, "", g.boards.join(" "));
+      addRow(atLine ? [g.key, String(g.flops), fmt(g.weight, 2), fmt(g.ev_oop, 2), fmt(g.ev_ip, 2), ...g.freqs.map(pct)]
+        : [g.key, String(g.flops), fmt(g.weight, 2), fmt(g.ev_oop, 2), ...g.freqs.map(pct)], g.freqs, "", g.boards.join(" "));
+    }
+  } else if (atLine) {
+    for (const x of rep.rows) {
+      addRow([boardEl(x.board), fmt(x.weight, 2), gl(x.global), fmt(x.ev_oop, 2), fmt(x.ev_ip, 2), ...freqCells(x)],
+        x.freqs, "", x.error || "");
+      if (cards && x.cards) {
+        for (const c of x.cards) {
+          const lab = el("span", "jr-card");
+          for (const k of c.cards) lab.appendChild(cardEl(k, "xs"));
+          addRow([lab, "", gl(c.global), fmt(c.ev_oop, 2), fmt(c.ev_ip, 2), ...freqCells(c)], c.freqs, "sub");
+        }
+      }
     }
   } else {
     for (const x of rep.rows) {
       addRow([boardEl(x.board), fmt(x.weight, 2), fmt(x.ev_oop, 2),
         x.exploitability != null && rep.pot ? fmt((100 * x.exploitability) / rep.pot, 2) + "%" : "—",
-        ...(x.freqs ? x.freqs.map(pct) : rep.labels.map(() => "—"))], x.freqs);
+        ...freqCells(x)], x.freqs);
     }
   }
   if (rep.total && rep.total.freqs) {
-    addRow(by ? ["All flops", String(rep.total.flops), fmt(rep.total.weight, 2), fmt(rep.total.ev_oop, 2), ...rep.total.freqs.map(pct)]
-      : [`Weighted (${rep.total.flops})`, fmt(rep.total.weight, 2), fmt(rep.total.ev_oop, 2), "", ...rep.total.freqs.map(pct)],
-    rep.total.freqs, "total");
+    const T = rep.total;
+    let cells;
+    if (atLine) cells = by ? ["All flops", String(T.flops), fmt(T.weight, 2), fmt(T.ev_oop, 2), fmt(T.ev_ip, 2)]
+      : [`Weighted (${T.flops})`, fmt(T.weight, 2), gl(T.global), fmt(T.ev_oop, 2), fmt(T.ev_ip, 2)];
+    else cells = by ? ["All flops", String(T.flops), fmt(T.weight, 2), fmt(T.ev_oop, 2)]
+      : [`Weighted (${T.flops})`, fmt(T.weight, 2), fmt(T.ev_oop, 2), ""];
+    addRow([...cells, ...T.freqs.map(pct)], T.freqs, "total");
   }
   t.appendChild(tb);
-  $("jr-note").textContent = "Frequencies are over the acting player's whole range at the first decision; groups and the " +
-    "total are weighted by the flop weights. Command line: python3 tools/jobs.py report " + JSON.stringify(rep.batch) +
+  const missing = rep.rows.filter((x) => x.error);
+  const cmd = "python3 tools/jobs.py report " + JSON.stringify(rep.batch) + (rep.line ? ` --line ${rep.line}` : "") +
     (by ? ` --by ${by}` : "") + " --csv FILE";
+  $("jr-note").textContent = (atLine
+    ? "Frequencies are over the acting player's range at this line, each hand weighted by its matchups; Global is how " +
+      "often the line is reached. A card (or *) in the line means every card dealt there; a flop's row rolls its cards up. "
+    : "Frequencies are over the acting player's whole range at the first decision, each hand weighted by its matchups. ") +
+    "Groups and the total weight each flop by its weight and matchups, as PioViewer's aggregation report does." +
+    (missing.length ? ` ${missing.length} flop(s) without this line: ${missing[0].board}: ${missing[0].error}.` : "") +
+    " Command line: " + cmd;
 }
 
 export function showJobs(on) {
@@ -265,6 +319,9 @@ export function initJobs({ opened }) {
   $("jb-add").onclick = addBatch;
   $("jr-close").onclick = () => $("jobs-report").close();
   $("jr-by").onchange = renderReport;
+  $("jr-cards").onchange = renderReport;
+  $("jr-line-go").onclick = () => loadReport();
+  $("jr-line").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); loadReport(); } };
   $("jb-acc").value = prefs.get("jobs-acc", "0.5");
   $("jb-acc").oninput = () => prefs.set("jobs-acc", $("jb-acc").value);
   loadFlopFiles();

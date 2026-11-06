@@ -307,6 +307,12 @@
 <dialog id="jobs-report" class="dialog wide">
   <div class="card-head"><h2 id="jr-title">Report</h2><button class="btn ghost small" id="jr-close">Close</button></div>
   <div class="jr-head"><p id="jr-sub" class="muted"></p><select id="jr-by" title="Group the flops by texture"></select></div>
+  <div class="jr-head jr-line-row">
+    <input id="jr-line" type="text" spellcheck="false" placeholder="Line, e.g. r:0:b198:c:2d:c:b447 (empty: the first decision)"
+      title="A node id from Study. A card (or *) means every card dealt there, like PioViewer's turn report">
+    <button class="btn small" id="jr-line-go">Report at line</button>
+    <label id="jr-cards-wrap" class="hidden"><input type="checkbox" id="jr-cards"> Show each card</label>
+  </div>
   <div class="jobs-table-wrap"><table class="jobs-table" id="jr-table"></table></div>
   <p id="jr-note" class="hint"></p>
 </dialog>

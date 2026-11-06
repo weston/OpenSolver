@@ -8,7 +8,7 @@ thread, each in its own solver process: the viewer's own solver stays free for b
 Endpoints (GET unless marked POST):
     /api/jobs/state                     queue, batches, runner state, current job progress, log
     /api/jobs/flop_files                flop files in the --flops-dir folder (name, board count)
-    /api/jobs/report?batch=NAME         root strategy per flop and the weighted average
+    /api/jobs/report?batch=NAME[&line=L] strategy per flop at the root or a line (#325), weighted average
     /api/jobs/add          POST         {name, tree: <Build form body>, flops | flops_file,
                                          accuracy (% pot), max_iters?, save?}
     /api/jobs/run          POST         {ids?: [...], batch?}  start the runner
@@ -272,7 +272,10 @@ class JobsService:
             return 200, self.flop_files()
         if sub == "/report":
             name = query.get("batch", [""])[0]
+            line = query.get("line", [""])[0]
             try:
+                if jobs.parse_line(line):
+                    return 200, jobs.line_report(self.q, name, line, self.solver_exe)
                 return 200, jobs.report(self.q, name, self.solver_exe)
             except jobs.JobError as e:
                 raise vsrv.SolverError(str(e))

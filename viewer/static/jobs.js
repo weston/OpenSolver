@@ -145,7 +145,13 @@ async function loadFlopFiles() {
 }
 
 async function addBatch() {
-  const info = (h, err) => { $("jb-info").innerHTML = err ? `<span class="err">${h}</span>` : h; };
+  const info = (h, err) => {  // an error is plain text (#384)
+    if (!err) { $("jb-info").innerHTML = h; return; }
+    const s = document.createElement("span");
+    s.className = "err";
+    s.textContent = h;
+    $("jb-info").replaceChildren(s);
+  };
   let tree;
   try { tree = currentTree(); } catch (e) { info(String(e.message || e), true); return; }
   const name = $("jb-name").value.trim();

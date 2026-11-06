@@ -264,8 +264,11 @@ function loadForm() {
 function applyForm(f) {
   editors.OOP.setText(f && f.range_oop != null ? f.range_oop : DEFAULTS.OOP);
   editors.IP.setText(f && f.range_ip != null ? f.range_ip : DEFAULTS.IP);
-  board = f && typeof f.board === "string" ? f.board.match(/../g) || [] : [...DEFAULTS.board];
-  if (f && f.accuracy != null && Number.isFinite(Number(f.accuracy))) $("f-accuracy").value = f.accuracy;
+  board = f && typeof f.board === "string" ? cleanBoard(f.board) : [...DEFAULTS.board];
+  if (f && f.accuracy != null && Number.isFinite(Number(f.accuracy))) {
+    $("f-accuracy").value = f.accuracy;
+    prefs.set("accuracy", $("f-accuracy").value);  // 3. as typing does: an opened spot survives a reload (#384)
+  }
   if (f) {
     const set = (id, v) => { if (v != null && Number.isFinite(v)) $(id).value = v; };
     set("f-pot", f.pot); set("f-stack", f.stack);
@@ -383,7 +386,22 @@ function setBusy(b, label) {
   $("btn-resume").disabled = b || !treeReady;
   if (label) info(label);
 }
-function info(html, err = false) { $("build-info").innerHTML = err ? `<span class="err">${html}</span>` : html; }
+/** A status line: html for our own messages; an error is plain text (it can echo server or file input, #384). */
+function info(html, err = false) {
+  const box = $("build-info");
+  if (!err) { box.innerHTML = html; return; }
+  const s = document.createElement("span");
+  s.className = "err";
+  s.textContent = html;
+  box.replaceChildren(s);
+}
+
+/** A saved/imported board: 0-5 distinct valid cards, else none (#384). */
+function cleanBoard(text) {
+  const cards = typeof text === "string" ? text.replace(/\s+/g, "").match(/../g) || [] : [];
+  const ok = cards.length <= 5 && cards.every((c) => /^[2-9TJQKA][cdhs]$/.test(c)) && new Set(cards).size === cards.length;
+  return ok ? cards : [];
+}
 
 function memLine(text) {
   const m = /([\d.]+)\s*(MB|GB|KB)/i.exec(text || "");

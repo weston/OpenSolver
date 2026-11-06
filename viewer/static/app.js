@@ -41,6 +41,14 @@ function toggleTheme() {
 
 /* ------------------------------------------------------------------ polling */
 
+/** A tree was built, loaded or opened from a job: drop the old tree's convergence. The server clears
+ *  its series too, but its event counter doesn't change, so the poll would keep ours (#384). */
+function freshTree() {
+  app.series = [];
+  app.lastEvents = -1;
+  drawSpark($("pill-spark"), app.series, app.rootPot);
+}
+
 async function refreshRootPot() {
   try {
     const p = await get("/api/path?id=r:0");
@@ -50,8 +58,17 @@ async function refreshRootPot() {
 }
 
 async function poll() {
+  try {
+    await pollOnce();
+  } catch (e) {
+    console.warn("poll", e);  // #384: one bad poll used to stop polling for good
+  }
+  schedule();
+}
+
+async function pollOnce() {
   let st;
-  try { st = await get("/api/progress"); } catch (e) { setPill("offline", "Server offline"); schedule(); return; }
+  try { st = await get("/api/progress"); } catch (e) { setPill("offline", "Server offline"); return; }
   const wasSolving = app.solving;
   app.solving = st.solving;
   if (st.tree && !app.tree) { app.tree = true; await refreshRootPot(); }
@@ -90,7 +107,6 @@ async function poll() {
       : pct != null ? `Solve finished at ${fmt(pct, 2)}% of the pot` : "Solve finished");
     if (app.view === "study" && app.tree) study.refresh();
   }
-  schedule();
 }
 let timer = null;
 function schedule() { clearTimeout(timer); timer = setTimeout(poll, app.solving ? 900 : 2500); }
@@ -119,6 +135,7 @@ function fileDialog(mode) {
       if (mode === "open") {
         await post("/api/load", { path });
         app.tree = true;
+        freshTree();
         treeLoadedElsewhere();
         await refreshRootPot();
         toast("Opened " + path + " — later streets load as you browse");
@@ -168,9 +185,10 @@ async function boot() {
     setView("jobs");
     try { await openReport(app.loadedBatch, line); } catch (e) { fail(e); }
   };
-  initBuild({ built: async () => { app.tree = true; await refreshRootPot(); study.reset(); } });
+  initBuild({ built: async () => { app.tree = true; freshTree(); await refreshRootPot(); study.reset(); } });
   initJobs({ opened: async () => {
     app.tree = true;
+    freshTree();
     treeLoadedElsewhere();
     await refreshRootPot();
     setView("study");

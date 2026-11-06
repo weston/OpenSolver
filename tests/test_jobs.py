@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for tools/jobs.py, the solve queue (#196).  usage: python3 tests/test_jobs.py [./solver]"""
 
+import csv
 import io
 import json
 import os
@@ -431,6 +432,35 @@ def integration(solver):
         check(rc == 0 and "at the root" in out and "Preflop Hands OOP" in hl and "Preflop Hands IP" in hl
               and hl[hl.index("Preflop Hands OOP") + 1].startswith("Hand,EV,Equity,Equity Realization,Matchups"),
               f"--hands writes PioViewer's handsEV layout ({rc}, {hl[:3]})")
+        print("[report: per-combo Full files (#346)]")
+        pre = os.path.join(td, "rep")
+        rc, out = cli("report", "srp", "--full", pre, "--solver", solver)
+        with open(pre + "_OOP_Full.csv") as f:
+            fo = list(csv.reader(f))
+        with open(pre + "_IP_Full.csv") as f:
+            fi = list(csv.reader(f))
+        check(rc == 0 and fo[0] == ["Flop", "Hand", "Weight OOP", "OOP EV", "bet 50 (50%) freq", "check freq", "EV chips"]
+              and fi[0] == ["Flop", "Hand", "Weight IP", "IP EV", "EV chips"], f"Full headers ({fo[0]}, {fi[0]})")
+        check(all(abs(float(r[4]) + float(r[5]) - 100) < 0.05 for r in fo[1:]), "the actor's frequencies sum to 100")
+        # independently: the combos with weight on Kh9h4h, from show_range of the save
+        s = vserver.Solver(solver)
+        try:
+            s.cmd(f'load_tree "{q.job("00001")["out"]}"')
+            order = s.cmd("show_hand_order").split()
+            ro = [float(x) for x in s.cmd("show_range OOP r:0").split()]
+        finally:
+            jobs.close_solver(s)
+        board = {"Kh", "9h", "4h"}
+        want = {h: w for h, w in zip(order, ro) if w > 0 and h[:2] not in board and h[2:] not in board}
+        got = {r[1]: float(r[2]) for r in fo[1:] if r[0] == "Kh 9h 4h"}
+        check(set(got) == set(want) and all(abs(got[h] - want[h]) < 1e-3 for h in want),
+              f"one row per combo in range, weight = show_range ({len(got)} vs {len(want)})")
+        check(len({r[0] for r in fo[1:]}) == 3 and "full: " in out, "every flop")
+        rc, out = cli("report", "srp", "--line", "c c *", "--full", pre + "t", "--solver", solver)
+        with open(pre + "t_OOP_Full.csv") as f:
+            ft = list(csv.reader(f))
+        check(rc == 0 and ft[0][:3] == ["Flop", "Turn", "Hand"] and all(len(r[1]) == 2 for r in ft[1:])
+              and len({(r[0], r[1]) for r in ft[1:]}) == 3 * 49, f"a turn line: one block per flop and turn ({ft[0]})")
         bad = jobs.line_report(q, "srp", "b77", solver)
         check(all(r["freqs"] is None and "no action b77" in r["error"] for r in bad["rows"]) and not bad["total"],
               f"an action not in the tree is reported per flop ({bad['rows'][0]['error']})")

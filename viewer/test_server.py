@@ -502,7 +502,11 @@ class ViewerTest(unittest.TestCase):
         st, d = self.req("/api/build", "POST", {})
         self.assertEqual(st, 200, d)
         st, d = self.req("/api/node?id=r:0")
-        self.assertEqual([c["id"] for c in d["children"]], ["r:0:b33"])  # no check, 30% merged away
+        self.assertEqual([c["id"] for c in d["children"]], ["r:0:b33", "r:0:c"])  # 30% merged into 33%
+        # ForceOOPBet: no line starts with a check, so after one (which the solver adds everywhere,
+        # as Pio does from the same lines) IP has no bet
+        st, d = self.req("/api/node?id=r:0:c")
+        self.assertEqual([c["id"] for c in d["children"]], ["r:0:c:c"])
         # only the listed PioViewer keys pass, one line each
         for bad in (["#Pot#1"], ["set_board AhKhQh"], ["#MergeSimilarBets#True\nset_pot 0 0 1"], "x"):
             st, d = self.req("/api/generate", "POST", dict(CFG, pio_extra=bad))

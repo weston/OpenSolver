@@ -284,6 +284,10 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
   equity in % of the node's pot, plus EV in chips). Each combo counts by reach × matchups on every flop, which
   reproduces PioViewer's own handsEV figures from its per-combo files exactly. It works at the root too (the saves
   are read once, like a line).
+- **Per combo** (#346): `report NAME [--line L] --full PREFIX` writes PioViewer's `PREFIX_OOP_Full.csv` and
+  `PREFIX_IP_Full.csv`: one row per flop (and card, at a turn line) per combo in range, with its weight, EV (% of the
+  node's pot, plus chips) and the acting player's frequencies. One pass over the saves, not cached; a 102-flop turn
+  report is millions of rows, as in PioViewer.
 - A job that fails (the solver errors or exits) is marked `failed` with the error and the run goes on.
   Ctrl-C or `stop --now` puts the current job back in the queue, also mid-build (the job's solver is ended); a
   stop once the solve is over lets its save finish first, so the solve is kept. One runner at a time (a lock in the queue directory).

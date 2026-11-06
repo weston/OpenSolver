@@ -947,6 +947,83 @@ def write_hands_csv(rep: dict, path: str) -> None:
             w.writerow([])
 
 
+def write_full(q: Queue, name: str, line: str, solver_exe: str, prefix: str, progress=None) -> dict:
+    """PioViewer's per-combo report files (#346): PREFIX_OOP_Full.csv and PREFIX_IP_Full.csv, one row per
+    flop (and card, at a * step) per combo the player holds there: Flop[,Turn],Hand,Weight <P>,<P> EV
+    (% of the node's pot), then the acting player's action frequencies (%), and EV in chips last. Combos
+    with no weight or blocked by the node's board are left out, as in PioViewer's files. One streaming
+    pass over the saves, nothing cached. Returns {"rows": {OOP: n, IP: n}, "flops": n, "skipped": [...]}."""
+    import math
+    import server as vserver
+    steps = parse_line(line)
+    js = [j for j in q.jobs(name) if j["status"] == "done"]
+    ncard = steps.count("*")
+    card_cols = (["Turn", "River"][:ncard] if ncard <= 2 else [f"Card {i + 1}" for i in range(ncard)])
+    files = {p: open(f"{prefix}_{p}_Full.csv", "w", newline="") for p in ("OOP", "IP")}
+    writers = {p: csv.writer(f) for p, f in files.items()}
+    head = None
+    counts = {"OOP": 0, "IP": 0}
+    skipped = []
+    done = 0
+    try:
+        for i, j in enumerate(js):
+            if progress:
+                progress(i, len(js), j["board"])
+            s = None
+            try:
+                s = vserver.Solver(solver_exe)
+                s.cmd(f'load_tree "{j["out"]}"', timeout=3600)
+                order = vserver.hand_order(s)
+                for nid, cards in walk_line(s, steps):
+                    node = vserver.parse_node_block(s.cmd(f"show_node {nid}"))
+                    actor = {"OOP_DEC": "OOP", "IP_DEC": "IP"}.get(node["type"])
+                    if actor is None:
+                        raise JobError(f"{nid} is not a decision ({node['type']})")
+                    acts = [_child_step(k["id"]) for k in vserver.parse_children(s.cmd(f"show_children {nid}"))]
+                    potv = [x for x in node["pot"] if x is not None]
+                    pot = sum(potv)
+                    facing = abs(potv[0] - potv[1]) if len(potv) >= 2 else 0
+                    if head is None:
+                        head = {"actor": actor, "actions": acts}
+                        labels = [action_label(a, pot, facing) for a in acts]
+                        for p in ("OOP", "IP"):
+                            writers[p].writerow(["Flop"] + card_cols + ["Hand", f"Weight {p}", f"{p} EV"] +
+                                                ([f"{l} freq" for l in labels] if p == actor else []) + ["EV chips"])
+                    elif acts != head["actions"] or actor != head["actor"]:
+                        continue  # a different decision under one card: left out, as in the line report
+                    board = set(node["board"].split())
+                    strat = [[float(x) for x in l.split()] for l in s.cmd(f"show_strategy {nid}").splitlines() if l.strip()]
+                    flop = " ".join(j["board"][k:k + 2] for k in range(0, 6, 2))
+                    for p in ("OOP", "IP"):
+                        reach = vserver.parse_floats(s.cmd(f"show_range {p} {nid}"), len(order))
+                        ev = vserver.ev_pair(s, p, nid)["ev"]
+                        for h, combo in enumerate(order):
+                            w = reach[h]
+                            if not w or w <= 0 or combo[:2] in board or combo[2:] in board:
+                                continue
+                            v = ev[h]
+                            okv = v is not None and math.isfinite(v)
+                            row = [flop] + cards + [""] * (ncard - len(cards)) + [
+                                combo, round(w, 3), round(100 * v / pot, 4) if okv and pot else ""]
+                            if p == actor:
+                                row += [round(100 * r[h], 2) for r in strat]
+                            row.append(round(v, 4) if okv else "")
+                            writers[p].writerow(row)
+                            counts[p] += 1
+                done += 1
+            except (JobError, vserver.SolverError, OSError, ValueError, IndexError) as e:
+                skipped.append({"board": j["board"], "error": str(e)[:300]})
+            finally:
+                if s is not None:
+                    close_solver(s)
+        if progress:
+            progress(len(js), len(js), None)
+    finally:
+        for f in files.values():
+            f.close()
+    return {"rows": counts, "flops": done, "skipped": skipped}
+
+
 def print_line_report(rep: dict, by: str | None = None, cards: bool = False, csv_path: str | None = None) -> None:
     """The CLI table of a line report; the CSV has PioViewer's layout (Flop, Turn, Global %, EVs, freqs:
     a flop row with an empty card, then its cards' rows, then the weighted total)."""
@@ -1307,6 +1384,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="report at this line instead of the root: a node id like r:0:b198:c:2d:c:b447, where a "
                          "card (or *) means every card dealt there, as in PioViewer's aggregation report")
     rp.add_argument("--cards", action="store_true", help="with --line through a card: also print each card's row")
+    rp.add_argument("--full", metavar="PREFIX", help="also write PioViewer's per-combo files PREFIX_OOP_Full.csv and "
+                    "PREFIX_IP_Full.csv (weight, EV, the actor's frequencies per combo per flop; reads every save)")
     rp.add_argument("--hands", metavar="FILE", help="also write each hand class's EV, equity, realization and "
                     "matchups over the batch as CSV (PioViewer's handsEV.csv; at the root too, reading the saves)")
 
@@ -1383,13 +1462,22 @@ def main(argv: list[str] | None = None) -> int:
                 w.writerow(row)
             if args.output:
                 out.close()
-        elif args.cmd == "report" and (parse_line(args.line) or args.hands):
+        elif args.cmd == "report" and (parse_line(args.line) or args.hands or args.full):
             exe = os.path.abspath(args.solver) if os.path.isfile(args.solver) else None
             rep = line_report(q, args.name, args.line, exe, root=True)
             print_line_report(rep, args.by, args.cards, args.csv)
             if args.hands:
                 write_hands_csv(rep, args.hands)
                 print(f"hands: {sum(len(v) for v in rep['hands'].values())} classes -> {args.hands}")
+            if args.full:
+                if not exe:
+                    raise JobError("--full reads the saves: give --solver")
+                res = write_full(q, args.name, args.line, exe, args.full,
+                                 progress=lambda d, t, b: b and print(f"  full: {d + 1}/{t} {b}", file=sys.stderr))
+                print(f"full: {res['rows']['OOP']} OOP and {res['rows']['IP']} IP rows over {res['flops']} flops -> "
+                      f"{args.full}_OOP_Full.csv, {args.full}_IP_Full.csv")
+                for x in res["skipped"]:
+                    print(f"  skipped {x['board']}: {x['error']}")
         elif args.cmd == "report":
             rep = report(q, args.name, os.path.abspath(args.solver) if os.path.isfile(args.solver) else None)
             labels = rep["labels"]

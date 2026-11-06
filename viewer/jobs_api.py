@@ -56,6 +56,8 @@ class JobsService:
         self.point = None      # its latest progress point
         self.log = collections.deque(maxlen=200)
         self.last_error = None
+        # line reports reading saves in the background (#333): (batch, line key) -> task
+        self.reports = {}
 
     # ---- runner thread
     def _log(self, msg):
@@ -263,6 +265,45 @@ class JobsService:
             raise vsrv.SolverError("that job has no save yet")
         return vsrv.api(solver, None, "POST", "/api/load", {}, {"path": j["out"]})[1] | {"board": j["board"]}
 
+    def line_report(self, name, line):
+        """A report at a line (#325). If every save's result at the line is cached it is answered at
+        once; otherwise the saves are read in a background task (one per batch and line) and this
+        answers {"reading": true, "progress": {done, total, board}} until it has finished (#333). Then
+        the report is built from the job cache, so it is never older than the queue."""
+        key = ":".join(jobs.parse_line(line))
+        tid = (name, key)
+        with self.mu:
+            t = self.reports.get(tid)
+            if t is not None and t["finished"]:
+                del self.reports[tid]
+                if t["error"]:
+                    raise vsrv.SolverError(t["error"])
+            elif t is not None:
+                return {"reading": True, "line": key, "progress": dict(t["progress"])}
+        # just read in the background, or all cached: build it now (a save that failed to read isn't
+        # cached and is tried again here, once, rather than starting another task)
+        if t is not None or not jobs.line_uncached(self.q, name, line):
+            return jobs.line_report(self.q, name, line, self.solver_exe)
+        if not self.solver_exe:
+            raise vsrv.SolverError("no solver to read the saves with")
+        with self.mu:
+            if tid in self.reports:  # started meanwhile by another request
+                return {"reading": True, "line": key, "progress": dict(self.reports[tid]["progress"])}
+            t = {"progress": {"done": 0, "total": None, "board": None}, "finished": False, "error": None}
+            self.reports[tid] = t
+
+        def prog(done, total, board):
+            t["progress"] = {"done": done, "total": total, "board": board}
+
+        def work():
+            try:
+                jobs.line_report(self.q, name, line, self.solver_exe, progress=prog)
+            except Exception as e:  # noqa: BLE001 - shown to whoever asks next
+                t["error"] = str(e) or type(e).__name__
+            t["finished"] = True
+        threading.Thread(target=work, name=f"report {name} {key}", daemon=True).start()
+        return {"reading": True, "line": key, "progress": dict(t["progress"])}
+
     def loaded(self, solver):
         """The finished job whose save the viewer has open, if any: {id, batch, board} or {} (the Study
         tab's Report button, #331: an aggregate report at the node you are looking at)."""
@@ -289,7 +330,7 @@ class JobsService:
             line = query.get("line", [""])[0]
             try:
                 if jobs.parse_line(line):
-                    return 200, jobs.line_report(self.q, name, line, self.solver_exe)
+                    return 200, self.line_report(name, line)
                 return 200, jobs.report(self.q, name, self.solver_exe)
             except jobs.JobError as e:
                 raise vsrv.SolverError(str(e))

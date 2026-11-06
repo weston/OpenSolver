@@ -153,14 +153,33 @@ class JobsApiTest(unittest.TestCase):
         st, d = self.req("/api/jobs/report?batch=nope")
         self.assertEqual(st, 400)
         # at a line (#325): the first action's child, then every turn under a check-check flop
+        # the saves are read in the background (#333): "reading" with progress, then the report
+        def line_report(line):
+            seen = []
+            for _ in range(600):
+                st, r = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(line))
+                self.assertEqual(st, 200, r)
+                if not r.get("reading"):
+                    return r, seen
+                seen.append(r["progress"])
+                time.sleep(0.05)
+            self.fail("the line report never finished")
         a0 = rep["actions"][0]
-        st, lr = self.req("/api/jobs/report?batch=srp&line=" + a0)
-        self.assertEqual(st, 200, lr)
+        lr, seen = line_report(a0)
+        self.assertTrue(seen and all(p["total"] in (None, 3) for p in seen) and seen[0]["done"] == 0,
+                        f"the first request starts a task and answers with its progress ({seen[:3]})")
         self.assertEqual((lr["line"], len(lr["rows"])), (a0, 3), lr)
         self.assertTrue(all(x["global"] is not None and x["freqs"] for x in lr["rows"]), lr["rows"])
+        lr2, seen2 = line_report(a0)
+        self.assertEqual((seen2, lr2["rows"]), ([], lr["rows"]), "cached: answered at once")
+        # two requests while it reads share one task
+        st, r1 = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote("r:0:" + a0 + ":c"))
+        st, r2 = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote(a0 + " c"))
+        self.assertTrue(r1.get("reading") and (r2.get("reading") or r2.get("rows") is not None), (r1, r2))
+        self.assertEqual(len([t for t in threading.enumerate() if t.name.startswith("report srp")]) <= 1, True)
+        line_report(a0 + ":c")
         if "c" in rep["actions"]:
-            st, tl = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote("r:0:c:c:*"))
-            self.assertEqual(st, 200, tl)
+            tl, _ = line_report("r:0:c:c:*")
             self.assertTrue(all(len(x["cards"]) == 49 for x in tl["rows"]), [len(x["cards"] or []) for x in tl["rows"]])
         st, d = self.req("/api/jobs/report?batch=srp&line=" + urllib.parse.quote("b50 x7"))
         self.assertEqual(st, 400, "a malformed line is refused")

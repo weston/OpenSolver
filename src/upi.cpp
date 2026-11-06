@@ -372,10 +372,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   out_raw("SOLVER: started\n");
   double best_e = std::numeric_limits<double>::infinity();  // 16-bit stall detection (#182)
   int stalled = 0;
-  if (info_auto_) {
-    next_report_ = (sub ? 0 : tree_->iterations) + 10;
-    auto_sched_ = AutoReportSchedule{};
-  }
+  bool sched_auto = false;  // the auto report schedule is set up (read under tree_mu_ below, #364)
   auto t0 = std::chrono::steady_clock::now();
   double base = sub ? 0.0 : solve_seconds_;
   long long done = 0;
@@ -410,6 +407,15 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
     RootStats st{};
     {
       std::lock_guard<std::mutex> lk(tree_mu_);
+      // set_info_freq changes info_auto_ under this lock (TreePause): start the auto schedule when it is
+      // on, also if it was turned on mid-solve (#364: read at thread start, it raced the setter)
+      if (info_auto_ != sched_auto) {
+        sched_auto = info_auto_;
+        if (sched_auto) {
+          next_report_ = (sub ? done : tree_->iterations) + 10;
+          auto_sched_ = AutoReportSchedule{};
+        }
+      }
       // DCFR discount clock: the tree's own counter for a whole solve (restarted when the payoff
       // model changes), a fresh 1..N for a subtree solve (exactly what solve_partial does).
       if (sub) {

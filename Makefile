@@ -50,6 +50,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 viewer/test_locks.py ./solver
 	python3 viewer/test_nl_lock.py ./solver
 	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
+	if command -v node >/dev/null; then node viewer/test_sizes_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_sizes_js.mjs; else echo "node not found: skipping viewer/test_sizes_js.mjs"; fi
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 
@@ -70,6 +71,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	python3 viewer/test_locks.py ./solver
 	python3 viewer/test_nl_lock.py ./solver
 	if command -v node >/dev/null; then node viewer/test_lock_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_lock_js.mjs; else echo "node not found: skipping viewer/test_lock_js.mjs"; fi
+	if command -v node >/dev/null; then node viewer/test_sizes_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_sizes_js.mjs; else echo "node not found: skipping viewer/test_sizes_js.mjs"; fi
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 

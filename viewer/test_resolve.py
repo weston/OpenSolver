@@ -162,6 +162,51 @@ class SizeFormsTest(unittest.TestCase):
             with self.assertRaises(vsrv.SolverError, msg=bad):
                 vresolve._field_sizes({"flop_bet": bad}, "flop_bet")
 
+    def test_field_sizes_match_the_form(self):
+        """#354: the server accepts exactly the form's grammar (sizes.js SIZE_RE / RAISE_RE) and bounds."""
+        for bad in (".5", "0", "5.", "+5", "1_0", "-0", "allin", "0.5x", "0e50", "2e200000", "100001"):
+            with self.assertRaises(vsrv.SolverError, msg=bad):
+                vresolve._field_sizes({"flop_raise": bad}, "flop_raise", allow_mult=True)
+        self.assertEqual(vresolve._field_sizes({"flop_bet": "33 75"}, "flop_bet"), "33,75")
+        # the same patterns as the form: read sizes.js and compare on a mixed list
+        import re
+        js = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "sizes.js")).read()
+        pats = dict(re.findall(r"export const (SIZE_RE|RAISE_RE) = /\^\((.*)\)\$/i;", js))
+        self.assertEqual(set(pats), {"SIZE_RE", "RAISE_RE"})
+        cases = ["33", "0.5", ".5", "5.", "e", "2e", "e50", "2e75", "2e0", "0e50", "3x", "1.5x", "0.5x", "a",
+                 "allin", "+5", "-0", "1_0", "x", "ee", "2e.a", "100", "0.05"]
+        for name, srv in (("SIZE_RE", vsrv.SIZE_RE), ("RAISE_RE", vsrv.RAISE_RE)):
+            form = re.compile(pats[name].replace("(", "(?:").replace("(?:?:", "(?:"), re.I)
+            for c in cases:
+                self.assertEqual(bool(form.fullmatch(c)), bool(srv.fullmatch(c)), f"{name} {c}")
+
+    def test_pio_extra_one_line_only(self):
+        """#354: Python's splitlines also splits on \\u2028, \\x0b, \\x85 ...: such a line is refused."""
+        self.assertEqual(vsrv.pio_extra_lines({"pio_extra": ["#MergeSimilarBets#True"]}), ["#MergeSimilarBets#True"])
+        for sep in (" ", "\x0b", "\x0c", "\x1c", "\x85"):
+            with self.assertRaises(vsrv.SolverError, msg=repr(sep)):
+                vsrv.pio_extra_lines({"pio_extra": [f"#MergeSimilarBets#True{sep}#Pot#5000"]})
+
+    def test_turn_root_keeps_hand_edits(self):
+        """#354: a turn board's tree applies RemovedLines like the flop's does."""
+        body = {"range_oop": "AA", "range_ip": "KK", "pot": 100, "stack": 1000, "board": "Kh9h4c2d",
+                "turn_bet": "50", "turn_bet_ip": "50", "river_bet": "50", "river_bet_ip": "50",
+                "allin_threshold": 67, "add_allin_limit": 300}
+        _, lines = vsrv.setup_from_body(body)
+        leads = lambda ls: [l for l in ls if l.strip().split()[1] == "50"]  # OOP's bet at the turn root
+        self.assertTrue(leads(lines), lines)
+        _, lines2 = vsrv.setup_from_body({**body, "pio_extra": ["#RemovedLines_2#Bet 50"]})
+        self.assertFalse(leads(lines2), lines2)
+        self.assertTrue(lines2, "the rest of the tree stays")
+
+    def test_allin_numbers_exact_and_positive(self):
+        tb = vsrv.load_tree_builder()
+        h = vsrv.sizing_header({"allin_threshold": 123456789, "add_allin_limit": 300}, tb)
+        self.assertIn("#AllinThreshold#123456789.0", h)
+        for bad in (0, -5):
+            with self.assertRaises(vsrv.SolverError):
+                vsrv.sizing_header({"allin_threshold": bad}, tb)
+
     def test_size_key_orders_mixed_forms(self):
         self.assertEqual(sorted(["a", "3x", "2e", "75", "33", "e"],
                                 key=vresolve._size_key),

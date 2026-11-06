@@ -144,6 +144,8 @@ def parse_size(part: str, chips: bool = False) -> SizeSpec:
         return SizeSpec("allin", text="allin")
     if m:
         # `NeP`: geometric over N streets, at most P% of the pot (see SIZING_RULES).
+        if m.group(1) and int(m.group(1)) < 1:
+            raise ValueError(f"bad geometric size {part!r} (want N >= 1)")
         return SizeSpec("geo", Decimal(m.group(1)) if m.group(1) else None, Decimal(m.group(2)), text=token)
     if token.endswith("e"):
         n = token[:-1]
@@ -564,6 +566,11 @@ def _children(cfg: Config, node: Node) -> list[tuple[int, Node | None, bool]]:
     return kept
 
 
+# Upper bound on the actions build_lines walks (#354): the largest real PioViewer config here walks a few
+# thousand; a runaway one (two sizes everywhere, 1000:1 stack-to-pot) would otherwise run for minutes.
+MAX_TREE_ACTIONS = 2_000_000
+
+
 def build_lines(cfg: Config, start: Node | None = None) -> list[list[int]]:
     """Every maximal line of the tree described by `cfg`.
 
@@ -581,8 +588,14 @@ def build_lines(cfg: Config, start: Node | None = None) -> list[list[int]]:
     """
     candidates: list[tuple[int, ...]] = []
 
+    visits = [0]
+
     def walk(node: Node, history: list[int]) -> None:
         for amount, nxt, aggressive in _children(cfg, node):
+            visits[0] += 1
+            if visits[0] > MAX_TREE_ACTIONS:
+                raise ValueError(f"tree too large: over {MAX_TREE_ACTIONS} actions (fewer sizes, or a "
+                                 "lower all-in threshold)")
             history.append(amount)
             if aggressive:
                 candidates.append(tuple(history))

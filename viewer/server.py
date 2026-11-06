@@ -858,6 +858,13 @@ def no_newlines(value, name):
     return value
 
 
+# The Build form's size grammar (viewer/static/sizes.js SIZE_RE / RAISE_RE): the server accepts exactly
+# what the form does (#354), so a request can't build a size the form would have refused, nor the reverse.
+_NUM = r"(?:[1-9]\d*(?:\.\d+)?|0\.\d*[1-9]\d*)"
+SIZE_RE = re.compile(rf"(?:{_NUM}|(?:[1-9]\d*)?e{_NUM}?|a)", re.I)
+RAISE_RE = re.compile(rf"(?:{_NUM}|(?:[1-9]\d*)?e{_NUM}?|[1-9]\d*(?:\.\d+)?x|a)", re.I)
+
+
 def _check_sizes(tb, b, key, allow_mult=True):
     """A size list in tools/tree_builder.py's grammar (#114, #315): percentages, geometric Ne / NeP,
     raise multiples Nx (raise fields only), a; entries separated by commas, spaces or both, as
@@ -866,6 +873,10 @@ def _check_sizes(tb, b, key, allow_mult=True):
     if not val:
         return ""
     parts = [p for p in re.split(r"[,\s]+", val) if p]
+    form_re = RAISE_RE if allow_mult else SIZE_RE
+    if any(not form_re.fullmatch(p) for p in parts):
+        raise SolverError(f"bad sizes in {key} "
+                          "(want percentages, geometric Ne, raise multiples Nx, or a)")
     try:
         specs = tb.parse_size_list(val)
     except ValueError:
@@ -914,8 +925,11 @@ def sizing_header(b, tb):
         add_allin_limit = float(b.get("add_allin_limit", 300))
     except (TypeError, ValueError):
         raise SolverError("bad all-in numbers")
-    header = [f"#AllinThreshold#{allin_threshold:g}",
-              f"#AddAllinOnlyIfLessThanThisTimesThePot#{add_allin_limit:g}"]
+    if not (0 < allin_threshold <= 1e9) or not (0 <= add_allin_limit <= 1e9):
+        raise SolverError("bad all-in numbers (threshold above 0, limit 0 or more)")
+    # repr keeps every digit (:g rounded to 6 figures, #354)
+    header = [f"#AllinThreshold#{allin_threshold!r}",
+              f"#AddAllinOnlyIfLessThanThisTimesThePot#{add_allin_limit!r}"]
     for street, name in (("flop", "Flop"), ("turn", "Turn"), ("river", "River")):
         cap = _raise_cap(b, f"{street}_raisecap")
         for player, sfx in (("", ""), ("IP", "_ip")):
@@ -1213,7 +1227,8 @@ def setup_from_body(b):
         # A 4- or 5-card board starts the tree on the turn or river: the builder must start
         # there too, or its lines run past the end of the hand.
         n_cards = len(board) // 2
-        start = tb.Node(n_cards - 3, (0, 0), tb.OOP, False, None) if n_cards in (4, 5) else None
+        start = (tb.Node(n_cards - 3, (0, 0), tb.OOP, False, None, removed=tuple(cfg.removed_lines),
+                         extra=tuple(cfg.extra_lines)) if n_cards in (4, 5) else None)  # hand edits too (#354)
         lines = tb.format_lines(tb.build_lines(cfg, start))
     except (ValueError, ArithmeticError) as e:
         raise SolverError(f"bad sizes: {e}")
@@ -1250,6 +1265,8 @@ def pio_extra_lines(b):
     out = []
     for line in extra:
         line = no_newlines(str(line), "pio_extra").strip()
+        if len(line.splitlines()) > 1:  # \u2028, \x0b, \x85 ... also split lines in parse_config (#354)
+            raise SolverError("bad pio_extra")
         m = re.fullmatch(r"#([A-Za-z_0-9]+)#.*", line)
         if not m or not any(m.group(1) == k or (k.endswith("_") and m.group(1).startswith(k))
                             for k in PIO_EXTRA_KEYS):
@@ -1279,7 +1296,14 @@ def op_pio_import(b):
     if cfg.pot <= 0 and cfg.stack <= 0:
         raise SolverError("not a PioViewer tree file (no #Pot# / #EffectiveStacks# header)")
     def size_list(specs):
-        return ",".join("a" if s.kind == "allin" else s.text for s in specs)
+        def one(s):
+            if s.kind == "allin":
+                return "a"
+            if s.kind == "pct":  # the form's spelling of a number (#354)
+                v = s.value.normalize()
+                return format(v, "f") if v == v.to_integral() or "." in format(v, "f") else str(v)
+            return s.text
+        return ",".join(one(s) for s in specs)
     form = {"pot": cfg.pot, "stack": cfg.stack, "board": cfg.board,
             "allin_threshold": float(cfg.allin_threshold),
             "add_allin_limit": float(cfg.add_allin_max_pot_mult) if cfg.add_allin_max_pot_mult.is_finite() else 100000}

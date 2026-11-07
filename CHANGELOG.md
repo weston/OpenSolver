@@ -47,7 +47,7 @@ documentation; contains no PioSOLVER code.
 
 ### Build
 
-- `make` builds `./solver`; `make test` runs 271 unit and end-to-end checks; `make test-big` adds the
+- `make` builds `./solver`; `make test` runs the C++ unit tests and the Python end-to-end suites (about 810 checks on 2026-11-06); `make test-big` adds the
   25bb tree.
 - `make release` builds `./solver-release` with LTO. PGO is available behind `PGO=1` but off by
   default: it measures at parity and roughly doubles build time.

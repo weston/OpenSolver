@@ -127,7 +127,7 @@ def unit():
         prog = ("import sys, time; sys.path.insert(0, sys.argv[1]); import jobs\n"
                 "q = jobs.Queue(sys.argv[2]); t = float(sys.argv[3])\n"
                 "time.sleep(max(0, t - time.time()))\n"
-                "try:\n    q.lock(); print('HELD'); time.sleep(1.5); q.unlock()\n"
+                "try:\n    q.lock(); b = time.time(); time.sleep(1.5); e = time.time(); q.unlock(); print('HELD', b, e)\n"
                 "except jobs.JobError:\n    print('REFUSED')\n")
         wins = []
         for trial in range(5):
@@ -135,10 +135,14 @@ def unit():
             ps = [subprocess.Popen([sys.executable, "-c", prog, os.path.join(REPO, "tools"), td, str(go)],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
             outs = [p.communicate(timeout=60) for p in ps]
-            wins.append(sum(o.strip() == "HELD" for o, _ in outs))
+            # no two holds overlap; on Windows a contender may take the lock after the holder let go,
+            # since msvcrt lock waits retry once a second (#400), so this counts overlaps, not holders
+            holds = sorted((float(o.split()[1]), float(o.split()[2])) for o, _ in outs if o.startswith("HELD"))
+            overlap = any(b < e for (_, e), (b, _) in zip(holds, holds[1:]))
+            wins.append(1 if holds and not overlap else f"{len(holds)} holders, overlap={overlap}")
             if any(e.strip() for _, e in outs):
                 wins.append(f"stderr: {[e[-200:] for _, e in outs if e.strip()]}")
-        check(wins == [1] * 5, f"exactly one of four simultaneous runners takes the lock ({wins})")
+        check(wins == [1] * 5, f"of four simultaneous runners, one holds the lock at a time ({wins})")
         q = jobs.Queue(td)
         check(not os.path.exists(q.lock_file), "the holder released the lock")
         setup, _ = jobs.tree_setup(TREE)

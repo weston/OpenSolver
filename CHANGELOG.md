@@ -16,7 +16,7 @@ documentation; contains no PioSOLVER code.
 - Vector-form **Discounted CFR** with exact card removal and no abstraction. Defaults α=1.3, γ=4,
   β=0 then 0.5 after iteration 50; `set_dcfr` overrides the exponents.
 - **Regret-based pruning** on by default (`set_pruning`). Skips traverser actions whose current
-  strategy is exactly zero for every hand and revisits them every `period`-th iteration (default 8,
+  strategy is exactly zero for every hand the node's board allows and revisits them every `period`-th iteration (default 8,
   at least 2). Results are close to, not bit-identical with, pruning off (#380). Worth ~13% on a deep tree.
 - **Suit isomorphism**, flop trees on by default to match Pio's `set_isomorphism 1 0`.
 - Averaging controls `avg_delay` and `avg_reset`, which reach a given exploitability in fewer

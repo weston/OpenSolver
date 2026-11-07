@@ -1264,6 +1264,37 @@ def check_set_equal_strats_restarts(u):
     u.cmd("free_tree")
 
 
+def check_rebuild_tree_restarts(u):
+    """#427, as Pio 3.10.1: rebuild_tree starts the solution over (show_iters 0; N iterations later a fresh
+    N-iteration solve) and keeps the locks: a locked node's strategy is unchanged through it and further solving."""
+    print("[rebuild_tree restarts the solve, keeps locks]")
+    for storage in ("off", "on"):
+        u.cmd(f"small_strats {storage}")
+        set_small_tree(u)
+        u.cmd("build_tree")
+        u.cmd("set_accuracy 0")
+        u.cmd("set_info_freq 1000")
+        u.cmd("go 40 steps")
+        u.cmd("wait_for_solver")
+        fresh = u.cmd("calc_results")
+        u.cmd("go 80 steps")
+        u.cmd("wait_for_solver")
+        check(u.cmd("rebuild_tree") == "rebuild_tree ok!" and u.cmd("show_iters") == "0",
+              f"show_iters is 0 after rebuild_tree (small_strats {storage})")
+        u.cmd("go 40 steps")
+        u.cmd("wait_for_solver")
+        check(u.cmd("calc_results") == fresh, f"40 iterations later: a fresh 40-iteration solve ({storage})")
+        u.cmd("lock_node r:0")
+        locked = u.cmd("show_strategy r:0")
+        u.cmd("rebuild_tree")
+        u.cmd("go 30 steps")
+        u.cmd("wait_for_solver")
+        check("LOCKED" in u.cmd("show_node r:0") and u.cmd("show_strategy r:0") == locked,
+              f"a locked node keeps its lock and its strategy through rebuild_tree and solving ({storage})")
+    u.cmd("small_strats auto")
+    u.cmd("free_tree")
+
+
 def check_predictive(u):
     """#408: set_predictive (PCFR+-style matching, #71) converges and splits the pot like the default;
     bad arguments are refused, and so is switching it mid-solve."""
@@ -1571,6 +1602,7 @@ def main(exe, big=False):
         check_eliminate_path(u)
         check_set_mes_persists(u)
         check_set_equal_strats_restarts(u)
+        check_rebuild_tree_restarts(u)
         check_predictive(u)
         check_small_commands(u)
 

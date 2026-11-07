@@ -215,6 +215,38 @@ namespace {
 struct Filler {
   GameTree& g;
   bool iso;
+  std::unordered_map<uint32_t, uint16_t> keep_index;  // cards dealt after the root board -> GNode::pad
+
+  // #239: the compact 16-bit row set of a decision node on `board` (0: full rows). Postflop trees only:
+  // in a preflop tree the hand lists span every flop.
+  uint16_t keep_set(const std::vector<int>& board) {
+    const size_t root = g.cfg.board.size();
+    if (g.cfg.preflop || board.size() <= root) return 0;
+    uint32_t key = 0;
+    for (size_t k = root; k < board.size(); ++k) key = key * 53u + static_cast<uint32_t>(board[k] + 1);
+    auto it = keep_index.find(key);
+    if (it != keep_index.end()) return it->second;
+    uint16_t id = 0;
+    if (g.keep_sets.size() < 65535) {
+      std::array<std::vector<uint16_t>, 2> ks;
+      bool any = false;
+      for (int p = 0; p < 2; ++p) {
+        for (size_t h = 0; h < g.hands[p].size(); ++h) {
+          bool blocked = false;
+          for (size_t k = root; k < board.size(); ++k)
+            blocked |= g.hcard[p][0][h] == board[k] || g.hcard[p][1][h] == board[k];
+          if (!blocked) ks[p].push_back(static_cast<uint16_t>(h));
+        }
+        any |= ks[p].size() < g.hands[p].size();
+      }
+      if (any) {
+        g.keep_sets.push_back(std::move(ks));
+        id = static_cast<uint16_t>(g.keep_sets.size());
+      }
+    }
+    keep_index.emplace(key, id);
+    return id;
+  }
 
   void fill(uint32_t idx, const ActionNode* an, std::vector<int>& board) {
     GNode n{};
@@ -228,6 +260,9 @@ struct Filler {
         n.storage = g.storage_floats;
         g.storage_floats += an->children.size() * g.hands[an->player].size();
         n.num_children = static_cast<uint16_t>(an->children.size());
+        n.pad = keep_set(board);
+        g.qoff.push_back(g.storage_q);
+        g.storage_q += g.stored_size(n);
         n.first_child = static_cast<uint32_t>(g.nodes.size());
         g.nodes.resize(g.nodes.size() + an->children.size());
         g.nodes[idx] = n;
@@ -363,6 +398,9 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   incentives.clear();
   storage_floats = 0;
   num_decisions = 0;
+  keep_sets.clear();
+  qoff.clear();
+  storage_q = 0;
   incomplete = false;
 
   int bl = static_cast<int>(cfg.board.size());
@@ -564,7 +602,7 @@ void GameTree::build_allin_tables() {
 }
 
 uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
-  uint64_t b = compress ? storage_floats * 4 + num_decisions * 8 : storage_floats * sizeof(float) * 2;
+  uint64_t b = compress ? storage_q * 4 + num_decisions * (8 + sizeof(uint64_t)) : storage_floats * sizeof(float) * 2;
   // Predictive CFR's `preds` is never compressed and is allocated after the build, so the
   // pre-allocation check has to be told about it (#98).
   if (with_preds || !preds.empty()) b += storage_floats * sizeof(float);
@@ -593,8 +631,8 @@ void GameTree::allocate_storage() {
   strat_q.shrink_to_fit();
   // resize() on an empty ZVec is a fresh calloc: zero pages, committed only when touched.
   if (compressed) {
-    regrets_q.resize(storage_floats);
-    strat_q.resize(storage_floats);
+    regrets_q.resize(storage_q);
+    strat_q.resize(storage_q);
     rscale.assign(num_decisions, 0.0f);
     sscale.assign(num_decisions, 0.0f);
   } else {
@@ -609,14 +647,8 @@ void GameTree::decompress() {
   strat.resize(storage_floats);
   for (const GNode& n : nodes) {
     if (n.kind != ANodeKind::Decision) continue;
-    const size_t len = node_size(n);
-    const float rs = rscale[n.aux], ss = sscale[n.aux];
-    const int16_t* rq = regrets_q.data() + n.storage;
-    const uint16_t* sq = strat_q.data() + n.storage;
-    float* r = regrets.data() + n.storage;
-    float* s = strat.data() + n.storage;
-    for (size_t i = 0; i < len; ++i) r[i] = static_cast<float>(rq[i]) * rs;
-    for (size_t i = 0; i < len; ++i) s[i] = static_cast<float>(sq[i]) * ss;
+    decode_rows(n, regrets_q.data() + qoff[n.aux], rscale[n.aux], regrets.data() + n.storage);
+    decode_rows(n, strat_q.data() + qoff[n.aux], sscale[n.aux], strat.data() + n.storage);
   }
   compressed = false;
   regrets_q.clear();
@@ -636,23 +668,53 @@ void GameTree::clear_storage() {
   std::fill(sscale.begin(), sscale.end(), 0.0f);
 }
 
+// 16-bit rows (compact or full, #239) -> the node's full A x H floats; dropped hands read 0 (+0, like a
+// stored 0 times a scale >= 0).
+template <class Q>
+void GameTree::decode_rows(const GNode& n, const Q* q, float s, float* out) const {
+  const uint16_t* k = keep_of(n);
+  if (!k) {
+    const size_t len = node_size(n);
+    for (size_t i = 0; i < len; ++i) out[i] = static_cast<float>(q[i]) * s;
+    return;
+  }
+  const size_t H = hands[n.player].size(), L = row_len(n);
+  for (size_t a = 0; a < n.num_children; ++a) {
+    float* o = out + a * H;
+    const Q* qa = q + a * L;
+    std::fill(o, o + H, 0.0f);
+    for (size_t j = 0; j < L; ++j) o[k[j]] = static_cast<float>(qa[j]) * s;
+  }
+}
+template void GameTree::decode_rows<int16_t>(const GNode&, const int16_t*, float, float*) const;
+template void GameTree::decode_rows<uint16_t>(const GNode&, const uint16_t*, float, float*) const;
+
+// The node's full rows -> its stored 16-bit rows: q[a * L + j] = f(a * H + keep[j], data[that]).
+template <class Q, class F>
+static void encode_rows(const GameTree& g, const GNode& n, Q* q, F&& f) {
+  const size_t H = g.hands[n.player].size();
+  const uint16_t* k = g.keep_of(n);
+  if (!k) {
+    const size_t len = g.node_size(n);
+    for (size_t i = 0; i < len; ++i) q[i] = f(i);
+    return;
+  }
+  const size_t L = g.row_len(n);
+  for (size_t a = 0; a < n.num_children; ++a)
+    for (size_t j = 0; j < L; ++j) q[a * L + j] = f(a * H + k[j]);
+}
+
 const float* GameTree::regrets_ro(const GNode& n, float* scratch) const {
   ensure_loaded(n);
   if (!compressed) return regrets.data() + n.storage;
-  const size_t len = node_size(n);
-  const int16_t* q = regrets_q.data() + n.storage;
-  const float s = rscale[n.aux];
-  for (size_t i = 0; i < len; ++i) scratch[i] = static_cast<float>(q[i]) * s;
+  decode_rows(n, regrets_q.data() + qoff[n.aux], rscale[n.aux], scratch);
   return scratch;
 }
 
 const float* GameTree::strat_ro(const GNode& n, float* scratch) const {
   ensure_loaded(n);
   if (!compressed) return strat.data() + n.storage;
-  const size_t len = node_size(n);
-  const uint16_t* q = strat_q.data() + n.storage;
-  const float s = sscale[n.aux];
-  for (size_t i = 0; i < len; ++i) scratch[i] = static_cast<float>(q[i]) * s;
+  decode_rows(n, strat_q.data() + qoff[n.aux], sscale[n.aux], scratch);
   return scratch;
 }
 
@@ -684,18 +746,18 @@ void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
     for (size_t i = 0; i < len; ++i) mb = std::max(mb, abs_bits(data[i]));
     m = std::bit_cast<float>(mb);
   }
-  int16_t* q = regrets_q.data() + n.storage;
+  int16_t* q = regrets_q.data() + qoff[n.aux];
   if (!(m > 0) || !std::isfinite(m)) {
     rscale[n.aux] = 0;
-    std::fill(q, q + len, int16_t(0));
+    std::fill(q, q + stored_size(n), int16_t(0));
     return;
   }
   rscale[n.aux] = m / 32767.0f;
   const float inv = 32767.0f / m;
-  for (size_t i = 0; i < len; ++i) {
+  encode_rows(*this, n, q, [&](size_t i) {
     float x = data[i] * inv;
-    q[i] = static_cast<int16_t>(x + (x >= 0.0f ? 0.5f : -0.5f));
-  }
+    return static_cast<int16_t>(x + (x >= 0.0f ? 0.5f : -0.5f));
+  });
 }
 
 // The kRoundTable points (k + 0.5) / kRoundTable of [0, 1) in a fixed shuffled order, repeated once so a
@@ -760,10 +822,10 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
     for (size_t i = 0; i < len; ++i) mb = std::max(mb, nonneg_bits(data[i]));
     m = std::bit_cast<float>(mb);
   }
-  uint16_t* q = strat_q.data() + n.storage;
+  uint16_t* q = strat_q.data() + qoff[n.aux];
   if (!(m > 0) || !std::isfinite(m)) {
     sscale[n.aux] = 0;
-    std::fill(q, q + len, uint16_t(0));
+    std::fill(q, q + stored_size(n), uint16_t(0));
     return;
   }
   sscale[n.aux] = m / 65535.0f;
@@ -777,6 +839,14 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   h ^= h >> 13;
   h *= 0xC2B2AE35u;
   h ^= h >> 16;
+  if (keep_of(n)) {
+    // Compact rows (#239): each value draws the uniform its full-row index i draws below, U[(h + i) mod N]
+    // (the loop below reads U[((h + i0) mod N) + i - i0] from the doubled table: the same entry).
+    encode_rows(*this, n, q, [&](size_t i) {
+      return static_cast<uint16_t>(std::min(65535.0f, std::max(0.0f, data[i]) * inv + U[(h + i) & (kRoundTable - 1)]));
+    });
+    return;
+  }
   size_t i = 0;
   while (i < len) {
     const size_t start = (h + i) & (kRoundTable - 1), blk = std::min(len - i, kRoundTable);
@@ -795,15 +865,15 @@ void GameTree::strat_store(const GNode& n, const float* data, float maxval) {
     for (size_t i = 0; i < len; ++i) mb = std::max(mb, nonneg_bits(data[i]));
     m = std::bit_cast<float>(mb);
   }
-  uint16_t* q = strat_q.data() + n.storage;
+  uint16_t* q = strat_q.data() + qoff[n.aux];
   if (!(m > 0) || !std::isfinite(m)) {
     sscale[n.aux] = 0;
-    std::fill(q, q + len, uint16_t(0));
+    std::fill(q, q + stored_size(n), uint16_t(0));
     return;
   }
   sscale[n.aux] = m / 65535.0f;
   const float inv = 65535.0f / m;
-  for (size_t i = 0; i < len; ++i) q[i] = static_cast<uint16_t>(std::max(0.0f, data[i]) * inv + 0.5f);
+  encode_rows(*this, n, q, [&](size_t i) { return static_cast<uint16_t>(std::max(0.0f, data[i]) * inv + 0.5f); });
 }
 
 StreetSegments GameTree::street_segments() const {

@@ -105,7 +105,7 @@ struct GNode {
   uint32_t anode;      // index into GameTree::anodes
   uint32_t first_child;
   uint16_t num_children;
-  uint16_t pad;
+  uint16_t pad;        // decision: 1 + its GameTree::keep_sets entry when 16-bit rows are compact (#239), else 0
   uint32_t aux;        // chance: ChanceInfo index; showdown: board id; decision: decision index
   uint64_t storage;    // decision: float offset into regrets/strat arrays (size A * H[player])
 };
@@ -258,6 +258,21 @@ class GameTree {
   std::vector<float> rscale, sscale;
   uint64_t storage_floats = 0;
   uint64_t num_decisions = 0;
+  // Compact 16-bit rows (#239). A hand holding a card dealt after the root board can't occur below that
+  // deal: its reach is 0 there, and its regrets and strategy sums stay exactly 0 (measured on every river
+  // node of a flop tree, float32 and 16-bit). The 16-bit arrays keep only the other hands, about 8% less
+  // on a flop tree. The accessors expand rows to all hands (0 for the dropped ones) and the commits
+  // compact them, so every walk, scale and stochastic rounding sees exactly the values it did before:
+  // results are bit-identical. float32 storage (and `preds`) keep full rows at GNode::storage.
+  std::vector<std::array<std::vector<uint16_t>, 2>> keep_sets;  // [set][player]: kept local hands, ascending
+  std::vector<uint64_t> qoff;  // per decision (GNode::aux): offset of its rows in regrets_q / strat_q
+  uint64_t storage_q = 0;      // length of regrets_q / strat_q
+  const uint16_t* keep_of(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1][n.player].data() : nullptr; }
+  size_t row_len(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1][n.player].size() : hands[n.player].size(); }
+  size_t stored_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * row_len(n); }
+  // A node's stored 16-bit rows (q, compact or full) decoded with scale s into its full A x H floats.
+  template <class Q>
+  void decode_rows(const GNode& n, const Q* q, float s, float* out) const;
 
   size_t node_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * hands[n.player].size(); }
   // Read access: returns the node's A*H values (direct pointer, or decoded into scratch).

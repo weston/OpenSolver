@@ -11,6 +11,7 @@ Usage:
     python3 tools/fuzz.py roundtrip ./solver --seconds 300    # dump_tree / load_tree, lossless is exact
     python3 tools/fuzz.py preflop ./solver --seconds 300      # preflop trees: finite, MES >= EV, threads
     python3 tools/fuzz.py locks ./solver --seconds 300        # locked strategies stay put, MES >= EV
+    python3 tools/fuzz.py edits ./solver --seconds 300        # eliminate_path, set_mes, rebuild_tree, ... between solves
     python3 tools/fuzz.py truncated ./solver --seconds 300    # no_rivers/no_turns saves: re-solved streets
     add --seed N to replay one case, --iso11 to force set_isomorphism 1 1 (invariants)
 
@@ -276,6 +277,60 @@ def case_locks(exe, rng, args):
     return setup + lock, msgs
 
 
+def case_edits(exe, rng, args):
+    """Strategy edits between solves (#421-#429): eliminate_path, set_mes, set_equal_strats, rebuild_tree,
+    lock_node / unlock_node, round_up_to, in random order. No crash or unexpected error, sane results,
+    and 1 and 3 threads give the same answers."""
+    setup, pot = spot(rng)
+    base = setup + ["build_tree", "set_accuracy 0", "go 10 steps", "wait_for_solver"]
+    rc, parts = run(exe, ["set_threads 1"] + base + ["show_all_lines"])
+    if rc != 0:
+        return setup, [f"exit status {rc}"]
+    blocks = [b for b in parts if any(x.startswith("r:0") for x in b.split())]
+    if not blocks:
+        return None, []
+    lines = [x for x in blocks[-1].split() if x.startswith("r:0") and "?" not in x]
+    if not lines:
+        return None, []
+    ops = []
+    for _ in range(rng.randint(2, 4)):
+        k = rng.choice(["elim", "mes", "equal", "rebuild", "lock", "round"])
+        line = rng.choice(lines)
+        parts_ = line.split(":")
+        if k == "elim" and len(parts_) > 2:
+            ops.append(f"eliminate_path {':'.join(parts_[:rng.randint(3, len(parts_))])}")
+        elif k == "mes":
+            ops.append(f"set_mes {rng.choice(['OOP', 'IP'])}")
+        elif k == "equal":
+            ops.append("set_equal_strats")
+        elif k == "rebuild":
+            ops.append("rebuild_tree")
+        elif k == "lock":
+            node = ":".join(parts_[:rng.randint(2, max(2, len(parts_) - 1))])
+            ops += [f"lock_node {node}", "go 5 steps", "wait_for_solver", f"unlock_node {node}"]
+        elif k == "round":
+            ops.append(f"round_up_to {rng.choice(['OOP', 'IP'])} {rng.choice([2, 4, 10])} {rng.choice(['flop', 'turn', 'river'])}")
+        ops += ["go 8 steps", "wait_for_solver"]
+    tail = ops + ["calc_results"]
+    outs = {}
+    for th in (1, 3):
+        rc, parts = run(exe, [f"set_threads {th}"] + base + tail)
+        if rc != 0:
+            return setup + ops, [f"exit status {rc} with {th} threads"]
+        # an edit on a path that isn't a bet, raise or check, or isn't in the tree, answers an error: fine
+        errs = [b for b in parts if b.startswith("ERROR") and "eliminate_path" not in b and "incorrect node" not in b
+                and "incorrect path" not in b]
+        outs[th] = (results(parts), errs)
+    r, errs = outs[1]
+    msgs = [f"unexpected error: {e[:120]}" for e in errs[:2]]
+    if r is None:
+        return (setup + ops, msgs) if msgs else (None, [])
+    check_results(r, pot, msgs, ev_sum=False)
+    if outs[3][0] != r:
+        msgs.append(f"1 vs 3 threads differ: {r} vs {outs[3][0]}")
+    return setup + ops, msgs
+
+
 def floats(b):
     t = b.split()
     return [float(x) for x in t] if len(t) >= 1326 and all(re.match(r"^[-0-9.e]+$|^nan$|^-?inf$", x) for x in t[:3]) else None
@@ -370,7 +425,8 @@ def case_truncated(exe, rng, args):
 
 
 MODES = {"invariants": case_invariants, "concurrency": case_concurrency, "roundtrip": case_roundtrip,
-         "preflop": case_preflop, "locks": case_locks, "truncated": case_truncated}
+         "preflop": case_preflop, "locks": case_locks, "truncated": case_truncated,
+         "edits": case_edits}
 
 
 def main(argv=None):

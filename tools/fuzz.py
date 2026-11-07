@@ -64,7 +64,7 @@ def spot(rng, iso11=False):
     if rng.random() < 0.3:
         pre.append("set_union_hands on")
     if rng.random() < 0.3:
-        pre.append("small_strats on")
+        pre.append(rng.choice(["small_strats on", "small_strats compact"]))  # compact: #239
     if iso11:
         pre.append("set_isomorphism 1 1")
     elif rng.random() < 0.3:

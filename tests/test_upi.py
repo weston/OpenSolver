@@ -1265,8 +1265,9 @@ def check_set_equal_strats_restarts(u):
 
 
 def check_rebuild_tree_restarts(u):
-    """#427, as Pio 3.10.1: rebuild_tree starts the solution over (show_iters 0; N iterations later a fresh
-    N-iteration solve) and keeps the locks: a locked node's strategy is unchanged through it and further solving."""
+    """#427, as Pio 3.10.1: rebuild_tree restarts the regrets and the count but keeps the strategy sums: it shows
+    the solved strategies until the next solve, N iterations later it is a fresh N-iteration solve, and a
+    locked node's strategy is unchanged through it and further solving."""
     print("[rebuild_tree restarts the solve, keeps locks]")
     for storage in ("off", "on"):
         u.cmd(f"small_strats {storage}")
@@ -1279,8 +1280,10 @@ def check_rebuild_tree_restarts(u):
         fresh = u.cmd("calc_results")
         u.cmd("go 80 steps")
         u.cmd("wait_for_solver")
+        solved = u.cmd("show_strategy r:0:c")
         check(u.cmd("rebuild_tree") == "rebuild_tree ok!" and u.cmd("show_iters") == "0",
               f"show_iters is 0 after rebuild_tree (small_strats {storage})")
+        check(u.cmd("show_strategy r:0:c") == solved, f"until the next solve it shows the solved strategies ({storage})")
         u.cmd("go 40 steps")
         u.cmd("wait_for_solver")
         check(u.cmd("calc_results") == fresh, f"40 iterations later: a fresh 40-iteration solve ({storage})")

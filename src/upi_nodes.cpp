@@ -1088,38 +1088,14 @@ void Upi::register_node_commands() {
     if (tree_->fast_loaded) throw CmdError{"Can't do that on partially loaded tree - please call load_all_nodes"};
     TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     tree_alg_ = algorithm_;
-    // As Pio (#427, paired probes): the solution starts over (show_iters 0; N iterations later it is a fresh
-    // N-iteration solve) and the locks stay, a locked node's strategy unchanged through the rebuild and
-    // further solving. So keep the locked rows (every hand of a lock_node node, the locked hands of a
-    // combo_lock_node one), clear the rest, and restart the count and the discount clock.
-    struct Kept {
-      uint32_t ni;
-      std::vector<float> s;
-    };
-    std::vector<Kept> kept;
-    for (uint32_t ni = 0; ni < tree_->nodes.size(); ++ni) {
-      const GNode& n = tree_->nodes[ni];
-      if (n.kind != ANodeKind::Decision || !(n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) continue;
-      std::vector<float> buf(tree_->node_size(n));
-      const float* s = tree_->strat_ro(n, buf.data());
-      kept.push_back({ni, std::vector<float>(s, s + tree_->node_size(n))});
-    }
-    tree_->clear_storage();
-    for (auto& k : kept) {
-      const GNode& n = tree_->nodes[k.ni];
-      if (!(n.flags & GF_LOCKED)) {  // combo-locked: only the locked hands keep their rows
-        const size_t H = static_cast<size_t>(tree_->num_hands(n.player));
-        auto mk = tree_->combo_lock.find(k.ni);
-        for (size_t h = 0; h < H; ++h)
-          if (mk == tree_->combo_lock.end() || h >= mk->second.size() || !mk->second[h])
-            for (size_t a = 0; a < n.num_children; ++a) k.s[a * H + h] = 0.0f;
-      }
-      // 16-bit: a whole lock re-rounds to nearest, which gives back every stored value; a combo lock commits,
-      // which takes its locked entries from their exact copies (#380)
-      if (!tree_->compressed) std::copy(k.s.begin(), k.s.end(), tree_->strat.begin() + static_cast<long>(n.storage));
-      else if (n.flags & GF_LOCKED) tree_->strat_store(n, k.s.data());
-      else tree_->strat_commit(n, k.s.data());
-    }
+    // As Pio (#427, paired probes): the regrets and the iteration count start over, the strategy sums stay.
+    // So the displayed strategies are the solved ones until the next solve (probe3's calc_line_freq after it
+    // is Pio's solved 0.00319), its first iteration gives the old sums zero weight (DCFR at t = 1), and N
+    // iterations later it is a fresh N-iteration solve; locks stay, a locked node's strategy unchanged.
+    std::fill(tree_->regrets.begin(), tree_->regrets.end(), 0.0f);
+    std::fill(tree_->regrets_q.begin(), tree_->regrets_q.end(), int16_t(0));
+    std::fill(tree_->rscale.begin(), tree_->rscale.end(), 0.0f);
+    std::fill(tree_->preds.begin(), tree_->preds.end(), 0.0f);
     tree_->iterations = 0;
     iterations_ = 0;
     discount_restart_ = 0;

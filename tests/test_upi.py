@@ -1360,6 +1360,32 @@ def check_unlock_resumes(u):
     u.cmd("free_tree")
 
 
+def check_incentives_in_results(u):
+    """#439, as Pio 3.10.1: calc_results counts an incentive as payoff. With +1 on an action, EV of its player
+    rises by about how often that action is taken, and exploitability is measured in that game (it used to
+    be the plain game's, where an incentivised strategy looks exploitable)."""
+    print("[incentives count in calc_results]")
+    res = {}
+    for inc in (None, "1 0"):
+        set_small_tree(u)
+        u.cmd("build_tree")
+        u.cmd("set_accuracy 0")
+        u.cmd("set_info_freq 1000")
+        if inc:
+            check(u.cmd(f"set_incentives_node r:0 {inc}") == "set_incentives_node ok!", "set_incentives_node r:0 1 0")
+        u.cmd("go 300 steps")
+        u.cmd("wait_for_solver")
+        r = u.cmd("calc_results").split("\n")
+        rows = [[float(x) for x in l.split()] for l in u.cmd("show_strategy r:0").splitlines()]
+        reach = [float(x) for x in u.cmd("show_range OOP r:0").split()]
+        freq = sum(w * x for w, x in zip(reach, rows[0])) / sum(reach)
+        res[inc] = (float(r[0].split(": ")[1]), float(r[4].split(": ")[1]), freq)
+    (ev0, ex0, _), (ev1, ex1, f1) = res[None], res["1 0"]
+    check(abs((ev1 - ev0) - f1) < 0.25 and ex1 < 0.2, f"EV OOP rises by about the first action's frequency "
+          f"({ev1 - ev0:.3f} vs {f1:.3f}), exploitability {ex1:.3f} (pot 40)")
+    u.cmd("free_tree")
+
+
 def check_predictive(u):
     """#408: set_predictive (PCFR+-style matching, #71) converges and splits the pot like the default;
     bad arguments are refused, and so is switching it mid-solve."""
@@ -1670,6 +1696,7 @@ def main(exe, big=False):
         check_set_equal_strats_restarts(u)
         check_rebuild_tree_restarts(u)
         check_unlock_resumes(u)
+        check_incentives_in_results(u)
         check_predictive(u)
         check_small_commands(u)
 

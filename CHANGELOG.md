@@ -22,7 +22,9 @@ documentation; contains no PioSOLVER code.
 - Averaging controls `avg_delay` and `avg_reset`, which reach a given exploitability in fewer
   iterations than accumulating from the first.
 - Optional **16-bit compressed storage** (`small_strats`), roughly halving memory, with a `lossless`
-  dump flag when exact records are wanted.
+  dump flag when exact records are wanted. `small_strats compact` (and `auto`, when full 16-bit rows don't
+  fit) also leaves out the river rows' board-blocked hands: about 7% less memory, about 14% more time per
+  iteration, identical results (AVX-512 VBMI2 builds, #418).
 - Multi-threaded over turn and river cards with a nested work-stealing pool and per-thread arena
   allocators.
 - Node **locking**: whole-node and per-combo (`lock_node`, `combo_lock_node`, `set_strategy`,
@@ -66,6 +68,15 @@ documentation; contains no PioSOLVER code.
   queue's runner lock and Windows file sharing (#363); and viewer fixes, including an XSS through an
   echoed board (#385), the Sail key never reaching the browser (#374), the fast preview, the re-solve
   and the locks (#358, #370, #383, #387).
+- 2026-11-07, from paired runs against Pio 3.10.1, strategy edits and what follows them:
+  - `eliminate_path`: one-time edit (#422). Each hand's frequency goes to its best remaining action by EV; a call
+    or fold is refused.
+  - `set_mes`: the best response persists under the v4 algorithms, as `set_strategy` does (#424).
+  - `set_equal_strats` and `rebuild_tree`: restart the solve (#426, #428). `rebuild_tree` keeps locks and,
+    until the next solve, the solved strategies.
+  - `unlock_node`: the node solves on (#430). It used to stay at its locked strategy for good.
+  - Incentives: counted as payoff in `calc_results`, `calc_ev` and the best responses (#440).
+  - Pruning: ignores hands blocked by the node's board, so it fires where it should (#435).
 
 - `make release` shipped a binary **12% slower** than the default build. Clang's front-end PGO
   instrumentation counts function entries before inlining, so functions the instrumented build

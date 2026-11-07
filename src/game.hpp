@@ -268,29 +268,34 @@ class GameTree {
   // Compact 16-bit rows (#239). At a river decision node, a hand holding a card dealt after the root board
   // can't occur: its reach is 0, and its regrets and strategy sums stay exactly 0 (measured on every river
   // node of flop trees, float32 and 16-bit; not so at turn nodes, which stay full). The 16-bit arrays keep
-  // only the other hands there, about 8% less on a flop tree. The accessors expand rows to all hands (0 for the dropped ones) and the commits
-  // compact them, so every walk, scale and stochastic rounding sees exactly the values it did before:
-  // results are bit-identical. float32 storage (and `preds`) keep full rows at GNode::storage.
+  // only the other hands there, about 8% less on a flop tree. The accessors expand rows to all hands (0
+  // for the dropped ones) and the commits compact them, so every walk, scale and stochastic rounding sees
+  // exactly the values it did before: results are bit-identical. float32 storage (and `preds`) keep full
+  // rows at GNode::storage.
   // They cost time: about 12% per iteration on threebet_mono (Zen 5, 16 threads) even with AVX-512 VBMI2
   // expand / compress, so they are a capacity tier, used only when full 16-bit rows don't fit
   // (select_rows, small_strats compact / auto). Builds without VBMI2 never compact (a scalar scatter per
-  // hand was 50% slower).
+  // hand was 50% slower). Unselected, they cost 2 bytes per decision: the build only counts kept hands.
   struct KeepSet {
-    std::vector<uint16_t> keep[2];  // [player]: kept local hands, ascending
-    std::vector<uint32_t> bits[2];  // [player]: bit h of word h / 32 set if hand h is kept
+    int card[2] = {-1, -1};         // the cards dealt after the root board
+    uint32_t kept[2] = {0, 0};      // [player]: hands neither card blocks
+    std::vector<uint16_t> keep[2];  // [player]: those hands, ascending (filled by select_rows(true))
+    std::vector<uint32_t> bits[2];  // [player]: bit h of word h / 32 set if hand h is kept (same)
   };
   std::vector<KeepSet> keep_sets;
-  std::vector<uint64_t> qoff;  // per decision (GNode::aux): offset of its rows in regrets_q / strat_q
+  std::vector<uint64_t> qoff;  // compact rows only: per decision (GNode::aux), its rows' offset in regrets_q / strat_q
   uint64_t storage_q = 0;      // length of regrets_q / strat_q
   uint64_t storage_compact = 0;  // what storage_q is with compact rows (the build computes both layouts)
   std::vector<uint16_t> keep_cand;  // per decision: its keep_sets entry + 1 if compact rows are selected
   bool compact_rows = false;
   // Before allocate_storage: compact river rows (if this build can and the tree has any) or full rows
-  // everywhere (GNode::pad 0, qoff = storage, the layout float32 uses). build() leaves full rows.
+  // everywhere (GNode::pad 0, at GNode::storage, the layout float32 uses). build() leaves full rows.
   void select_rows(bool compact);
+  // Offset of a node's rows in regrets_q / strat_q.
+  uint64_t qo(const GNode& n) const { return compact_rows ? qoff[n.aux] : n.storage; }
   const uint16_t* keep_of(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].keep[n.player].data() : nullptr; }
   const uint32_t* keep_bits(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].bits[n.player].data() : nullptr; }
-  size_t row_len(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].keep[n.player].size() : hands[n.player].size(); }
+  size_t row_len(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].kept[n.player] : hands[n.player].size(); }
   size_t stored_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * row_len(n); }
   // A node's stored 16-bit rows (q, compact or full) decoded with scale s into its full A x H floats.
   template <class Q>

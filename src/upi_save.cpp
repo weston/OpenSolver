@@ -538,8 +538,8 @@ void write_record(GzOut& out, const GameTree& g, const GNode& n) {
   if (g.compressed) {
     out.put(g.rscale[n.aux]);
     out.put(g.sscale[n.aux]);
-    const int16_t* rq = g.regrets_q.data() + g.qoff[n.aux];
-    const uint16_t* sq = g.strat_q.data() + g.qoff[n.aux];
+    const int16_t* rq = g.regrets_q.data() + g.qo(n);
+    const uint16_t* sq = g.strat_q.data() + g.qo(n);
     if (g.keep_of(n)) {
       std::vector<int16_t> fr;
       std::vector<uint16_t> fs;
@@ -615,8 +615,8 @@ void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int pre
   if ((file_mode & 1) && t.compressed) {
     t.rscale[n.aux] = in.template get<float>();
     t.sscale[n.aux] = in.template get<float>();
-    int16_t* rq = t.regrets_q.data() + t.qoff[n.aux];
-    uint16_t* sq = t.strat_q.data() + t.qoff[n.aux];
+    int16_t* rq = t.regrets_q.data() + t.qo(n);
+    uint16_t* sq = t.strat_q.data() + t.qo(n);
     if (t.keep_of(n)) {
       std::vector<int16_t> fr16(len);
       std::vector<uint16_t> fs16(len);

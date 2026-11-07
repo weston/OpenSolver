@@ -232,20 +232,20 @@ struct Filler {
     if (it != keep_index.end()) return it->second;
     uint16_t id = 0;
     if (g.keep_sets.size() < 65535) {
+      // Only the counts here (select_rows(true) lists the hands): H minus the hands holding either card,
+      // plus the one holding both, which was taken off twice.
       GameTree::KeepSet ks;
+      for (size_t k = root; k < board.size() && k - root < 2; ++k) ks.card[k - root] = board[k];
       bool any = false;
       for (int p = 0; p < 2; ++p) {
-        const size_t H = g.hands[p].size();
-        ks.bits[p].assign((H + 31) / 32, 0u);
-        for (size_t h = 0; h < H; ++h) {
-          bool blocked = false;
-          for (size_t k = root; k < board.size(); ++k)
-            blocked |= g.hcard[p][0][h] == board[k] || g.hcard[p][1][h] == board[k];
-          if (blocked) continue;
-          ks.keep[p].push_back(static_cast<uint16_t>(h));
-          ks.bits[p][h / 32] |= 1u << (h % 32);
-        }
-        any |= ks.keep[p].size() < H;
+        int64_t kept = static_cast<int64_t>(g.hands[p].size());
+        for (int c : ks.card)
+          if (c >= 0) kept -= static_cast<int64_t>(g.hands_with_card[p][c].size());
+        if (ks.card[1] >= 0)
+          for (uint16_t h : g.hands_with_card[p][ks.card[0]])
+            kept += g.hcard[p][0][h] == ks.card[1] || g.hcard[p][1][h] == ks.card[1];
+        ks.kept[p] = static_cast<uint32_t>(kept);
+        any |= ks.kept[p] < g.hands[p].size();
       }
       if (any) {
         g.keep_sets.push_back(std::move(ks));
@@ -271,8 +271,7 @@ struct Filler {
         {
           const uint16_t c = keep_set(board);
           g.keep_cand.push_back(c);
-          g.qoff.push_back(n.storage);  // full rows until select_rows(true)
-          g.storage_compact += an->children.size() * (c ? g.keep_sets[c - 1].keep[an->player].size()
+          g.storage_compact += an->children.size() * (c ? g.keep_sets[c - 1].kept[an->player]
                                                          : g.hands[an->player].size());
         }
         n.first_child = static_cast<uint32_t>(g.nodes.size());
@@ -548,12 +547,33 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
 
 void GameTree::select_rows(bool compact) {
   compact_rows = compact && PIO_COMPACT_ROWS && !keep_sets.empty();
+  for (KeepSet& ks : keep_sets)
+    for (int p = 0; p < 2; ++p) {
+      ks.keep[p].clear();
+      ks.bits[p].clear();
+      if (!compact_rows) continue;
+      const size_t H = hands[p].size();
+      ks.bits[p].assign((H + 31) / 32, 0u);
+      for (size_t h = 0; h < H; ++h) {
+        const int c0 = hcard[p][0][h], c1 = hcard[p][1][h];
+        if (c0 == ks.card[0] || c1 == ks.card[0] || c0 == ks.card[1] || c1 == ks.card[1]) continue;
+        ks.keep[p].push_back(static_cast<uint16_t>(h));
+        ks.bits[p][h / 32] |= 1u << (h % 32);
+      }
+      if (ks.keep[p].size() != ks.kept[p]) {  // the build's count is what the layout uses: never differ
+        select_rows(false);
+        return;
+      }
+    }
+  qoff.clear();
+  if (compact_rows) qoff.resize(num_decisions);
   storage_q = 0;
   for (GNode& n : nodes) {
     if (n.kind != ANodeKind::Decision) continue;
     n.pad = compact_rows ? keep_cand[n.aux] : 0;
-    qoff[n.aux] = compact_rows ? storage_q : n.storage;
-    if (compact_rows) storage_q += stored_size(n);
+    if (!compact_rows) continue;
+    qoff[n.aux] = storage_q;
+    storage_q += stored_size(n);
   }
   if (!compact_rows) storage_q = storage_floats;
 }
@@ -676,8 +696,8 @@ void GameTree::decompress() {
   strat.resize(storage_floats);
   for (const GNode& n : nodes) {
     if (n.kind != ANodeKind::Decision) continue;
-    decode_rows(n, regrets_q.data() + qoff[n.aux], rscale[n.aux], regrets.data() + n.storage);
-    decode_rows(n, strat_q.data() + qoff[n.aux], sscale[n.aux], strat.data() + n.storage);
+    decode_rows(n, regrets_q.data() + qo(n), rscale[n.aux], regrets.data() + n.storage);
+    decode_rows(n, strat_q.data() + qo(n), sscale[n.aux], strat.data() + n.storage);
   }
   compressed = false;
   regrets_q.clear();
@@ -783,14 +803,14 @@ static void compress_rows(const GameTree& g, const GNode& n, const Q* full, Q* q
 const float* GameTree::regrets_ro(const GNode& n, float* scratch) const {
   ensure_loaded(n);
   if (!compressed) return regrets.data() + n.storage;
-  decode_rows(n, regrets_q.data() + qoff[n.aux], rscale[n.aux], scratch);
+  decode_rows(n, regrets_q.data() + qo(n), rscale[n.aux], scratch);
   return scratch;
 }
 
 const float* GameTree::strat_ro(const GNode& n, float* scratch) const {
   ensure_loaded(n);
   if (!compressed) return strat.data() + n.storage;
-  decode_rows(n, strat_q.data() + qoff[n.aux], sscale[n.aux], scratch);
+  decode_rows(n, strat_q.data() + qo(n), sscale[n.aux], scratch);
   return scratch;
 }
 
@@ -822,7 +842,7 @@ void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
     for (size_t i = 0; i < len; ++i) mb = std::max(mb, abs_bits(data[i]));
     m = std::bit_cast<float>(mb);
   }
-  int16_t* q = regrets_q.data() + qoff[n.aux];
+  int16_t* q = regrets_q.data() + qo(n);
   if (!(m > 0) || !std::isfinite(m)) {
     rscale[n.aux] = 0;
     std::fill(q, q + stored_size(n), int16_t(0));
@@ -901,7 +921,7 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
     for (size_t i = 0; i < len; ++i) mb = std::max(mb, nonneg_bits(data[i]));
     m = std::bit_cast<float>(mb);
   }
-  uint16_t* q = strat_q.data() + qoff[n.aux];
+  uint16_t* q = strat_q.data() + qo(n);
   if (!(m > 0) || !std::isfinite(m)) {
     sscale[n.aux] = 0;
     std::fill(q, q + stored_size(n), uint16_t(0));
@@ -940,7 +960,7 @@ void GameTree::strat_store(const GNode& n, const float* data, float maxval) {
     for (size_t i = 0; i < len; ++i) mb = std::max(mb, nonneg_bits(data[i]));
     m = std::bit_cast<float>(mb);
   }
-  uint16_t* q = strat_q.data() + qoff[n.aux];
+  uint16_t* q = strat_q.data() + qo(n);
   if (!(m > 0) || !std::isfinite(m)) {
     sscale[n.aux] = 0;
     std::fill(q, q + stored_size(n), uint16_t(0));

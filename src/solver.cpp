@@ -1014,7 +1014,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     g_.ensure_loaded(n);
     const bool q16 = g_.compressed;
     const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
-    const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qoff[n.aux] : nullptr;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
 #if PIO_COMPACT_ROWS
     // Compact rows (#239): row a starts at a * L, and each 16 hands take popcount of their kept bits. An
     // expand-load puts the kept values in their hands' lanes and 0 elsewhere, which is what the full row
@@ -1077,7 +1077,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     const float* R = q16 ? nullptr
                          : g_.compressed ? g_.regrets_ro(n, sc.a.alloc(static_cast<size_t>(A) * H))
                                          : g_.regrets.data() + n.storage;
-    const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qoff[n.aux] : nullptr;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
     const __m256 qs = _mm256_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm256_setzero_ps(),
                  one = _mm256_set1_ps(1.0f), uni = _mm256_set1_ps(1.0f / static_cast<float>(A));
     __m256 v[16];
@@ -1128,7 +1128,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     const float* R = q16 ? nullptr
                          : g_.compressed ? g_.regrets_ro(n, sc.a.alloc(static_cast<size_t>(A) * H))
                                          : g_.regrets.data() + n.storage;
-    const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qoff[n.aux] : nullptr;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
     const float qs = q16 ? g_.rscale[n.aux] : 0.0f;
     const float32x4_t z = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), uni = vdupq_n_f32(1.0f / static_cast<float>(A));
     float32x4_t v[16];
@@ -1412,7 +1412,7 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
     if (accumulate_) {
       if (g_.compressed) {
         const size_t len = g_.stored_size(n);
-        const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + g_.qoff[n.aux]);
+        const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + g_.qo(n));
         for (size_t off = 0; off < len * 2; off += 64) __builtin_prefetch(b + off, 1, 3);
       } else {
         const size_t len = static_cast<size_t>(A) * Hp;

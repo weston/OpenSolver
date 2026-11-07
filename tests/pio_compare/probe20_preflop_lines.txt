@@ -1,0 +1,20 @@
+# Probe 20: add_preflop_line checks (2026-11-07), blinds 10/5. All 18 responses byte-identical with Pio 3.10.1.
+# "5 25 25": the SB's 5 is a fold, so the rest is too long; "10 10 25" continues past the preflop action, too
+# long, and the prefix builds; "25 20" (last: Pio may stop answering after a bad line) is Incorrect bet size.
+set_range OOP 22+,AK
+set_range IP 22+,AK
+set_pot 10 5 0
+set_eff_stack 1000
+add_preflop_line 25 25
+add_preflop_line 5 25 25
+add_preflop_line 10 10
+add_preflop_line 25 100 1000 1000
+add_preflop_line 10 25 25
+add_preflop_line 1000 1000
+add_preflop_line 25 1000
+add_preflop_line 25 1000 1000 1000
+add_preflop_line 10 10 25
+build_preflop_tree
+show_children r:0
+show_all_lines
+add_preflop_line 25 20

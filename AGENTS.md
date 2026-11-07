@@ -387,6 +387,9 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the
   `set_*` state (not from a loaded tree). `unlock_all` clears every whole-node lock, not combo locks
   (our extension `combo_unlock_all` clears those; the viewer's *Unlock all* sends both, #255).
+- `add_preflop_line` is checked when added, like `add_line` (probe 20): with blinds 10/5, `5 25 25` (the SB's 5 is a
+  fold) and `10 10 25` (past the preflop action, no schematic) are `Specified line is too long. Some actions were not
+  included in the tree.` and their prefix builds; `25 20` is `Incorrect bet size.`.
 - Error paths (probe 19, 2026-11-07): `set_pot` values must each be 0..65535 (the first outside stops it, the earlier
   ones are applied); `set_eff_stack` outside 0..65535 or non-numeric is `Both stack sizes and the starting pot should
   be below 65535 (consider dividing stacks/pot by 10 or 100)`; `build_tree` with no board or no lines is

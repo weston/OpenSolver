@@ -1433,6 +1433,22 @@ void Upi::register_preflop_commands() {
   };
   H["add_preflop_line"] = [this, parse_line](const Args& a) {
     pf_lines_.add.push_back(parse_line(a));
+    // Checked against the current blinds and stack like add_line, and kept either way: a line running past
+    // a fold or an all-in call is Pio's "too long" (probe of 2026-11-07: "5 25 25" with blinds 10/5, the SB's
+    // 5 being a fold), a bet below the one faced its "Incorrect bet size.".
+    ActionTreeParams ap;
+    ap.board_len = 0;
+    ap.start_inv[0] = cfg_.pot[0];
+    ap.start_inv[1] = cfg_.pot[1];
+    ap.eff_stack = cfg_.eff_stack > std::max(cfg_.pot[0], cfg_.pot[1]) ? cfg_.eff_stack
+                                                                        : std::numeric_limits<int32_t>::max();
+    std::string err;
+    if (!validate_line(ap, pf_lines_.add.back(), err)) {
+      if (err.rfind("Specified line is too long", 0) == 0) throw CmdError{err};
+      if (err.find(" is between current investment") != std::string::npos ||
+          err.find(" is below current investment") != std::string::npos)
+        throw CmdError{"Incorrect bet size."};
+    }
     return std::string("add_preflop_line ok!");
   };
   H["remove_preflop_line"] = [this, parse_line](const Args& a) {

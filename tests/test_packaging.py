@@ -132,7 +132,19 @@ def test_install():
               "docs follow BINNAME")
 
 
+def test_commands_doc():
+    """docs/commands.md has a row for every registered UPI command and no other (#404)."""
+    print("[docs/commands.md against src/upi*.cpp]")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import check_commands_doc
+    errors, stale = check_commands_doc.problems()
+    check(not errors, f"every command has a row, every row a command, the count is right {errors[:3]}")
+    if stale:  # any source edit moves lines: not a failure
+        print(f"  note: {len(stale)} line link(s) drifted; python3 tools/check_commands_doc.py --fix")
+
+
 if __name__ == "__main__":
+    test_commands_doc()
     test_dist()
     test_install()
     print("ALL PASSED" if not fails else f"{fails} FAILED")

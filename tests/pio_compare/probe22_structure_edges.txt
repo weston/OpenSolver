@@ -1,0 +1,62 @@
+# Probe 22: tree structure and deterministic edge cases on an unsolved flop tree (2026-11-07): node blocks,
+# children, lines, equities, win EVs, locks and their errors. The add_line error is last (Pio stops answering after one).
+set_range OOP AA,KK,QQ,JJ,TT,99,88,AK,AQ,AJs,KQ,QJs,JTs,T9s,98s,A5s
+set_range IP AA,KK,QQ,JJ,TT,99,88,77,AK,AQ,AJ,KQ,KJs,QJs,JTs,T9s,87s,76s
+set_pot 1
+set_pot 10 10
+show_tree_params
+set_pot 0 0 60
+set_eff_stack 150
+set_board AsKs
+set_board AsKsAs
+set_board Td9d2c
+add_line 0 20 20 60 60 150
+add_line 0 20 70 150
+add_line 0 0 30 30 30 30
+build_tree
+show_node r:0
+show_node r:0:c:b20:b70
+show_node r:0:c:b20:b70:b150
+show_node r:0:c:b20:b70:b150:c
+show_node r:0:b30:c
+show_children r:0:b30:c
+show_node r:0:b30:c:Ad
+show_node r:0:b30:c:Ah
+show_node r:0:b30:c:Tc
+show_node r:0:b30:c:9c:c:c
+show_children r:0:b30:c:9c:c:c
+show_node r:0:zz
+show_node r:1
+show_children r:0:c:b20:f
+show_all_lines
+calc_eq OOP
+calc_eq IP
+calc_eq_node IP r:0
+calc_eq_node OOP r:0:b30:c:Ad
+calc_ev OOP r:0
+calc_ev IP r:0:b30
+show_win_evs OOP r:0:c:b20:b70:b150:c
+show_win_evs IP r:0:b30:c:9c:c:c:c
+show_strategy r:0
+set_strategy r:0 1 2
+combo_lock_node r:0 1 0 0 1
+show_locked_combos r:0
+show_locked_combos r:0:b30
+lock_node r:0:b30
+show_node r:0:b30
+show_locked_combos r:0:b30
+unlock_node r:0:b30
+show_node r:0:b30
+show_range IP r:0:b30
+calc_line_freq r:0:b30:c
+calc_global_freq r:0:b30:c:Ad
+node_count
+show_hand_order
+show_effective_stack
+show_board_no_iso
+set_end_string END2
+show_node r:0
+set_end_string END
+echo hello world
+echo
+add_line 30 30 0 0 0 0

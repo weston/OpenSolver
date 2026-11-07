@@ -1,0 +1,30 @@
+# Probe 23: a turn-rooted tree with set_isomorphism 1 1 (2026-11-07): river card listing, isomorphic river cards,
+# display frames, ranges and EVs there. Unsolved, so deterministic.
+set_range OOP AA,KK,QQ,AK,AQs,JTs
+set_range IP AA,KK,QQ,JJ,AK,KQs,98s
+set_board Td9d2c5h
+set_pot 0 0 60
+set_eff_stack 150
+set_isomorphism 1 1
+add_line 0 0 30 30
+add_line 30 90
+build_tree
+node_count
+show_children r:0:c:c
+show_node r:0:c:c:As
+show_node r:0:c:c:Ac
+show_node r:0:c:c:Ad
+show_node r:0:c:c:Ah
+show_node r:0:c:c:5s
+show_board_no_iso
+show_range OOP r:0:c:c:As
+show_range OOP r:0:c:c:Ac
+calc_ev IP r:0:c:c:Ac:c
+show_strategy r:0:c:c:Ad
+set_display_iso cs
+show_node r:0:c:c:Ac
+show_board_no_iso
+reset_display_iso
+set_isomorphism 1 0
+build_tree
+node_count

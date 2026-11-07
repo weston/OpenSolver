@@ -1,0 +1,25 @@
+# Probe 24: equities, matchups, frequencies and win EVs at turn and river nodes of an unsolved flop tree with
+# wide ranges (2026-11-07). The _pp listings differ only in the order of ties (README).
+set_range OOP 22+,A2s+,K9s+,QTs+,JTs,T9s,98s,A9o+,KTo+,QJo
+set_range IP 22+,A2s+,K8s+,Q9s+,J9s+,T8s+,97s+,87s,A8o+,KTo+,QTo+,JTo
+set_board Kh9h4h
+set_pot 0 0 60
+set_eff_stack 120
+add_line 0 0 0 0 0 0
+add_line 0 0 0 0 30 30
+add_line 0 0 30 30 30 30
+build_tree
+calc_eq OOP
+calc_eq IP
+calc_eq_pp OOP
+calc_eq_node OOP r:0:c:c:Ah
+calc_eq_node IP r:0:c:c:Ah:c:c:2s
+calc_eq_node OOP r:0:c:c:Ah:b30:c:2s
+calc_matchups_line r:0:c:c:Ah:c
+calc_line_freq r:0:c:c:Ah:b30
+calc_global_freq r:0:c:c:Ah:b30:c:2s
+show_win_evs OOP r:0:c:c:Ah:c:c:2s:c:c
+show_win_evs IP r:0:c:c:Ah:b30:c:2s:c:c
+calc_ev OOP r:0:c:c:Ah:c:c:2s:c
+calc_ev_pp IP r:0:c:c:Ah:c:c:2s:b30
+explo_partial r:0:c:c:Ah:c

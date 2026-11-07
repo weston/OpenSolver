@@ -507,9 +507,18 @@ def check_output_format(u):
     rng = u.cmd("show_range OOP")
     check("0.300000012 " in rng and rng.endswith(" ") and len(rng.split()) == 1326,
           "floats print as %.9g of the float32, like Pio (0.3 -> 0.300000012)")
-    for c in ("show_strategy_pp r:0", "calc_ev_pp OOP r:0", "calc_eq_pp OOP", "show_locked_combos r:0"):
+    for c in ("show_strategy_pp r:0", "calc_ev_pp OOP r:0", "calc_eq_pp OOP"):
         out = u.cmd(c)
         check(out.endswith("\n") and not out.endswith("\n\n"), f"{c.split()[0]} ends with one blank line, like Pio")
+    # show_locked_combos: the blank line only at a locked node; a node never locked answers the bare line
+    # (Pio 3.10.1, probe of 2026-11-07)
+    out = u.cmd("show_locked_combos r:0")
+    check(not out.endswith("\n") and len(out.split()) == 1326, "show_locked_combos at an unlocked node: no blank line, like Pio")
+    u.cmd("lock_node r:0")
+    out = u.cmd("show_locked_combos r:0")
+    check(out.endswith("\n") and not out.endswith("\n\n"), "show_locked_combos at a locked node ends with one blank line, like Pio")
+    u.cmd("unlock_node r:0")
+    check(u.cmd("echo").startswith("ERROR: echo"), "echo without an argument is an error, like Pio")
     check(u.cmd("set_incentives_node r:0 1 2") == "set_incentives_node ok!", "set_incentives_node")
     inc = u.cmd("show_incentives r:0")
     check(inc == "1.000000 2.000000 ", f"show_incentives prints '%f ' per action like Pio ({inc!r})")
@@ -998,7 +1007,7 @@ def check_go_partial(u):
     stopped = lambda: any(b and b[0].startswith("SOLVER: stopped") for b in list(u.solver_msgs))
     deadline = time.time() + 20   # no wait_for_solver here: it would drop the hold itself
     while time.time() < deadline and not stopped():
-        u.cmd("echo")   # the harness collects SOLVER: messages while it reads a response
+        u.cmd("echo x")   # the harness collects SOLVER: messages while it reads a response
         time.sleep(0.02)
     check(stopped(), "go_partial runs although a hold was pending")
     u.cmd("wait_for_solver")

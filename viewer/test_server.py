@@ -121,6 +121,22 @@ class ViewerTest(unittest.TestCase):
         st, _ = self.req("/api/status", "GET", None, {"Host": f"localhost:{self.http.server_port}"})
         self.assertEqual(st, 200)
 
+    def test_03c_bad_content_length(self):
+        """#394: a garbage, negative or huge Content-Length gets an answer, and nothing huge is read."""
+        import http.client
+        for value, want in (("abc", 400), ("-5", 400), (str(1 << 40), 413)):
+            c = http.client.HTTPConnection("127.0.0.1", self.http.server_port, timeout=10)
+            c.putrequest("POST", "/api/status")
+            c.putheader("Content-Type", "application/json")
+            c.putheader("Content-Length", value)
+            c.endheaders()
+            r = c.getresponse()
+            self.assertEqual(r.status, want, value)
+            self.assertIn("Content-Length" if want == 400 else "MB", json.loads(r.read())["error"])
+            c.close()
+        st, _ = self.req("/api/status")  # the server still answers
+        self.assertEqual(st, 200)
+
     def test_04_traversal_blocked(self):
         try:
             r = urllib.request.urlopen(self.base + "/../solver", timeout=10)

@@ -1425,6 +1425,8 @@ class Handler(BaseHTTPRequestHandler):
         with open(full, "rb") as f:
             self._send(200, f.read(), STATIC_TYPES[m.group(1)])
 
+    MAX_BODY = 64 << 20  # far above any real request (a PioViewer import or a lock is a few MB at most)
+
     def _allowed(self, method):
         """Refuse requests a web page on another site could make (#48 follow-up).
 
@@ -1452,7 +1454,20 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         body = None
         if method == "POST":
-            raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+            # a garbage length used to raise here (no answer at all), a negative one read until the client
+            # closed, and any size was read whole (#394)
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                length = -1
+            if length < 0:
+                self._send(400, {"ok": False, "error": "bad Content-Length"})
+                return
+            if length > self.MAX_BODY:
+                self.close_connection = True  # the unread body must not be parsed as the next request
+                self._send(413, {"ok": False, "error": f"request body over {self.MAX_BODY >> 20} MB"})
+                return
+            raw = self.rfile.read(length)
             if raw:
                 try:
                     body = json.loads(raw)

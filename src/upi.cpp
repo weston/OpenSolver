@@ -771,7 +771,10 @@ void Upi::register_commands() {
     }
     return std::string("skip_if_done ok!");
   };
-  H["echo"] = [](const Args& a) { return a.empty() ? std::string() : a[0]; };  // Pio echoes the first argument
+  H["echo"] = [](const Args& a) {  // Pio echoes the first argument; with none it is an error
+    if (a.empty()) throw CmdError{"incorrect or missing argument"};
+    return a[0];
+  };
   H["repeat"] = [](const Args& a) {
     long long n = arg_int(a, 0, "count");
     std::string text = join(a, 1), s;

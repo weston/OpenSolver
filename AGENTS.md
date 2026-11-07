@@ -214,7 +214,8 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `<n> children`, `flags: <f> ` and a blank line. `show_children` concatenates `child i:` + block.
 - Computed floats print as `%.9g` of the float32 (`0.570510685`, `1.05068034e-06`, `60`); every 1326- or
   169-value line is `"%.9g "` per value, so it **ends in a space** (`show_hand_order` too). `_pp` listings
-  and `show_locked_combos` end with a blank line before `END`; `show_incentives` is `"%f "` per action;
+  and `show_locked_combos` at a locked node (whole node or combos; never-locked nodes answer the bare line)
+  end with a blank line before `END`; `show_incentives` is `"%f "` per action;
   `calc_eq_preflop` prints `nan` for classes with 0 matchups. `compare.py` compares numbers with a
   tolerance, so diff byte-for-byte to see these (#125).
 - `calc_ev`/`calc_eq` matchups are weighted by the hand's own reach (`calc_eq` also times the number of
@@ -386,6 +387,13 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the
   `set_*` state (not from a loaded tree). `unlock_all` clears every whole-node lock, not combo locks
   (our extension `combo_unlock_all` clears those; the viewer's *Unlock all* sends both, #255).
+- Lock flags (probes of 2026-11-07). Pio's `show_node` drops `COMBO_LOCKED` after `unlock_all` or
+  `unlock_node`, though the combos stay locked: a solve after either keeps them at their set strategy, and
+  `show_locked_combos` still lists them. We keep showing the flag while the lock is in force (a display
+  inconsistency in Pio, not copied). Pio also keeps `COMBO_LOCKED` after a `combo_lock_node` with an all-zero
+  mask; ours clears the lock and the flag (the viewer unlocks a node's combos that way). `show_locked_combos`
+  in Pio echoes the 1326 values as given, including combos outside the range; ours prints 0 there.
+  `echo` with no argument is `ERROR: echo incorrect or missing argument`.
 - Displayed strategies for hands that never reach a node come from regrets (v4 algorithm).
 - Preflop: SB is `IP` and acts first; `set_pot <bb> <sb> 0`; preflop and postflop line amounts are
   absolute; subset flops are node tokens exactly as added (`r:0:b25:c:7c7d2h`); postflop subtrees show

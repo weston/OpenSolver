@@ -1271,7 +1271,10 @@ void Upi::register_node_commands() {
       for (int h = 0; h < Hn; ++h) local[h] = m[h];
     }
     to_1326(n.player, r.frame, local.data(), out.data());
-    return floats_line(out.data(), NUM_COMBOS) + "\n\n";  // Pio: blank line before END (#125)
+    // Pio ends the line with a blank line before END only when the node is locked (whole node or combos, #125);
+    // a node never locked answers the bare line (probe of 2026-11-07).
+    const bool any_lock = (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) != 0;
+    return floats_line(out.data(), NUM_COMBOS) + (any_lock ? "\n\n" : "\n");
   };
   H["set_strategy"] = [this](const Args& a) { return cmd_set_strategy(a); };
   H["set_equal_strats"] = [this](const Args&) {

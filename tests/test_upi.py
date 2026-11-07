@@ -1298,6 +1298,37 @@ def check_rebuild_tree_restarts(u):
     u.cmd("free_tree")
 
 
+def check_unlock_resumes(u):
+    """#429, as Pio 3.10.1: lock_node holds the node's strategy while locked; after unlock_node the node
+    solves on (it used to stay at the locked strategy for good: lock_node wrote it as a dominant regret)."""
+    print("[unlock_node: the node solves on]")
+    rows = lambda: [[float(x) for x in l.split()] for l in u.cmd("show_strategy r:0").splitlines()]
+    set_small_tree(u)
+    u.cmd("build_tree")
+    u.cmd("set_accuracy 0")
+    u.cmd("set_info_freq 1000")
+    u.cmd("go 230 steps")
+    u.cmd("wait_for_solver")
+    free = rows()
+    u.cmd("build_tree")
+    u.cmd("go 30 steps")
+    u.cmd("wait_for_solver")
+    u.cmd("lock_node r:0")
+    locked = rows()
+    u.cmd("go 50 steps")
+    u.cmd("wait_for_solver")
+    check(rows() == locked, "a locked node keeps its strategy while solving")
+    u.cmd("unlock_node r:0")
+    u.cmd("go 150 steps")
+    u.cmd("wait_for_solver")
+    after = rows()
+    dist = lambda x, y: max(abs(a - b) for ra, rb in zip(x, y) for a, b in zip(ra, rb))
+    check(dist(after, locked) > 0.05 and dist(after, free) < dist(locked, free),
+          f"after unlock_node it moves toward the free solve (from the lock {dist(after, locked):.3f}, "
+          f"to the free solve {dist(after, free):.3f}, was {dist(locked, free):.3f})")
+    u.cmd("free_tree")
+
+
 def check_predictive(u):
     """#408: set_predictive (PCFR+-style matching, #71) converges and splits the pot like the default;
     bad arguments are refused, and so is switching it mid-solve."""
@@ -1606,6 +1637,7 @@ def main(exe, big=False):
         check_set_mes_persists(u)
         check_set_equal_strats_restarts(u)
         check_rebuild_tree_restarts(u)
+        check_unlock_resumes(u)
         check_predictive(u)
         check_small_commands(u)
 

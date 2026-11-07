@@ -240,6 +240,9 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   best response persists (probe3's tree, `set_mes IP` then 60 iterations: exploitability 36), under
   `original_pio` / `pio_cfr` (set before `build_tree`) solving re-converges. `set_equal_strats` restarts the solve:
   `show_iters` 0, and N iterations later it is exactly a fresh N-iteration solve (#425).
+- `unlock_node` (paired probe 2026-11-06, #429): the node solves on. 150 iterations after unlocking `r:0`, Pio's
+  strategy is within 0.05 of an unlocked solve. A lock must not write a dominant regret (ours did, so the
+  node stayed locked for good).
 - `rebuild_tree` (paired probes 2026-11-06, #427) restarts the regrets and `show_iters` but keeps the strategy
   sums and the locks: until the next solve the solved strategies show (probe3's `calc_line_freq` after it
   is the solved 0.00319); N iterations later it is a fresh N-iteration solve.

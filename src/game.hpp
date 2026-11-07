@@ -300,6 +300,8 @@ class GameTree {
   // A node's stored 16-bit rows (q, compact or full) decoded with scale s into its full A x H floats.
   template <class Q>
   void decode_rows(const GNode& n, const Q* q, float s, float* out) const;
+  // Per decision (GNode::aux): the board's cards at the node. Hands sharing one are never dealt there.
+  std::vector<uint64_t> dec_board;
 
   size_t node_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * hands[n.player].size(); }
   // Read access: returns the node's A*H values (direct pointer, or decoded into scratch).

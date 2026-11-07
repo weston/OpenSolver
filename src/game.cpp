@@ -265,6 +265,7 @@ struct Filler {
     switch (an->kind) {
       case ANodeKind::Decision: {
         n.aux = static_cast<uint32_t>(g.num_decisions++);
+        g.dec_board.push_back(board_mask(board));
         n.storage = g.storage_floats;
         g.storage_floats += an->children.size() * g.hands[an->player].size();
         n.num_children = static_cast<uint16_t>(an->children.size());
@@ -415,6 +416,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   storage_q = 0;
   storage_compact = 0;
   compact_rows = false;
+  dec_board.clear();
   incomplete = false;
 
   int bl = static_cast<int>(cfg.board.size());
@@ -655,7 +657,7 @@ uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds, bool compact
   // Predictive CFR's `preds` is never compressed and is allocated after the build, so the
   // pre-allocation check has to be told about it (#98).
   if (with_preds || !preds.empty()) b += storage_floats * sizeof(float);
-  b += nodes.size() * sizeof(GNode);
+  b += nodes.size() * sizeof(GNode) + dec_board.size() * sizeof(uint64_t);
   b += chances.size() * (sizeof(ChanceInfo) + 64);
   for (auto& s : showdowns)
     b += (s.ent[0].size() + s.ent[1].size()) * sizeof(SdEntry) + (s.groups[0].size() + s.groups[1].size()) * 4 +

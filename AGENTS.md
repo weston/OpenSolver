@@ -236,7 +236,33 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `couldn't open <path>: No such file or directory` and drops the current tree.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
-- `eliminate_path` is a one-time edit that moves the frequency to check/call.
+- `set_mes` follows `set_strategy`'s rule (paired probes 2026-11-06, #423): under the v4 algorithms the written
+  best response persists (probe3's tree, `set_mes IP` then 60 iterations: exploitability 36), under
+  `original_pio` / `pio_cfr` (set before `build_tree`) solving re-converges. `set_equal_strats` restarts the solve:
+  `show_iters` 0, and N iterations later it is exactly a fresh N-iteration solve (#425).
+- Solving on after `load_tree` of a **default** (frequency-only) save (paired probe 2026-11-06, probe3's tree,
+  saved at 150 iterations): Pio answers `go` with `ERROR: go can't do that on incomplete tree` until
+  `load_all_nodes`. Then 60 more iterations end at exploitability **8.29**, from a save at 0.027. Ours runs
+  `go` on the lazy tree and ends at 0.439 (a fresh 60-iteration solve: 0.125). Neither keeps the regrets in
+  that format, so resuming is a poor warm start in both. Not copied. To resume a solve, save `lossless`:
+  ours then continues bit-exactly.
+- `unlock_node` (paired probe 2026-11-06, #429): the node solves on. 150 iterations after unlocking `r:0`, Pio's
+  strategy is within 0.05 of an unlocked solve. A lock must not write a dominant regret (ours did, so the
+  node stayed locked for good).
+- `rebuild_tree` (paired probes 2026-11-06, #427) restarts the regrets and `show_iters` but keeps the strategy
+  sums and the locks: until the next solve the solved strategies show (probe3's `calc_line_freq` after it
+  is the solved 0.00319); N iterations later it is a fresh N-iteration solve.
+- `eliminate_path` (probed 2026-11-06, #421) takes a bet, raise or check; a call or fold answers `ERROR:
+  eliminate_path incorrect path`. Each hand's frequency of the action goes to its best remaining action
+  by EV, so some hands' raise goes to call and others' to fold. It's a one-time edit: further solving
+  brings the action back (100 iterations later probe3 is at 0.089 exploitability, like a fresh solve).
+- `show_strategy` at a turn or river node prints **0** for hands that contain the turn or river card
+  (probe on Kh9h4h, turn Ah / river As, 2026-11-06; #414). `show_range`, `calc_ev`, `calc_eq_node` and the
+  `_pp` hand lists already agreed there. Probe with ranges that hold such hands: narrow ranges (no
+  deuces under a `2c` turn) hide this whole class of difference.
+- After an `add_line` error (amounts are cumulative per player, so a river check after a turn bet and
+  call is `30 30`, not `0 0`), Pio 3.10.1 stops answering at the next command; a probe script must use
+  only valid lines.
 - Truncated saves (`dump_tree ... no_turns|no_rivers`) load with root flags `INCOMPLETE_TREE ...
   FAST_LOAD COMPRESSED`; browsing a missing street re-solves that street's subtree on demand to
   `set_recalc_accuracy` (fraction of the pot; defaults 0.0025 0.001 0.0005) and flags it

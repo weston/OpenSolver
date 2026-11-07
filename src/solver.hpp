@@ -117,6 +117,7 @@ class Solver {
   int first_player = 0;  // set_first_iteration_player
   bool parallel = true;
   bool write_best_response = false;  // BestResponse walks store the pure BR strategy (set_mes)
+  float br_regret_scale = 1.0f;      // ...with the best action's regret this large (set_strategy's, #423)
   // #71 convergence experiments (set_predictive / set_avg_delay):
   bool predictive = false;  // regret matching input is R + last instantaneous regret (PCFR+-style)
   // 32, not 0. The first iterations are the noisiest, and skipping their contribution to the
@@ -272,6 +273,8 @@ class Solver {
 
   // Sum over opponent hands compatible with each of p's hands: out[h] = sum_o ro[o] * compat(h, o).
   void compat_mass(int p, const float* ro, float* out) const;
+  // Pruning test for the traverser p's strategy row at decision ni: zero for every hand the board allows.
+  bool prunable_row(uint32_t ni, int p, const float* row) const;
   // Total matchups at the root: sum_h r_p[h] * compat mass.
   double root_matchups() const;
 

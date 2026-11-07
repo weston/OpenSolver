@@ -11,7 +11,7 @@ public UPI documentation; it contains no PioSOLVER code.
 - Multi-threaded over turn/river cards with a nested work-stealing pool.
 - Suit **isomorphism** (flop trees on by default, like Pio's `set_isomorphism 1 0`).
 - Optional 16-bit compressed storage (`small_strats`), roughly halving memory. The strategy sums are rounded stochastically, so it converges like float32 (#272, #293).
-- **Regret-based pruning** on by default (`set_pruning off|on [period]`): a traverser action whose current strategy is exactly zero for every hand is skipped (its regret row frozen, its subtree not walked) and revisited every `period`-th iteration (default 8, at least 2). The iteration's values are exact, but the frozen rows and skipped subtrees change the regrets and averages slightly, so results are close to, not bit-identical with, `set_pruning off` (#380). Worth about 13% on a deep tree.
+- **Regret-based pruning** on by default (`set_pruning off|on [period]`): a traverser action whose current strategy is exactly zero for every hand that can occur at the node (not counting hands holding a dealt turn or river card) is skipped (its regret row frozen, its subtree not walked) and revisited every `period`-th iteration (default 8, at least 2). The iteration's values are exact, but the frozen rows and skipped subtrees change the regrets and averages slightly, so results are close to, not bit-identical with, `set_pruning off` (#380). Worth about 13% on a deep tree.
 
 New here? **[docs/quickstart.md](docs/quickstart.md)** walks through installing, solving a spot and
 reading the output in about five minutes. The rest of this file is reference and internals.
@@ -564,8 +564,7 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   keeps Pio's codes with honest descriptions.
 - **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.
 - `show_all_freqs` prints real frequencies (Pio 3.10 prints `nan`); `estimate_schematic_tree` reports
-  real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `node_count`
-  counts every node in preflop trees.
+  real sizes (no ~150 MB floor); `node_count` counts every node in preflop trees.
 - Equal values are listed in 1326 order in `show_nuts` and the sorted `_pp` listings (`show_strategy_pp`,
   `calc_ev_pp`, `calc_eq_pp`); Pio lists ties in an order that changes with the rest of the list. Black-box
   probes ruled out a stable sort and MSVC `std::sort` / heap orders over the 1326 order, so we keep ours.

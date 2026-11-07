@@ -653,10 +653,11 @@ std::string Upi::cmd_show_all_freqs(const Args& a) {
 // ---------------------------------------------------------------------------------------------
 // Strategy writing / locking
 
-void Upi::set_node_strategy(uint32_t ni, const float* strat) {
+void Upi::set_node_strategy(uint32_t ni, const float* strat, bool persist) {
   // Pio 3.10 (probe9): under the default v4 algorithms an edited strategy persists through further
   // solving (it is written as a dominant regret); under original_pio / pio_cfr it is only a start.
-  const float regret_scale = (tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
+  // persist = false: only a start under every algorithm (eliminate_path, #421).
+  const float regret_scale = (!persist || tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
   const GNode& n = tree_->nodes[ni];
   int A = n.num_children, H = tree_->num_hands(n.player);
   std::vector<float> rbuf, sbuf;
@@ -688,7 +689,19 @@ void Upi::lock_node_impl(uint32_t ni, bool lock) {
     int A = n.num_children, H = tree_->num_hands(n.player);
     std::vector<float> sig(static_cast<size_t>(A) * H);
     solver_->average_strategy(ni, sig.data());
-    set_node_strategy(ni, sig.data());
+    // The flag locks: a locked node plays its strategy sums and its regrets aren't updated. So only the sums
+    // take the locked strategy and the regrets stay as solved, frozen: after unlock_node the node solves on
+    // from them, as Pio's does (#429; a dominant regret, as set_strategy writes, kept it locked for good).
+    std::vector<float> sbuf(tree_->compressed ? static_cast<size_t>(A) * H : 0);
+    float* S = tree_->strat_rw(n, sbuf.data());
+    for (int h = 0; h < H; ++h) {
+      double sum = 0;
+      for (int k = 0; k < A; ++k) sum += std::max(0.0f, sig[static_cast<size_t>(k) * H + h]);
+      for (int k = 0; k < A; ++k)
+        S[static_cast<size_t>(k) * H + h] =
+            sum > 0 ? static_cast<float>(std::max(0.0f, sig[static_cast<size_t>(k) * H + h]) / sum) : 1.0f / static_cast<float>(A);
+    }
+    tree_->strat_commit(n, S);
     n.flags |= GF_LOCKED;
   } else {
     n.flags &= static_cast<uint8_t>(~GF_LOCKED);
@@ -718,9 +731,13 @@ std::string Upi::cmd_set_mes(const Args& a) {
   TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   int Hp = tree_->num_hands(p);
   std::vector<float> out(Hp);
+  // Like set_strategy (set_node_strategy): under the v4 algorithms Pio's written best response persists
+  // through further solving, under original_pio / pio_cfr it is a start (#423, paired probes).
+  solver_->br_regret_scale = (tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
   solver_->write_best_response = true;
   solver_->walk(Walk::BestResponse, 0, p, tree_->init_reach[p].data(), tree_->init_reach[1 - p].data(), out.data());
   solver_->write_best_response = false;
+  solver_->br_regret_scale = 1.0f;
   return "set_mes ok!";
 }
 
@@ -1081,7 +1098,19 @@ void Upi::register_node_commands() {
   H["rebuild_tree"] = [this](const Args&) {
     require_tree();
     if (tree_->fast_loaded) throw CmdError{"Can't do that on partially loaded tree - please call load_all_nodes"};
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     tree_alg_ = algorithm_;
+    // As Pio (#427, paired probes): the regrets and the iteration count start over, the strategy sums stay.
+    // So the displayed strategies are the solved ones until the next solve (probe3's calc_line_freq after it
+    // is Pio's solved 0.00319), its first iteration gives the old sums zero weight (DCFR at t = 1), and N
+    // iterations later it is a fresh N-iteration solve; locks stay, a locked node's strategy unchanged.
+    std::fill(tree_->regrets.begin(), tree_->regrets.end(), 0.0f);
+    std::fill(tree_->regrets_q.begin(), tree_->regrets_q.end(), int16_t(0));
+    std::fill(tree_->rscale.begin(), tree_->rscale.end(), 0.0f);
+    std::fill(tree_->preds.begin(), tree_->preds.end(), 0.0f);
+    tree_->iterations = 0;
+    iterations_ = 0;
+    discount_restart_ = 0;
     return std::string("rebuild_tree ok!");
   };
   H["estimate_rebuild_tree"] = [this](const Args&) {
@@ -1252,36 +1281,66 @@ void Upi::register_node_commands() {
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~(GF_LOCKED | GF_COMBO_LOCKED));
     tree_->combo_lock.clear();
     tree_->combo_lock_s.clear();
+    // A fresh start, as in Pio (show_iters 0; 60 iterations later it is exactly a fresh 60-iteration solve,
+    // #425): the DCFR discounts and the average's weighting restart with the count.
+    tree_->iterations = 0;
+    iterations_ = 0;
+    discount_restart_ = 0;
     return std::string("set_equal_strats ok!");
   };
   H["set_mes"] = [this](const Args& a) { return cmd_set_mes(a); };
   H["round_up_to"] = [this](const Args& a) { return cmd_round_up_to(a); };
   H["eliminate_path"] = [this](const Args& a) {
-    // Pio semantics: a one-time edit that sets the action's frequency to 0 (renormalising the other
-    // actions) on every runout of the line; further solving may bring the action back.
+    // Pio 3.10.1 semantics, probed (#421): a one-time edit on every runout of the line. Only a bet, raise
+    // or check can be eliminated (a call or fold: "incorrect path"). Each hand's frequency of the action
+    // goes to its best remaining action by EV (probe3's r:0:b66:b300: 22 of 22 hands, some to call, some
+    // to fold), and further solving may bring the action back.
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
     TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     std::set<std::pair<uint32_t, int>> done;
+    bool passive_path = false;
     for_each_runout(a[0], [&](const NodeRef& r, double) {
       if (r.steps.empty()) return;
       auto& st = r.steps.back();
       const GNode& parent = tree_->nodes[st.node];
-      if (parent.kind != ANodeKind::Decision || !done.insert({st.node, st.choice}).second) return;
-      int A = parent.num_children, H = tree_->num_hands(parent.player);
+      if (parent.kind != ANodeKind::Decision) return;
+      const ActionNode& an = tree_->an(parent);
+      const ActKind kind = an.actions[st.choice].kind;
+      if (kind == ActKind::Call || kind == ActKind::Fold) {
+        passive_path = true;
+        return;
+      }
+      if (!done.insert({st.node, st.choice}).second) return;
+      ensure_recalced(r);  // as calc_ev: a street a truncated save left out is solved first (covers the siblings)
+      const int A = parent.num_children, p = parent.player, H = tree_->num_hands(p);
       std::vector<float> sig(static_cast<size_t>(A) * H);
       solver_->average_strategy(st.node, sig.data());
-      // The removed frequency goes to check/call (what PioSOLVER does); renormalise if there is none.
-      const ActionNode& an = tree_->an(parent);
-      int passive = -1;
+      // Each remaining action's counterfactual value per hand. EV is that over the hand's compatible
+      // opponent mass, the same for every action here (the actor's choice doesn't move the opponent's
+      // reach), so the best action by EV is the best by value.
+      std::vector<float> r0, r1;
+      node_reach(r, r0, r1);  // the opponent's reach at the child is the parent's
+      const std::vector<float> own(static_cast<size_t>(H), 1.0f);
+      const float* ro = p == 0 ? r1.data() : r0.data();
+      std::vector<float> cfv(static_cast<size_t>(A) * H, 0.0f);
       for (int k = 0; k < A; ++k)
-        if (k != st.choice && (an.actions[k].kind == ActKind::Check || an.actions[k].kind == ActKind::Call)) passive = k;
+        if (k != st.choice)
+          solver_->walk(Walk::Evaluate, parent.first_child + static_cast<uint32_t>(k), p, own.data(), ro,
+                        cfv.data() + static_cast<size_t>(k) * H);
       for (int h = 0; h < H; ++h) {
+        int best = -1;
+        for (int k = 0; k < A; ++k)
+          if (k != st.choice && (best < 0 || cfv[static_cast<size_t>(k) * H + h] > cfv[static_cast<size_t>(best) * H + h]))
+            best = k;
         float& v = sig[static_cast<size_t>(st.choice) * H + h];
-        if (passive >= 0) sig[static_cast<size_t>(passive) * H + h] += v;
+        if (best >= 0) sig[static_cast<size_t>(best) * H + h] += v;
         v = 0.0f;
       }
-      set_node_strategy(st.node, sig.data());
+      // only a start, not a dominant regret: Pio's solve brings the action back (probe3: 100 more
+      // iterations after eliminating r:0:b66:b300 end at 0.089 exploitability; a persistent edit, 2.36)
+      set_node_strategy(st.node, sig.data(), false);
     });
+    if (passive_path && done.empty()) throw CmdError{"incorrect path"};  // Pio's answer for a call or fold
     if (done.empty()) throw CmdError{"incorrect node"};
     return std::string("eliminate_path ok!");
   };

@@ -16,7 +16,7 @@ documentation; contains no PioSOLVER code.
 - Vector-form **Discounted CFR** with exact card removal and no abstraction. Defaults α=1.3, γ=4,
   β=0 then 0.5 after iteration 50; `set_dcfr` overrides the exponents.
 - **Regret-based pruning** on by default (`set_pruning`). Skips traverser actions whose current
-  strategy is exactly zero for every hand and revisits them every `period`-th iteration (default 8,
+  strategy is exactly zero for every hand the node's board allows and revisits them every `period`-th iteration (default 8,
   at least 2). Results are close to, not bit-identical with, pruning off (#380). Worth ~13% on a deep tree.
 - **Suit isomorphism**, flop trees on by default to match Pio's `set_isomorphism 1 0`.
 - Averaging controls `avg_delay` and `avg_reset`, which reach a given exploitability in fewer
@@ -61,7 +61,8 @@ documentation; contains no PioSOLVER code.
   hardening against corrupt and crafted files, and no unsolved streets in re-dumped truncated loads (#361);
   solve-control concurrency, an out-of-memory solve no longer aborting the process (#366, #365, #368, #377);
   tree construction, including wrong preflop `calc_eq` (#372); 16-bit combo locks no longer drifting,
-  `set_mes` at combo-locked nodes (#381); `set_info_freq 0` reporting by time like Pio (#379); the job
+  `set_mes` at combo-locked nodes (#381); `set_info_freq 0` reporting by time like Pio (#379);
+  `show_strategy` printing 0 for hands that contain the turn or river card, like Pio (#414); the job
   queue's runner lock and Windows file sharing (#363); and viewer fixes, including an XSS through an
   echoed board (#385), the Sail key never reaching the browser (#374), the fast preview, the re-solve
   and the locks (#358, #370, #383, #387).

@@ -71,6 +71,20 @@ inline void regret_row_max(float* __restrict r, float* __restrict s, float* __re
 
 }  // namespace
 
+// Regret-based pruning skips an action that no hand which can occur at the node plays. A hand sharing a
+// card with the node's board (a dealt turn or river card) never occurs there: its regrets stay 0, so it
+// plays every action uniformly, and counting it blocked nearly every prune below the flop (threebet_mono,
+// 150 iterations: 7,454 of 48.7M river action rows pruned; ignoring these hands, 757,403).
+bool Solver::prunable_row(uint32_t ni, int p, const float* row) const {
+  const GNode& n = g_.nodes[ni];
+  const uint64_t bm = g_.dec_board[n.aux];
+  const uint16_t* hs = g_.hands[p].data();
+  const int Hp = g_.num_hands(p);
+  for (int h = 0; h < Hp; ++h)
+    if (row[h] != 0.0f && !(combo_mask(hs[h]) & bm)) return false;
+  return true;
+}
+
 void Solver::compat_mass(int p, const float* ro, float* out) const {
   const int o = 1 - p;
   const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
@@ -1423,7 +1437,7 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
     uint8_t* pruned = nullptr;
     if (prune_this_iter_ && !(n.flags & (GF_LOCKED | GF_COMBO_LOCKED | GF_INCENTIVES | GF_ELIMINATED))) {
       pruned = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
-      for (int a = 0; a < A; ++a) pruned[a] = all_zero(sigma + static_cast<size_t>(a) * Hp, Hp) ? 1 : 0;
+      for (int a = 0; a < A; ++a) pruned[a] = prunable_row(ni, p, sigma + static_cast<size_t>(a) * Hp) ? 1 : 0;
     }
     float* cfv = ar.alloc(static_cast<size_t>(A) * Hp);
     float* rpa = ar.alloc(static_cast<size_t>(A) * Hp);
@@ -1679,7 +1693,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     if (M == Walk::CFR && prune_this_iter_ &&
         !(n.flags & (GF_LOCKED | GF_COMBO_LOCKED | GF_INCENTIVES | GF_ELIMINATED))) {
       pruned = reinterpret_cast<uint8_t*>(sc.a.alloc(static_cast<size_t>((A + 3) / 4)));
-      for (int a = 0; a < A; ++a) pruned[a] = all_zero(sigma + static_cast<size_t>(a) * Hp, Hp) ? 1 : 0;
+      for (int a = 0; a < A; ++a) pruned[a] = prunable_row(ni, p, sigma + static_cast<size_t>(a) * Hp) ? 1 : 0;
     }
     float* cfv = sc.a.alloc(static_cast<size_t>(A) * Hp);
     float* rpa = sc.a.alloc(static_cast<size_t>(A) * Hp);  // per-action reach: actions may run in parallel
@@ -1750,7 +1764,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
               if (cfv[static_cast<size_t>(a) * Hp + h] >= cfv[static_cast<size_t>(best) * Hp + h]) best = a;
             for (int a = 0; a < A; ++a) {
               float v = a == best ? 1.0f : 0.0f;
-              R[static_cast<size_t>(a) * Hp + h] = v;
+              R[static_cast<size_t>(a) * Hp + h] = v * br_regret_scale;
               S[static_cast<size_t>(a) * Hp + h] = v;
             }
           }
@@ -1769,7 +1783,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
             if (cfv[static_cast<size_t>(a) * Hp + h] >= cfv[static_cast<size_t>(best) * Hp + h]) best = a;  // ties: last action
           for (int a = 0; a < A; ++a) {
             float v = a == best ? 1.0f : 0.0f;
-            R[static_cast<size_t>(a) * Hp + h] = v;
+            R[static_cast<size_t>(a) * Hp + h] = v * br_regret_scale;
             S[static_cast<size_t>(a) * Hp + h] = v;
           }
         }

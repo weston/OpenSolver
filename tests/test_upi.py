@@ -1216,6 +1216,150 @@ def check_mid_solve_settings(u):
     u.cmd("free_tree")
 
 
+def check_eliminate_path(u):
+    """#421, as Pio 3.10.1 (probe3 and paired probes): eliminate_path takes a bet, raise or check, not a
+    call or fold; each hand's frequency goes to its best remaining action by EV; solving can bring the
+    action back."""
+    print("[eliminate_path]")
+    for c in ("set_range OOP AA,KK,QQ,77,44,AK,AQ,KQ,QJs,JTs,T9s,98s,A5s,A4s",
+              "set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s,99,88", "set_board KhQs7d4c", "set_pot 0 0 100",
+              "set_eff_stack 300", "clear_lines", "add_line 66 66 198", "add_line 66 300", "add_line 0 66 300",
+              "add_line 0 0 66", "add_line 0 0 0 66", "build_tree", "set_accuracy 0", "set_info_freq 1000"):
+        u.cmd(c)
+    u.cmd("go 150 steps")
+    u.cmd("wait_for_solver")
+    rows = lambda node: [[float(x) for x in l.split()] for l in u.cmd(f"show_strategy {node}").splitlines()]
+    ev = lambda node: [float(x) for x in u.cmd(f"calc_ev IP {node}").splitlines()[0].split()]
+    before = rows("r:0:b66")  # IP facing the bet: raise to 300, call, fold
+    ev_c, ev_f = ev("r:0:b66:c"), ev("r:0:b66:f")
+    check(u.cmd("eliminate_path r:0:b66:c") == "ERROR: eliminate_path incorrect path"
+          and u.cmd("eliminate_path r:0:b66:f") == "ERROR: eliminate_path incorrect path",
+          "eliminate_path refuses a call or a fold, like Pio")
+    check(u.cmd("eliminate_path r:0:b66:b300") == "eliminate_path ok!", "eliminate_path takes a raise")
+    after = rows("r:0:b66")
+    moved = [h for h in range(1326) if before[0][h] > 0.01]
+    right = [h for h in moved if (after[1][h] - before[1][h] > after[2][h] - before[2][h]) == (ev_c[h] > ev_f[h])]
+    to_fold = [h for h in moved if after[2][h] > before[2][h] + 0.01]
+    check(moved and all(after[0][h] == 0 for h in range(1326)) and len(right) == len(moved) and to_fold,
+          f"each hand's raise goes to its better remaining action by EV ({len(right)} of {len(moved)}, "
+          f"{len(to_fold)} to fold)")
+    u.cmd("go 100 steps")
+    u.cmd("wait_for_solver")
+    check(sum(rows("r:0:b66")[0]) > 1, "further solving brings the raise back (a start, not a lock)")
+    u.cmd("free_tree")
+
+
+def check_set_mes_persists(u):
+    """#423, as Pio 3.10.1: under the default (v4) algorithms set_mes's best response persists through
+    further solving, like set_strategy, so the other player exploits it; under pio_cfr it is a start."""
+    print("[set_mes persists under v4, not under pio_cfr]")
+    expl = {}
+    for alg in ("v4_small", "pio_cfr"):
+        set_small_tree(u)
+        u.cmd(f"set_algorithm {alg}")
+        u.cmd("build_tree")
+        u.cmd("set_accuracy 0")
+        u.cmd("set_info_freq 1000")
+        u.cmd("go 150 steps")
+        u.cmd("wait_for_solver")
+        check(u.cmd("set_mes IP") == "set_mes ok!", f"set_mes IP ({alg})")
+        u.cmd("go 60 steps")
+        u.cmd("wait_for_solver")
+        expl[alg] = float(u.cmd("calc_results").split("\n")[4].split(": ")[1])
+    u.cmd("set_algorithm v4_small")
+    check(expl["v4_small"] > 2.0, f"v4: IP keeps its best response, so 60 iterations later it is exploited "
+                                  f"({expl['v4_small']:.3f} chips, pot 40)")
+    check(expl["pio_cfr"] < 0.5, f"pio_cfr: a start, solving re-converges ({expl['pio_cfr']:.3f} chips)")
+    u.cmd("free_tree")
+
+
+def check_set_equal_strats_restarts(u):
+    """#425, as Pio 3.10.1: set_equal_strats is a fresh start. show_iters is 0, and N iterations later the
+    results are a fresh N-iteration solve's."""
+    print("[set_equal_strats restarts the solve]")
+    set_small_tree(u)
+    u.cmd("build_tree")
+    u.cmd("set_accuracy 0")
+    u.cmd("set_info_freq 1000")
+    u.cmd("go 40 steps")
+    u.cmd("wait_for_solver")
+    fresh = u.cmd("calc_results")
+    u.cmd("go 80 steps")
+    u.cmd("wait_for_solver")
+    check(u.cmd("set_equal_strats") == "set_equal_strats ok!" and u.cmd("show_iters") == "0",
+          "show_iters is 0 after set_equal_strats")
+    u.cmd("go 40 steps")
+    u.cmd("wait_for_solver")
+    again = u.cmd("calc_results")
+    check(again == fresh, f"40 iterations after it are exactly a fresh 40-iteration solve ({again!r} vs {fresh!r})")
+    u.cmd("free_tree")
+
+
+def check_rebuild_tree_restarts(u):
+    """#427, as Pio 3.10.1: rebuild_tree restarts the regrets and the count but keeps the strategy sums: it shows
+    the solved strategies until the next solve, N iterations later it is a fresh N-iteration solve, and a
+    locked node's strategy is unchanged through it and further solving."""
+    print("[rebuild_tree restarts the solve, keeps locks]")
+    for storage in ("off", "on"):
+        u.cmd(f"small_strats {storage}")
+        set_small_tree(u)
+        u.cmd("build_tree")
+        u.cmd("set_accuracy 0")
+        u.cmd("set_info_freq 1000")
+        u.cmd("go 40 steps")
+        u.cmd("wait_for_solver")
+        fresh = u.cmd("calc_results")
+        u.cmd("go 80 steps")
+        u.cmd("wait_for_solver")
+        solved = u.cmd("show_strategy r:0:c")
+        check(u.cmd("rebuild_tree") == "rebuild_tree ok!" and u.cmd("show_iters") == "0",
+              f"show_iters is 0 after rebuild_tree (small_strats {storage})")
+        check(u.cmd("show_strategy r:0:c") == solved, f"until the next solve it shows the solved strategies ({storage})")
+        u.cmd("go 40 steps")
+        u.cmd("wait_for_solver")
+        check(u.cmd("calc_results") == fresh, f"40 iterations later: a fresh 40-iteration solve ({storage})")
+        u.cmd("lock_node r:0")
+        locked = u.cmd("show_strategy r:0")
+        u.cmd("rebuild_tree")
+        u.cmd("go 30 steps")
+        u.cmd("wait_for_solver")
+        check("LOCKED" in u.cmd("show_node r:0") and u.cmd("show_strategy r:0") == locked,
+              f"a locked node keeps its lock and its strategy through rebuild_tree and solving ({storage})")
+    u.cmd("small_strats auto")
+    u.cmd("free_tree")
+
+
+def check_unlock_resumes(u):
+    """#429, as Pio 3.10.1: lock_node holds the node's strategy while locked; after unlock_node the node
+    solves on (it used to stay at the locked strategy for good: lock_node wrote it as a dominant regret)."""
+    print("[unlock_node: the node solves on]")
+    rows = lambda: [[float(x) for x in l.split()] for l in u.cmd("show_strategy r:0").splitlines()]
+    set_small_tree(u)
+    u.cmd("build_tree")
+    u.cmd("set_accuracy 0")
+    u.cmd("set_info_freq 1000")
+    u.cmd("go 230 steps")
+    u.cmd("wait_for_solver")
+    free = rows()
+    u.cmd("build_tree")
+    u.cmd("go 30 steps")
+    u.cmd("wait_for_solver")
+    u.cmd("lock_node r:0")
+    locked = rows()
+    u.cmd("go 50 steps")
+    u.cmd("wait_for_solver")
+    check(rows() == locked, "a locked node keeps its strategy while solving")
+    u.cmd("unlock_node r:0")
+    u.cmd("go 150 steps")
+    u.cmd("wait_for_solver")
+    after = rows()
+    dist = lambda x, y: max(abs(a - b) for ra, rb in zip(x, y) for a, b in zip(ra, rb))
+    check(dist(after, locked) > 0.05 and dist(after, free) < dist(locked, free),
+          f"after unlock_node it moves toward the free solve (from the lock {dist(after, locked):.3f}, "
+          f"to the free solve {dist(after, free):.3f}, was {dist(locked, free):.3f})")
+    u.cmd("free_tree")
+
+
 def check_predictive(u):
     """#408: set_predictive (PCFR+-style matching, #71) converges and splits the pot like the default;
     bad arguments are refused, and so is switching it mid-solve."""
@@ -1521,6 +1665,11 @@ def main(exe, big=False):
         check_info_freq_auto(u)
         check_setting_errors(u)
         check_mid_solve_settings(u)
+        check_eliminate_path(u)
+        check_set_mes_persists(u)
+        check_set_equal_strats_restarts(u)
+        check_rebuild_tree_restarts(u)
+        check_unlock_resumes(u)
         check_predictive(u)
         check_small_commands(u)
 

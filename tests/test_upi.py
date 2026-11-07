@@ -908,6 +908,7 @@ def check_small_commands(u):
         u.cmd("go 50 steps")
         u.cmd("wait_for_solver")
         res = u.cmd("calc_results")
+        level = re.search(r"compression_level \(1-21\): (\d+)", u.cmd("show_settings")).group(1)
         size = {}
         for lvl in (1, 21):
             check(u.cmd(f"set_compression_level {lvl}") == "set_compression_level ok!", f"set_compression_level {lvl}")
@@ -920,7 +921,7 @@ def check_small_commands(u):
         check(size[21] <= size[1], f"level 21 compresses at least as well as level 1 ({size[21]} vs {size[1]} bytes)")
         check(all(u.cmd(f"set_compression_level {v}").startswith("ERROR") for v in ("0", "22", "x")),
               "compression levels outside 1..21 are refused")
-        u.cmd("set_compression_level 21")
+        u.cmd(f"set_compression_level {level}")  # as it was (11 by default), for the checks after this one
         u.cmd("free_tree")
     check(u.cmd("set_avg_delay 7") == "set_avg_delay ok!" and u.cmd("show_avg_delay") == "7",
           "show_avg_delay shows set_avg_delay")

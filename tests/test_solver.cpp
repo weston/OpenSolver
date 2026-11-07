@@ -115,6 +115,64 @@ static bool run(const char* name, const char* board, const char* r0, const char*
 // nondeterminism via the prune decision), the EVs must still sum to the pot, and the pruned run
 // must reach about the unpruned exploitability in the same number of iterations. The revisit
 // schedule is exercised by using a small prune_period.
+// Pruning below the flop: hands that share a card with a node's board (the dealt turn / river) never
+// occur there, so they must not keep an action alive (they play every action uniformly on zero regrets).
+// Checked on a river node directly, then a flop tree solved with pruning must stay deterministic and
+// converge like the unpruned solve.
+static bool pruning_ignores_blocked_hands() {
+  GameConfig cfg;
+  parse_cards("Kh9d4h", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ,JJ,TT,99,AK,AQ,AJ,KQ,KJ,QJ,JT,T9,A5s,65s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+  if (!parse_range("AA,KK,QQ,JJ,TT,99,88,AK,AQ:0.5,KQ,QJ,JT,98s,76s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+  cfg.pot[2] = 60;
+  cfg.eff_stack = 200;
+  cfg.lines.add = {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {0, 0, 40}, {20, 200}, {0, 0, 0, 0, 30, 30}, {0, 0, 0, 0, 30, 90}};
+  GameTree g;
+  if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+  // a river decision node of OOP where some of OOP's hands are blocked by the turn / river
+  Solver s0(g);
+  const int H = g.num_hands(0);
+  uint32_t ni = UINT32_MAX;
+  int blocked = -1, live = -1;
+  for (uint32_t i = 0; i < g.nodes.size() && ni == UINT32_MAX; ++i) {
+    const GNode& n = g.nodes[i];
+    if (n.kind != ANodeKind::Decision || n.board_len != 5 || n.player != 0) continue;
+    blocked = live = -1;
+    for (int h = 0; h < H; ++h) {
+      if (combo_mask(g.hands[0][h]) & g.dec_board[n.aux]) blocked = h;
+      else live = h;
+    }
+    if (blocked >= 0 && live >= 0) ni = i;
+  }
+  if (ni == UINT32_MAX) { std::printf("[pruning, blocked hands] no river node with blocked hands\n"); return false; }
+  std::vector<float> row(H, 0.0f);
+  row[blocked] = 0.5f;
+  const bool skip_blocked = s0.prunable_row(ni, 0, row.data());
+  row[live] = 0.25f;
+  const bool keep_live = !s0.prunable_row(ni, 0, row.data());
+  // the solve: pruning (twice, for determinism) against no pruning
+  GameTree g1, g2, g3;
+  if (!g1.build(cfg, err) || !g2.build(cfg, err) || !g3.build(cfg, err)) { std::printf("[pruning, blocked hands] build\n"); return false; }
+  Solver a(g1), b(g2), off(g3);
+  off.pruning = false;
+  for (int t = 1; t <= 200; ++t) {
+    a.iterate(t);
+    b.iterate(t);
+    off.iterate(t);
+  }
+  const RootStats ra = a.root_stats(), rb = b.root_stats(), ro = off.root_stats();
+  const bool det = ra.ev[0] == rb.ev[0] && ra.exploitability == rb.exploitability && g1.regrets == g2.regrets;
+  const bool conv = ra.exploitability <= ro.exploitability * 1.5 + 0.0005 * 60;
+  std::printf("[pruning, blocked hands] river row: blocked-only %s, live %s; flop tree explo on=%.5f off=%.5f %s%s\n",
+              skip_blocked ? "prunable" : "KEPT", keep_live ? "kept" : "PRUNED", ra.exploitability, ro.exploitability,
+              det ? "deterministic " : "NONDETERMINISTIC ", conv ? "converged" : "DIVERGED");
+  return skip_blocked && keep_live && det && conv;
+}
+
 static bool run_pruning() {
   const char* board = "KhQs7d4c2s";
   const char* r0 = "AA,KK,QQ,77,44,22,AK,AQ,KQ,QJs,JTs,T9s,98s,65s,A5s";
@@ -532,6 +590,7 @@ int main(int argc, char** argv) {
   fails += !run("flop-mono-noiso", "Kh9h4h", "AA,KK,QQ,JJ,TT,99,AK,AQ,AJ,KQ,KJ,QJ,JT,T9", "AA,KK,QQ,JJ,TT,99,88,AK,AQ,KQ,QJ,JT", 60, 200,
                 {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {0, 0, 40}, {20, 200}}, 200, 0.01, false);
   fails += !run_pruning();
+  fails += !pruning_ignores_blocked_hands();
   fails += !mem_accounting();
   fails += !showdown_kernels_match();
   fails += !decompress_midsolve();

@@ -361,7 +361,17 @@ On the realistic trees (`srp_big`, `threebet_mono`; owner's Zen 5 PC, 32 threads
     cost +10%, or unchanged when restricted to nodes where at most 1/8 of the hands need it. The full
     vectorised call is cheaper than a scalar per-hand loop.
   - **Board-blocked hands are 8.05% of river storage** on every tree (river rows are 98-99% of all
-    storage; turn rows 1-3%, 4% of them blocked), so 8% of the bytes streamed per iteration are dead. Compacting them is #239.
+    storage; turn rows 1-3%, 4% of them blocked), so 8% of the bytes streamed per iteration are dead.
+    **Compacting them (#239) is slower: built, measured, not kept** (branch `compact-rivers`). River
+    nodes stored A x H' rows, every river board got its own compact hand space, and the walks gathered
+    reaches into it at each turn->river chance node and scattered values back; float32 bit-identical
+    to full rows, storage -7.7%. Time: M4 10 threads threebet_mono +2.1%, flop_srp_4 +7.2%, deep
+    +11.8%; Zen 5 32 threads -1.4% (noise), +6.6%, +12.5%. The river subtree gained only 1% (deep,
+    thread-seconds 19.76 -> 19.56): the showdown kernels, its largest part, never touched blocked
+    hands, so only the row loops shrink. The gather and scatter (2.16 + 1.08 s against 0.55 + 0.14 s
+    for the memcpy and zeroing they replace) cost more than that at every river root, though they
+    already copy the runs between blocked hands in 4-float blocks (3x an index loop). What is left is
+    8% less memory at a 2-12% time cost, for trees within 8% of the RAM limit.
 - **Profile at 10 threads** (2026-11-06, M4, threebet_mono float32, `sample` for 8 s; the main thread's
   wait in `wait_for_solver` left out): the lanes kernel 35%, `current_strategy` 20%, `river_down` 8%,
   `traverser_update` 8%, `river_cfr` 6%, `strategy_only` 6%, `memset` 2.6%, `Arena::alloc` 2%,

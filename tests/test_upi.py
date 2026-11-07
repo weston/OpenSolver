@@ -1129,14 +1129,17 @@ def check_predictive(u):
     set_small_tree(u)
     u.cmd("set_accuracy 0")
     u.cmd("set_info_freq 100")
-    res = {}
+    res, early = {}, {}
     for mode in ("off", "on"):
-        u.cmd("build_tree")
         check(u.cmd(f"set_predictive {mode}") == "set_predictive ok!", f"set_predictive {mode}")
-        u.cmd("go 300 steps")
-        u.cmd("wait_for_solver")
-        r = u.cmd("calc_results").split("\n")
-        res[mode] = [float(r[i].split(": ")[1]) for i in (0, 1, 4)]
+        for steps, into in ((30, early), (300, res)):
+            u.cmd("build_tree")
+            u.cmd(f"go {steps} steps")
+            u.cmd("wait_for_solver")
+            r = u.cmd("calc_results").split("\n")
+            into[mode] = [float(r[i].split(": ")[1]) for i in (0, 1, 4)]
+    # it takes effect: after 30 iterations the two are on different paths (1.15 vs 1.40 after 10)
+    check(early["on"] != early["off"], f"set_predictive changes the iterates ({early['on']} vs {early['off']})")
     (eo, ei, xo), (po, pi, xp) = res["off"], res["on"]
     check(xp < 0.4 and xp < 4 * xo + 0.02, f"predictive converges (exploitability {xp:.4f} vs {xo:.4f} off, pot 40)")
     check(abs(po + pi - 40) < 0.05 and abs(po - eo) < 0.5, f"and gives the default's EVs ({po:.3f} vs {eo:.3f})")

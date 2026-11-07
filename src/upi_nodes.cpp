@@ -1086,7 +1086,19 @@ void Upi::register_node_commands() {
   H["rebuild_tree"] = [this](const Args&) {
     require_tree();
     if (tree_->fast_loaded) throw CmdError{"Can't do that on partially loaded tree - please call load_all_nodes"};
+    TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     tree_alg_ = algorithm_;
+    // As Pio (#427, paired probes): the regrets and the iteration count start over, the strategy sums stay.
+    // So the displayed strategies are the solved ones until the next solve (probe3's calc_line_freq after it
+    // is Pio's solved 0.00319), its first iteration gives the old sums zero weight (DCFR at t = 1), and N
+    // iterations later it is a fresh N-iteration solve; locks stay, a locked node's strategy unchanged.
+    std::fill(tree_->regrets.begin(), tree_->regrets.end(), 0.0f);
+    std::fill(tree_->regrets_q.begin(), tree_->regrets_q.end(), int16_t(0));
+    std::fill(tree_->rscale.begin(), tree_->rscale.end(), 0.0f);
+    std::fill(tree_->preds.begin(), tree_->preds.end(), 0.0f);
+    tree_->iterations = 0;
+    iterations_ = 0;
+    discount_restart_ = 0;
     return std::string("rebuild_tree ok!");
   };
   H["estimate_rebuild_tree"] = [this](const Args&) {

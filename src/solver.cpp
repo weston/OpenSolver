@@ -1,4 +1,5 @@
 #include "solver.hpp"
+#include "compact_rows.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -1027,19 +1028,42 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     g_.ensure_loaded(n);
     const bool q16 = g_.compressed;
     const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
-    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
+#if PIO_COMPACT_ROWS
+    // Compact rows (#239): row a starts at a * L, and each 16 hands take popcount of their kept bits. An
+    // expand-load puts the kept values in their hands' lanes and 0 elsewhere, which is what the full row
+    // held there, so the floats are the full-row ones.
+    const uint32_t* kb = q16 ? g_.keep_bits(n) : nullptr;
+    const size_t L = q16 ? g_.row_len(n) : static_cast<size_t>(H);
+    size_t used = 0;  // compact values before hand h in every row
+#endif
     const __m512 qs = _mm512_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm512_setzero_ps(),
                  one = _mm512_set1_ps(1.0f), uni = _mm512_set1_ps(1.0f / static_cast<float>(A));
     __m512 v[16];
     for (int h = 0; h < H; h += 16) {
       const __mmask16 m = static_cast<__mmask16>(H - h >= 16 ? 0xffff : (1u << (H - h)) - 1);
+#if PIO_COMPACT_ROWS
+      const __mmask16 km = kb ? static_cast<__mmask16>(kb[h / 32] >> (h % 32)) : 0;
+#endif
       __m512 sum = z;
       for (int a = 0; a < A; ++a) {
         const size_t off = static_cast<size_t>(a) * H + h;
-        // the rows are read interleaved: prefetch each one ahead (one stream per row per thread)
-        if (q16) _mm_prefetch(reinterpret_cast<const char*>(Q + off) + 256, _MM_HINT_T0);
-        else _mm_prefetch(reinterpret_cast<const char*>(R + off) + 512, _MM_HINT_T0);
-        __m512 x = q16 ? _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(_mm256_maskz_loadu_epi16(m, Q + off))), qs)
+        __m256i q = _mm256_setzero_si256();
+#if PIO_COMPACT_ROWS
+        if (kb) {
+          const int16_t* qa = Q + static_cast<size_t>(a) * L + used;
+          _mm_prefetch(reinterpret_cast<const char*>(qa) + 256, _MM_HINT_T0);
+          q = expand16(km, qa);
+        } else
+#endif
+        if (q16) {
+          // the rows are read interleaved: prefetch each one ahead (one stream per row per thread)
+          _mm_prefetch(reinterpret_cast<const char*>(Q + off) + 256, _MM_HINT_T0);
+          q = _mm256_maskz_loadu_epi16(m, Q + off);
+        } else {
+          _mm_prefetch(reinterpret_cast<const char*>(R + off) + 512, _MM_HINT_T0);
+        }
+        __m512 x = q16 ? _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(q)), qs)
                        : _mm512_maskz_loadu_ps(m, R + off);
         x = _mm512_max_ps(x, z);  // v > 0 ? v : 0 (x is never NaN here)
         v[a] = x;
@@ -1050,6 +1074,9 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
       const __m512 add = _mm512_mask_blend_ps(pos, uni, z);
       for (int a = 0; a < A; ++a)
         _mm512_mask_storeu_ps(out + static_cast<size_t>(a) * H + h, m, _mm512_fmadd_ps(v[a], inv, add));
+#if PIO_COMPACT_ROWS
+      used += static_cast<size_t>(__builtin_popcount(km));
+#endif
     }
   } else
 #endif
@@ -1058,9 +1085,13 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     // AVX2 form of the single pass (#175 / NEON #222) for x86 builds without AVX-512: 8 hands at a
     // time with every action's row in registers. The generic loops' operations in the same order.
     g_.ensure_loaded(n);
-    const bool q16 = g_.compressed;
-    const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
-    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    // 16-bit full rows decode in registers; compact ones (#239) are expanded into scratch by regrets_ro
+    // first (dropped hands read 0, as stored zeros would), then matched like float32 rows.
+    const bool q16 = g_.compressed && !n.pad;
+    const float* R = q16 ? nullptr
+                         : g_.compressed ? g_.regrets_ro(n, sc.a.alloc(static_cast<size_t>(A) * H))
+                                         : g_.regrets.data() + n.storage;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
     const __m256 qs = _mm256_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm256_setzero_ps(),
                  one = _mm256_set1_ps(1.0f), uni = _mm256_set1_ps(1.0f / static_cast<float>(A));
     __m256 v[16];
@@ -1105,9 +1136,13 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     // order (r + 0, max with 0, sum over actions in order, 1/sum, fma(v, inv, add)): identical floats.
     // M4, 10 threads: -2 to -5% on every bench tree (threebet_mono 6.12 -> 5.95 s).
     g_.ensure_loaded(n);
-    const bool q16 = g_.compressed;
-    const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
-    const int16_t* Q = q16 ? g_.regrets_q.data() + n.storage : nullptr;
+    // 16-bit full rows decode in registers; compact ones (#239) are expanded into scratch by regrets_ro
+    // first (dropped hands read 0, as stored zeros would), then matched like float32 rows.
+    const bool q16 = g_.compressed && !n.pad;
+    const float* R = q16 ? nullptr
+                         : g_.compressed ? g_.regrets_ro(n, sc.a.alloc(static_cast<size_t>(A) * H))
+                                         : g_.regrets.data() + n.storage;
+    const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
     const float qs = q16 ? g_.rscale[n.aux] : 0.0f;
     const float32x4_t z = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), uni = vdupq_n_f32(1.0f / static_cast<float>(A));
     float32x4_t v[16];
@@ -1389,11 +1424,12 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
     // instead of stalling the update (threebet_mono, M4: -6% at 1 and 10 threads; Zen 5: -9% at 1
     // and 8 threads, -7% at 32). The regrets need no hint: current_strategy has just read them.
     if (accumulate_) {
-      const size_t len = static_cast<size_t>(A) * Hp;
       if (g_.compressed) {
-        const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + n.storage);
+        const size_t len = g_.stored_size(n);
+        const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + g_.qo(n));
         for (size_t off = 0; off < len * 2; off += 64) __builtin_prefetch(b + off, 1, 3);
       } else {
+        const size_t len = static_cast<size_t>(A) * Hp;
         const char* b = reinterpret_cast<const char*>(g_.strat.data() + n.storage);
         for (size_t off = 0; off < len * 4; off += 64) __builtin_prefetch(b + off, 1, 3);
       }

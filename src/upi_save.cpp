@@ -516,13 +516,41 @@ void write_record_quant(GzOut& out, const GameTree& g, const Solver& solver, uin
   out.write(q.data(), q.size() * sizeof(uint16_t));
 }
 
+// Compact 16-bit rows (#239) <-> the full rows a file holds (dropped hands are 0 there, as they always were).
+template <class Q>
+static void expand_q(const GameTree& g, const GNode& n, const Q* q, std::vector<Q>& full) {
+  const size_t H = static_cast<size_t>(g.num_hands(n.player)), L = g.row_len(n);
+  const uint16_t* k = g.keep_of(n);
+  full.assign(g.node_size(n), Q(0));
+  for (size_t a = 0; a < n.num_children; ++a)
+    for (size_t j = 0; j < L; ++j) full[a * H + k[j]] = q[a * L + j];
+}
+template <class Q>
+static void compact_q(const GameTree& g, const GNode& n, const Q* full, Q* q) {
+  const size_t H = static_cast<size_t>(g.num_hands(n.player)), L = g.row_len(n);
+  const uint16_t* k = g.keep_of(n);
+  for (size_t a = 0; a < n.num_children; ++a)
+    for (size_t j = 0; j < L; ++j) q[a * L + j] = full[a * H + k[j]];
+}
+
 void write_record(GzOut& out, const GameTree& g, const GNode& n) {
   size_t len = g.node_size(n);
   if (g.compressed) {
     out.put(g.rscale[n.aux]);
     out.put(g.sscale[n.aux]);
-    out.write(g.regrets_q.data() + n.storage, len * sizeof(int16_t));
-    out.write(g.strat_q.data() + n.storage, len * sizeof(uint16_t));
+    const int16_t* rq = g.regrets_q.data() + g.qo(n);
+    const uint16_t* sq = g.strat_q.data() + g.qo(n);
+    if (g.keep_of(n)) {
+      std::vector<int16_t> fr;
+      std::vector<uint16_t> fs;
+      expand_q(g, n, rq, fr);
+      expand_q(g, n, sq, fs);
+      out.write(fr.data(), len * sizeof(int16_t));
+      out.write(fs.data(), len * sizeof(uint16_t));
+    } else {
+      out.write(rq, len * sizeof(int16_t));
+      out.write(sq, len * sizeof(uint16_t));
+    }
   } else {
     out.write(g.regrets.data() + n.storage, len * sizeof(float));
     out.write(g.strat.data() + n.storage, len * sizeof(float));
@@ -587,8 +615,19 @@ void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int pre
   if ((file_mode & 1) && t.compressed) {
     t.rscale[n.aux] = in.template get<float>();
     t.sscale[n.aux] = in.template get<float>();
-    in.read(t.regrets_q.data() + n.storage, len * sizeof(int16_t));
-    in.read(t.strat_q.data() + n.storage, len * sizeof(uint16_t));
+    int16_t* rq = t.regrets_q.data() + t.qo(n);
+    uint16_t* sq = t.strat_q.data() + t.qo(n);
+    if (t.keep_of(n)) {
+      std::vector<int16_t> fr16(len);
+      std::vector<uint16_t> fs16(len);
+      in.read(fr16.data(), len * sizeof(int16_t));
+      in.read(fs16.data(), len * sizeof(uint16_t));
+      compact_q(t, n, fr16.data(), rq);
+      compact_q(t, n, fs16.data(), sq);
+    } else {
+      in.read(rq, len * sizeof(int16_t));
+      in.read(sq, len * sizeof(uint16_t));
+    }
     return;
   }
   if (!(file_mode & 1) && !t.compressed) {
@@ -814,7 +853,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   std::string err;
   if (!t->build(lc.cfg, err, false)) throw CmdError{"cannot rebuild tree: " + err};
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
-  if (small_strats_ == "on") t->compressed = true;
+  if (small_strats_ == "on" || small_strats_ == "compact") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
   // auto: keep the file's storage mode so a save/load round trip is exact. Requantizing a float32 save
   // to 16-bit is lossy (~1e-4 in strategies), so only do it when float32 genuinely does not fit.
@@ -822,6 +861,9 @@ std::string Upi::cmd_load_tree(const Args& a) {
   // after this decision, so float32 chosen against an unpriced budget can overflow (#98).
   else t->compressed = ((lc.h.mode & kModeQ16) && !(lc.h.mode & kModeQuant)) ||
                        t->memory_bytes_for(false, predictive_) > avail;
+  // compact river rows (#239), as build_tree chooses them; files always hold full rows
+  t->select_rows(t->compressed && (small_strats_ == "compact" ||
+                                   (small_strats_ == "auto" && t->memory_bytes_for(true, predictive_) > avail * 9 / 10)));
   tree_.reset();
   solver_.reset();
   t->allocate_storage();

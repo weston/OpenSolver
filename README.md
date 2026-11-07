@@ -628,7 +628,9 @@ retuned — see `bench/dcfr_sweep.md` and `src/solver.hpp`.)
 over the M4 table, which is a snapshot.
 
 `build_tree` checks free memory and switches to compressed storage automatically when float32
-storage would not fit (`small_strats auto`; force with `on` / `off`).
+storage would not fit (`small_strats auto`; force with `on` / `off`). If 16-bit would not fit either,
+`auto` also leaves out the river rows' board-blocked hands, about 7% less memory for about 14% more
+time per iteration with identical results (force with `small_strats compact`, #239).
 
 ## Layout
 

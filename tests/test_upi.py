@@ -8,6 +8,7 @@ By default the multi-street checks run on a small tree (tens of MB) so `make tes
 ~3.3 GB with small_strats) — use that on a large-RAM machine.
 """
 import math
+import shutil
 import os
 import platform
 import re
@@ -1105,6 +1106,36 @@ def check_tree_construction_edges(exe):
           "add_schematic_tree refuses a turn board, whose lines would be read as flop lines (#396)")
 
 
+def check_compact_rows(exe):
+    """#239: small_strats compact (16-bit rows without the river's board-blocked hands) gives exactly what
+    small_strats on gives: the same solve, strategies and EVs, lossless saves that load either way."""
+    print("[small_strats compact]")
+    td = tempfile.mkdtemp(prefix="wsolver-compact-")
+    save = os.path.join(td, "c.cfr")
+
+    def run(mode, extra):
+        lines = ["set_end_string END", "set_threads 4",
+                 "set_range OOP 22+,A2s+,K9s+,QTs+,JTs,ATo+,KJo+,76s,65s", "set_range IP 22+,A2s+,K9s+,Q9s+,J9s+,T9s,98s,ATo+,KTo+",
+                 "set_board Qs8s7d", "set_pot 0 0 60", "set_eff_stack 300", "add_line 0 20 20 60 60 300",
+                 "add_line 20 60 60 300", "add_line 0 0 30 30 90 300", f"small_strats {mode}", "build_tree",
+                 "set_info_freq 1000"] + extra + ["exit"]
+        p = subprocess.run([exe], input="\n".join(lines) + "\n", capture_output=True, text=True, timeout=600)
+        blocks = [b.strip() for b in p.stdout.split("END") if b.strip()]
+        return [b for b in blocks if not b.startswith(("SOLVER", "running time"))]
+
+    solve = ["go 40 steps", "wait_for_solver", "calc_results", "show_strategy r:0:c:c:2c:c:c:4h",
+             "show_strategy r:0:b20:c:Kd:c:c:2s", "calc_ev OOP r:0:c:c:2c:c:c:4h", "lock_node r:0:c:c:2c:c:c:4h",
+             "go 20 steps", "wait_for_solver", "calc_results"]
+    on = run("on", solve + [f'dump_tree "{save}" lossless'])
+    compact = run("compact", solve)
+    check(len(on) > 10 and on[:len(compact)] == compact, "small_strats compact solves exactly like small_strats on")
+    reload = ["calc_results", "show_strategy r:0:b20:c:Kd:c:c:2s", "go 10 steps", "wait_for_solver", "calc_results"]
+    a = run("on", [f'load_tree "{save}"'] + reload)
+    b = run("compact", [f'load_tree "{save}"'] + reload)
+    check(len(a) > 5 and a == b, "a lossless save loads and solves on exactly the same in compact mode")
+    shutil.rmtree(td, ignore_errors=True)
+
+
 def check_core_review(exe):
     """#380: 16-bit combo-locked rows hold their values; pruning periods below 2 are refused; set_mes
     plays the best response for the unlocked hands of a combo-locked node."""
@@ -1589,6 +1620,7 @@ def main(exe, big=False):
     check_framing(exe)
     check_save_robustness(exe)
     check_tree_construction_edges(exe)
+    check_compact_rows(exe)
     check_core_review(exe)
     check_exit_while_parked(exe)
     u = Upi(exe)

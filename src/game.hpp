@@ -17,6 +17,13 @@
 #include "action_tree.hpp"
 #include "cards.hpp"
 
+// Compact 16-bit river rows (#239, see GameTree::keep_sets): needs AVX-512 VBMI2 expand / compress.
+#if defined(__AVX512VBMI2__) && defined(__AVX512BW__) && defined(__AVX512VL__) && !defined(PIO_NO_COMPACT_ROWS)
+#define PIO_COMPACT_ROWS 1
+#else
+#define PIO_COMPACT_ROWS 0
+#endif
+
 namespace pio {
 
 // Max reductions for the 16-bit storage scales. Non-negative floats order exactly like their IEEE-754
@@ -105,7 +112,7 @@ struct GNode {
   uint32_t anode;      // index into GameTree::anodes
   uint32_t first_child;
   uint16_t num_children;
-  uint16_t pad;
+  uint16_t pad;        // decision: 1 + its GameTree::keep_sets entry when 16-bit rows are compact (#239), else 0
   uint32_t aux;        // chance: ChanceInfo index; showdown: board id; decision: decision index
   uint64_t storage;    // decision: float offset into regrets/strat arrays (size A * H[player])
 };
@@ -258,6 +265,41 @@ class GameTree {
   std::vector<float> rscale, sscale;
   uint64_t storage_floats = 0;
   uint64_t num_decisions = 0;
+  // Compact 16-bit rows (#239). At a river decision node, a hand holding a card dealt after the root board
+  // can't occur: its reach is 0, and its regrets and strategy sums stay exactly 0 (measured on every river
+  // node of flop trees, float32 and 16-bit; not so at turn nodes, which stay full). The 16-bit arrays keep
+  // only the other hands there, about 8% less on a flop tree. The accessors expand rows to all hands (0
+  // for the dropped ones) and the commits compact them, so every walk, scale and stochastic rounding sees
+  // exactly the values it did before: results are bit-identical. float32 storage (and `preds`) keep full
+  // rows at GNode::storage.
+  // They cost time: about 12% per iteration on threebet_mono (Zen 5, 16 threads) even with AVX-512 VBMI2
+  // expand / compress, so they are a capacity tier, used only when full 16-bit rows don't fit
+  // (select_rows, small_strats compact / auto). Builds without VBMI2 never compact (a scalar scatter per
+  // hand was 50% slower). Unselected, they cost 2 bytes per decision: the build only counts kept hands.
+  struct KeepSet {
+    int card[2] = {-1, -1};         // the cards dealt after the root board
+    uint32_t kept[2] = {0, 0};      // [player]: hands neither card blocks
+    std::vector<uint16_t> keep[2];  // [player]: those hands, ascending (filled by select_rows(true))
+    std::vector<uint32_t> bits[2];  // [player]: bit h of word h / 32 set if hand h is kept (same)
+  };
+  std::vector<KeepSet> keep_sets;
+  std::vector<uint64_t> qoff;  // compact rows only: per decision (GNode::aux), its rows' offset in regrets_q / strat_q
+  uint64_t storage_q = 0;      // length of regrets_q / strat_q
+  uint64_t storage_compact = 0;  // what storage_q is with compact rows (the build computes both layouts)
+  std::vector<uint16_t> keep_cand;  // per decision: its keep_sets entry + 1 if compact rows are selected
+  bool compact_rows = false;
+  // Before allocate_storage: compact river rows (if this build can and the tree has any) or full rows
+  // everywhere (GNode::pad 0, at GNode::storage, the layout float32 uses). build() leaves full rows.
+  void select_rows(bool compact);
+  // Offset of a node's rows in regrets_q / strat_q.
+  uint64_t qo(const GNode& n) const { return compact_rows ? qoff[n.aux] : n.storage; }
+  const uint16_t* keep_of(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].keep[n.player].data() : nullptr; }
+  const uint32_t* keep_bits(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].bits[n.player].data() : nullptr; }
+  size_t row_len(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].kept[n.player] : hands[n.player].size(); }
+  size_t stored_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * row_len(n); }
+  // A node's stored 16-bit rows (q, compact or full) decoded with scale s into its full A x H floats.
+  template <class Q>
+  void decode_rows(const GNode& n, const Q* q, float s, float* out) const;
   // Per decision (GNode::aux): the board's cards at the node. Hands sharing one are never dealt there.
   std::vector<uint64_t> dec_board;
 
@@ -323,11 +365,11 @@ class GameTree {
   // Build from config. Returns false + err.
   bool build(const GameConfig& c, std::string& err, bool allocate = true);
   // Memory needed (bytes) for the current node set; valid after build(..., false).
-  uint64_t memory_bytes() const { return memory_bytes_for(compressed); }
+  uint64_t memory_bytes() const { return memory_bytes_for(compressed, false, compact_rows); }
   // with_preds: count the predictive array that set_predictive will allocate after the
   // build. Already-allocated preds are counted regardless, so memory_bytes() is right
   // once the feature is on; the flag is for the check that runs *before* allocation.
-  uint64_t memory_bytes_for(bool compress, bool with_preds = false) const;
+  uint64_t memory_bytes_for(bool compress, bool with_preds = false, bool compact = false) const;
   void allocate_storage();  // uses `compressed`
   void fill_term_pay();     // term_pay_ from payoff_ and anodes
 

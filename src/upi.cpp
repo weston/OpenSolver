@@ -611,7 +611,7 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   // Old tree memory is released before allocating the new one, so count it as available.
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
   uint64_t full = t->memory_bytes_for(false, predictive_), small = t->memory_bytes_for(true, predictive_);
-  if (small_strats_ == "on") t->compressed = true;
+  if (small_strats_ == "on" || small_strats_ == "compact") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
   else {
     // auto: 16-bit storage for preflop trees (like Pio), when float32 does not fit, and (x86) when
@@ -634,7 +634,10 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
     t->compressed = c.preflop || full > avail * 9 / 10 || full * th >= (uint64_t(2) << 30);
 #endif
   }
-  uint64_t need = t->memory_bytes_for(t->compressed, predictive_);  // preds is allocated after the build (#98)
+  // Compact river rows (#239): ~7% less 16-bit storage for ~12% more time per iteration, so only on
+  // request or when full 16-bit rows don't fit either.
+  t->select_rows(t->compressed && (small_strats_ == "compact" || (small_strats_ == "auto" && small > avail * 9 / 10)));
+  uint64_t need = t->memory_bytes_for(t->compressed, predictive_, t->compact_rows);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board
   if (!mem_ignore && need > avail)
     throw CmdError{"not enough memory: need " + std::to_string(need >> 20) + " MB (" + std::to_string(small >> 20) +
@@ -1245,7 +1248,9 @@ void Upi::register_commands() {
     return std::string("ignore_mem_check ok!");
   };
   H["small_strats"] = [this](const Args& a) {
-    if (a.empty() || (a[0] != "on" && a[0] != "off" && a[0] != "auto")) throw CmdError{"incorrect or missing argument"};
+    // compact (extension, #239): 16-bit storage with the board-blocked hands of river rows left out
+    if (a.empty() || (a[0] != "on" && a[0] != "off" && a[0] != "auto" && a[0] != "compact"))
+      throw CmdError{"incorrect or missing argument"};
     small_strats_ = a[0];
     return std::string("small_strats ok!");
   };

@@ -8,9 +8,7 @@
 #include <cstdlib>
 #include <numeric>
 #include <type_traits>
-#if PIO_COMPACT_ROWS
-#include <immintrin.h>
-#endif
+#include "compact_rows.hpp"
 
 #include "eval.hpp"
 
@@ -699,7 +697,7 @@ void GameTree::decode_rows(const GNode& n, const Q* q, float s, float* out) cons
     float* o = out + a * H;
     for (size_t h = 0; h < H; h += 32) {
       const __mmask32 m = bits[h / 32];
-      const __m512i v = _mm512_maskz_expandloadu_epi16(m, src);
+      const __m512i v = expand32(m, src);
       src += __builtin_popcount(m);
       const __m256i v0 = _mm512_castsi512_si256(v), v1 = _mm512_extracti64x4_epi64(v, 1);
       __m512i w0, w1;
@@ -750,9 +748,7 @@ static void compress_rows(const GameTree& g, const GNode& n, const Q* full, Q* q
     for (size_t h = 0; h < H; h += 32) {
       const __mmask32 m = bits[h / 32];
       const size_t rem = H - h;
-      const __mmask32 ld = rem >= 32 ? 0xffffffffu : static_cast<__mmask32>((1u << rem) - 1);
-      _mm512_mask_compressstoreu_epi16(q, m, _mm512_maskz_loadu_epi16(ld, src + h));
-      q += __builtin_popcount(m);
+      q += compress32(m, _mm512_maskz_loadu_epi16(low_bits32(static_cast<int>(rem)), src + h), q);
     }
   }
 #else

@@ -1,4 +1,5 @@
 #include "solver.hpp"
+#include "compact_rows.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -1038,7 +1039,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
         if (kb) {
           const int16_t* qa = Q + static_cast<size_t>(a) * L + used;
           _mm_prefetch(reinterpret_cast<const char*>(qa) + 256, _MM_HINT_T0);
-          q = _mm256_maskz_expandloadu_epi16(km, qa);
+          q = expand16(km, qa);
         } else
 #endif
         if (q16) {

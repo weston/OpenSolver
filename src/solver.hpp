@@ -274,6 +274,8 @@ class Solver {
 
   // Sum over opponent hands compatible with each of p's hands: out[h] = sum_o ro[o] * compat(h, o).
   void compat_mass(int p, const float* ro, float* out) const;
+  // Evaluation walks: add node ni's incentives to p's per-action value rows (A x Hp) (#439).
+  void add_incentives(uint32_t ni, int p, const float* ro, float* rows) const;
   // Pruning test for the traverser p's strategy row at decision ni: zero for every hand the board allows.
   bool prunable_row(uint32_t ni, int p, const float* row) const;
   // Total matchups at the root: sum_h r_p[h] * compat mass.

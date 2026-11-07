@@ -236,6 +236,10 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `couldn't open <path>: No such file or directory` and drops the current tree.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
+- Incentives (`set_incentives_node`, paired probes 2026-11-06, #439) nudge only the regret update at their node,
+  in Pio as in ours: strategies match, and the bonus doesn't reach earlier decisions (root strategy unchanged
+  with +5 on a reached later node). Pio's `calc_results` counts them as payoff (+1 on a root bet played ~80%:
+  EV OOP +0.81), and so does ours now; its exploitability is measured in that game.
 - `set_mes` follows `set_strategy`'s rule (paired probes 2026-11-06, #423): under the v4 algorithms the written
   best response persists (probe3's tree, `set_mes IP` then 60 iterations: exploitability 36), under
   `original_pio` / `pio_cfr` (set before `build_tree`) solving re-converges. `set_equal_strats` restarts the solve:

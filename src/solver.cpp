@@ -85,6 +85,25 @@ bool Solver::prunable_row(uint32_t ni, int p, const float* row) const {
   return true;
 }
 
+// calc_results, calc_ev and the best responses count an incentive as payoff, as Pio's do (#439): action a of
+// an incentivised node is worth its incentive times the hand's compatible opponent mass on top (the bonus the
+// regret update adds). The solve itself is unchanged.
+void Solver::add_incentives(uint32_t ni, int p, const float* ro, float* rows) const {
+  auto it = g_.incentives.find(ni);
+  if (it == g_.incentives.end()) return;
+  const int Hp = g_.num_hands(p);
+  ArenaScope sc;
+  float* mass = sc.a.alloc(Hp);
+  compat_mass(p, ro, mass);
+  const int A = g_.nodes[ni].num_children;
+  for (int a = 0; a < A && a < static_cast<int>(it->second.size()); ++a) {
+    const float ia = it->second[a];
+    if (ia == 0.0f) continue;
+    float* r = rows + static_cast<size_t>(a) * Hp;
+    for (int h = 0; h < Hp; ++h) r[h] += ia * mass[h];
+  }
+}
+
 void Solver::compat_mass(int p, const float* ro, float* out) const {
   const int o = 1 - p;
   const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
@@ -1733,6 +1752,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       walk_t<M>(ci, p, rp2, ro, ca);
     };
     run_actions(n, A, act);
+    if (M != Walk::CFR && (n.flags & GF_INCENTIVES)) add_incentives(ni, p, ro, cfv);
     if (M == Walk::BestResponse) {
       std::memcpy(out, cfv, sizeof(float) * Hp);
       for (int a = 1; a < A; ++a) {
@@ -2485,7 +2505,7 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
           std::memset(rk, 0, sizeof(float) * 2 * Hp);
           return;
         }
-        if (river_batch && n.board_len == 4 && !tl_ew.busy &&
+        if (river_batch && g_.incentives.empty() && n.board_len == 4 && !tl_ew.busy &&
             g_.nodes[n.first_child + static_cast<uint32_t>(k)].kind == ANodeKind::Decision)
           river_evbr(n.first_child + static_cast<uint32_t>(k), p, ro2, rk, rk + Hp);
         else
@@ -2562,6 +2582,10 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
       walk_evbr(ci, p, rp2, ro, ea, ba);
     };
     run_actions(n, A, act);
+    if (n.flags & GF_INCENTIVES) {
+      add_incentives(ni, p, ro, cev);
+      add_incentives(ni, p, ro, cbr);
+    }
     // on-policy value (walk_t<Evaluate>)
     std::memset(ev, 0, sizeof(float) * Hp);
     for (int a = 0; a < A; ++a) {

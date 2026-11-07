@@ -217,11 +217,13 @@ struct Filler {
   bool iso;
   std::unordered_map<uint32_t, uint16_t> keep_index;  // cards dealt after the root board -> GNode::pad
 
-  // #239: the compact 16-bit row set of a decision node on `board` (0: full rows). Postflop trees only:
-  // in a preflop tree the hand lists span every flop.
+  // #239: the compact 16-bit row set of a decision node on `board` (0: full rows). River nodes of
+  // postflop trees only. In a preflop tree the hand lists span every flop. At turn nodes the blocked
+  // hands' regrets are not 0 (a flop tree, 60 iterations: up to 25,000 at 245 of 539 turn nodes), and
+  // they set the node's 16-bit scale, so dropping them would change results; turn rows are ~1% of storage.
   uint16_t keep_set(const std::vector<int>& board) {
     const size_t root = g.cfg.board.size();
-    if (g.cfg.preflop || board.size() <= root) return 0;
+    if (g.cfg.preflop || board.size() != 5 || board.size() <= root) return 0;
     uint32_t key = 0;
     for (size_t k = root; k < board.size(); ++k) key = key * 53u + static_cast<uint32_t>(board[k] + 1);
     auto it = keep_index.find(key);

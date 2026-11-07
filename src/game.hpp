@@ -258,10 +258,10 @@ class GameTree {
   std::vector<float> rscale, sscale;
   uint64_t storage_floats = 0;
   uint64_t num_decisions = 0;
-  // Compact 16-bit rows (#239). A hand holding a card dealt after the root board can't occur below that
-  // deal: its reach is 0 there, and its regrets and strategy sums stay exactly 0 (measured on every river
-  // node of a flop tree, float32 and 16-bit). The 16-bit arrays keep only the other hands, about 8% less
-  // on a flop tree. The accessors expand rows to all hands (0 for the dropped ones) and the commits
+  // Compact 16-bit rows (#239). At a river decision node, a hand holding a card dealt after the root board
+  // can't occur: its reach is 0, and its regrets and strategy sums stay exactly 0 (measured on every river
+  // node of flop trees, float32 and 16-bit; not so at turn nodes, which stay full). The 16-bit arrays keep
+  // only the other hands there, about 8% less on a flop tree. The accessors expand rows to all hands (0 for the dropped ones) and the commits
   // compact them, so every walk, scale and stochastic rounding sees exactly the values it did before:
   // results are bit-identical. float32 storage (and `preds`) keep full rows at GNode::storage.
   std::vector<std::array<std::vector<uint16_t>, 2>> keep_sets;  // [set][player]: kept local hands, ascending

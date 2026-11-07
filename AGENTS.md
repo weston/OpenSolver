@@ -390,6 +390,12 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - `add_preflop_line` is checked when added, like `add_line` (probe 20): with blinds 10/5, `5 25 25` (the SB's 5 is a
   fold) and `10 10 25` (past the preflop action, no schematic) are `Specified line is too long. Some actions were not
   included in the tree.` and their prefix builds; `25 20` is `Incorrect bet size.`.
+- Line order (probes of 2026-11-07). Before `set_pot`, `add_preflop_line` checks against blinds 0/0 in Pio too
+  (`3 2` is `Incorrect bet size.`, then `25 25` and `5 25 25` are fine), as ours does. `add_line` before `set_board`
+  is not worth matching: Pio checks later lines against a line tree whose street count it guessed when it was
+  created (with no board `0 30 30 90` is too long; after `set_board Td9d2c` a check-down past the river is accepted
+  and a valid all-in river line is too long), and its `build_tree` then crashed. Ours checks a line only once the
+  board is set. Probe scripts set the board, pot and stack before any line.
 - Error paths (probe 19, 2026-11-07): `set_pot` values must each be 0..65535 (the first outside stops it, the earlier
   ones are applied); `set_eff_stack` outside 0..65535 or non-numeric is `Both stack sizes and the starting pot should
   be below 65535 (consider dividing stacks/pot by 10 or 100)`; `build_tree` with no board or no lines is

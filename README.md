@@ -564,8 +564,7 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   keeps Pio's codes with honest descriptions.
 - **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.
 - `show_all_freqs` prints real frequencies (Pio 3.10 prints `nan`); `estimate_schematic_tree` reports
-  real sizes (no ~150 MB floor); `show_iters` keeps counting after `solve_partial`; `node_count`
-  counts every node in preflop trees.
+  real sizes (no ~150 MB floor); `node_count` counts every node in preflop trees.
 - Equal values are listed in 1326 order in `show_nuts` and the sorted `_pp` listings (`show_strategy_pp`,
   `calc_ev_pp`, `calc_eq_pp`); Pio lists ties in an order that changes with the rest of the list. Black-box
   probes ruled out a stable sort and MSVC `std::sort` / heap orders over the 1326 order, so we keep ours.

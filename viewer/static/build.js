@@ -537,7 +537,8 @@ export function initBuild({ built }) {
   };
   document.querySelector(".tree-form").addEventListener("input", () => { validateSizes(); saveForm(); });
   $("f-accuracy").addEventListener("input", () => { prefs.set("accuracy", $("f-accuracy").value); markSpot(); });
-  const acc = prefs.get("accuracy", null);
+  let acc = prefs.get("accuracy", null);
+  if (acc != null && !Number.isFinite(Number(acc))) acc = null;  // a damaged pref, not "[object Object]" (#392)
   if (acc) $("f-accuracy").value = acc;
 
   $("spot-open").onclick = openSpot;

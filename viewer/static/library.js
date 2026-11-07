@@ -221,9 +221,10 @@ async function rename() {
 async function del() {
   if (!L.selected) return;
   if (L.armedDelete !== L.selected) {
-    L.armedDelete = L.selected;
+    const armed = L.armedDelete = L.selected;
     updateButtons();
-    setTimeout(() => { if (L.armedDelete) { L.armedDelete = null; updateButtons(); } }, 3000);
+    // disarm only this item: arming another one meanwhile keeps its own 3 s (#392)
+    setTimeout(() => { if (L.armedDelete === armed) { L.armedDelete = null; updateButtons(); } }, 3000);
     return;
   }
   try {

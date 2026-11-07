@@ -125,7 +125,8 @@ function fileDialog(mode) {
   $("file-ok").textContent = mode === "open" ? "Open" : "Save";
   $("save-opts").classList.toggle("hidden", mode === "open");
   $("save-hint").classList.toggle("hidden", mode === "open");
-  $("file-path").value = prefs.get("path", "tree.cfr");
+  const lastPath = prefs.get("path", "tree.cfr");
+  $("file-path").value = typeof lastPath === "string" ? lastPath : "tree.cfr";  // a damaged pref (#392)
   dlg.returnValue = "";
   dlg.onclose = async () => {
     if (dlg.returnValue !== "ok") return;

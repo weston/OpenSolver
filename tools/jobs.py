@@ -189,9 +189,43 @@ def _read_json(path: str):
     return _retry_shared(rd)
 
 
-def _pid_alive(pid: int) -> bool:
+def _proc_start(pid: int) -> str | None:
+    """When process `pid` started, as an opaque string, or None if unknown. With the pid it names one
+    process: a pid reused later (as after a reboot) has another start (#398)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                t = [ctypes.c_ulonglong() for _ in range(4)]
+                if not k32.GetProcessTimes(h, *(ctypes.byref(x) for x in t)):
+                    return None
+                return str(t[0].value)  # creation time
+            finally:
+                k32.CloseHandle(h)
+        with open(f"/proc/{pid}/stat") as f:
+            start = f.read().rsplit(")", 1)[1].split()[19]  # field 22, after the command name
+        try:
+            with open("/proc/sys/kernel/random/boot_id") as f:
+                start = f.read().strip()[:8] + ":" + start
+        except OSError:
+            pass
+        return start
+    except (OSError, IndexError, ValueError, AttributeError):
+        return None
+
+
+def _pid_alive(pid: int, start: str | None = None) -> bool:
+    """Process `pid` is running and, if `start` is given and can be checked, is the one that started then."""
     if pid <= 0:
         return False
+    if start:
+        now = _proc_start(pid)
+        if now is not None and now != start:
+            return False  # the pid was reused
     if os.name == "nt":
         import ctypes
         h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
@@ -208,6 +242,10 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _job_runner_alive(j: dict) -> bool:
+    return _pid_alive(j.get("runner_pid") or 0, j.get("runner_start"))
 
 
 class Queue:
@@ -320,7 +358,7 @@ class Queue:
         with self.edit():
             js = [j for j in self.jobs() if j["status"] == "failed"] if jids is None else [self.job(i) for i in jids]
             for j in js:
-                if j["status"] == "running" and _pid_alive(j.get("runner_pid") or 0):
+                if j["status"] == "running" and _job_runner_alive(j):
                     raise JobError(f"job {j['id']} is running")
             for j in js:
                 j.update(status="queued", started=None, finished=None, error=None, result=None, runner_pid=None)
@@ -371,7 +409,7 @@ class Queue:
             # as they are now (one may have started meanwhile), each once: a repeated id would be removed twice
             jobs = list({j["id"]: self.job(j["id"]) for j in jobs}.values())
             for j in jobs:
-                if j["status"] == "running" and _pid_alive(j.get("runner_pid") or 0):
+                if j["status"] == "running" and _job_runner_alive(j):
                     raise JobError(f"job {j['id']} is running (stop it first)")
             for j in jobs:
                 os.remove(os.path.join(self.jobs_dir, j["id"] + ".json"))
@@ -408,7 +446,7 @@ class Queue:
         """Jobs left 'running' by a runner that died go back to the queue."""
         with self.edit():
             for j in self.jobs():
-                if j["status"] == "running" and not _pid_alive(j.get("runner_pid") or 0):
+                if j["status"] == "running" and not _job_runner_alive(j):
                     j.update(status="queued", started=None, runner_pid=None)
                     self.save(j)
 
@@ -419,29 +457,34 @@ class Queue:
         contender reading it in between took the empty file for a stale lock)."""
         os.makedirs(self.root, exist_ok=True)
         with self.edit():
-            pid = self.runner_pid()
-            if pid and _pid_alive(pid):
+            pid = self.runner()
+            if pid:
                 raise JobError(f"another runner is active (pid {pid})")
             fd, tmp = tempfile.mkstemp(dir=self.root, suffix=".tmp")
             with os.fdopen(fd, "w") as f:
-                f.write(str(os.getpid()))
+                f.write(f"{os.getpid()} {_proc_start(os.getpid()) or ''}".strip())
             _retry_shared(lambda: os.replace(tmp, self.lock_file))  # the pid is never seen half-written
 
-    def runner_pid(self) -> int:
+    def _lock_owner(self) -> tuple[int, str | None]:
+        """(pid, start) from the lock file: "pid start", or just "pid" from before #398."""
         try:
             with open(self.lock_file) as f:
-                text = f.read().strip()
+                parts = f.read().split()
         except OSError:
-            return 0
+            return 0, None
         try:
-            return int(text or 0)
+            return int(parts[0]) if parts else 0, parts[1] if len(parts) > 1 else None
         except ValueError:
-            return 0
+            return 0, None
+
+    def runner_pid(self) -> int:
+        return self._lock_owner()[0]
 
     def runner(self) -> int:
-        """The pid of the live runner holding the lock (this process or another), else 0."""
-        pid = self.runner_pid()
-        return pid if _pid_alive(pid) else 0
+        """The pid of the live runner holding the lock (this process or another), else 0. A pid
+        reused by another process since the lock was taken (as after a reboot) is not it (#398)."""
+        pid, start = self._lock_owner()
+        return pid if _pid_alive(pid, start) else 0
 
     def unlock(self) -> None:
         """Release the runner lock if this process holds it (never another runner's)."""
@@ -1255,7 +1298,8 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
                 log(f"[{job['id']} {job['board']}] FAILED: {e}")
             return "failed" if gone is not None else "skipped"
         job = q.update(job["id"], expect=lambda j: j["status"] == "queued", status="running",
-                       started=time.time(), finished=None, error=None, result=None, runner_pid=os.getpid())
+                       started=time.time(), finished=None, error=None, result=None, runner_pid=os.getpid(),
+                       runner_start=_proc_start(os.getpid()))
         if job is None:
             return "skipped"
     jid = job["id"]

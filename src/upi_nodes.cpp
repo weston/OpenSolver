@@ -653,10 +653,11 @@ std::string Upi::cmd_show_all_freqs(const Args& a) {
 // ---------------------------------------------------------------------------------------------
 // Strategy writing / locking
 
-void Upi::set_node_strategy(uint32_t ni, const float* strat) {
+void Upi::set_node_strategy(uint32_t ni, const float* strat, bool persist) {
   // Pio 3.10 (probe9): under the default v4 algorithms an edited strategy persists through further
   // solving (it is written as a dominant regret); under original_pio / pio_cfr it is only a start.
-  const float regret_scale = (tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
+  // persist = false: only a start under every algorithm (eliminate_path, #421).
+  const float regret_scale = (!persist || tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
   const GNode& n = tree_->nodes[ni];
   int A = n.num_children, H = tree_->num_hands(n.player);
   std::vector<float> rbuf, sbuf;
@@ -1280,7 +1281,9 @@ void Upi::register_node_commands() {
         if (passive >= 0) sig[static_cast<size_t>(passive) * H + h] += v;
         v = 0.0f;
       }
-      set_node_strategy(st.node, sig.data());
+      // only a start, not a dominant regret: Pio's solve brings the action back (probe3: 100 more
+      // iterations after eliminating r:0:b66:b300 end at 0.089 exploitability; a persistent edit, 2.36)
+      set_node_strategy(st.node, sig.data(), false);
     });
     if (done.empty()) throw CmdError{"incorrect node"};
     return std::string("eliminate_path ok!");

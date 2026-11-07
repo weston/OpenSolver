@@ -117,6 +117,7 @@ class Solver {
   int first_player = 0;  // set_first_iteration_player
   bool parallel = true;
   bool write_best_response = false;  // BestResponse walks store the pure BR strategy (set_mes)
+  float br_regret_scale = 1.0f;      // ...with the best action's regret this large (set_strategy's, #423)
   // #71 convergence experiments (set_predictive / set_avg_delay):
   bool predictive = false;  // regret matching input is R + last instantaneous regret (PCFR+-style)
   // 32, not 0. The first iterations are the noisiest, and skipping their contribution to the

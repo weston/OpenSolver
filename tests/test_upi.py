@@ -1135,8 +1135,7 @@ def check_predictive(u):
         check(u.cmd(f"set_predictive {mode}") == "set_predictive ok!", f"set_predictive {mode}")
         u.cmd("go 300 steps")
         u.cmd("wait_for_solver")
-        r = u.cmd("calc_results").split("
-")
+        r = u.cmd("calc_results").split("\n")
         res[mode] = [float(r[i].split(": ")[1]) for i in (0, 1, 4)]
     (eo, ei, xo), (po, pi, xp) = res["off"], res["on"]
     check(xp < 0.4 and xp < 4 * xo + 0.02, f"predictive converges (exploitability {xp:.4f} vs {xo:.4f} off, pot 40)")

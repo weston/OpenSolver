@@ -1465,6 +1465,10 @@ void Upi::register_preflop_commands() {
   };
   H["add_schematic_tree"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
+    // the lines are kept as written and read from the flop at add_all_flops: lines written for a turn
+    // or river board described later streets, and silently became flop actions (#396; Pio accepts the
+    // schematic, then crashes in add_all_flops)
+    if (cfg_.board.size() > 3) throw CmdError{"a schematic is a flop tree: set a 3-card board"};
     // Pio's workflow builds each schematic first (set_board, set_pot, ..., build_tree, then
     // add_schematic_tree), so the tree in memory is then the postflop one. Resolve the exit in the
     // preflop tree from build_preflop_tree's config, built without storage, as Pio does (#306).

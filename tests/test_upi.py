@@ -1035,6 +1035,11 @@ def check_tree_construction_edges(exe):
                "add_preflop_line 25 25", "build_preflop_tree", "add_to_subset 0 As Ks Qs", "set_board AsKsQs",
                "set_pot 0 0 50", "set_eff_stack 75", "add_line 25", "add_schematic_tree 25 25", "add_all_flops"])
     check("the flop subset's weights are all 0" in out, "add_all_flops refuses an all-zero subset")
+    out = run(["set_range OOP QQ+,AKs", "set_range IP QQ+,AKs,JTs", "set_pot 10 5 0", "set_eff_stack 100",
+               "add_preflop_line 25 25", "build_preflop_tree", "add_to_subset 1 As Ks Qs", "set_board AsKsQs7d",
+               "set_pot 0 0 50", "set_eff_stack 75", "add_line 25", "add_schematic_tree r:0:b25:c"])
+    check("ERROR: add_schematic_tree a schematic is a flop tree: set a 3-card board" in out,
+          "add_schematic_tree refuses a turn board, whose lines would be read as flop lines (#396)")
 
 
 def check_core_review(exe):

@@ -689,7 +689,9 @@ void Upi::lock_node_impl(uint32_t ni, bool lock) {
     int A = n.num_children, H = tree_->num_hands(n.player);
     std::vector<float> sig(static_cast<size_t>(A) * H);
     solver_->average_strategy(ni, sig.data());
-    set_node_strategy(ni, sig.data());
+    // The flag locks (a locked node plays its strategy sums; its regrets aren't updated), so the strategy is
+    // written as a start, not a dominant regret: after unlock_node the node solves on, as in Pio (#429).
+    set_node_strategy(ni, sig.data(), false);
     n.flags |= GF_LOCKED;
   } else {
     n.flags &= static_cast<uint8_t>(~GF_LOCKED);

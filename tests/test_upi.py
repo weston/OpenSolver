@@ -1218,6 +1218,30 @@ def check_eliminate_path(u):
     u.cmd("free_tree")
 
 
+def check_set_mes_persists(u):
+    """#423, as Pio 3.10.1: under the default (v4) algorithms set_mes's best response persists through
+    further solving, like set_strategy, so the other player exploits it; under pio_cfr it is a start."""
+    print("[set_mes persists under v4, not under pio_cfr]")
+    expl = {}
+    for alg in ("v4_small", "pio_cfr"):
+        set_small_tree(u)
+        u.cmd(f"set_algorithm {alg}")
+        u.cmd("build_tree")
+        u.cmd("set_accuracy 0")
+        u.cmd("set_info_freq 1000")
+        u.cmd("go 150 steps")
+        u.cmd("wait_for_solver")
+        check(u.cmd("set_mes IP") == "set_mes ok!", f"set_mes IP ({alg})")
+        u.cmd("go 60 steps")
+        u.cmd("wait_for_solver")
+        expl[alg] = float(u.cmd("calc_results").split("\n")[4].split(": ")[1])
+    u.cmd("set_algorithm v4_small")
+    check(expl["v4_small"] > 2.0, f"v4: IP keeps its best response, so 60 iterations later it is exploited "
+                                  f"({expl['v4_small']:.3f} chips, pot 40)")
+    check(expl["pio_cfr"] < 0.5, f"pio_cfr: a start, solving re-converges ({expl['pio_cfr']:.3f} chips)")
+    u.cmd("free_tree")
+
+
 def check_predictive(u):
     """#408: set_predictive (PCFR+-style matching, #71) converges and splits the pot like the default;
     bad arguments are refused, and so is switching it mid-solve."""
@@ -1523,6 +1547,7 @@ def main(exe, big=False):
         check_setting_errors(u)
         check_mid_solve_settings(u)
         check_eliminate_path(u)
+        check_set_mes_persists(u)
         check_predictive(u)
         check_small_commands(u)
 

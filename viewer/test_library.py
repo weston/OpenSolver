@@ -169,12 +169,22 @@ class LibraryUnitTest(unittest.TestCase):
         with self.assertRaises(libm.LibraryError):
             self.lib.save("range", inside, RANGE)
 
+    def _symlink(self, src, dst):
+        """os.symlink, or skip where the OS won't let this user make one (#402: Windows without Developer
+        Mode raises WinError 1314; such a user can't plant a link in the library either)."""
+        try:
+            os.symlink(src, dst)
+        except OSError as e:
+            if getattr(e, "winerror", None) == 1314:
+                self.skipTest("creating symlinks needs a privilege this account lacks")
+            raise
+
     def test_symlink_dir_escape_refused(self):
         """A folder inside the library that is a symlink to outside must not be usable."""
         outside = tempfile.mkdtemp(prefix="wsolver-outside-")
         self.addCleanup(shutil.rmtree, outside, True)
         os.makedirs(os.path.join(self.lib.root, "ranges"))
-        os.symlink(outside, os.path.join(self.lib.root, "ranges", "escape"))
+        self._symlink(outside, os.path.join(self.lib.root, "ranges", "escape"))
         with self.assertRaises(libm.LibraryError):
             self.lib.save("range", "escape/victim", RANGE)
         with self.assertRaises(libm.LibraryError):
@@ -189,7 +199,7 @@ class LibraryUnitTest(unittest.TestCase):
         with open(secret, "w") as f:
             f.write("top secret range")
         os.makedirs(os.path.join(self.lib.root, "ranges"))
-        os.symlink(secret, os.path.join(self.lib.root, "ranges", "link.txt"))
+        self._symlink(secret, os.path.join(self.lib.root, "ranges", "link.txt"))
         with self.assertRaises(libm.LibraryError):
             self.lib.get("range", "link")
         # read it back exactly as written: the outside file is untouched

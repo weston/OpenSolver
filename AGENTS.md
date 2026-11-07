@@ -236,6 +236,9 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `couldn't open <path>: No such file or directory` and drops the current tree.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
+- `set_mes` follows `set_strategy`'s rule (paired probes 2026-11-06, #423): under the v4 algorithms the written
+  best response persists (probe3's tree, `set_mes IP` then 60 iterations: exploitability 36), under
+  `original_pio` / `pio_cfr` (set before `build_tree`) solving re-converges. `set_equal_strats` is a start in both.
 - `eliminate_path` (probed 2026-11-06, #421) takes a bet, raise or check; a call or fold answers `ERROR:
   eliminate_path incorrect path`. Each hand's frequency of the action goes to its best remaining action
   by EV, so some hands' raise goes to call and others' to fold. It's a one-time edit: further solving

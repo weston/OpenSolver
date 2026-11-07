@@ -1122,6 +1122,35 @@ def check_mid_solve_settings(u):
     u.cmd("free_tree")
 
 
+def check_predictive(u):
+    """#408: set_predictive (PCFR+-style matching, #71) converges and splits the pot like the default;
+    bad arguments are refused, and so is switching it mid-solve."""
+    print("[set_predictive]")
+    set_small_tree(u)
+    u.cmd("set_accuracy 0")
+    u.cmd("set_info_freq 100")
+    res = {}
+    for mode in ("off", "on"):
+        u.cmd("build_tree")
+        check(u.cmd(f"set_predictive {mode}") == "set_predictive ok!", f"set_predictive {mode}")
+        u.cmd("go 300 steps")
+        u.cmd("wait_for_solver")
+        r = u.cmd("calc_results").split("
+")
+        res[mode] = [float(r[i].split(": ")[1]) for i in (0, 1, 4)]
+    (eo, ei, xo), (po, pi, xp) = res["off"], res["on"]
+    check(xp < 0.4 and xp < 4 * xo + 0.02, f"predictive converges (exploitability {xp:.4f} vs {xo:.4f} off, pot 40)")
+    check(abs(po + pi - 40) < 0.05 and abs(po - eo) < 0.5, f"and gives the default's EVs ({po:.3f} vs {eo:.3f})")
+    check(u.cmd("set_predictive maybe").startswith("ERROR") and u.cmd("set_predictive").startswith("ERROR"),
+          "set_predictive refuses an argument other than on / off")
+    u.cmd("go 60 seconds")
+    check(u.cmd("set_predictive off") == "ERROR: set_predictive stop the solver first", "refused while solving")
+    u.cmd("stop")
+    u.cmd("wait_for_solver")
+    check(u.cmd("set_predictive off") == "set_predictive ok!", "accepted once stopped")
+    u.cmd("free_tree")
+
+
 def check_setting_errors(u):
     """A setting command that errors leaves the setting as it was (it used to assign, then reject)."""
     print("[setting errors change nothing]")
@@ -1395,6 +1424,7 @@ def main(exe, big=False):
         check_info_freq_auto(u)
         check_setting_errors(u)
         check_mid_solve_settings(u)
+        check_predictive(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")

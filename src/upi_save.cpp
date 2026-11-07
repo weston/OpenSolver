@@ -1003,6 +1003,11 @@ std::string Upi::cmd_show_metadata(const Args& a) {
 void Upi::register_save_commands() {
   handlers_["show_save_version"] = [](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
+    {  // a file that can't be opened is Pio's "couldn't open <path>: <reason>" error (probe 19)
+      std::FILE* f = std::fopen(a[0].c_str(), "rb");
+      if (!f) throw CmdError{"couldn't open " + a[0] + ": " + std::strerror(errno)};
+      std::fclose(f);
+    }
     try {
       GzIn in(a[0]);
       Header h = read_header(in);

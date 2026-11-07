@@ -1,0 +1,66 @@
+# Probe 19: error paths (2026-11-07). Deterministic except the go-while-solving block (a 3 s solve; Pio's stop
+# did not answer within 60 s there). set_pot / set_eff_stack limits,
+# build_tree without a board or lines, set_icm without a tree, show_save_version of a missing file, go while solving.
+# Known differences: Pio accepts set_threads / set_accuracy / set_info_freq with a non-numeric argument (ours refuses),
+# and 'set_pot abc 3 4' sets a stale first value in Pio (ours 0). A bare calc_eq makes Pio stop answering (not here).
+set_pot 10 10 5
+show_tree_params
+set_pot
+show_tree_params
+set_pot 10 10 5
+set_pot -5 0 10
+show_tree_params
+set_pot 10 10 5
+set_pot 70000 1 1
+show_tree_params
+set_pot 10 10 5
+set_pot 7
+show_tree_params
+set_pot 10 10 5
+set_pot 3 -1 2
+show_tree_params
+set_pot 10 10 5
+set_pot 65535 65535 65535
+show_tree_params
+set_pot 65536 0 0
+show_tree_params
+set_pot 10 10 5
+set_pot abc 3 4
+show_tree_params
+set_eff_stack 0
+set_eff_stack 1.5
+set_eff_stack 65534
+set_eff_stack 65535
+set_eff_stack 70000
+set_eff_stack 100
+show_effective_stack
+set_pot 0 0 -1
+set_pot 70000 0 0
+set_pot 30000 30000 10000
+set_pot 1 2 3 4
+show_tree_params
+set_pot 0 0 60
+set_range OOP AA,KK
+set_range IP AA,QQ
+build_tree
+set_board Td9d2c
+set_eff_stack 0
+build_tree
+set_eff_stack 100
+build_tree
+show_node r:0
+calc_eq_node OOP
+set_icm_point
+set_icm
+reset_icm_tables
+show_icm
+calc_eq XYZ
+show_save_version C:\nonexistent\x.cfr
+add_line 0 0 30 30 30 30
+build_tree
+set_accuracy 0
+go 3 seconds
+go 3
+go 1 parsecs
+go 5 steps
+wait_for_solver

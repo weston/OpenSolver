@@ -387,6 +387,12 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `board: <cards >|not set`, `pot: <a b c >`, `bet_sizes: <n >...`, `donk_bet: TRUE|FALSE` from the
   `set_*` state (not from a loaded tree). `unlock_all` clears every whole-node lock, not combo locks
   (our extension `combo_unlock_all` clears those; the viewer's *Unlock all* sends both, #255).
+- Error paths (probe 19, 2026-11-07): `set_pot` values must each be 0..65535 (the first outside stops it, the earlier
+  ones are applied); `set_eff_stack` outside 0..65535 or non-numeric is `Both stack sizes and the starting pot should
+  be below 65535 (consider dividing stacks/pot by 10 or 100)`; `build_tree` with no board or no lines is
+  `missing/incorrect tree`; `go` during a solve is `Can't do that when solver is running` whatever its arguments; Pio's
+  `stop` did not answer within 60 s during a long `go` in a piped session. Pio accepts `set_threads abc`,
+  `set_accuracy abc` and `set_info_freq abc`; ours refuses them (not copied).
 - Lock flags (probes of 2026-11-07). Pio's `show_node` drops `COMBO_LOCKED` after `unlock_all` or
   `unlock_node`, though the combos stay locked: a solve after either keeps them at their set strategy, and
   `show_locked_combos` still lists them. We keep showing the flag while the lock is in force (a display

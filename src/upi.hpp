@@ -189,7 +189,8 @@ class Upi {
   void apply_pcfr_settings();  // pushes predictive_/avg_delay_ into the solver (+preds alloc)
   void register_preflop_commands();
   void lock_node_impl(uint32_t ni, bool lock);
-  void set_node_strategy(uint32_t ni, const float* local_strat);  // A*H canonical
+  // A*H canonical; persist: written as a dominant regret under v4 algorithms (Pio's set_strategy)
+  void set_node_strategy(uint32_t ni, const float* local_strat, bool persist = true);
   double explo_at(const NodeRef& r, std::vector<float>& r0, std::vector<float>& r1, RootStats* st = nullptr);
   // Same, with the reach already computed (the solver thread's partial job keeps its own copy).
   double explo_at_reach(uint32_t node, const float* r0, const float* r1, RootStats* st = nullptr);

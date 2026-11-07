@@ -1185,6 +1185,39 @@ def check_mid_solve_settings(u):
     u.cmd("free_tree")
 
 
+def check_eliminate_path(u):
+    """#421, as Pio 3.10.1 (probe3 and paired probes): eliminate_path takes a bet, raise or check, not a
+    call or fold; each hand's frequency goes to its best remaining action by EV; solving can bring the
+    action back."""
+    print("[eliminate_path]")
+    for c in ("set_range OOP AA,KK,QQ,77,44,AK,AQ,KQ,QJs,JTs,T9s,98s,A5s,A4s",
+              "set_range IP AA,KK,QQ,JJ,TT,AK,AQ,KQ,KJ,QJ,JT,T9s,99,88", "set_board KhQs7d4c", "set_pot 0 0 100",
+              "set_eff_stack 300", "clear_lines", "add_line 66 66 198", "add_line 66 300", "add_line 0 66 300",
+              "add_line 0 0 66", "add_line 0 0 0 66", "build_tree", "set_accuracy 0", "set_info_freq 1000"):
+        u.cmd(c)
+    u.cmd("go 150 steps")
+    u.cmd("wait_for_solver")
+    rows = lambda node: [[float(x) for x in l.split()] for l in u.cmd(f"show_strategy {node}").splitlines()]
+    ev = lambda node: [float(x) for x in u.cmd(f"calc_ev IP {node}").splitlines()[0].split()]
+    before = rows("r:0:b66")  # IP facing the bet: raise to 300, call, fold
+    ev_c, ev_f = ev("r:0:b66:c"), ev("r:0:b66:f")
+    check(u.cmd("eliminate_path r:0:b66:c") == "ERROR: eliminate_path incorrect path"
+          and u.cmd("eliminate_path r:0:b66:f") == "ERROR: eliminate_path incorrect path",
+          "eliminate_path refuses a call or a fold, like Pio")
+    check(u.cmd("eliminate_path r:0:b66:b300") == "eliminate_path ok!", "eliminate_path takes a raise")
+    after = rows("r:0:b66")
+    moved = [h for h in range(1326) if before[0][h] > 0.01]
+    right = [h for h in moved if (after[1][h] - before[1][h] > after[2][h] - before[2][h]) == (ev_c[h] > ev_f[h])]
+    to_fold = [h for h in moved if after[2][h] > before[2][h] + 0.01]
+    check(moved and all(after[0][h] == 0 for h in range(1326)) and len(right) == len(moved) and to_fold,
+          f"each hand's raise goes to its better remaining action by EV ({len(right)} of {len(moved)}, "
+          f"{len(to_fold)} to fold)")
+    u.cmd("go 100 steps")
+    u.cmd("wait_for_solver")
+    check(sum(rows("r:0:b66")[0]) > 1, "further solving brings the raise back (a start, not a lock)")
+    u.cmd("free_tree")
+
+
 def check_predictive(u):
     """#408: set_predictive (PCFR+-style matching, #71) converges and splits the pot like the default;
     bad arguments are refused, and so is switching it mid-solve."""
@@ -1489,6 +1522,7 @@ def main(exe, big=False):
         check_info_freq_auto(u)
         check_setting_errors(u)
         check_mid_solve_settings(u)
+        check_eliminate_path(u)
         check_predictive(u)
         check_small_commands(u)
 

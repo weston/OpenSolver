@@ -236,7 +236,10 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   `couldn't open <path>: No such file or directory` and drops the current tree.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
-- `eliminate_path` is a one-time edit that moves the frequency to check/call.
+- `eliminate_path` (probed 2026-11-06, #421) takes a bet, raise or check; a call or fold answers `ERROR:
+  eliminate_path incorrect path`. Each hand's frequency of the action goes to its best remaining action
+  by EV, so some hands' raise goes to call and others' to fold. It's a one-time edit: further solving
+  brings the action back (100 iterations later probe3 is at 0.089 exploitability, like a fresh solve).
 - `show_strategy` at a turn or river node prints **0** for hands that contain the turn or river card
   (probe on Kh9h4h, turn Ah / river As, 2026-11-06; #414). `show_range`, `calc_ev`, `calc_eq_node` and the
   `_pp` hand lists already agreed there. Probe with ranges that hold such hands: narrow ranges (no

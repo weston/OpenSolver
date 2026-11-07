@@ -237,6 +237,13 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - `set_range` accepts only 1326 numbers. Errors are `ERROR: <cmd> incorrect path|incorrect node|incorrect
   or missing argument|missing/incorrect tree`, unknown commands `ERROR: Command X not recognized`.
 - `eliminate_path` is a one-time edit that moves the frequency to check/call.
+- `show_strategy` at a turn or river node prints **0** for hands that contain the turn or river card
+  (probe on Kh9h4h, turn Ah / river As, 2026-11-06; #414). `show_range`, `calc_ev`, `calc_eq_node` and the
+  `_pp` hand lists already agreed there. Probe with ranges that hold such hands: narrow ranges (no
+  deuces under a `2c` turn) hide this whole class of difference.
+- After an `add_line` error (amounts are cumulative per player, so a river check after a turn bet and
+  call is `30 30`, not `0 0`), Pio 3.10.1 stops answering at the next command; a probe script must use
+  only valid lines.
 - Truncated saves (`dump_tree ... no_turns|no_rivers`) load with root flags `INCOMPLETE_TREE ...
   FAST_LOAD COMPRESSED`; browsing a missing street re-solves that street's subtree on demand to
   `set_recalc_accuracy` (fraction of the pot; defaults 0.0025 0.001 0.0005) and flags it

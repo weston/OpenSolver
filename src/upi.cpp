@@ -315,7 +315,7 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
   static const std::set<std::string> needs_tree = {
       "calc_ev", "calc_ev_pp", "calc_global_freq", "calc_line_freq", "calc_results", "clear_cache",
       "combo_lock_node", "combo_unlock_all", "dump_tree", "eliminate_path", "estimate_rebuild_tree", "explo_partial", "go",
-      "load_all_nodes", "lock_node", "node_count", "rebuild_tree", "set_strategy", "show_children",
+      "load_all_nodes", "lock_node", "node_count", "rebuild_tree", "set_icm", "set_strategy", "show_children",
       "show_effective_stack", "show_incentives", "show_locked_combos", "show_node", "show_strategy",
       "show_strategy_pp", "show_win_evs", "solve_all_splits", "solve_partial", "unlock_all", "unlock_node"};
   if (!tree_ && needs_tree.count(cmd)) require_tree();
@@ -588,7 +588,8 @@ std::string Upi::cmd_build_tree(const Args& a) {
     else if (s == "mem_pessimistic") pessimistic = true;
     else throw CmdError{"incorrect or missing argument"};
   }
-  if (cfg_.board.size() < 3) throw CmdError{"incorrect or missing argument"};
+  // Pio 3.10.1: no board, or no lines added, is "missing/incorrect tree" (probe 19)
+  if (cfg_.board.size() < 3 || cfg_.lines.add.empty()) throw CmdError{"missing/incorrect tree"};
   GameConfig c = cfg_;
   c.preflop = false;
   c.schematics.clear();
@@ -829,6 +830,10 @@ void Upi::register_commands() {
   // ---- Solving ----
   H["go"] = [this](const Args& a) {
     require_tree();
+    // Pio refuses a go while a solve runs, before looking at the arguments (probe 19); it used to be ignored here.
+    // A solve parked by `hold` (ours) still resumes on go, as before.
+    if (solving_ && !held_) throw CmdError{"Can't do that when solver is running"};
+    const bool was_held = held_;
     release_hold();
     double secs = 0;
     long long steps = 0;
@@ -841,7 +846,7 @@ void Upi::register_commands() {
       else if (unit == "seconds" || unit == "second" || unit == "s") secs = v > 0 ? v : 1e-9;
       else throw CmdError{"incorrect or missing argument"};
     }
-    if (solving_) return std::string("go ok!");
+    if (was_held && solving_) return std::string("go ok!");
     prepare_solve();  // what can fail, before the answer: one response per command (#376)
     out_raw(std::string("go ok!\n") + (end_string_.empty() ? "" : end_string_ + "\n"));
     try {
@@ -1064,7 +1069,15 @@ void Upi::register_commands() {
   // "1e1" is 1. set_eff_stack and set_pot take anything; add_line and friends need a leading digit.
   H["set_eff_stack"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
-    cfg_.eff_stack = chips_arg(a[0]);
+    // Pio 3.10.1 (probe 19): 0..65535 (fractions truncate); a negative, larger or non-numeric value is this
+    // error and leaves the stack as it was.
+    const std::string& s = a[0];
+    const size_t d = s[0] == '+' ? 1 : 0;
+    const bool numeric = d < s.size() && std::isdigit(static_cast<unsigned char>(s[d]));
+    const long long v = std::atoll(s.c_str());
+    if (!numeric || v < 0 || v > 65535)
+      throw CmdError{"Both stack sizes and the starting pot should be below 65535 (consider dividing stacks/pot by 10 or 100)"};
+    cfg_.eff_stack = static_cast<int32_t>(v);
     return std::string("set_eff_stack ok!");
   };
   H["set_board"] = [this](const Args& a) {
@@ -1078,8 +1091,13 @@ void Upi::register_commands() {
     return std::string("set_board ok!");
   };
   H["set_pot"] = [this](const Args& a) {
-    // Pio: only the given values change; fewer than two is an error, but they are still applied.
-    for (size_t i = 0; i < 3 && i < a.size(); ++i) cfg_.pot[i] = chips_arg(a[i]);
+    // Pio: only the given values change; fewer than two is an error, but they are still applied. Each value
+    // must be 0..65535: the first one outside stops it with this error, the earlier ones applied (probe 19).
+    for (size_t i = 0; i < 3 && i < a.size(); ++i) {
+      const int32_t v = chips_arg(a[i]);
+      if (v < 0 || v > 65535) throw CmdError{"incorrect or missing argument"};
+      cfg_.pot[i] = v;
+    }
     if (a.size() < 2) throw CmdError{"incorrect or missing argument"};
     return std::string("set_pot ok!");
   };

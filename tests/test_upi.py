@@ -1103,7 +1103,23 @@ def check_tree_construction_edges(exe):
     check("ERROR: build_tree the removed lines leave a decision with no actions" in out,
           "build_tree refuses a decision the removed lines left without actions")
     out = run(["set_eff_stack 3000000000", "set_pot 1500000000 1500000000 0", "add_line 50 4294967346"])
-    check(out.count("incorrect or missing argument") == 3, "chip amounts out of range are refused, not wrapped")
+    check(out.count("incorrect or missing argument") == 2 and "should be below 65535" in out,
+          "chip amounts out of range are refused, not wrapped")
+    # Pio 3.10.1's error paths (probe 19)
+    out = run(["set_pot 10 10 5", "set_pot 3 -1 2", "show_tree_params", "set_pot 65536 0 0", "show_tree_params",
+               "set_eff_stack 100", "set_eff_stack 65536", "set_eff_stack -1", "set_eff_stack abc", "set_eff_stack 65535"])
+    check(out.count("pot: 3 10 5 ") == 2, "set_pot stops at the first value outside 0..65535, like Pio")
+    check(out.count("ERROR: set_eff_stack Both stack sizes and the starting pot should be below 65535") == 3,
+          "set_eff_stack outside 0..65535 or not a number: Pio's error")
+    out = run(["build_tree", "set_board Td9d2c", "set_range OOP AA,KK", "set_range IP AA,QQ", "set_pot 0 0 60",
+               "set_eff_stack 100", "build_tree", "set_icm", "show_save_version /nonexistent/dir/x.cfr"])
+    check(out.count("ERROR: build_tree missing/incorrect tree") == 2, "build_tree without a board or lines: missing/incorrect tree")
+    check("ERROR: set_icm missing/incorrect tree" in out, "set_icm without a tree: missing/incorrect tree")
+    check("ERROR: show_save_version couldn't open /nonexistent/dir/x.cfr: No such file or directory" in out,
+          "show_save_version of a missing file: Pio's couldn't open error")
+    out = run(["set_board Td9d2c", "set_range OOP AA,KK", "set_range IP AA,QQ", "set_pot 0 0 60", "set_eff_stack 100",
+               "add_line 0 0 30 30 30 30", "build_tree", "set_accuracy 0", "go 100000 steps", "go 3", "go 5 steps", "stop"])
+    check(out.count("ERROR: go Can't do that when solver is running") == 2, "go while solving: Pio's error, before the arguments")
     out = run(["set_range OOP QQ+,AKs", "set_range IP QQ+,AKs,JTs", "set_pot 10 5 0", "set_eff_stack 100",
                "add_preflop_line 25 25", "build_preflop_tree", "add_to_subset 0 As Ks Qs", "set_board AsKsQs",
                "set_pot 0 0 50", "set_eff_stack 75", "add_line 25", "add_schematic_tree 25 25", "add_all_flops"])

@@ -1105,6 +1105,15 @@ def check_tree_construction_edges(exe):
     out = run(["set_eff_stack 3000000000", "set_pot 1500000000 1500000000 0", "add_line 50 4294967346"])
     check(out.count("incorrect or missing argument") == 2 and "should be below 65535" in out,
           "chip amounts out of range are refused, not wrapped")
+    # preflop lines are checked when added, like add_line (probe 20): past a fold, or past an exit with no
+    # schematic, is "too long" (the prefix builds); a bet below the one faced is "Incorrect bet size."
+    out = run(["set_range OOP 22+,AK", "set_range IP 22+,AK", "set_pot 10 5 0", "set_eff_stack 1000",
+               "add_preflop_line 25 25", "add_preflop_line 5 25 25", "add_preflop_line 10 10 25", "add_preflop_line 25 20",
+               "clear_preflop_lines", "add_preflop_line 25 25", "add_preflop_line 10 10 25", "build_preflop_tree"])
+    check(out.count("ERROR: add_preflop_line Specified line is too long. Some actions were not included in the tree.") == 3,
+          "add_preflop_line past a fold or past the preflop action: too long, like Pio")
+    check("ERROR: add_preflop_line Incorrect bet size." in out, "add_preflop_line below the bet faced: Incorrect bet size")
+    check("build_preflop_tree ok!" in out, "a preflop line past an exit with no schematic builds its prefix, like Pio")
     # Pio 3.10.1's error paths (probe 19)
     out = run(["set_pot 10 10 5", "set_pot 3 -1 2", "show_tree_params", "set_pot 65536 0 0", "show_tree_params",
                "set_eff_stack 100", "set_eff_stack 65536", "set_eff_stack -1", "set_eff_stack abc", "set_eff_stack 65535"])

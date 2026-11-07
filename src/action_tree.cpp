@@ -169,12 +169,9 @@ struct Builder {
         n = n->children[0].get();
       }
       if (n->kind != ANodeKind::Decision) {
-        if (n->kind == ANodeKind::Chance) {  // preflop exit: postflop actions need a schematic tree
-          err = "line continues past the end of the hand";
-          return false;
-        }
         // Pio 3.10 (probed): a line that runs past a fold, an all-in call or the river keeps its
-        // valid prefix; add_line reports "Specified line is too long" and the tree still builds.
+        // valid prefix; add_line reports "Specified line is too long" and the tree still builds. So
+        // does a preflop line past an exit with no schematic (add_preflop_line "10 10 25", 2026-11-07).
         past_end = true;
         return true;
       }

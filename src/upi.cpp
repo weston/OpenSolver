@@ -1006,7 +1006,7 @@ void Upi::register_commands() {
   // Not a Pio command. Regret-based pruning (#51, see Solver::pruning): from iteration
   // 2*<period>+1 on, an action of the traverser whose current strategy is zero for every one of
   // its hands is not re-measured that iteration; its regret row is frozen (not discounted or
-  // updated) until the next full iteration. Every <period>-th iteration (default 32) is measured
+  // updated) until the next full iteration. Every <period>-th iteration (default 8) is measured
   // in full. The strategy and the strategy-sum rows are untouched, so this is a
   // convergence-speed knob, not an abstraction.
   H["set_pruning"] = [this](const Args& a) {

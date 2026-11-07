@@ -1714,7 +1714,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
               if (cfv[static_cast<size_t>(a) * Hp + h] >= cfv[static_cast<size_t>(best) * Hp + h]) best = a;
             for (int a = 0; a < A; ++a) {
               float v = a == best ? 1.0f : 0.0f;
-              R[static_cast<size_t>(a) * Hp + h] = v;
+              R[static_cast<size_t>(a) * Hp + h] = v * br_regret_scale;
               S[static_cast<size_t>(a) * Hp + h] = v;
             }
           }
@@ -1733,7 +1733,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
             if (cfv[static_cast<size_t>(a) * Hp + h] >= cfv[static_cast<size_t>(best) * Hp + h]) best = a;  // ties: last action
           for (int a = 0; a < A; ++a) {
             float v = a == best ? 1.0f : 0.0f;
-            R[static_cast<size_t>(a) * Hp + h] = v;
+            R[static_cast<size_t>(a) * Hp + h] = v * br_regret_scale;
             S[static_cast<size_t>(a) * Hp + h] = v;
           }
         }

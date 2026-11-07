@@ -719,9 +719,13 @@ std::string Upi::cmd_set_mes(const Args& a) {
   TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   int Hp = tree_->num_hands(p);
   std::vector<float> out(Hp);
+  // Like set_strategy (set_node_strategy): under the v4 algorithms Pio's written best response persists
+  // through further solving, under original_pio / pio_cfr it is a start (#423, paired probes).
+  solver_->br_regret_scale = (tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
   solver_->write_best_response = true;
   solver_->walk(Walk::BestResponse, 0, p, tree_->init_reach[p].data(), tree_->init_reach[1 - p].data(), out.data());
   solver_->write_best_response = false;
+  solver_->br_regret_scale = 1.0f;
   return "set_mes ok!";
 }
 

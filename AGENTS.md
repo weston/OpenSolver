@@ -390,6 +390,10 @@ where relevant). The maintainer can run probes on request; ask in the issue.
 - `add_preflop_line` is checked when added, like `add_line` (probe 20): with blinds 10/5, `5 25 25` (the SB's 5 is a
   fold) and `10 10 25` (past the preflop action, no schematic) are `Specified line is too long. Some actions were not
   included in the tree.` and their prefix builds; `25 20` is `Incorrect bet size.`.
+- Strategy edits (probe 21, 2026-11-07): `clear_incentives` clears every incentive whatever its argument;
+  `eliminate_path` refuses the check that closes a betting round (`r:0:c:c`) like a call, but takes the opening check;
+  `round_up_to <p> 0 <street>` is accepted (no-op here). Pio accepts one `set_strategy` value too many and more
+  `set_incentives_node` values than actions; ours refuses them.
 - Line order (probes of 2026-11-07). Before `set_pot`, `add_preflop_line` checks against blinds 0/0 in Pio too
   (`3 2` is `Incorrect bet size.`, then `25 25` and `5 25 25` are fine), as ours does. `add_line` before `set_board`
   is not worth matching: Pio checks later lines against a line tree whose street count it guessed when it was

@@ -1114,6 +1114,16 @@ def check_tree_construction_edges(exe):
           "add_preflop_line past a fold or past the preflop action: too long, like Pio")
     check("ERROR: add_preflop_line Incorrect bet size." in out, "add_preflop_line below the bet faced: Incorrect bet size")
     check("build_preflop_tree ok!" in out, "a preflop line past an exit with no schematic builds its prefix, like Pio")
+    # strategy-edit commands (probe 21)
+    out = run(["set_range OOP AA,KK,QQ,AK", "set_range IP AA,KK,QQ,JJ,AK", "set_board Td9d2c", "set_pot 0 0 60",
+               "set_eff_stack 150", "add_line 0 0 30 30 30 30", "add_line 30 90", "build_tree",
+               "set_incentives_node r:0 1 2", "set_incentives_node r:0:c 3", "clear_incentives r:0:c", "show_incentives r:0",
+               "set_incentives_node r:0 1 2", "clear_incentives", "show_incentives r:0",
+               "eliminate_path r:0:c:c", "eliminate_path r:0:c", "round_up_to OOP 0 flop"])
+    check(out.count("Incentives are not used in this node!") == 2, "clear_incentives clears every incentive, like Pio")
+    check("ERROR: eliminate_path incorrect path" in out and "eliminate_path ok!" in out,
+          "eliminate_path: the check that closes the round is refused like a call, the opening check is not")
+    check("round_up_to ok!" in out, "round_up_to 0: accepted as a no-op, like Pio")
     # Pio 3.10.1's error paths (probe 19)
     out = run(["set_pot 10 10 5", "set_pot 3 -1 2", "show_tree_params", "set_pot 65536 0 0", "show_tree_params",
                "set_eff_stack 100", "set_eff_stack 65536", "set_eff_stack -1", "set_eff_stack abc", "set_eff_stack 65535"])

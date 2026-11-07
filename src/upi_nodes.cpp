@@ -745,8 +745,9 @@ std::string Upi::cmd_round_up_to(const Args& a) {
   if (a.size() < 3) throw CmdError{"incorrect or missing argument"};
   int p = player_arg(a[0]);
   int N = std::atoi(a[1].c_str());
-  if (N <= 0) throw CmdError{"incorrect or missing argument"};
+  if (N < 0) throw CmdError{"incorrect or missing argument"};
   int street = street_arg(a[2]);
+  if (N == 0) return std::string("round_up_to ok!");  // Pio accepts 0 (probe 21): nothing to round to
   require_tree();
   TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   for (uint32_t ni = 0; ni < tree_->nodes.size(); ++ni) {
@@ -1309,7 +1310,11 @@ void Upi::register_node_commands() {
       if (parent.kind != ANodeKind::Decision) return;
       const ActionNode& an = tree_->an(parent);
       const ActKind kind = an.actions[st.choice].kind;
-      if (kind == ActKind::Call || kind == ActKind::Fold) {
+      // a check that closes the betting round (its child is no decision) is refused like a call (probe 21)
+      const bool closing_check =
+          kind == ActKind::Check &&
+          tree_->nodes[parent.first_child + static_cast<uint32_t>(st.choice)].kind != ANodeKind::Decision;
+      if (kind == ActKind::Call || kind == ActKind::Fold || closing_check) {
         passive_path = true;
         return;
       }
@@ -1383,13 +1388,13 @@ void Upi::register_node_commands() {
     for (float x : it->second) s += pfmt("%f", x) + " ";
     return s;
   };
-  H["clear_incentives"] = [this](const Args& a) {
-    if (a.empty()) throw CmdError{"incorrect or missing argument"};
+  H["clear_incentives"] = [this](const Args&) {
+    // Pio 3.10.1 (probe 21): every incentive in the tree goes, whatever the argument ("clear_incentives r:0:c"
+    // also cleared r:0's), and with no argument too.
+    require_tree();
     TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
-    NodeRef r = resolve(a[0]);
-    if (r.pseudo_root) throw CmdError{"incorrect node"};
-    tree_->incentives.erase(r.node);
-    tree_->nodes[r.node].flags &= static_cast<uint8_t>(~GF_INCENTIVES);
+    for (const auto& [ni, v] : tree_->incentives) tree_->nodes[ni].flags &= static_cast<uint8_t>(~GF_INCENTIVES);
+    tree_->incentives.clear();
     return std::string("clear_incentives ok!");
   };
 

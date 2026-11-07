@@ -887,6 +887,56 @@ def check_scripts(u):
     check(text == "stdoutredi ok!\nEND\nis_ready ok!\nEND\n", f"stdoutredi answers into the file, like Pio ({text!r})")
 
 
+def check_small_commands(u):
+    """#410: the commands no test used: stdoutredi_append, set_compression_level, show_avg_delay, change_step,
+    deactivate, show_build_version, and the two removed rebuild_forgotten_streets commands."""
+    print("[commands no other check uses]")
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "append.txt")
+        for _ in range(2):  # appends: the second redirect keeps the first's answers
+            u.send_raw("stdoutredi_append " + out)
+            u.send_raw("is_ready")
+            check(u.cmd("stdoutback") == "stdoutback ok!", "stdoutback after stdoutredi_append")
+        with open(out) as f:
+            text = f.read()
+        once = "stdoutredi_append ok!\nEND\nis_ready ok!\nEND\n"
+        check(text == once * 2, f"stdoutredi_append appends its answers to the file ({text!r})")
+
+        set_small_tree(u)
+        u.cmd("build_tree")
+        u.cmd("set_accuracy 0")
+        u.cmd("go 50 steps")
+        u.cmd("wait_for_solver")
+        res = u.cmd("calc_results")
+        level = re.search(r"compression_level \(1-21\): (\d+)", u.cmd("show_settings")).group(1)
+        size = {}
+        for lvl in (1, 21):
+            check(u.cmd(f"set_compression_level {lvl}") == "set_compression_level ok!", f"set_compression_level {lvl}")
+            path = os.path.join(td, f"c{lvl}.cfr")
+            check(u.cmd(f'dump_tree "{path}"') == "dump_tree ok!", f"dump_tree at compression level {lvl}")
+            size[lvl] = os.path.getsize(path)
+        for lvl in (1, 21):
+            u.cmd(f'load_tree "{os.path.join(td, f"c{lvl}.cfr")}"')
+            check(u.cmd("calc_results") == res, f"the level-{lvl} save loads back to the same results")
+        check(size[21] <= size[1], f"level 21 compresses at least as well as level 1 ({size[21]} vs {size[1]} bytes)")
+        check(all(u.cmd(f"set_compression_level {v}").startswith("ERROR") for v in ("0", "22", "x")),
+              "compression levels outside 1..21 are refused")
+        u.cmd(f"set_compression_level {level}")  # as it was (11 by default), for the checks after this one
+        u.cmd("free_tree")
+    check(u.cmd("set_avg_delay 7") == "set_avg_delay ok!" and u.cmd("show_avg_delay") == "7",
+          "show_avg_delay shows set_avg_delay")
+    u.cmd("set_avg_delay 32")
+    step = u.cmd("show_step")
+    check(u.cmd("change_step 0.25") == "change_step ok!" and u.cmd("show_step") == "0.250000",
+          "change_step is stored and shown")
+    u.cmd("change_step " + step)
+    check(u.cmd("deactivate") == "Deactivation successful!", "deactivate is an acknowledged no-op")
+    check(re.fullmatch(r"\d+\.\d+\.\d+ \(.+\)", u.cmd("show_build_version")) is not None,
+          "show_build_version gives the version and build date")
+    for c in ("rebuild_forgotten_streets", "estimate_rebuild_forgotten_streets"):
+        check(u.cmd(c) == f"ERROR: {c} removed in UPI 3.10; use rebuild_tree", f"{c}: the removed-command error")
+
+
 def check_go_partial(u):
     """go_partial (#153): asynchronous subtree solves, like `go` but below a node."""
     print("[go_partial: asynchronous subtree solving]")
@@ -1427,6 +1477,7 @@ def main(exe, big=False):
         check_setting_errors(u)
         check_mid_solve_settings(u)
         check_predictive(u)
+        check_small_commands(u)
 
         print("[river tree + set_mes + rake]")
         u.cmd("set_board KhQs7d4c2s")

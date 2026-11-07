@@ -115,6 +115,36 @@ int GameTree::showdown_board_id(const std::vector<int>& board) {
       str[p][i] = v[i].first;
     }
   }
+  if (compact_rivers) {
+    // #239: re-index the entries in the board's compact space (unblocked hands in hands[p] order)
+    std::vector<int32_t> cidx[2];
+    for (int p = 0; p < 2; ++p) {
+      cidx[p].assign(hands[p].size(), -1);
+      for (size_t h = 0; h < hands[p].size(); ++h) {
+        if (combo_mask(hands[p][h]) & mask) {
+          sb.cut[p].push_back(static_cast<uint16_t>(h));
+          continue;
+        }
+        cidx[p][h] = static_cast<int32_t>(sb.full[p].size());
+        sb.full[p].push_back(static_cast<uint16_t>(h));
+        sb.hc[p][0].push_back(hcard[p][0][h]);
+        sb.hc[p][1].push_back(hcard[p][1][h]);
+      }
+    }
+    for (int p = 0; p < 2; ++p) {
+      sb.same[p].resize(sb.full[p].size());
+      for (size_t i = 0; i < sb.full[p].size(); ++i) {
+        const int32_t sh = same_hand[p][sb.full[p][i]];
+        sb.same[p][i] = sh >= 0 ? cidx[1 - p][static_cast<size_t>(sh)] : -1;
+      }
+      for (SdEntry& e : sb.ent[p]) {
+        e.idx = static_cast<uint16_t>(cidx[p][e.idx]);
+        if (e.same >= 0) e.same = static_cast<int16_t>(cidx[1 - p][static_cast<size_t>(e.same)]);
+      }
+      sb.blocked[p].clear();
+    }
+    sb.compact = true;
+  }
   for (int p = 0; p < 2; ++p) {
     const auto& sp = str[p];
     const auto& so = str[1 - p];
@@ -226,7 +256,15 @@ struct Filler {
       case ANodeKind::Decision: {
         n.aux = static_cast<uint32_t>(g.num_decisions++);
         n.storage = g.storage_floats;
-        g.storage_floats += an->children.size() * g.hands[an->player].size();
+        size_t rh = g.hands[an->player].size();
+        int32_t bid = -1;
+        if (g.compact_rivers && board.size() == 5) {  // #239: rows in the board's compact space
+          bid = g.showdown_board_id(board);
+          rh = g.showdowns[static_cast<size_t>(bid)].full[an->player].size();
+        }
+        g.dec_board.push_back(bid);
+        g.storage_floats += an->children.size() * rh;
+        g.full_floats += an->children.size() * g.hands[an->player].size();
         n.num_children = static_cast<uint16_t>(an->children.size());
         n.first_child = static_cast<uint32_t>(g.nodes.size());
         g.nodes.resize(g.nodes.size() + an->children.size());
@@ -333,6 +371,7 @@ struct Filler {
         g.nodes[idx] = n;
         return;
       case ANodeKind::Fold:
+        if (g.compact_rivers && board.size() == 5) n.aux = static_cast<uint32_t>(g.showdown_board_id(board));  // #239
         g.nodes[idx] = n;
         return;
     }
@@ -362,7 +401,9 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   combo_lock_s.clear();
   incentives.clear();
   storage_floats = 0;
+  full_floats = 0;
   num_decisions = 0;
+  dec_board.clear();
   incomplete = false;
 
   int bl = static_cast<int>(cfg.board.size());
@@ -483,6 +524,10 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   fill_term_pay();
 
   bool iso = (bl == 3 && cfg.iso_flop) || (bl == 4 && cfg.iso_turn);
+  // #239: postflop trees rooted before the river. Preflop trees keep full rows: their all-in runouts run
+  // the showdown kernels in the full space (no outcome tables), where compact boards would need a
+  // gather and scatter per runout.
+  compact_rivers = cfg.compact_rivers && !cfg.preflop && bl < 5 && !std::getenv("WS_NOCOMPACT");  // EXPERIMENT
   nodes.reserve(1024);
   nodes.resize(1);
   std::vector<int> board = cfg.board;
@@ -505,8 +550,8 @@ void fill_allin_table(const GameTree& g, const AllinRunouts& ar, const std::vect
     int i0 = 0, j0 = 0;
     int16_t gi = 0;
     for (const auto& gr : sb.groups[0]) {  // strength groups ascending: the group index is the rank
-      for (int i = i0; i < gr.first; ++i) r0[sb.ent[0][i].idx] = gi;
-      for (int j = j0; j < gr.second; ++j) r1[sb.ent[1][j].idx] = gi;
+      for (int i = i0; i < gr.first; ++i) r0[sb.compact ? sb.full[0][sb.ent[0][i].idx] : sb.ent[0][i].idx] = gi;
+      for (int j = j0; j < gr.second; ++j) r1[sb.compact ? sb.full[1][sb.ent[1][j].idx] : sb.ent[1][j].idx] = gi;
       i0 = gr.first;
       j0 = gr.second;
       ++gi;
@@ -572,7 +617,9 @@ uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
   b += chances.size() * (sizeof(ChanceInfo) + 64);
   for (auto& s : showdowns)
     b += (s.ent[0].size() + s.ent[1].size()) * sizeof(SdEntry) + (s.groups[0].size() + s.groups[1].size()) * 4 +
+         (s.full[0].size() + s.full[1].size()) * (2 + 2 + 4) + (s.cut[0].size() + s.cut[1].size()) * 2 +
          sizeof(ShowdownBoard);
+  b += dec_board.size() * sizeof(int32_t);
   uint64_t tables = 0;
   for (auto& a : allins) tables += a.e2.size() * sizeof(uint16_t) + a.e2b.size();
   b += tables ? tables : allin_table_plan(nullptr);  // before allocate_storage builds them
@@ -601,6 +648,58 @@ void GameTree::allocate_storage() {
     regrets.resize(storage_floats);
     strat.resize(storage_floats);
   }
+}
+
+void GameTree::rows_to_full(const GNode& n, const float* rows, float* full, float fill) const {
+  const ShowdownBoard* b = river_board(n);
+  const size_t A = n.num_children, H = hands[n.player].size();
+  if (!b) {
+    std::copy(rows, rows + A * H, full);
+    return;
+  }
+  const std::vector<uint16_t>& f = b->full[n.player];
+  const size_t Hr = f.size();
+  std::fill(full, full + A * H, fill);
+  for (size_t a = 0; a < A; ++a)
+    for (size_t i = 0; i < Hr; ++i) full[a * H + f[i]] = rows[a * Hr + i];
+}
+
+void GameTree::rows_from_full(const GNode& n, const float* full, float* rows) const {
+  const ShowdownBoard* b = river_board(n);
+  const size_t A = n.num_children, H = hands[n.player].size();
+  if (!b) {
+    std::copy(full, full + A * H, rows);
+    return;
+  }
+  const std::vector<uint16_t>& f = b->full[n.player];
+  const size_t Hr = f.size();
+  for (size_t a = 0; a < A; ++a)
+    for (size_t i = 0; i < Hr; ++i) rows[a * Hr + i] = full[a * H + f[i]];
+}
+
+void GameTree::get_full(const GNode& n, bool strategy, float* full) const {
+  std::vector<float> buf(node_size(n));
+  const float* r = strategy ? strat_ro(n, buf.data()) : regrets_ro(n, buf.data());
+  rows_to_full(n, r, full);
+}
+
+void GameTree::set_full(const GNode& n, bool strategy, const float* full) {
+  std::vector<float> buf(node_size(n));
+  float* r = strategy ? strat_rw(n, buf.data()) : regrets_rw(n, buf.data());
+  rows_from_full(n, full, r);
+  if (strategy) strat_commit(n, r);
+  else regrets_commit(n, r);
+}
+
+GameTree::LockMask GameTree::lock_mask(uint32_t ni) const {
+  LockMask m;
+  auto it = combo_lock.find(ni);
+  if (it == combo_lock.end()) return m;
+  const GNode& n = nodes[ni];
+  if (it->second.size() != hands[n.player].size()) return m;
+  m.m = it->second.data();
+  if (const ShowdownBoard* b = river_board(n)) m.f = b->full[n.player].data();
+  return m;
 }
 
 void GameTree::decompress() {
@@ -744,11 +843,13 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
     const size_t ni = static_cast<size_t>(&n - nodes.data());
     auto c = ni < nodes.size() ? combo_lock_s.find(static_cast<uint32_t>(ni)) : combo_lock_s.end();
     auto mk = ni < nodes.size() ? combo_lock.find(static_cast<uint32_t>(ni)) : combo_lock.end();
-    if (c != combo_lock_s.end() && mk != combo_lock.end() && c->second.size() == len) {
-      const size_t H = hands[n.player].size();
+    if (c != combo_lock_s.end() && mk != combo_lock.end() && c->second.size() == len &&
+        mk->second.size() == hands[n.player].size()) {
+      const size_t H = static_cast<size_t>(row_hands(n));
+      const LockMask lm = lock_mask(static_cast<uint32_t>(ni));
       fixed.assign(data, data + len);
-      for (size_t h = 0; h < H && h < mk->second.size(); ++h)
-        if (mk->second[h])
+      for (size_t h = 0; h < H; ++h)
+        if (lm[static_cast<int>(h)])
           for (size_t a = 0; a < static_cast<size_t>(n.num_children); ++a) fixed[a * H + h] = c->second[a * H + h];
       data = fixed.data();
       maxval = -1.0f;

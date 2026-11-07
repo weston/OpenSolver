@@ -70,22 +70,24 @@ inline void regret_row_max(float* __restrict r, float* __restrict s, float* __re
 
 }  // namespace
 
-void Solver::compat_mass(int p, const float* ro, float* out) const {
+void Solver::compat_mass(int p, const float* ro, float* out) const { compat_mass(g_.full_space(), p, ro, out); }
+
+void Solver::compat_mass(const HandSpace& hs, int p, const float* ro, float* out) const {
   const int o = 1 - p;
-  const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
+  const int Hp = hs.n[p], Ho = hs.n[o];
   float cs[NUM_CARDS] = {0};
   float total = 0;
-  const uint8_t* oc1 = g_.hcard[o][0].data();
-  const uint8_t* oc2 = g_.hcard[o][1].data();
+  const uint8_t* oc1 = hs.c1[o];
+  const uint8_t* oc2 = hs.c2[o];
   for (int k = 0; k < Ho; ++k) {
     float r = ro[k];
     total += r;
     cs[oc1[k]] += r;
     cs[oc2[k]] += r;
   }
-  const uint8_t* pc1 = g_.hcard[p][0].data();
-  const uint8_t* pc2 = g_.hcard[p][1].data();
-  const int32_t* same = g_.same_hand[p].data();
+  const uint8_t* pc1 = hs.c1[p];
+  const uint8_t* pc2 = hs.c2[p];
+  const int32_t* same = hs.same[p];
   for (int h = 0; h < Hp; ++h) {
     float v = total - cs[pc1[h]] - cs[pc2[h]];
     if (same[h] >= 0) v += ro[same[h]];
@@ -105,8 +107,9 @@ double Solver::root_matchups() const {
 
 void Solver::fold_value(const GNode& n, int p, const float* ro, float* out) const {
   const float pay = g_.term_pay(n).w[p];
-  compat_mass(p, ro, out);
-  const int Hp = g_.num_hands(p);
+  const HandSpace hs = g_.space(n);
+  compat_mass(hs, p, ro, out);
+  const int Hp = hs.n[p];
   for (int h = 0; h < Hp; ++h) out[h] *= pay;
 }
 
@@ -888,7 +891,7 @@ void Solver::allin_table_value(const AllinRunouts& ar, const E* e2, float W, flo
 void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) const {
   const GameTree::TermPay& tp = g_.term_pay(n);
   const float W = tp.w[p], L = tp.l[p], T = tp.t[p];
-  const int Hp = g_.num_hands(p);
+  const int Hp = g_.space(n).n[p];
   std::memset(out, 0, sizeof(float) * Hp);
   if (n.board_len == 5) {
     showdown_board(g_.showdowns[n.aux], W, L, T, p, ro, out);
@@ -946,7 +949,21 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
   float* acc = sc.a.alloc_zero(static_cast<size_t>(chunks) * Hp);
   auto task = [&](int k) {
     float* dst = acc + static_cast<size_t>(k) * Hp;
-    for (int b = k; b < nb; b += chunks) showdown_board(g_.showdowns[ar.boards[b]], W, L, T, p, ro, dst);
+    for (int b = k; b < nb; b += chunks) {
+      const ShowdownBoard& sb = g_.showdowns[ar.boards[b]];
+      if (!sb.compact) {
+        showdown_board(sb, W, L, T, p, ro, dst);
+        continue;
+      }
+      // #239: a compact board's kernel works in its own hand space (only without outcome tables)
+      ArenaScope bsc;
+      const int np = static_cast<int>(sb.full[p].size()), no = static_cast<int>(sb.full[1 - p].size());
+      float* roc = bsc.a.alloc(no);
+      for (int i = 0; i < no; ++i) roc[i] = ro[sb.full[1 - p][i]];
+      float* oc = bsc.a.alloc_zero(np);
+      showdown_board(sb, W, L, T, p, roc, oc);
+      for (int i = 0; i < np; ++i) dst[sb.full[p][i]] += oc[i];
+    }
   };
   if (chunks > 1) {
     std::function<void(int)> fn = task;
@@ -966,7 +983,7 @@ bool Solver::call_and_fold(const GNode& sd, const GNode& fold, int p, const floa
   if (sd.kind != ANodeKind::Showdown || fold.kind != ANodeKind::Fold || sd.board_len != 5) return false;
   const GameTree::TermPay& tp = g_.term_pay(sd);
   const float W = tp.w[p], L = tp.l[p], T = tp.t[p];
-  const int Hp = g_.num_hands(p);
+  const int Hp = g_.space(sd).n[p];
   std::memset(sd_out, 0, sizeof(float) * Hp);
   std::memset(fold_out, 0, sizeof(float) * Hp);
   showdown_board(g_.showdowns[sd.aux], W, L, T, p, ro, sd_out, fold_out);
@@ -980,10 +997,11 @@ bool Solver::call_with_opp_fold(const GNode& sd, const GNode& fold, int p, const
   if (sd.kind != ANodeKind::Showdown || fold.kind != ANodeKind::Fold || sd.board_len != 5) return false;
   const GameTree::TermPay& tp = g_.term_pay(sd);
   const float W = tp.w[p], L = tp.l[p], T = tp.t[p];
-  const int Ho = g_.num_hands(1 - p);
+  const HandSpace hs = g_.space(sd);
+  const int Ho = hs.n[1 - p];
   for (int k = 0; k < Ho; ++k) xf[k] = ro[k] * sfold[k];
   const SdFold f{xf, g_.term_pay(fold).w[p]};
-  std::memset(out, 0, sizeof(float) * g_.num_hands(p));
+  std::memset(out, 0, sizeof(float) * hs.n[p]);
   showdown_board(g_.showdowns[sd.aux], W, L, T, p, xc, out, nullptr, &f);
   return true;
 }
@@ -991,7 +1009,7 @@ bool Solver::call_with_opp_fold(const GNode& sd, const GNode& fold, int p, const
 void Solver::current_strategy(uint32_t ni, float* out) const {
   const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
-  const int H = g_.num_hands(n.player);
+  const int H = g_.row_hands(n);
   ArenaScope sc;
   const bool need_s = (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) != 0;
   const float* S = need_s ? g_.strat_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr) : nullptr;
@@ -1156,9 +1174,8 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   }
   }
   if (n.flags & GF_COMBO_LOCKED) {
-    auto it = g_.combo_lock.find(ni);
-    if (it != g_.combo_lock.end()) {
-      const auto& mask = it->second;
+    const GameTree::LockMask mask = g_.lock_mask(ni);
+    if (mask) {
       for (int h = 0; h < H; ++h)
         if (mask[h])
           for (int a = 0; a < A; ++a) out[static_cast<size_t>(a) * H + h] = S[static_cast<size_t>(a) * H + h];
@@ -1172,7 +1189,7 @@ void Solver::apply_elimination(uint32_t ni, float* out) const {
   if (it == g_.eliminated.end()) return;
   const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
-  const int H = g_.num_hands(n.player);
+  const int H = g_.row_hands(n);
   const uint32_t mask = it->second;
   int live = 0;
   for (int a = 0; a < A; ++a) live += !((mask >> a) & 1u);
@@ -1194,8 +1211,16 @@ void Solver::apply_elimination(uint32_t ni, float* out) const {
 
 void Solver::average_strategy(uint32_t ni, float* out) const {
   const GNode& n = g_.nodes[ni];
+  if (!g_.river_board(n)) return average_rows(ni, out);
+  std::vector<float> rows(g_.node_size(n));
+  average_rows(ni, rows.data());
+  g_.rows_to_full(n, rows.data(), out);
+}
+
+void Solver::average_rows(uint32_t ni, float* out) const {
+  const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
-  const int H = g_.num_hands(n.player);
+  const int H = g_.row_hands(n);
   ArenaScope sc;
   const float* S = g_.strat_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
   if (n.flags & GF_LOCKED) {
@@ -1229,6 +1254,22 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
 }
 
 void Solver::walk(Walk mode, uint32_t ni, int p, const float* rp, const float* ro, float* out) {
+  if (const ShowdownBoard* b = g_.river_board(g_.nodes[ni])) {
+    // #239: full-width rows in and out, the node's compact space inside (blocked hands' values: 0)
+    const HandSpace hs = GameTree::board_space(*b);
+    const int o = 1 - p;
+    std::vector<float> rpc(hs.n[p]), roc(hs.n[o]), oc(hs.n[p]);
+    for (int i = 0; i < hs.n[p]; ++i) rpc[i] = rp[hs.full[p][i]];
+    for (int i = 0; i < hs.n[o]; ++i) roc[i] = ro[hs.full[o][i]];
+    switch (mode) {
+      case Walk::CFR: walk_t<Walk::CFR>(ni, p, rpc.data(), roc.data(), oc.data()); break;
+      case Walk::BestResponse: walk_t<Walk::BestResponse>(ni, p, rpc.data(), roc.data(), oc.data()); break;
+      case Walk::Evaluate: walk_t<Walk::Evaluate>(ni, p, rpc.data(), roc.data(), oc.data()); break;
+    }
+    std::fill(out, out + g_.num_hands(p), 0.0f);
+    for (int i = 0; i < hs.n[p]; ++i) out[hs.full[p][i]] = oc[i];
+    return;
+  }
   switch (mode) {
     case Walk::CFR: walk_t<Walk::CFR>(ni, p, rp, ro, out); break;
     case Walk::BestResponse: walk_t<Walk::BestResponse>(ni, p, rp, ro, out); break;
@@ -1241,7 +1282,7 @@ void Solver::walk(Walk mode, uint32_t ni, int p, const float* rp, const float* r
 void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* rp, const float* ro, const float* sigma,
                               const float* cfv, const uint8_t* pruned, const float* out) {
   const int A = n.num_children;
-  const int Hp = g_.num_hands(p);
+  const int Hp = g_.row_hands(n);
   ArenaScope sc;
   float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
   // Strategy-sum accumulation (accumulate_). With avg_reset (default) it runs from t = 1 and
@@ -1259,14 +1300,11 @@ void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* r
     if (it != g_.incentives.end()) {
       inc = it->second.data();
       mass = sc.a.alloc(Hp);
-      compat_mass(p, ro, mass);
+      compat_mass(g_.space(n), p, ro, mass);
     }
   }
-  const uint8_t* lockmask = nullptr;
-  if (n.flags & GF_COMBO_LOCKED) {
-    auto it = g_.combo_lock.find(ni);
-    if (it != g_.combo_lock.end()) lockmask = it->second.data();
-  }
+  GameTree::LockMask lockmask;
+  if (n.flags & GF_COMBO_LOCKED) lockmask = g_.lock_mask(ni);
   uint32_t mr = 0, ms = 0;  // max |regret| and max strategy sum as float bits (abs_bits, game.hpp)
   const bool fast = !lockmask && !inc;
   const bool accum = accumulate_;
@@ -1357,10 +1395,11 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
   Arena& ar = arena();
   const GNode& n = g_.nodes[ni];
   const int o = 1 - p;
-  const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
+  const HandSpace hs = g_.space(n);
+  const int Hp = hs.n[p], Ho = hs.n[o];
   const int A = n.num_children;
   const int actor = n.player;
-  const int Ha = g_.num_hands(actor);
+  const int Ha = hs.n[actor];
   float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
   current_strategy(ni, sigma);
   // dst and compat go to showdown_batch unzeroed: it zeroes what its kernel needs (zero_rows).
@@ -1460,8 +1499,8 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
     }
     if (child.kind == ANodeKind::Fold) {
       const float pay = g_.term_pay(child).w[p];
-      const uint8_t* oc1 = g_.hcard[o][0].data();
-      const uint8_t* oc2 = g_.hcard[o][1].data();
+      const uint8_t* oc1 = hs.c1[o];
+      const uint8_t* oc2 = hs.c2[o];
       float cs[NUM_CARDS] = {0};
       float total = 0;
       for (int k = 0; k < Ho; ++k) {
@@ -1474,9 +1513,9 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
         strategy_only(ci, p, rp);
         continue;
       }
-      const uint8_t* pc1 = g_.hcard[p][0].data();
-      const uint8_t* pc2 = g_.hcard[p][1].data();
-      const int32_t* same = g_.same_hand[p].data();
+      const uint8_t* pc1 = hs.c1[p];
+      const uint8_t* pc2 = hs.c2[p];
+      const int32_t* same = hs.same[p];
       for (int h = 0; h < Hp; ++h) {
         float m = total - cs[pc1[h]] - cs[pc2[h]];
         if (same[h] >= 0) m += ro[same[h]] * sa[same[h]];
@@ -1513,8 +1552,9 @@ void Solver::river_cfr(uint32_t root, int p, const float* rp, const float* ro, f
   w.scale.clear();
   w.sb = nullptr;
   river_down(root, p, rp, ro, out);
-  if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data(), g_.num_hands(1 - p));
-  const int Hp = g_.num_hands(p);
+  const HandSpace hs = g_.space(g_.nodes[root]);
+  if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data(), hs.n[1 - p]);
+  const int Hp = hs.n[p];
   for (auto& [row, pay] : w.scale)
     for (int h = 0; h < Hp; ++h) row[h] *= pay;
   for (size_t i = w.nodes.size(); i-- > 0;) {
@@ -1563,7 +1603,8 @@ template <Walk M>
 void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float* out) {
   const GNode& n = g_.nodes[ni];
   const int o = 1 - p;
-  const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
+  const HandSpace hs = g_.space(n);  // #239: a river node's rows are in its board's compact space
+  const int Hp = hs.n[p], Ho = hs.n[o];
   switch (n.kind) {
     case ANodeKind::Fold:
       fold_value(n, p, ro, out);
@@ -1584,6 +1625,28 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
         ArenaScope tsc;
         int card = ci.cards[k];
         float* rk = res + static_cast<size_t>(k) * Hp;
+        const uint32_t ck = n.first_child + static_cast<uint32_t>(k);
+        if (const ShowdownBoard* cb = g_.river_board(g_.nodes[ck])) {
+          // #239: the river child runs in its board's compact space. Gather the reaches (the dealt
+          // card's hands are not in it) and scatter the values; blocked hands get 0, as below.
+          const int cp = static_cast<int>(cb->full[p].size()), co = static_cast<int>(cb->full[o].size());
+          float* ro2 = tsc.a.alloc(co + 3);  // + 3: gather_row / scatter_row slack
+          gather_row(cb->cut[o], Ho, ro, ro2);
+          float* rp2 = tsc.a.alloc(cp + 3);
+          gather_row(cb->cut[p], Hp, rp, rp2);
+          if (all_zero(ro2, co) && !(M == Walk::BestResponse && write_best_response)) {
+            std::memset(rk, 0, sizeof(float) * Hp);
+            if (M == Walk::CFR) strategy_only(ck, p, rp2);
+            return;
+          }
+          float* rkc = tsc.a.alloc(cp + 3);
+          if (M == Walk::CFR && river_batch && !tl_rw.busy && g_.nodes[ck].kind == ANodeKind::Decision)
+            river_cfr(ck, p, rp2, ro2, rkc);  // #186
+          else
+            walk_t<M>(ck, p, rp2, ro2, rkc);
+          scatter_row(cb->cut[p], Hp, rkc, rk);
+          return;
+        }
         float* ro2 = tsc.a.alloc(Ho);
         std::memcpy(ro2, ro, sizeof(float) * Ho);
         for (uint16_t h : g_.hands_with_card[o][card]) ro2[h] = 0.0f;
@@ -1626,11 +1689,11 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
 
   const int A = n.num_children;
   const int actor = n.player;
-  const int Ha = g_.num_hands(actor);
+  const int Ha = hs.n[actor];
   ArenaScope sc;
   float* sigma = sc.a.alloc(static_cast<size_t>(A) * Ha);
   if (M == Walk::CFR) current_strategy(ni, sigma);
-  else if (actor == o || M == Walk::Evaluate || (n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) average_strategy(ni, sigma);
+  else if (actor == o || M == Walk::Evaluate || (n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) average_rows(ni, sigma);
 
   if (actor == p) {
     // Regret-based pruning (#51): in the CFR walk, an action whose current strategy is zero for
@@ -1691,11 +1754,8 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       // A best response cannot deviate where the strategy is locked (whole node or locked combos);
       // this is what makes MES / exploitability meaningful in node-locking workflows (Pio does the same).
       if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) {
-        const uint8_t* lockmask = nullptr;
-        if (!(n.flags & GF_LOCKED)) {
-          auto it = g_.combo_lock.find(ni);
-          if (it != g_.combo_lock.end()) lockmask = it->second.data();
-        }
+        GameTree::LockMask lockmask;
+        if (!(n.flags & GF_LOCKED)) lockmask = g_.lock_mask(ni);
         for (int h = 0; h < Hp; ++h) {
           if (lockmask && !lockmask[h]) continue;
           float v = 0.0f;
@@ -1788,8 +1848,8 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
       // Opponent folds: value = payoff * compatible mass of (ro * sigma_fold), fused into one pass
       // over the opponent's hands (no reach vector, no temporary, no extra add pass).
       const float pay = g_.term_pay(g_.nodes[ci]).w[p];
-      const uint8_t* oc1 = g_.hcard[o][0].data();
-      const uint8_t* oc2 = g_.hcard[o][1].data();
+      const uint8_t* oc1 = hs.c1[o];
+      const uint8_t* oc2 = hs.c2[o];
       float cs[NUM_CARDS] = {0};
       float total = 0;
       for (int k = 0; k < Ho; ++k) {
@@ -1802,9 +1862,9 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
         if (M == Walk::CFR) strategy_only(ci, p, rp);
         return;
       }
-      const uint8_t* pc1 = g_.hcard[p][0].data();
-      const uint8_t* pc2 = g_.hcard[p][1].data();
-      const int32_t* same = g_.same_hand[p].data();
+      const uint8_t* pc1 = hs.c1[p];
+      const uint8_t* pc2 = hs.c2[p];
+      const int32_t* same = hs.same[p];
       for (int h = 0; h < Hp; ++h) {
         float m = total - cs[pc1[h]] - cs[pc2[h]];
         if (same[h] >= 0) m += ro[same[h]] * sa[same[h]];
@@ -1856,7 +1916,7 @@ void Solver::run_actions(const GNode& n, int A, F& act) {
 // strategy accumulated, otherwise the average is biased toward iterations where the opponent enters.
 void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
   const GNode& n = g_.nodes[ni];
-  const int Hp = g_.num_hands(p);
+  const int Hp = g_.space(n).n[p];
   if (n.kind == ANodeKind::Fold || n.kind == ANodeKind::Showdown) return;
   if (all_zero(rp, Hp)) return;
   if (n.kind == ANodeKind::Chance) {
@@ -1864,6 +1924,13 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
     const int K = n.num_children;
     auto task = [&](int k) {
       ArenaScope tsc;
+      const uint32_t ck = n.first_child + static_cast<uint32_t>(k);
+      if (const ShowdownBoard* cb = g_.river_board(g_.nodes[ck])) {  // #239: as in walk_t
+        float* rp2 = tsc.a.alloc(cb->full[p].size() + 3);
+        gather_row(cb->cut[p], Hp, rp, rp2);
+        strategy_only(ck, p, rp2);
+        return;
+      }
       float* rp2 = tsc.a.alloc(Hp);
       std::memcpy(rp2, rp, sizeof(float) * Hp);
       if (ci.flop_deal) {
@@ -1896,11 +1963,8 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
     // An unreached node had zero counterfactual values this round, so its instantaneous
     // regret is zero: the prediction must not reuse a stale one from an earlier round.
     float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
-    const uint8_t* lockmask = nullptr;
-    if (n.flags & GF_COMBO_LOCKED) {
-      auto it = g_.combo_lock.find(ni);
-      if (it != g_.combo_lock.end()) lockmask = it->second.data();
-    }
+    GameTree::LockMask lockmask;
+    if (n.flags & GF_COMBO_LOCKED) lockmask = g_.lock_mask(ni);
     const float pm = pos_mult_, nm = neg_mult_, sm = strat_mult_;
     const bool accum = accumulate_;
     for (int a = 0; a < A; ++a) {
@@ -2128,14 +2192,11 @@ void Solver::reset_strategy_sums() {
     for (int ni = lo; ni < hi; ++ni) {
       const GNode& n = g_.nodes[ni];
       if (n.kind != ANodeKind::Decision || (n.flags & GF_LOCKED)) continue;
-      const int A = n.num_children, H = g_.num_hands(n.player);
+      const int A = n.num_children, H = g_.row_hands(n);
       ArenaScope sc;
       float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
-      const uint8_t* lockmask = nullptr;
-      if (n.flags & GF_COMBO_LOCKED) {
-        auto it = g_.combo_lock.find(static_cast<uint32_t>(ni));
-        if (it != g_.combo_lock.end()) lockmask = it->second.data();
-      }
+      GameTree::LockMask lockmask;
+      if (n.flags & GF_COMBO_LOCKED) lockmask = g_.lock_mask(static_cast<uint32_t>(ni));
       if (!lockmask) {
         std::memset(S, 0, sizeof(float) * static_cast<size_t>(A) * H);
       } else {
@@ -2174,7 +2235,7 @@ void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r
     int p = k == 0 ? first_player : 1 - first_player;
     ArenaScope sc;
     float* out = sc.a.alloc(g_.num_hands(p));
-    walk_t<Walk::CFR>(ni, p, r[p], r[1 - p], out);
+    walk(Walk::CFR, ni, p, r[p], r[1 - p], out);  // full-width reaches: walk enters a compact river space
   }
 }
 
@@ -2214,12 +2275,13 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
   Arena& ar = arena();
   const GNode& n = g_.nodes[ni];
   const int o = 1 - p;
-  const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
+  const HandSpace hs = g_.space(n);
+  const int Hp = hs.n[p], Ho = hs.n[o];
   const int A = n.num_children;
   const int actor = n.player;
-  const int Ha = g_.num_hands(actor);
+  const int Ha = hs.n[actor];
   float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
-  average_strategy(ni, sigma);
+  average_rows(ni, sigma);
   float* cev = ar.alloc(static_cast<size_t>(A) * Hp);
   float* cbr = ar.alloc(static_cast<size_t>(A) * Hp);
   uint8_t* kind = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
@@ -2286,8 +2348,8 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
     }
     if (child.kind == ANodeKind::Fold) {
       const float pay = g_.term_pay(child).w[p];
-      const uint8_t* oc1 = g_.hcard[o][0].data();
-      const uint8_t* oc2 = g_.hcard[o][1].data();
+      const uint8_t* oc1 = hs.c1[o];
+      const uint8_t* oc2 = hs.c2[o];
       float cs[NUM_CARDS] = {0};
       float total = 0;
       for (int k = 0; k < Ho; ++k) {
@@ -2297,9 +2359,9 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
         cs[oc2[k]] += v;
       }
       if (total == 0.0f) continue;
-      const uint8_t* pc1 = g_.hcard[p][0].data();
-      const uint8_t* pc2 = g_.hcard[p][1].data();
-      const int32_t* same = g_.same_hand[p].data();
+      const uint8_t* pc1 = hs.c1[p];
+      const uint8_t* pc2 = hs.c2[p];
+      const int32_t* same = hs.same[p];
       for (int h = 0; h < Hp; ++h) {
         float m = total - cs[pc1[h]] - cs[pc2[h]];
         if (same[h] >= 0) m += ro[same[h]] * sa[same[h]];
@@ -2334,8 +2396,9 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
   w.scale.clear();
   w.sb = nullptr;
   river_evbr_down(root, p, ro, ev, br);
-  if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data(), g_.num_hands(1 - p));
-  const int Hp = g_.num_hands(p);
+  const HandSpace hs = g_.space(g_.nodes[root]);
+  if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data(), hs.n[1 - p]);
+  const int Hp = hs.n[p];
   for (auto& [row, pay] : w.scale)
     for (int h = 0; h < Hp; ++h) row[h] *= pay;
   for (size_t i = w.nodes.size(); i-- > 0;) {
@@ -2361,11 +2424,8 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
         for (int h = 0; h < Hp; ++h) r.br[h] = std::max(r.br[h], c[h]);
       }
       if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) {
-        const uint8_t* lockmask = nullptr;
-        if (!(n.flags & GF_LOCKED)) {
-          auto it = g_.combo_lock.find(r.ni);
-          if (it != g_.combo_lock.end()) lockmask = it->second.data();
-        }
+        GameTree::LockMask lockmask;
+        if (!(n.flags & GF_LOCKED)) lockmask = g_.lock_mask(r.ni);
         for (int h = 0; h < Hp; ++h) {
           if (lockmask && !lockmask[h]) continue;
           float v = 0.0f;
@@ -2400,7 +2460,8 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
 void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br) {
   const GNode& n = g_.nodes[ni];
   const int o = 1 - p;
-  const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
+  const HandSpace hs = g_.space(n);
+  const int Hp = hs.n[p], Ho = hs.n[o];
   switch (n.kind) {
     case ANodeKind::Fold:
       fold_value(n, p, ro, ev);
@@ -2424,6 +2485,27 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
         ArenaScope tsc;
         int card = ci.cards[k];
         float* rk = res + static_cast<size_t>(k) * 2 * Hp;
+        const uint32_t ck = n.first_child + static_cast<uint32_t>(k);
+        if (const ShowdownBoard* cb = g_.river_board(g_.nodes[ck])) {  // #239: as in walk_t
+          const int cp = static_cast<int>(cb->full[p].size()), co = static_cast<int>(cb->full[o].size());
+          float* ro2 = tsc.a.alloc(co + 3);  // + 3: gather_row / scatter_row slack
+          gather_row(cb->cut[o], Ho, ro, ro2);
+          if (all_zero(ro2, co)) {
+            std::memset(rk, 0, sizeof(float) * 2 * Hp);
+            return;
+          }
+          float* rkc = tsc.a.alloc(static_cast<size_t>(2) * cp + 3);
+          if (river_batch && !tl_ew.busy && g_.nodes[ck].kind == ANodeKind::Decision) {
+            river_evbr(ck, p, ro2, rkc, rkc + cp);
+          } else {
+            float* rp2 = tsc.a.alloc(cp + 3);
+            gather_row(cb->cut[p], Hp, rp, rp2);
+            walk_evbr(ck, p, rp2, ro2, rkc, rkc + cp);
+          }
+          scatter_row(cb->cut[p], Hp, rkc, rk);
+          scatter_row(cb->cut[p], Hp, rkc + cp, rk + Hp);
+          return;
+        }
         float* ro2 = tsc.a.alloc(Ho);
         std::memcpy(ro2, ro, sizeof(float) * Ho);
         for (uint16_t h : g_.hands_with_card[o][card]) ro2[h] = 0.0f;
@@ -2468,10 +2550,10 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
 
   const int A = n.num_children;
   const int actor = n.player;
-  const int Ha = g_.num_hands(actor);
+  const int Ha = hs.n[actor];
   ArenaScope sc;
   float* sigma = sc.a.alloc(static_cast<size_t>(A) * Ha);
-  average_strategy(ni, sigma);
+  average_rows(ni, sigma);
 
   if (actor == p) {
     float* cev = sc.a.alloc(static_cast<size_t>(A) * Hp);
@@ -2525,11 +2607,8 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
       for (int h = 0; h < Hp; ++h) br[h] = std::max(br[h], c[h]);
     }
     if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) {
-      const uint8_t* lockmask = nullptr;
-      if (!(n.flags & GF_LOCKED)) {
-        auto it = g_.combo_lock.find(ni);
-        if (it != g_.combo_lock.end()) lockmask = it->second.data();
-      }
+      GameTree::LockMask lockmask;
+      if (!(n.flags & GF_LOCKED)) lockmask = g_.lock_mask(ni);
       for (int h = 0; h < Hp; ++h) {
         if (lockmask && !lockmask[h]) continue;
         float v = 0.0f;
@@ -2574,8 +2653,8 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
     }
     if (g_.nodes[ci].kind == ANodeKind::Fold) {
       const float pay = g_.term_pay(g_.nodes[ci]).w[p];
-      const uint8_t* oc1 = g_.hcard[o][0].data();
-      const uint8_t* oc2 = g_.hcard[o][1].data();
+      const uint8_t* oc1 = hs.c1[o];
+      const uint8_t* oc2 = hs.c2[o];
       float cs[NUM_CARDS] = {0};
       float total = 0;
       for (int k = 0; k < Ho; ++k) {
@@ -2585,9 +2664,9 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
         cs[oc2[k]] += v;
       }
       if (total == 0.0f) return;
-      const uint8_t* pc1 = g_.hcard[p][0].data();
-      const uint8_t* pc2 = g_.hcard[p][1].data();
-      const int32_t* same = g_.same_hand[p].data();
+      const uint8_t* pc1 = hs.c1[p];
+      const uint8_t* pc2 = hs.c2[p];
+      const int32_t* same = hs.same[p];
       for (int h = 0; h < Hp; ++h) {
         float m = total - cs[pc1[h]] - cs[pc2[h]];
         if (same[h] >= 0) m += ro[same[h]] * sa[same[h]];

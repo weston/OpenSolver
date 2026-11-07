@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -90,6 +91,9 @@ struct GameConfig {
   // of being filtered out. They enter with reach 0, so the equilibrium is unaffected; the
   // cost is wider vectors. Off by default: see set_union_hands.
   bool union_hands = false;
+  // #239: river decision nodes store rows for their board's unblocked hands only (GameTree::compact_rivers).
+  // Not a user setting; tests turn it off to compare against full rows.
+  bool compact_rivers = true;
   LineSet lines;
   int32_t start_pot() const { return pot[0] + pot[1] + pot[2]; }
   bool full_preflop() const { return preflop && !schematics.empty(); }
@@ -155,8 +159,60 @@ struct ShowdownBoard {
   // equal", so every opponent hand is touched once and the loops have no data-dependent branches.
   std::vector<std::pair<uint16_t, uint16_t>> groups[2];
   // Per player: the hands the board blocks (not in ent), so a row the lanes kernels store into needs
-  // zeroing only there (showdown_batch).
+  // zeroing only there (showdown_batch). Empty for a compact board.
   std::vector<uint16_t> blocked[2];
+  // Compact river rows (#239, GameTree::compact_rivers): the board's own hand space, the hands it does
+  // not block in hands[p] order. ent[].idx and ent[].same then index this space, and so do the reach and
+  // value rows of the river walk and the regret / strategy rows of the board's decision nodes.
+  bool compact = false;
+  std::vector<uint16_t> full[2];   // compact index -> local hand index (ascending)
+  std::vector<uint8_t> hc[2][2];   // hole cards by compact index
+  std::vector<int32_t> same[2];    // compact index of the same combo in the opponent's space, or -1
+  std::vector<uint16_t> cut[2];    // the blocked local hands (ascending): gather_row / scatter_row
+};
+
+// Full-width row (H) <-> a compact board's row (#239), copying the contiguous runs between the blocked
+// hands (~8% of a flop tree's river row, so runs of ~12) in whole 4-float blocks: an index gather is a
+// scalar loop on NEON, and an element loop per short run is 3x slower than this (290 hands: 83 vs 27 ns).
+// A block may run up to 3 floats past its run; the next run overwrites them (and the blocked slots are
+// zeroed after), so gather_row's dst and scatter_row's src need 3 floats of slack past the compact row.
+// Nothing is read or written past the full row.
+inline void gather_row(const std::vector<uint16_t>& cut, int H, const float* __restrict src, float* __restrict dst) {
+  int from = 0;
+  const size_t nc = cut.size();
+  for (size_t c = 0; c <= nc; ++c) {
+    const int b = c < nc ? cut[c] : H;
+    int j = from;
+    for (; j < b && j + 4 <= H; j += 4, dst += 4) std::memcpy(dst, src + j, 16);
+    if (j > b) dst -= j - b;
+    else
+      for (; j < b; ++j) *dst++ = src[j];
+    from = b + 1;
+  }
+}
+inline void scatter_row(const std::vector<uint16_t>& cut, int H, const float* __restrict src, float* __restrict dst) {
+  int from = 0;
+  const size_t nc = cut.size();
+  for (size_t c = 0; c <= nc; ++c) {
+    const int b = c < nc ? cut[c] : H;
+    int j = from;
+    for (; j < b && j + 4 <= H; j += 4, src += 4) std::memcpy(dst + j, src, 16);
+    if (j > b) src -= j - b;
+    else
+      for (; j < b; ++j) dst[j] = *src++;
+    if (c < nc) dst[b] = 0.0f;
+    from = b + 1;
+  }
+}
+
+// A hand index space: the full hand lists (hands[p]), or a compact river board's (#239). The solver's
+// hand-level loops (compatible mass, fold values, the river walk) run on whichever space a node has.
+struct HandSpace {
+  int n[2];
+  const uint8_t* c1[2];
+  const uint8_t* c2[2];
+  const int32_t* same[2];
+  const uint16_t* full[2];  // index -> local hand index; nullptr in the full space
 };
 
 // Allocator for big zero-initialised arrays: calloc memory and no per-element construction, so the OS
@@ -259,7 +315,69 @@ class GameTree {
   uint64_t storage_floats = 0;
   uint64_t num_decisions = 0;
 
-  size_t node_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * hands[n.player].size(); }
+  // Compact river rows (#239). On a postflop tree rooted before the river, a hand that shares a card with
+  // a river board can never reach that board's nodes: ~8% of every river row on a flop tree, and river
+  // rows are ~99% of storage. With compact_rivers every 5-card ShowdownBoard gets its own hand space (the
+  // hands it does not block), river decision nodes store A x H' rows in it, and the solver's river walk
+  // runs in it end to end. Outside the solver (UPI, saves, locks) rows stay full width: get_full /
+  // set_full convert, with 0 for the blocked hands.
+  bool compact_rivers = false;
+  std::vector<int32_t> dec_board;  // per decision (GNode::aux): its river board, or -1 (full rows)
+  uint64_t full_floats = 0;        // storage_floats with every node at full width (the save format's)
+  // The compact board of a river node (decision, fold or showdown), or nullptr: full space.
+  const ShowdownBoard* river_board(const GNode& n) const {
+    if (!compact_rivers || n.board_len != 5) return nullptr;
+    if (n.kind == ANodeKind::Decision) return &showdowns[static_cast<size_t>(dec_board[n.aux])];
+    if (n.kind == ANodeKind::Showdown || n.kind == ANodeKind::Fold) return &showdowns[n.aux];
+    return nullptr;
+  }
+  HandSpace full_space() const {
+    HandSpace s;
+    for (int p = 0; p < 2; ++p) {
+      s.n[p] = static_cast<int>(hands[p].size());
+      s.c1[p] = hcard[p][0].data();
+      s.c2[p] = hcard[p][1].data();
+      s.same[p] = same_hand[p].data();
+      s.full[p] = nullptr;
+    }
+    return s;
+  }
+  static HandSpace board_space(const ShowdownBoard& sb) {
+    HandSpace s;
+    for (int p = 0; p < 2; ++p) {
+      s.n[p] = static_cast<int>(sb.full[p].size());
+      s.c1[p] = sb.hc[p][0].data();
+      s.c2[p] = sb.hc[p][1].data();
+      s.same[p] = sb.same[p].data();
+      s.full[p] = sb.full[p].data();
+    }
+    return s;
+  }
+  HandSpace space(const GNode& n) const {
+    const ShowdownBoard* b = river_board(n);
+    return b ? board_space(*b) : full_space();
+  }
+  // Hands per row of a decision node's storage.
+  int row_hands(const GNode& n) const {
+    const ShowdownBoard* b = river_board(n);
+    return static_cast<int>(b ? b->full[n.player].size() : hands[n.player].size());
+  }
+  size_t node_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * row_hands(n); }
+  size_t full_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * hands[n.player].size(); }
+  // A rows of a decision node between its storage width and full width (blocked hands: `fill`).
+  void rows_to_full(const GNode& n, const float* rows, float* full, float fill = 0.0f) const;
+  void rows_from_full(const GNode& n, const float* full, float* rows) const;
+  // Full-width copies of a node's regrets / strategy sums, and the reverse (blocked hands dropped).
+  void get_full(const GNode& n, bool strategy, float* full) const;
+  void set_full(const GNode& n, bool strategy, const float* full);
+  // Per-combo lock mask of a decision node read in its row space (combo_lock stays full width).
+  struct LockMask {
+    const uint8_t* m = nullptr;
+    const uint16_t* f = nullptr;
+    explicit operator bool() const { return m != nullptr; }
+    bool operator[](int h) const { return m[f ? f[h] : h] != 0; }
+  };
+  LockMask lock_mask(uint32_t ni) const;
   // Read access: returns the node's A*H values (direct pointer, or decoded into scratch).
   const float* regrets_ro(const GNode& n, float* scratch) const;
   const float* strat_ro(const GNode& n, float* scratch) const;
@@ -290,7 +408,7 @@ class GameTree {
 
   // Per-node extras (keyed by node index)
   std::unordered_map<uint32_t, std::vector<uint8_t>> combo_lock;  // per local hand: 1 = locked
-  // 16-bit storage: the exact strategy rows (A x H) of combo-locked nodes. Their locked entries are
+  // 16-bit storage: the exact strategy rows (node_size: A x row_hands) of combo-locked nodes. Their locked entries are
   // quantized from these at every strat_commit, so they don't random-walk under stochastic rounding
   // (#380). Filled on the command thread only (combo_lock_node, before a solve); the walk only reads.
   std::unordered_map<uint32_t, std::vector<float>> combo_lock_s;

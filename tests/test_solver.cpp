@@ -463,6 +463,81 @@ static bool river_batch_matches() {
   return same && same_stats && !g1.regrets.empty();
 }
 
+// #239: compact river rows against full rows, on a flop tree (rivers block two more cards) with all-in
+// lines. With float32 storage and pruning off every live hand's regrets and strategy sums, at every node,
+// and the root stats are bit-identical: compact only drops the board-blocked hands, which never reach the
+// river. (Pruning and 16-bit storage see the blocked hands' never-used junk regrets in full rows, so they
+// are only close there.)
+static bool compact_rivers_match() {
+  GameConfig cfg;
+  parse_cards("Kh9d4h", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("AA,KK,QQ,JJ,TT,99,AK,AQ,AJ,KQ,KJ,QJ,JT,T9,A5s,65s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+  if (!parse_range("AA,KK,QQ,JJ,TT,99,88,AK,AQ:0.5,KQ,QJ,JT,98s,76s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+  cfg.pot[2] = 60;
+  cfg.eff_stack = 200;
+  cfg.lines.add = {{20, 20, 60, 60, 200}, {0, 20, 20, 60, 60}, {0, 0, 40}, {20, 200}, {0, 0, 0, 0, 30, 30}};
+  bool ok = true;
+  for (int variant = 0; variant < 3; ++variant) {  // 0: float32, no pruning; 1: pruning; 2: 16-bit
+    GameConfig c1 = cfg, c2 = cfg;
+    c1.compact_rivers = false;
+    GameTree g1, g2;
+    g1.compressed = g2.compressed = variant == 2;
+    if (!g1.build(c1, err) || !g2.build(c2, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+    if (g1.compact_rivers || !g2.compact_rivers || g2.storage_floats >= g1.storage_floats) return false;
+    Solver s1(g1), s2(g2);
+    s1.pruning = s2.pruning = variant == 1;
+    for (int t = 1; t <= 60; ++t) {
+      s1.iterate(t);
+      s2.iterate(t);
+    }
+    const RootStats a = s1.root_stats(), b = s2.root_stats();
+    // every decision node's live hands (not sharing a card with the node's board)
+    long long diff = 0, compared = 0;
+    std::vector<std::pair<uint32_t, uint64_t>> st{{0u, board_mask(cfg.board)}};
+    std::vector<float> f1, f2;
+    while (!st.empty()) {
+      auto [ni, bm] = st.back();
+      st.pop_back();
+      const GNode& n = g1.nodes[ni];
+      if (n.kind == ANodeKind::Chance) {
+        const ChanceInfo& ci = g1.chances[n.aux];
+        for (int k = 0; k < n.num_children; ++k) st.push_back({n.first_child + k, bm | card_bit(ci.cards[k])});
+        continue;
+      }
+      if (n.kind != ANodeKind::Decision) continue;
+      for (int k = 0; k < n.num_children; ++k) st.push_back({n.first_child + k, bm});
+      const size_t A = n.num_children, H = g1.hands[n.player].size();
+      for (int which = 0; which < 2; ++which) {
+        f1.resize(A * H);
+        f2.resize(A * H);
+        g1.get_full(n, which, f1.data());
+        g2.get_full(g2.nodes[ni], which, f2.data());
+        for (size_t h = 0; h < H; ++h) {
+          if (combo_mask(g1.hands[n.player][h]) & bm) continue;
+          for (size_t x = 0; x < A; ++x) {
+            ++compared;
+            diff += std::memcmp(&f1[x * H + h], &f2[x * H + h], sizeof(float)) != 0;
+          }
+        }
+      }
+    }
+    const double rel = std::abs(a.exploitability - b.exploitability) / std::max(1e-9, a.exploitability);
+    const bool exact = diff == 0 && a.ev[0] == b.ev[0] && a.ev[1] == b.ev[1] && a.mes[0] == b.mes[0] &&
+                       a.mes[1] == b.mes[1] && a.exploitability == b.exploitability;
+    const bool pass = variant == 0 ? exact : rel < 0.05;
+    std::printf("[compact rivers] %s: storage %.1f -> %.1f MB, live entries differing %lld of %lld, "
+                "exploitability %.9g vs %.9g: %s\n",
+                variant == 0 ? "float32" : variant == 1 ? "pruning" : "16-bit", g1.storage_floats * 8 / 1e6,
+                g2.storage_floats * 8 / 1e6, diff, compared, a.exploitability, b.exploitability, pass ? "ok" : "FAILED");
+    ok &= pass && compared > 0;
+  }
+  return ok;
+}
+
 // set_info_freq auto across the average's restart (set_avg_delay). Replays the reports of a real
 // 115K-node flop solve (the viewer's fast-preview sketch, target 0.165 chips, delay 32): the restart
 // at iteration 33 lifts exploitability from 2.2 to 4.9, just under the previous report's 5.25. A
@@ -538,6 +613,7 @@ int main(int argc, char** argv) {
   fails += !stochastic_sums();
   fails += !allin_tables_match();
   fails += !river_batch_matches();
+  fails += !compact_rivers_match();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

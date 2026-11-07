@@ -476,8 +476,10 @@ LoadedConfig read_config_section(GzIn& in) {
 
 // Node records: 16-bit storage writes [f32 regret scale][f32 strategy scale][A*H i16][A*H u16],
 // float32 storage writes [A*H f32 regrets][A*H f32 strategy sums].
+// Records are full width (A x hands[player]) whatever the tree's storage: compact river rows (#239) are
+// expanded on write (blocked hands 0) and compacted on read, so saves stay readable both ways.
 size_t record_bytes(const GameTree& t, const GNode& n, uint8_t file_mode) {
-  size_t len = t.node_size(n);
+  size_t len = t.full_size(n);
   if (file_mode & kModeQuant) {
     size_t H = static_cast<size_t>(t.num_hands(n.player));
     return 4 + (n.num_children > 1 ? (n.num_children - 1) * H * 2 : 0);
@@ -497,7 +499,9 @@ void write_record_quant(GzOut& out, const GameTree& g, const Solver& solver, uin
   f.resize(len);
   b1.resize(len);
   solver.average_strategy(ni, f.data());
-  const float* S = g.strat_ro(n, b1.data());
+  const float* S = b1.data();
+  if (g.river_board(n)) g.get_full(n, true, b1.data());
+  else S = g.strat_ro(n, b1.data());
   float sscale = 0;
   for (int h = 0; h < H; ++h) {
     double t = 0;
@@ -516,8 +520,51 @@ void write_record_quant(GzOut& out, const GameTree& g, const Solver& solver, uin
   out.write(q.data(), q.size() * sizeof(uint16_t));
 }
 
+// A rows of a compact river node at full width, blocked hands 0 (#239).
+template <class T>
+const T* full_rows(const GameTree& g, const GNode& n, const T* rows, std::vector<T>& buf) {
+  const ShowdownBoard* b = g.river_board(n);
+  if (!b) return rows;
+  const std::vector<uint16_t>& f = b->full[n.player];
+  const size_t A = n.num_children, H = g.hands[n.player].size(), Hr = f.size();
+  buf.assign(A * H, T(0));
+  for (size_t a = 0; a < A; ++a)
+    for (size_t i = 0; i < Hr; ++i) buf[a * H + f[i]] = rows[a * Hr + i];
+  return buf.data();
+}
+
+// The reverse: full-width rows into a node's storage rows.
+template <class T>
+void compact_rows(const GameTree& g, const GNode& n, const T* full, T* rows) {
+  const ShowdownBoard* b = g.river_board(n);
+  const size_t A = n.num_children, H = g.hands[n.player].size();
+  if (!b) {
+    std::memcpy(rows, full, A * H * sizeof(T));
+    return;
+  }
+  const std::vector<uint16_t>& f = b->full[n.player];
+  const size_t Hr = f.size();
+  for (size_t a = 0; a < A; ++a)
+    for (size_t i = 0; i < Hr; ++i) rows[a * Hr + i] = full[a * H + f[i]];
+}
+
 void write_record(GzOut& out, const GameTree& g, const GNode& n) {
-  size_t len = g.node_size(n);
+  size_t len = g.full_size(n);
+  if (g.river_board(n)) {
+    if (g.compressed) {
+      std::vector<int16_t> rq;
+      std::vector<uint16_t> sq;
+      out.put(g.rscale[n.aux]);
+      out.put(g.sscale[n.aux]);
+      out.write(full_rows(g, n, g.regrets_q.data() + n.storage, rq), len * sizeof(int16_t));
+      out.write(full_rows(g, n, g.strat_q.data() + n.storage, sq), len * sizeof(uint16_t));
+    } else {
+      std::vector<float> fb;
+      out.write(full_rows(g, n, g.regrets.data() + n.storage, fb), len * sizeof(float));
+      out.write(full_rows(g, n, g.strat.data() + n.storage, fb), len * sizeof(float));
+    }
+    return;
+  }
   if (g.compressed) {
     out.put(g.rscale[n.aux]);
     out.put(g.sscale[n.aux]);
@@ -545,6 +592,29 @@ struct MemIn {
   }
 };
 
+// Full-width float rows into the node's storage (compacted for a compact river node), quantised for a
+// 16-bit tree. No accessors: the lazy loader uses this too.
+void store_full(GameTree& t, const GNode& n, std::vector<float>& fr, std::vector<float>& fs) {
+  const float* r = fr.data();
+  const float* s = fs.data();
+  std::vector<float> cr, cs;
+  if (t.river_board(n)) {
+    cr.resize(t.node_size(n));
+    cs.resize(t.node_size(n));
+    compact_rows(t, n, fr.data(), cr.data());
+    compact_rows(t, n, fs.data(), cs.data());
+    r = cr.data();
+    s = cs.data();
+  }
+  if (t.compressed) {
+    t.regrets_store(n, r);
+    t.strat_store(n, s);
+  } else {
+    std::memcpy(t.regrets.data() + n.storage, r, t.node_size(n) * sizeof(float));
+    std::memcpy(t.strat.data() + n.storage, s, t.node_size(n) * sizeof(float));
+  }
+}
+
 // Reads one record into the tree's storage directly (no accessors: used by the lazy loader too),
 // converting between the file's and the tree's storage modes.
 template <class In>
@@ -570,28 +640,40 @@ void read_record_quant(In& in, GameTree& t, const GNode& n, int prec, std::vecto
     fr[static_cast<size_t>(A - 1) * H + h] = std::max(0.0f, rest);
   }
   for (size_t i = 0; i < len; ++i) fs[i] = fr[i] * sscale;  // regrets = frequencies (fr)
-  if (t.compressed) {
-    t.regrets_store(n, fr.data());
-    t.strat_store(n, fs.data());
-  } else {
-    std::memcpy(t.regrets.data() + n.storage, fr.data(), len * sizeof(float));
-    std::memcpy(t.strat.data() + n.storage, fs.data(), len * sizeof(float));
-  }
+  store_full(t, n, fr, fs);
 }
 
 template <class In>
 void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int prec, std::vector<float>& fr,
                  std::vector<float>& fs) {
   if (file_mode & kModeQuant) return read_record_quant(in, t, n, prec, fr, fs);
-  size_t len = t.node_size(n);
+  size_t len = t.full_size(n);
+  const bool compact = t.river_board(n) != nullptr;
   if ((file_mode & 1) && t.compressed) {
     t.rscale[n.aux] = in.template get<float>();
     t.sscale[n.aux] = in.template get<float>();
+    if (compact) {
+      std::vector<int16_t> qr(len);
+      std::vector<uint16_t> qs(len);
+      in.read(qr.data(), len * sizeof(int16_t));
+      in.read(qs.data(), len * sizeof(uint16_t));
+      compact_rows(t, n, qr.data(), t.regrets_q.data() + n.storage);
+      compact_rows(t, n, qs.data(), t.strat_q.data() + n.storage);
+      return;
+    }
     in.read(t.regrets_q.data() + n.storage, len * sizeof(int16_t));
     in.read(t.strat_q.data() + n.storage, len * sizeof(uint16_t));
     return;
   }
   if (!(file_mode & 1) && !t.compressed) {
+    if (compact) {
+      fr.resize(len);
+      fs.resize(len);
+      in.read(fr.data(), len * sizeof(float));
+      in.read(fs.data(), len * sizeof(float));
+      store_full(t, n, fr, fs);
+      return;
+    }
     in.read(t.regrets.data() + n.storage, len * sizeof(float));
     in.read(t.strat.data() + n.storage, len * sizeof(float));
     return;
@@ -608,14 +690,11 @@ void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int pre
       fr[i] = qr[i] * rs;
       fs[i] = qs[i] * ss;
     }
-    std::memcpy(t.regrets.data() + n.storage, fr.data(), len * sizeof(float));
-    std::memcpy(t.strat.data() + n.storage, fs.data(), len * sizeof(float));
   } else {
     in.read(fr.data(), len * sizeof(float));
     in.read(fs.data(), len * sizeof(float));
-    t.regrets_store(n, fr.data());
-    t.strat_store(n, fs.data());
   }
+  store_full(t, n, fr, fs);
 }
 
 // Segments present in a save truncated at board length `max_len` (all nodes of a segment share it).
@@ -745,7 +824,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   out.write(w.buf.data(), w.buf.size());
   Writer m;
   m.put(static_cast<uint64_t>(g.nodes.size()));
-  m.put(static_cast<uint64_t>(g.storage_floats));
+  m.put(static_cast<uint64_t>(g.full_floats));  // full width, whatever the storage (#239)
   for (auto& n : g.nodes) m.put(n.flags);
   m.put(static_cast<uint32_t>(g.combo_lock.size()));
   for (auto& [ni, mk] : g.combo_lock) {
@@ -834,7 +913,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   in.read(mbuf.data(), mlen);
   Reader r{mbuf.data(), mbuf.data() + mbuf.size()};
   uint64_t nn = r.get<uint64_t>(), sf = r.get<uint64_t>();
-  if (nn != t->nodes.size() || sf != t->storage_floats) throw CmdError{"file format error (tree shape mismatch)"};
+  if (nn != t->nodes.size() || sf != t->full_floats) throw CmdError{"file format error (tree shape mismatch)"};
   for (auto& n : t->nodes) n.flags = r.get<uint8_t>();
   // Every entry must name a decision node of this tree and have that node's size, and every lock
   // flag its entry (#360: a crafted file read out of bounds in show_locked_combos and the walk).

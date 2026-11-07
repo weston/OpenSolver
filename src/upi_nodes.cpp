@@ -654,13 +654,9 @@ void Upi::set_node_strategy(uint32_t ni, const float* strat) {
   const float regret_scale = (tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
   const GNode& n = tree_->nodes[ni];
   int A = n.num_children, H = tree_->num_hands(n.player);
-  std::vector<float> rbuf, sbuf;
-  if (tree_->compressed) {
-    rbuf.resize(static_cast<size_t>(A) * H);
-    sbuf.resize(static_cast<size_t>(A) * H);
-  }
-  float* R = tree_->regrets_rw(n, rbuf.data());
-  float* S = tree_->strat_rw(n, sbuf.data());
+  std::vector<float> rbuf(static_cast<size_t>(A) * H), sbuf(static_cast<size_t>(A) * H);
+  float* R = rbuf.data();
+  float* S = sbuf.data();
   for (int h = 0; h < H; ++h) {
     double sum = 0;
     for (int k = 0; k < A; ++k) sum += std::max(0.0f, strat[static_cast<size_t>(k) * H + h]);
@@ -671,8 +667,8 @@ void Upi::set_node_strategy(uint32_t ni, const float* strat) {
       R[static_cast<size_t>(k) * H + h] = v * regret_scale;
     }
   }
-  tree_->regrets_commit(n, R);
-  tree_->strat_commit(n, S);
+  tree_->set_full(n, false, R);  // every entry is written: full width in, the node's storage width out
+  tree_->set_full(n, true, S);
 }
 
 void Upi::lock_node_impl(uint32_t ni, bool lock) {
@@ -1198,8 +1194,9 @@ void Upi::register_node_commands() {
     from_1326(n.player, r.frame, v.data(), local.data());
     std::vector<float> sig(static_cast<size_t>(A) * Hn);
     solver_->average_strategy(r.node, sig.data());
-    std::vector<float> sbuf(tree_->compressed ? static_cast<size_t>(A) * Hn : 0);
-    float* S = tree_->strat_rw(n, sbuf.data());
+    std::vector<float> sbuf(static_cast<size_t>(A) * Hn);
+    tree_->get_full(n, true, sbuf.data());  // full width (#239: a compact river node's rows are narrower)
+    float* S = sbuf.data();
     std::vector<uint8_t> mask(Hn, 0);
     bool any = false;
     for (int h = 0; h < Hn; ++h) {
@@ -1209,11 +1206,14 @@ void Upi::register_node_commands() {
         for (int k = 0; k < A; ++k) S[static_cast<size_t>(k) * Hn + h] = sig[static_cast<size_t>(k) * Hn + h];
       }
     }
-    if (any && tree_->compressed)  // the exact rows, before they are quantized (#380)
-      tree_->combo_lock_s[r.node].assign(S, S + static_cast<size_t>(A) * Hn);
-    else
+    if (any && tree_->compressed) {  // the exact rows, before they are quantized (#380), at storage width
+      auto& cs = tree_->combo_lock_s[r.node];
+      cs.resize(tree_->node_size(n));
+      tree_->rows_from_full(n, S, cs.data());
+    } else {
       tree_->combo_lock_s.erase(r.node);
-    tree_->strat_commit(n, S);
+    }
+    tree_->set_full(n, true, S);
     if (any) {
       tree_->combo_lock[r.node] = mask;
       n.flags |= GF_COMBO_LOCKED;

@@ -267,11 +267,15 @@ class Solver {
 
   // Strategies at decision node (A * H[acting]): current (regret matching) / average.
   void current_strategy(uint32_t ni, float* out) const;
+  // Full width (hands[actor]); a compact river node's blocked hands get 0 (#239).
   void average_strategy(uint32_t ni, float* out) const;
+  // In the node's row space (GameTree::row_hands): what the walks use.
+  void average_rows(uint32_t ni, float* out) const;
   void apply_elimination(uint32_t ni, float* out) const;
 
   // Sum over opponent hands compatible with each of p's hands: out[h] = sum_o ro[o] * compat(h, o).
-  void compat_mass(int p, const float* ro, float* out) const;
+  void compat_mass(int p, const float* ro, float* out) const;  // full space
+  void compat_mass(const HandSpace& hs, int p, const float* ro, float* out) const;
   // Total matchups at the root: sum_h r_p[h] * compat mass.
   double root_matchups() const;
 

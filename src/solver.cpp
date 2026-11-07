@@ -1648,8 +1648,9 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
 
   if (actor == p) {
     // Regret-based pruning (#51): in the CFR walk, an action whose current strategy is zero for
-    // every one of p's hands contributes exactly nothing to this iteration's strategy, cfv
-    // aggregate or strategy-sum rows; the only work lost by skipping its subtree is re-measuring
+    // every one of p's hands that can occur here (prunable_row, #435) contributes exactly nothing
+    // to this iteration's strategy, cfv aggregate or strategy-sum rows of those hands; the only
+    // work lost by skipping its subtree is re-measuring
     // its instantaneous regret, which is Brown & Sandholm's bounded approximation (solver.hpp).
     // Never prune nodes whose update semantics must not change: locked, combo-locked, incentivised
     // (rake/ICM bonuses are added to the regret update) or eliminated.
@@ -1758,7 +1759,7 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     }
     std::memset(out, 0, sizeof(float) * Hp);
     for (int a = 0; a < A; ++a) {
-      if (pruned && pruned[a]) continue;  // its sigma row is zero: identical to the full sum
+      if (pruned && pruned[a]) continue;  // zero for every hand that can occur here: their sums are exact
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       const float* c = cfv + static_cast<size_t>(a) * Hp;
       for (int h = 0; h < Hp; ++h) out[h] += sa[h] * c[h];

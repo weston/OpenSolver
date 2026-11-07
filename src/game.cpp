@@ -7,6 +7,10 @@
 #include <functional>
 #include <cstdlib>
 #include <numeric>
+#include <type_traits>
+#if PIO_COMPACT_ROWS
+#include <immintrin.h>
+#endif
 
 #include "eval.hpp"
 
@@ -223,23 +227,27 @@ struct Filler {
   // they set the node's 16-bit scale, so dropping them would change results; turn rows are ~1% of storage.
   uint16_t keep_set(const std::vector<int>& board) {
     const size_t root = g.cfg.board.size();
-    if (g.cfg.preflop || board.size() != 5 || board.size() <= root) return 0;
+    if (!PIO_COMPACT_ROWS || g.cfg.preflop || board.size() != 5 || board.size() <= root) return 0;
     uint32_t key = 0;
     for (size_t k = root; k < board.size(); ++k) key = key * 53u + static_cast<uint32_t>(board[k] + 1);
     auto it = keep_index.find(key);
     if (it != keep_index.end()) return it->second;
     uint16_t id = 0;
     if (g.keep_sets.size() < 65535) {
-      std::array<std::vector<uint16_t>, 2> ks;
+      GameTree::KeepSet ks;
       bool any = false;
       for (int p = 0; p < 2; ++p) {
-        for (size_t h = 0; h < g.hands[p].size(); ++h) {
+        const size_t H = g.hands[p].size();
+        ks.bits[p].assign((H + 31) / 32, 0u);
+        for (size_t h = 0; h < H; ++h) {
           bool blocked = false;
           for (size_t k = root; k < board.size(); ++k)
             blocked |= g.hcard[p][0][h] == board[k] || g.hcard[p][1][h] == board[k];
-          if (!blocked) ks[p].push_back(static_cast<uint16_t>(h));
+          if (blocked) continue;
+          ks.keep[p].push_back(static_cast<uint16_t>(h));
+          ks.bits[p][h / 32] |= 1u << (h % 32);
         }
-        any |= ks[p].size() < g.hands[p].size();
+        any |= ks.keep[p].size() < H;
       }
       if (any) {
         g.keep_sets.push_back(std::move(ks));
@@ -680,6 +688,36 @@ void GameTree::decode_rows(const GNode& n, const Q* q, float s, float* out) cons
     for (size_t i = 0; i < len; ++i) out[i] = static_cast<float>(q[i]) * s;
     return;
   }
+#if PIO_COMPACT_ROWS
+  // Expand-load 32 kept values at a time into their hands' lanes (dropped hands 0), then convert like
+  // the loop above: int -> float, times s (the same single multiply, so the same floats).
+  const size_t H = hands[n.player].size();
+  const uint32_t* bits = keep_bits(n);
+  const __m512 sv = _mm512_set1_ps(s);
+  const Q* src = q;  // the rows are consecutive, each popcount(bits) = row_len values long
+  for (size_t a = 0; a < n.num_children; ++a) {
+    float* o = out + a * H;
+    for (size_t h = 0; h < H; h += 32) {
+      const __mmask32 m = bits[h / 32];
+      const __m512i v = _mm512_maskz_expandloadu_epi16(m, src);
+      src += __builtin_popcount(m);
+      const __m256i v0 = _mm512_castsi512_si256(v), v1 = _mm512_extracti64x4_epi64(v, 1);
+      __m512i w0, w1;
+      if constexpr (std::is_signed_v<Q>) {
+        w0 = _mm512_cvtepi16_epi32(v0);
+        w1 = _mm512_cvtepi16_epi32(v1);
+      } else {
+        w0 = _mm512_cvtepu16_epi32(v0);
+        w1 = _mm512_cvtepu16_epi32(v1);
+      }
+      const size_t rem = H - h;
+      const __mmask16 m0 = rem >= 16 ? 0xffff : static_cast<__mmask16>((1u << rem) - 1);
+      const __mmask16 m1 = rem >= 32 ? 0xffff : rem > 16 ? static_cast<__mmask16>((1u << (rem - 16)) - 1) : 0;
+      _mm512_mask_storeu_ps(o + h, m0, _mm512_mul_ps(_mm512_cvtepi32_ps(w0), sv));
+      if (m1) _mm512_mask_storeu_ps(o + h + 16, m1, _mm512_mul_ps(_mm512_cvtepi32_ps(w1), sv));
+    }
+  }
+#else
   const size_t H = hands[n.player].size(), L = row_len(n);
   for (size_t a = 0; a < n.num_children; ++a) {
     float* o = out + a * H;
@@ -687,23 +725,42 @@ void GameTree::decode_rows(const GNode& n, const Q* q, float s, float* out) cons
     std::fill(o, o + H, 0.0f);
     for (size_t j = 0; j < L; ++j) o[k[j]] = static_cast<float>(qa[j]) * s;
   }
+#endif
 }
 template void GameTree::decode_rows<int16_t>(const GNode&, const int16_t*, float, float*) const;
 template void GameTree::decode_rows<uint16_t>(const GNode&, const uint16_t*, float, float*) const;
 
-// The node's full rows -> its stored 16-bit rows: q[a * L + j] = f(a * H + keep[j], data[that]).
-template <class Q, class F>
-static void encode_rows(const GameTree& g, const GNode& n, Q* q, F&& f) {
+// Compact nodes encode with their usual full-row loops into this per-thread buffer, then compress_rows
+// keeps the kept hands' values: the arithmetic is the full-row code's, by construction.
+template <class Q>
+static Q* full_rows_tmp(size_t len) {
+  thread_local std::vector<Q> buf;
+  if (buf.size() < len) buf.resize(len);
+  return buf.data();
+}
+
+// A node's full 16-bit rows -> its compact stored rows (q[a * L + j] = full[a * H + keep[j]]).
+template <class Q>
+static void compress_rows(const GameTree& g, const GNode& n, const Q* full, Q* q) {
   const size_t H = g.hands[n.player].size();
-  const uint16_t* k = g.keep_of(n);
-  if (!k) {
-    const size_t len = g.node_size(n);
-    for (size_t i = 0; i < len; ++i) q[i] = f(i);
-    return;
+#if PIO_COMPACT_ROWS
+  const uint32_t* bits = g.keep_bits(n);
+  for (size_t a = 0; a < n.num_children; ++a) {
+    const Q* src = full + a * H;
+    for (size_t h = 0; h < H; h += 32) {
+      const __mmask32 m = bits[h / 32];
+      const size_t rem = H - h;
+      const __mmask32 ld = rem >= 32 ? 0xffffffffu : static_cast<__mmask32>((1u << rem) - 1);
+      _mm512_mask_compressstoreu_epi16(q, m, _mm512_maskz_loadu_epi16(ld, src + h));
+      q += __builtin_popcount(m);
+    }
   }
+#else
+  const uint16_t* k = g.keep_of(n);
   const size_t L = g.row_len(n);
   for (size_t a = 0; a < n.num_children; ++a)
-    for (size_t j = 0; j < L; ++j) q[a * L + j] = f(a * H + k[j]);
+    for (size_t j = 0; j < L; ++j) q[a * L + j] = full[a * H + k[j]];
+#endif
 }
 
 const float* GameTree::regrets_ro(const GNode& n, float* scratch) const {
@@ -756,10 +813,13 @@ void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
   }
   rscale[n.aux] = m / 32767.0f;
   const float inv = 32767.0f / m;
-  encode_rows(*this, n, q, [&](size_t i) {
+  const bool compact = keep_of(n) != nullptr;
+  int16_t* dst = compact ? full_rows_tmp<int16_t>(len) : q;
+  for (size_t i = 0; i < len; ++i) {
     float x = data[i] * inv;
-    return static_cast<int16_t>(x + (x >= 0.0f ? 0.5f : -0.5f));
-  });
+    dst[i] = static_cast<int16_t>(x + (x >= 0.0f ? 0.5f : -0.5f));
+  }
+  if (compact) compress_rows(*this, n, dst, q);
 }
 
 // The kRoundTable points (k + 0.5) / kRoundTable of [0, 1) in a fixed shuffled order, repeated once so a
@@ -841,22 +901,18 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   h ^= h >> 13;
   h *= 0xC2B2AE35u;
   h ^= h >> 16;
-  if (keep_of(n)) {
-    // Compact rows (#239): each value draws the uniform its full-row index i draws below, U[(h + i) mod N]
-    // (the loop below reads U[((h + i0) mod N) + i - i0] from the doubled table: the same entry).
-    encode_rows(*this, n, q, [&](size_t i) {
-      return static_cast<uint16_t>(std::min(65535.0f, std::max(0.0f, data[i]) * inv + U[(h + i) & (kRoundTable - 1)]));
-    });
-    return;
-  }
+  // Compact rows (#239) round in full-row order too, so every value draws the uniform it always drew.
+  const bool compact = keep_of(n) != nullptr;
+  uint16_t* dst = compact ? full_rows_tmp<uint16_t>(len) : q;
   size_t i = 0;
   while (i < len) {
     const size_t start = (h + i) & (kRoundTable - 1), blk = std::min(len - i, kRoundTable);
     const float* u = U + start;
     for (size_t k = 0; k < blk; ++k)
-      q[i + k] = static_cast<uint16_t>(std::min(65535.0f, std::max(0.0f, data[i + k]) * inv + u[k]));
+      dst[i + k] = static_cast<uint16_t>(std::min(65535.0f, std::max(0.0f, data[i + k]) * inv + u[k]));
     i += blk;
   }
+  if (compact) compress_rows(*this, n, dst, q);
 }
 
 void GameTree::strat_store(const GNode& n, const float* data, float maxval) {
@@ -875,7 +931,10 @@ void GameTree::strat_store(const GNode& n, const float* data, float maxval) {
   }
   sscale[n.aux] = m / 65535.0f;
   const float inv = 65535.0f / m;
-  encode_rows(*this, n, q, [&](size_t i) { return static_cast<uint16_t>(std::max(0.0f, data[i]) * inv + 0.5f); });
+  const bool compact = keep_of(n) != nullptr;
+  uint16_t* dst = compact ? full_rows_tmp<uint16_t>(len) : q;
+  for (size_t i = 0; i < len; ++i) dst[i] = static_cast<uint16_t>(std::max(0.0f, data[i]) * inv + 0.5f);
+  if (compact) compress_rows(*this, n, dst, q);
 }
 
 StreetSegments GameTree::street_segments() const {

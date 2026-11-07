@@ -1011,25 +1011,44 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     // generic three-pass loops below (sum over actions in order, 1/sum, o * inv + add as an fma), so
     // the floats are identical; no arena sum/add rows, and 16-bit regrets decode in registers.
     g_.ensure_loaded(n);
-    // 16-bit full rows decode in registers; compact ones (#239) are expanded into scratch by regrets_ro
-    // first (dropped hands read 0, as stored zeros would), then matched like float32 rows.
-    const bool q16 = g_.compressed && !n.pad;
-    const float* R = q16 ? nullptr
-                         : g_.compressed ? g_.regrets_ro(n, sc.a.alloc(static_cast<size_t>(A) * H))
-                                         : g_.regrets.data() + n.storage;
+    const bool q16 = g_.compressed;
+    const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
     const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qoff[n.aux] : nullptr;
+#if PIO_COMPACT_ROWS
+    // Compact rows (#239): row a starts at a * L, and each 16 hands take popcount of their kept bits. An
+    // expand-load puts the kept values in their hands' lanes and 0 elsewhere, which is what the full row
+    // held there, so the floats are the full-row ones.
+    const uint32_t* kb = q16 ? g_.keep_bits(n) : nullptr;
+    const size_t L = q16 ? g_.row_len(n) : static_cast<size_t>(H);
+    size_t used = 0;  // compact values before hand h in every row
+#endif
     const __m512 qs = _mm512_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm512_setzero_ps(),
                  one = _mm512_set1_ps(1.0f), uni = _mm512_set1_ps(1.0f / static_cast<float>(A));
     __m512 v[16];
     for (int h = 0; h < H; h += 16) {
       const __mmask16 m = static_cast<__mmask16>(H - h >= 16 ? 0xffff : (1u << (H - h)) - 1);
+#if PIO_COMPACT_ROWS
+      const __mmask16 km = kb ? static_cast<__mmask16>(kb[h / 32] >> (h % 32)) : 0;
+#endif
       __m512 sum = z;
       for (int a = 0; a < A; ++a) {
         const size_t off = static_cast<size_t>(a) * H + h;
-        // the rows are read interleaved: prefetch each one ahead (one stream per row per thread)
-        if (q16) _mm_prefetch(reinterpret_cast<const char*>(Q + off) + 256, _MM_HINT_T0);
-        else _mm_prefetch(reinterpret_cast<const char*>(R + off) + 512, _MM_HINT_T0);
-        __m512 x = q16 ? _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(_mm256_maskz_loadu_epi16(m, Q + off))), qs)
+        __m256i q = _mm256_setzero_si256();
+#if PIO_COMPACT_ROWS
+        if (kb) {
+          const int16_t* qa = Q + static_cast<size_t>(a) * L + used;
+          _mm_prefetch(reinterpret_cast<const char*>(qa) + 256, _MM_HINT_T0);
+          q = _mm256_maskz_expandloadu_epi16(km, qa);
+        } else
+#endif
+        if (q16) {
+          // the rows are read interleaved: prefetch each one ahead (one stream per row per thread)
+          _mm_prefetch(reinterpret_cast<const char*>(Q + off) + 256, _MM_HINT_T0);
+          q = _mm256_maskz_loadu_epi16(m, Q + off);
+        } else {
+          _mm_prefetch(reinterpret_cast<const char*>(R + off) + 512, _MM_HINT_T0);
+        }
+        __m512 x = q16 ? _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(q)), qs)
                        : _mm512_maskz_loadu_ps(m, R + off);
         x = _mm512_max_ps(x, z);  // v > 0 ? v : 0 (x is never NaN here)
         v[a] = x;
@@ -1040,6 +1059,9 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
       const __m512 add = _mm512_mask_blend_ps(pos, uni, z);
       for (int a = 0; a < A; ++a)
         _mm512_mask_storeu_ps(out + static_cast<size_t>(a) * H + h, m, _mm512_fmadd_ps(v[a], inv, add));
+#if PIO_COMPACT_ROWS
+      used += static_cast<size_t>(__builtin_popcount(km));
+#endif
     }
   } else
 #endif

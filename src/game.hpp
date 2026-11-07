@@ -17,6 +17,13 @@
 #include "action_tree.hpp"
 #include "cards.hpp"
 
+// Compact 16-bit river rows (#239, see GameTree::keep_sets): needs AVX-512 VBMI2 expand / compress.
+#if defined(__AVX512VBMI2__) && defined(__AVX512BW__) && defined(__AVX512VL__) && !defined(PIO_NO_COMPACT_ROWS)
+#define PIO_COMPACT_ROWS 1
+#else
+#define PIO_COMPACT_ROWS 0
+#endif
+
 namespace pio {
 
 // Max reductions for the 16-bit storage scales. Non-negative floats order exactly like their IEEE-754
@@ -264,11 +271,18 @@ class GameTree {
   // only the other hands there, about 8% less on a flop tree. The accessors expand rows to all hands (0 for the dropped ones) and the commits
   // compact them, so every walk, scale and stochastic rounding sees exactly the values it did before:
   // results are bit-identical. float32 storage (and `preds`) keep full rows at GNode::storage.
-  std::vector<std::array<std::vector<uint16_t>, 2>> keep_sets;  // [set][player]: kept local hands, ascending
+  // Only on builds with AVX-512 VBMI2, whose expand-load / compress-store move compact rows at the speed of
+  // full ones; elsewhere a scatter per hand made threebet_mono 50% slower, so rows stay full there.
+  struct KeepSet {
+    std::vector<uint16_t> keep[2];  // [player]: kept local hands, ascending
+    std::vector<uint32_t> bits[2];  // [player]: bit h of word h / 32 set if hand h is kept
+  };
+  std::vector<KeepSet> keep_sets;
   std::vector<uint64_t> qoff;  // per decision (GNode::aux): offset of its rows in regrets_q / strat_q
   uint64_t storage_q = 0;      // length of regrets_q / strat_q
-  const uint16_t* keep_of(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1][n.player].data() : nullptr; }
-  size_t row_len(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1][n.player].size() : hands[n.player].size(); }
+  const uint16_t* keep_of(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].keep[n.player].data() : nullptr; }
+  const uint32_t* keep_bits(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].bits[n.player].data() : nullptr; }
+  size_t row_len(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].keep[n.player].size() : hands[n.player].size(); }
   size_t stored_size(const GNode& n) const { return static_cast<size_t>(n.num_children) * row_len(n); }
   // A node's stored 16-bit rows (q, compact or full) decoded with scale s into its full A x H floats.
   template <class Q>

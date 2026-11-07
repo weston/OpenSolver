@@ -1242,6 +1242,28 @@ def check_set_mes_persists(u):
     u.cmd("free_tree")
 
 
+def check_set_equal_strats_restarts(u):
+    """#425, as Pio 3.10.1: set_equal_strats is a fresh start. show_iters is 0, and N iterations later the
+    results are a fresh N-iteration solve's."""
+    print("[set_equal_strats restarts the solve]")
+    set_small_tree(u)
+    u.cmd("build_tree")
+    u.cmd("set_accuracy 0")
+    u.cmd("set_info_freq 1000")
+    u.cmd("go 40 steps")
+    u.cmd("wait_for_solver")
+    fresh = u.cmd("calc_results")
+    u.cmd("go 80 steps")
+    u.cmd("wait_for_solver")
+    check(u.cmd("set_equal_strats") == "set_equal_strats ok!" and u.cmd("show_iters") == "0",
+          "show_iters is 0 after set_equal_strats")
+    u.cmd("go 40 steps")
+    u.cmd("wait_for_solver")
+    again = u.cmd("calc_results")
+    check(again == fresh, f"40 iterations after it are exactly a fresh 40-iteration solve ({again!r} vs {fresh!r})")
+    u.cmd("free_tree")
+
+
 def check_predictive(u):
     """#408: set_predictive (PCFR+-style matching, #71) converges and splits the pot like the default;
     bad arguments are refused, and so is switching it mid-solve."""
@@ -1548,6 +1570,7 @@ def main(exe, big=False):
         check_mid_solve_settings(u)
         check_eliminate_path(u)
         check_set_mes_persists(u)
+        check_set_equal_strats_restarts(u)
         check_predictive(u)
         check_small_commands(u)
 

@@ -1257,6 +1257,11 @@ void Upi::register_node_commands() {
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~(GF_LOCKED | GF_COMBO_LOCKED));
     tree_->combo_lock.clear();
     tree_->combo_lock_s.clear();
+    // A fresh start, as in Pio (show_iters 0; 60 iterations later it is exactly a fresh 60-iteration solve,
+    // #425): the DCFR discounts and the average's weighting restart with the count.
+    tree_->iterations = 0;
+    iterations_ = 0;
+    discount_restart_ = 0;
     return std::string("set_equal_strats ok!");
   };
   H["set_mes"] = [this](const Args& a) { return cmd_set_mes(a); };

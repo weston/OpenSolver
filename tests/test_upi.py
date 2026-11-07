@@ -195,6 +195,18 @@ def check_strategies(u, order, evo):
     check(len(eq) == 3 and 0.3 < float(eq[2]) < 0.7, f"calc_eq_node total {float(eq[2]):.3f}")
 
 
+def check_blocked_display(u, order):
+    """Hands containing the turn or river card print 0 in show_strategy, as in Pio (a probe on Kh9h4h,
+    turn Ah / river As: Pio's rows are 0 there, ours printed the never-reached hands' regret strategy)."""
+    print("[show_strategy: hands blocked by the turn / river card print 0]")
+    for node, cards in (("r:0:c:c:Ad", ("Ad",)), ("r:0:c:c:Ks:c:c:3h", ("Ks", "3h"))):
+        rows = [floats(l) for l in u.cmd("show_strategy " + node).split("\n")]
+        blocked = [i for i, h in enumerate(order) if h[:2] in cards or h[2:] in cards]
+        check(all(r[i] == 0 for r in rows for i in blocked), f"{node}: hands with {'/'.join(cards)} print 0")
+        live = [i for i in range(1326) if any(r[i] for r in rows)]
+        check(live and all(abs(sum(r[i] for r in rows) - 1) < 1e-4 for i in live), f"{node}: live hands sum to 1")
+
+
 def check_isomorphism(u, order):
     print("[isomorphism: QhQc2c: turn cards of suits d/s are equivalent (board uses h,c)]")
     a = floats(u.cmd("show_strategy r:0:c:c:7d").split("\n")[0])
@@ -446,6 +458,7 @@ def run_small_tree(u, order):
     print("[strategies / ranges / EVs]")
     check_strategies(u, order, evo)
     check_isomorphism(u, order)
+    check_blocked_display(u, order)
     check_locking(u)
     check_save_load(u, "r:0:c:b12", deep_paths=("r:0:c:c:3d", "r:0:c:b12:c:Ad:c", "r:0:c:c:Ks:c:c:3h", "r:0:b12:c:7d:c:c:9s"),
                     whole_tree=True)

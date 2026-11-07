@@ -99,8 +99,26 @@ def unit():
         with open(q.lock_file, "w") as f:
             f.write("999999999")
         q.lock()
-        check(open(q.lock_file).read() == str(os.getpid()), "a stale lock is taken over")
+        check(open(q.lock_file).read().split()[0] == str(os.getpid()), "a stale lock is taken over")
         q.unlock()
+        # #398: a pid that is alive but belongs to another process than the lock's (as after a reboot)
+        if jobs._proc_start(os.getppid()) is not None:
+            with open(q.lock_file, "w") as f:
+                f.write(f"{os.getppid()} not-its-start")
+            check(q.runner() == 0, "a lock whose pid was reused is not a live runner")
+            q.lock()
+            check(q.runner() == os.getpid(), "and is taken over")
+            q.unlock()
+            j = q.job("00001")
+            j.update(status="running", runner_pid=os.getppid(), runner_start="not-its-start")
+            q.save(j)
+            q.recover()
+            check(q.job("00001")["status"] == "queued", "a running job whose runner pid was reused goes back to the queue")
+        # a lock from before #398 (pid only) still holds while that pid lives
+        with open(q.lock_file, "w") as f:
+            f.write(str(os.getppid()))
+        check(q.runner() == os.getppid() and raises(q.lock), "a pid-only lock of a live process still holds")
+        os.remove(q.lock_file)
         check(raises(q.job, "../../etc"), "job ids are numbers")
 
     print("[queue robustness (#362)]")

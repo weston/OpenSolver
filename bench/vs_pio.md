@@ -141,6 +141,34 @@ On threebet_mono Pio needs 995 iterations to reach 0.1% of pot, where WSolver ne
 targets the two converge at about the same rate per iteration (see above), so the gap at 0.1% is
 convergence, not only speed per iteration.
 
+### Small trees again (2026-11-06)
+
+The small trees, last measured at #147, re-run on main `87ac0ff` with the same `bench/run.py` for both:
+WSolver in WSL, Pio 3.10.1 native through `pio_wsl.py`. 16 and 32 threads, two reps each. Seconds to
+0.1% of pot, best thread count:
+
+| tree | WSolver | Pio |
+|---|---|---|
+| threebet_mono | **5.5** (16 threads) | 41.4 (32) |
+| flop_srp_4 | **0.83** (16) | ≤ 1.19 (32) |
+| flop_srp_2 | **0.40** (16) | ≤ 0.56 (32) |
+| flop_3bet | **0.25** (16) | ≤ 0.53 (16, 32) |
+| deep | 1.53 (16) | ≤ 1.12 (32) |
+
+Pio reports on a timer (about every 0.55 s), so its small-tree times are only upper bounds: the target
+was crossed between two reports.
+
+**deep, in detail.** It's the same game on both: equilibrium EVs 21.120 / 18.880.
+- **Per 100 iterations:** WSolver 0.85 s at 16 threads and 0.96–1.06 s at 32; Pio 1.27 s at 16 and 1.05 s at
+  32. WSolver is faster per iteration at both thread counts.
+- **Per iteration count:** Pio converges faster mid-solve. After 120 iterations it's at 0.031 against
+  WSolver's 0.056, and after 200 at 0.013 against 0.019. By 600 both are at about 0.002–0.003.
+- **Net:** both reach 0.1% at about 1.2 s, so "about even on deep" still holds.
+
+The convergence trade matches `bench/dcfr_sweep.md`: alpha 1.1 is faster on deep only and stalls
+threebet_mono. Pio shows the same trade the other way round, needing 995 iterations to 0.1% on
+threebet_mono against WSolver's 290. A fixed schedule doesn't win both (#53).
+
 ## Tree memory (2026-11-05)
 
 Same trees, same machine (Zen 5 9950X). Pio's figures are its own `estimate_schematic_tree` (v4_large =

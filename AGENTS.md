@@ -240,6 +240,12 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   best response persists (probe3's tree, `set_mes IP` then 60 iterations: exploitability 36), under
   `original_pio` / `pio_cfr` (set before `build_tree`) solving re-converges. `set_equal_strats` restarts the solve:
   `show_iters` 0, and N iterations later it is exactly a fresh N-iteration solve (#425).
+- Solving on after `load_tree` of a **default** (frequency-only) save (paired probe 2026-11-06, probe3's tree,
+  saved at 150 iterations): Pio answers `go` with `ERROR: go can't do that on incomplete tree` until
+  `load_all_nodes`. Then 60 more iterations end at exploitability **8.29**, from a save at 0.027. Ours runs
+  `go` on the lazy tree and ends at 0.439 (a fresh 60-iteration solve: 0.125). Neither keeps the regrets in
+  that format, so resuming is a poor warm start in both. Not copied. To resume a solve, save `lossless`:
+  ours then continues bit-exactly.
 - `unlock_node` (paired probe 2026-11-06, #429): the node solves on. 150 iterations after unlocking `r:0`, Pio's
   strategy is within 0.05 of an unlocked solve. A lock must not write a dominant regret (ours did, so the
   node stayed locked for good).

@@ -240,6 +240,9 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   best response persists (probe3's tree, `set_mes IP` then 60 iterations: exploitability 36), under
   `original_pio` / `pio_cfr` (set before `build_tree`) solving re-converges. `set_equal_strats` restarts the solve:
   `show_iters` 0, and N iterations later it is exactly a fresh N-iteration solve (#425).
+- `rebuild_tree` (paired probes 2026-11-06, #427) restarts the regrets and `show_iters` but keeps the strategy
+  sums and the locks: until the next solve the solved strategies show (probe3's `calc_line_freq` after it
+  is the solved 0.00319); N iterations later it is a fresh N-iteration solve.
 - `eliminate_path` (probed 2026-11-06, #421) takes a bet, raise or check; a call or fold answers `ERROR:
   eliminate_path incorrect path`. Each hand's frequency of the action goes to its best remaining action
   by EV, so some hands' raise goes to call and others' to fold. It's a one-time edit: further solving

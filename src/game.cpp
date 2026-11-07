@@ -268,9 +268,13 @@ struct Filler {
         n.storage = g.storage_floats;
         g.storage_floats += an->children.size() * g.hands[an->player].size();
         n.num_children = static_cast<uint16_t>(an->children.size());
-        n.pad = keep_set(board);
-        g.qoff.push_back(g.storage_q);
-        g.storage_q += g.stored_size(n);
+        {
+          const uint16_t c = keep_set(board);
+          g.keep_cand.push_back(c);
+          g.qoff.push_back(n.storage);  // full rows until select_rows(true)
+          g.storage_compact += an->children.size() * (c ? g.keep_sets[c - 1].keep[an->player].size()
+                                                         : g.hands[an->player].size());
+        }
         n.first_child = static_cast<uint32_t>(g.nodes.size());
         g.nodes.resize(g.nodes.size() + an->children.size());
         g.nodes[idx] = n;
@@ -407,8 +411,11 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   storage_floats = 0;
   num_decisions = 0;
   keep_sets.clear();
+  keep_cand.clear();
   qoff.clear();
   storage_q = 0;
+  storage_compact = 0;
+  compact_rows = false;
   incomplete = false;
 
   int bl = static_cast<int>(cfg.board.size());
@@ -534,8 +541,21 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   std::vector<int> board = cfg.board;
   Filler f{*this, iso};
   f.fill(0, aroot.get(), board);
+  select_rows(false);
   if (allocate) allocate_storage();
   return true;
+}
+
+void GameTree::select_rows(bool compact) {
+  compact_rows = compact && PIO_COMPACT_ROWS && !keep_sets.empty();
+  storage_q = 0;
+  for (GNode& n : nodes) {
+    if (n.kind != ANodeKind::Decision) continue;
+    n.pad = compact_rows ? keep_cand[n.aux] : 0;
+    qoff[n.aux] = compact_rows ? storage_q : n.storage;
+    if (compact_rows) storage_q += stored_size(n);
+  }
+  if (!compact_rows) storage_q = storage_floats;
 }
 
 namespace {
@@ -609,8 +629,9 @@ void GameTree::build_allin_tables() {
   pool().parallel_for(static_cast<int>(todo.size()), fn);
 }
 
-uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds) const {
-  uint64_t b = compress ? storage_q * 4 + num_decisions * (8 + sizeof(uint64_t)) : storage_floats * sizeof(float) * 2;
+uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds, bool compact) const {
+  const uint64_t q = compact && PIO_COMPACT_ROWS && !keep_sets.empty() ? storage_compact : storage_floats;
+  uint64_t b = compress ? q * 4 + num_decisions * (8 + sizeof(uint64_t)) : storage_floats * sizeof(float) * 2;
   // Predictive CFR's `preds` is never compressed and is allocated after the build, so the
   // pre-allocation check has to be told about it (#98).
   if (with_preds || !preds.empty()) b += storage_floats * sizeof(float);

@@ -853,7 +853,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   std::string err;
   if (!t->build(lc.cfg, err, false)) throw CmdError{"cannot rebuild tree: " + err};
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
-  if (small_strats_ == "on") t->compressed = true;
+  if (small_strats_ == "on" || small_strats_ == "compact") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
   // auto: keep the file's storage mode so a save/load round trip is exact. Requantizing a float32 save
   // to 16-bit is lossy (~1e-4 in strategies), so only do it when float32 genuinely does not fit.
@@ -861,6 +861,9 @@ std::string Upi::cmd_load_tree(const Args& a) {
   // after this decision, so float32 chosen against an unpriced budget can overflow (#98).
   else t->compressed = ((lc.h.mode & kModeQ16) && !(lc.h.mode & kModeQuant)) ||
                        t->memory_bytes_for(false, predictive_) > avail;
+  // compact river rows (#239), as build_tree chooses them; files always hold full rows
+  t->select_rows(t->compressed && (small_strats_ == "compact" ||
+                                   (small_strats_ == "auto" && t->memory_bytes_for(true, predictive_) > avail * 9 / 10)));
   tree_.reset();
   solver_.reset();
   t->allocate_storage();

@@ -271,8 +271,10 @@ class GameTree {
   // only the other hands there, about 8% less on a flop tree. The accessors expand rows to all hands (0 for the dropped ones) and the commits
   // compact them, so every walk, scale and stochastic rounding sees exactly the values it did before:
   // results are bit-identical. float32 storage (and `preds`) keep full rows at GNode::storage.
-  // Only on builds with AVX-512 VBMI2, whose expand-load / compress-store move compact rows at the speed of
-  // full ones; elsewhere a scatter per hand made threebet_mono 50% slower, so rows stay full there.
+  // They cost time: about 12% per iteration on threebet_mono (Zen 5, 16 threads) even with AVX-512 VBMI2
+  // expand / compress, so they are a capacity tier, used only when full 16-bit rows don't fit
+  // (select_rows, small_strats compact / auto). Builds without VBMI2 never compact (a scalar scatter per
+  // hand was 50% slower).
   struct KeepSet {
     std::vector<uint16_t> keep[2];  // [player]: kept local hands, ascending
     std::vector<uint32_t> bits[2];  // [player]: bit h of word h / 32 set if hand h is kept
@@ -280,6 +282,12 @@ class GameTree {
   std::vector<KeepSet> keep_sets;
   std::vector<uint64_t> qoff;  // per decision (GNode::aux): offset of its rows in regrets_q / strat_q
   uint64_t storage_q = 0;      // length of regrets_q / strat_q
+  uint64_t storage_compact = 0;  // what storage_q is with compact rows (the build computes both layouts)
+  std::vector<uint16_t> keep_cand;  // per decision: its keep_sets entry + 1 if compact rows are selected
+  bool compact_rows = false;
+  // Before allocate_storage: compact river rows (if this build can and the tree has any) or full rows
+  // everywhere (GNode::pad 0, qoff = storage, the layout float32 uses). build() leaves full rows.
+  void select_rows(bool compact);
   const uint16_t* keep_of(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].keep[n.player].data() : nullptr; }
   const uint32_t* keep_bits(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].bits[n.player].data() : nullptr; }
   size_t row_len(const GNode& n) const { return n.pad ? keep_sets[n.pad - 1].keep[n.player].size() : hands[n.player].size(); }
@@ -350,11 +358,11 @@ class GameTree {
   // Build from config. Returns false + err.
   bool build(const GameConfig& c, std::string& err, bool allocate = true);
   // Memory needed (bytes) for the current node set; valid after build(..., false).
-  uint64_t memory_bytes() const { return memory_bytes_for(compressed); }
+  uint64_t memory_bytes() const { return memory_bytes_for(compressed, false, compact_rows); }
   // with_preds: count the predictive array that set_predictive will allocate after the
   // build. Already-allocated preds are counted regardless, so memory_bytes() is right
   // once the feature is on; the flag is for the check that runs *before* allocation.
-  uint64_t memory_bytes_for(bool compress, bool with_preds = false) const;
+  uint64_t memory_bytes_for(bool compress, bool with_preds = false, bool compact = false) const;
   void allocate_storage();  // uses `compressed`
   void fill_term_pay();     // term_pay_ from payoff_ and anodes
 

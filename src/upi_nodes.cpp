@@ -689,7 +689,19 @@ void Upi::lock_node_impl(uint32_t ni, bool lock) {
     int A = n.num_children, H = tree_->num_hands(n.player);
     std::vector<float> sig(static_cast<size_t>(A) * H);
     solver_->average_strategy(ni, sig.data());
-    set_node_strategy(ni, sig.data());
+    // The flag locks: a locked node plays its strategy sums and its regrets aren't updated. So only the sums
+    // take the locked strategy and the regrets stay as solved, frozen: after unlock_node the node solves on
+    // from them, as Pio's does (#429; a dominant regret, as set_strategy writes, kept it locked for good).
+    std::vector<float> sbuf(tree_->compressed ? static_cast<size_t>(A) * H : 0);
+    float* S = tree_->strat_rw(n, sbuf.data());
+    for (int h = 0; h < H; ++h) {
+      double sum = 0;
+      for (int k = 0; k < A; ++k) sum += std::max(0.0f, sig[static_cast<size_t>(k) * H + h]);
+      for (int k = 0; k < A; ++k)
+        S[static_cast<size_t>(k) * H + h] =
+            sum > 0 ? static_cast<float>(std::max(0.0f, sig[static_cast<size_t>(k) * H + h]) / sum) : 1.0f / static_cast<float>(A);
+    }
+    tree_->strat_commit(n, S);
     n.flags |= GF_LOCKED;
   } else {
     n.flags &= static_cast<uint8_t>(~GF_LOCKED);

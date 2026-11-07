@@ -168,12 +168,13 @@ class Solver {
 
   // Regret-based pruning (set_pruning, #51; Brown & Sandholm, "Regret-Based Pruning in
   // Extensive-Form Games", NIPS 2015). During a CFR walk only, an action of the traverser whose
-  // CURRENT strategy is exactly zero for every one of the traverser's hands is pruned: its subtree
+  // CURRENT strategy is exactly zero for every one of the traverser's hands that can occur at the node
+  // (hands holding a dealt turn or river card never get there and are ignored, #435) is pruned: its subtree
   // is not re-measured this iteration and its regret row is left completely untouched (frozen, not
   // discounted). This changes nothing about this iteration's strategy, cfv aggregate or
   // strategy-sum rows (the zero-strategy condition already guarantees "this action contributes 0
   // everywhere"); the skipped instantaneous regret measurement is the bounded approximation RBP
-  // theory covers. Every prune_period-th iteration (default 32) is measured in full (the RBP
+  // theory covers. Every prune_period-th iteration (default 8) is measured in full (the RBP
   // revisiting schedule), which is when a frozen row can re-enter.
   //
   // Pruning activates only after two full periods (t > 2*prune_period). Bench: pruning from t=1

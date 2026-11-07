@@ -296,8 +296,13 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
   if (!pp) {
     std::string s;
     std::vector<float> line(NUM_COMBOS);
+    // Hands the node's board blocks (a turn or river card) print 0, as in Pio and print_all_strats:
+    // their rows hold the never-reached regrets of hands that cannot occur here.
+    const uint64_t bm = board_mask(r.board);
     for (int k = 0; k < A; ++k) {
       to_1326(actor, r.frame, sig.data() + static_cast<size_t>(k) * H, line.data(), 0.0f);
+      for (int c = 0; c < NUM_COMBOS; ++c)
+        if (combo_mask(c) & bm) line[c] = 0.0f;
       if (tree_->cfg.union_hands)
         for (int c = 0; c < NUM_COMBOS; ++c)
           if (tree_->cfg.range[actor][PERM_COMBO[PERM_INV[display_perm_]][c]] <= 0) line[c] = 0.0f;

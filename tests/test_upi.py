@@ -1124,6 +1124,12 @@ def check_tree_construction_edges(exe):
     check("ERROR: eliminate_path incorrect path" in out and "eliminate_path ok!" in out,
           "eliminate_path: the check that closes the round is refused like a call, the opening check is not")
     check("round_up_to ok!" in out, "round_up_to 0: accepted as a no-op, like Pio")
+    # estimate_tree without a preflop config needs a built tree and answers one line (probe 26)
+    out = run(["set_range OOP AA,KK", "set_range IP AA,QQ", "set_pot 0 0 60", "set_eff_stack 150", "set_board Td9d2c",
+               "add_line 0 30", "estimate_tree", "estimate_schematic_tree", "build_tree", "estimate_tree"])
+    check("ERROR: estimate_tree missing/incorrect tree" in out and "estimated tree size (v4_large)" in out
+          and re.search(r"^estimated tree size: \d+ MB$", out, re.M) is not None,
+          "estimate_tree: refused before build_tree, one line after, like Pio")
     # Pio 3.10.1 needs both arguments of set_always_recalc (probe 25)
     out = run(["set_always_recalc 2", "set_always_recalc 1 500"])
     check(out.count("ERROR: set_always_recalc incorrect or missing argument") == 1 and "set_always_recalc ok!" in out,

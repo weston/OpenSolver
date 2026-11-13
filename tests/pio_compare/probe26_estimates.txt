@@ -1,0 +1,20 @@
+# Probe 26: estimate_tree, estimate_rebuild_tree, show_memory and solver_time on a postflop tree (2026-11-12).
+# Pio 3.10.1 refuses estimate_tree with no tree ("missing/incorrect tree"; the unbuilt postflop config is
+# estimate_schematic_tree's) and answers one line once a tree is built. Sizes and host memory differ by
+# design (Pio's ~150 MB floor, another machine); solver_time counts from process start in both.
+solver_time
+show_memory
+estimate_tree
+set_range OOP AA,KK,QQ,JJ,TT,99,88,AK,AQ,AJs,KQ,QJs,JTs,T9s,98s,A5s
+set_range IP AA,KK,QQ,JJ,TT,99,88,77,AK,AQ,AJ,KQ,KJs,QJs,JTs,T9s,87s,76s
+set_pot 0 0 60
+set_eff_stack 150
+set_board Td9d2c
+add_line 0 30 90 150
+add_line 30 90 150
+estimate_tree
+estimate_schematic_tree
+build_tree
+estimate_tree
+estimate_rebuild_tree
+solver_time

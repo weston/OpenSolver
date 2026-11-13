@@ -953,8 +953,11 @@ void Upi::register_commands() {
     return std::string("set_recalc_accuracy ok!");
   };
   H["set_always_recalc"] = [this](const Args& a) {
-    always_recalc_street_ = static_cast<int>(arg_int(a, 0, "street"));
-    always_recalc_ms_ = a.size() > 1 ? static_cast<int>(arg_int(a, 1, "timeout")) : 0;
+    // Pio 3.10.1 needs both the street and the time limit (probe 25: "set_always_recalc 2" is refused).
+    const int street = static_cast<int>(arg_int(a, 0, "street"));
+    const int ms = static_cast<int>(arg_int(a, 1, "timeout"));
+    always_recalc_street_ = street;
+    always_recalc_ms_ = ms;
     return std::string("set_always_recalc ok!");
   };
   H["set_isomorphism"] = [this](const Args& a) {

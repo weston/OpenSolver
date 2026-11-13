@@ -651,7 +651,8 @@ def _api_main(solver, lib, method, path, query, body):
         return 200, st
 
     if path == "/api/estimate":
-        return 200, {"text": solver.cmd("estimate_tree")}
+        # the configured (not yet built) postflop tree: estimate_tree needs a built one, as in Pio
+        return 200, {"text": solver.cmd("estimate_schematic_tree")}
 
     if path == "/api/calc_results":
         return 200, {"text": solver.cmd("calc_results")}

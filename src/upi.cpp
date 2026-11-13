@@ -1280,8 +1280,13 @@ void Upi::register_commands() {
   };
   H["estimate_schematic_tree"] = [this](const Args&) { return estimate_text(); };
   H["estimate_tree"] = [this](const Args&) {
-    // Preflop tree with the current subset and schematic trees (or the pure preflop tree).
-    if (!have_pf_) return estimate_text();
+    // Preflop tree with the current subset and schematic trees (or the pure preflop tree). Without a
+    // preflop config, Pio 3.10.1 (probe 26) needs a built tree and answers one line for it; the postflop
+    // config before build_tree is estimate_schematic_tree's job.
+    if (!have_pf_) {
+      require_tree();
+      return "estimated tree size: " + std::to_string(tree_->memory_bytes() >> 20) + " MB";  // as built
+    }
     GameConfig c = pf_cfg_;
     c.schematics = schematics_;
     c.subset = subset_;

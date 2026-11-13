@@ -1124,6 +1124,10 @@ def check_tree_construction_edges(exe):
     check("ERROR: eliminate_path incorrect path" in out and "eliminate_path ok!" in out,
           "eliminate_path: the check that closes the round is refused like a call, the opening check is not")
     check("round_up_to ok!" in out, "round_up_to 0: accepted as a no-op, like Pio")
+    # Pio 3.10.1 needs both arguments of set_always_recalc (probe 25)
+    out = run(["set_always_recalc 2", "set_always_recalc 1 500"])
+    check(out.count("ERROR: set_always_recalc incorrect or missing argument") == 1 and "set_always_recalc ok!" in out,
+          "set_always_recalc needs the street and the time limit, like Pio")
     # Pio 3.10.1's error paths (probe 19)
     out = run(["set_pot 10 10 5", "set_pot 3 -1 2", "show_tree_params", "set_pot 65536 0 0", "show_tree_params",
                "set_eff_stack 100", "set_eff_stack 65536", "set_eff_stack -1", "set_eff_stack abc", "set_eff_stack 65535"])

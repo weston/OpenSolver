@@ -303,6 +303,35 @@ class ViewerTest(unittest.TestCase):
         st, _ = self.req("/api/blockers?id=" + urllib.parse.quote("r:0\nshow_version"))
         self.assertEqual(st, 400)
 
+    def test_08d_graphs(self):
+        # the Graphs tab's data: per-combo equity and EV of both players, at any node
+        st, d = self.req("/api/graphs?id=r:0")
+        self.assertEqual(st, 200, d)
+        st, rng = self.req("/api/range?id=r:0")
+        for pl in ("oop", "ip"):
+            for k in ("reach", "eq", "ev"):
+                self.assertEqual(len(d[pl][k]), 1326, (pl, k))
+            self.assertEqual(d[pl]["reach"], rng[pl])
+            for e, w in zip(d[pl]["eq"], d[pl]["reach"]):
+                if w:
+                    self.assertTrue(e is not None and 0 <= e <= 1, e)
+            self.assertEqual(len(d[pl]["eq_matchups"]), 1326)
+        # the two equities are complementary over the matchups (a showdown has a winner or a split)
+        tot = sum(m * (e or 0) for m, e in zip(d["oop"]["eq_matchups"], d["oop"]["eq"])) + \
+            sum(m * (e or 0) for m, e in zip(d["ip"]["eq_matchups"], d["ip"]["eq"]))
+        self.assertAlmostEqual(tot / sum(d["oop"]["eq_matchups"]), 1.0, places=3)
+        # a deal is fine; a fold uses the node above it (calc_ev has nothing at a terminal)
+        st, d2 = self.req("/api/graphs?id=" + urllib.parse.quote("r:0:c:c"))
+        self.assertEqual((st, d2["id"]), (200, "r:0:c:c"))
+        st, root = self.req("/api/node?id=r:0")
+        bet = next(c["id"] for c in root["children"] if ":b" in c["id"])
+        st, kids = self.req("/api/node?id=" + urllib.parse.quote(bet))
+        fold = next(c["id"] for c in kids["children"] if c["id"].endswith(":f"))
+        st, d3 = self.req("/api/graphs?id=" + urllib.parse.quote(fold))
+        self.assertEqual((st, d3["id"]), (200, bet))
+        st, _ = self.req("/api/graphs?id=" + urllib.parse.quote("r:0\nshow_version"))
+        self.assertEqual(st, 400)
+
     def test_09_solve_with_live_progress(self):
         st, d = self.req("/api/solve", "POST", {"accuracy": 1.0})
         self.assertEqual(st, 200, d)

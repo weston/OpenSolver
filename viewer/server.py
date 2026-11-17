@@ -564,7 +564,7 @@ def api(solver, lib, method, path, query, body):
 
 LOCK_PATHS = ("/api/lock", "/api/unlock", "/api/lock/revert", "/api/lock/apply")
 BROWSE_PATHS = ("/api/node", "/api/strategy", "/api/path", "/api/range", "/api/categories", "/api/ev",
-                "/api/calc_results", "/api/hand_order", "/api/blockers")
+                "/api/calc_results", "/api/hand_order", "/api/blockers", "/api/graphs")
 
 
 def _api_main(solver, lib, method, path, query, body):
@@ -635,6 +635,9 @@ def _api_main(solver, lib, method, path, query, body):
 
     if path == "/api/blockers":
         return 200, blockers_at(solver, node_id_arg(query))
+
+    if path == "/api/graphs":
+        return 200, graphs_at(solver, node_id_arg(query))
 
     if path == "/api/ev":
         node_id = node_id_arg(query)
@@ -869,6 +872,36 @@ def categories_at(solver, node_id, player):
             "total": round(total, 4),
             "made_names": made_names, "draw_names": draw_names,
             "made": made, "draws": draws}
+
+
+def graphs_at(solver, node_id):
+    """Per-combo equity and EV of both players at any node, for the Graphs tab's distributions.
+
+    For each player: reach (show_range), equity against the other range and its matchups
+    (calc_eq_node), EV and its matchups (calc_ev). The page sorts the combos by equity or EV and
+    plots them against the share of the range.
+    """
+    with solver.cmd_lock:
+        # a fold or showdown has no EVs to ask for (calc_ev: "incorrect path"): use the node above it
+        toks = node_id.split(":")
+        node = parse_node_block(solver.cmd("show_node " + node_id))
+        while node["type"] == "END_NODE" and len(toks) > 2:
+            toks.pop()
+            node = parse_node_block(solver.cmd("show_node " + ":".join(toks)))
+        node_id = ":".join(toks)
+        out = {"id": node_id}
+        for pl in ("OOP", "IP"):
+            eq = solver.cmd(f"calc_eq_node {pl} {node_id}").split("\n")
+            ev = solver.cmd(f"calc_ev {pl} {node_id}").split("\n")
+            out[pl.lower()] = {
+                "reach": parse_floats(solver.cmd(f"show_range {pl} {node_id}"), NUM_COMBOS),
+                "eq": parse_floats(eq[0], NUM_COMBOS),
+                "eq_matchups": parse_floats(eq[1], NUM_COMBOS) if len(eq) > 1 and eq[1].strip() else None,
+                "ev": parse_floats(ev[0], NUM_COMBOS),
+                "ev_matchups": parse_floats(ev[1], NUM_COMBOS) if len(ev) > 1 and ev[1].strip() else None,
+            }
+    out["node"] = node
+    return out
 
 
 def blockers_at(solver, node_id):

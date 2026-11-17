@@ -564,7 +564,7 @@ def api(solver, lib, method, path, query, body):
 
 LOCK_PATHS = ("/api/lock", "/api/unlock", "/api/lock/revert", "/api/lock/apply")
 BROWSE_PATHS = ("/api/node", "/api/strategy", "/api/path", "/api/range", "/api/categories", "/api/ev",
-                "/api/calc_results", "/api/hand_order")
+                "/api/calc_results", "/api/hand_order", "/api/blockers")
 
 
 def _api_main(solver, lib, method, path, query, body):
@@ -632,6 +632,9 @@ def _api_main(solver, lib, method, path, query, body):
         if player not in ("OOP", "IP", "ACTOR"):
             raise SolverError("player must be OOP, IP or actor")
         return 200, categories_at(solver, node_id, player)
+
+    if path == "/api/blockers":
+        return 200, blockers_at(solver, node_id_arg(query))
 
     if path == "/api/ev":
         node_id = node_id_arg(query)
@@ -866,6 +869,50 @@ def categories_at(solver, node_id, player):
             "total": round(total, 4),
             "made_names": made_names, "draw_names": draw_names,
             "made": made, "draws": draws}
+
+
+def blockers_at(solver, node_id):
+    """What the actor's cards remove from the other player's range at a decision (the Blockers tab).
+
+    Everything the tab needs for any combo the user picks, so picking one costs no further call:
+    both reaches, each villain combo's equity against the actor's range (calc_eq_node), the
+    actor's equity per combo, villain's made-hand and draw categories on this board, and for each
+    actor action that hands the move to villain, villain's strategy there. Villain's reach at such
+    a child is the same as here (only the actor acted), so the tab weighs those strategies with
+    `villain_reach`. The combinatorics (which villain combos a hand blocks) are done in the page.
+    """
+    with solver.cmd_lock:
+        node = parse_node_block(solver.cmd("show_node " + node_id))
+        if node["type"] not in ("OOP_DEC", "IP_DEC"):
+            raise SolverError("blockers need a decision node")
+        actor = "OOP" if node["type"] == "OOP_DEC" else "IP"
+        villain = "IP" if actor == "OOP" else "OOP"
+        board = "".join(node["board"].split())
+        hero_reach = parse_floats(solver.cmd(f"show_range {actor} {node_id}"), NUM_COMBOS)
+        villain_reach = parse_floats(solver.cmd(f"show_range {villain} {node_id}"), NUM_COMBOS)
+        villain_eq = parse_floats(solver.cmd(f"calc_eq_node {villain} {node_id}").split("\n")[0], NUM_COMBOS)
+        hero_eq = parse_floats(solver.cmd(f"calc_eq_node {actor} {node_id}").split("\n")[0], NUM_COMBOS)
+        vdec = "OOP_DEC" if villain == "OOP" else "IP_DEC"
+        responses = []
+        for kid in parse_children(solver.cmd("show_children " + node_id)):
+            r = {"id": kid["id"], "node": kid, "children": None, "freq": None}
+            if kid["type"] == vdec:
+                rows = [l for l in solver.cmd("show_strategy " + kid["id"]).split("\n") if l.strip()]
+                if rows and all(len(x.split()) == NUM_COMBOS for x in rows):  # not a preflop raw layout
+                    r["children"] = parse_children(solver.cmd("show_children " + kid["id"]))
+                    r["freq"] = [parse_floats(x, NUM_COMBOS) for x in rows]
+            responses.append(r)
+        cats = None
+        if len(board) >= 6:
+            names = solver.cmd("show_category_names").split("\n")
+            lines = solver.cmd("show_categories " + board).split("\n")
+            made, draw = [int(t) for t in lines[0].split()], [int(t) for t in lines[1].split()]
+            if len(made) != NUM_COMBOS or len(draw) != NUM_COMBOS:
+                raise SolverError("unexpected show_categories output")
+            cats = {"made_names": names[0].split(), "draw_names": names[1].split(), "made": made, "draw": draw}
+    return {"id": node_id, "node": node, "actor": actor, "villain": villain, "board": board,
+            "hero_reach": hero_reach, "villain_reach": villain_reach, "hero_eq": hero_eq,
+            "villain_eq": villain_eq, "responses": responses, "cats": cats}
 
 
 def require_post(method):

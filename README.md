@@ -345,10 +345,18 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     (not normalized, so rarely reached hands show short bars), split by action frequency.
     Strategy, Range and EV modes; OOP/IP for the latter two.
   - side panel: per-combo strategy and EV for the hovered or pinned hand, node and range-EV
-    summary, both players' ranges.
+    summary, both players' ranges, made-hand and draw categories.
+  - **Blockers** tab: pick a combo of the player to act (click a combo in the Hand tab, pick one of
+    the pinned class's combos, or type it) to see what its cards remove from the other range:
+    the combos it blocks, the other player's range by hand class and by category with and without
+    them, that range's equity against yours, and its response to each of your actions (for
+    example its fold frequency facing a bet) with and without them. Below, every single card is
+    ranked by how much holding it moves a number you choose (the other player's equity, or any of
+    its responses). Holding a hand changes no strategy; it only rules out the opponent's combos
+    that share its cards.
 
-  Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`)
-  links to the current node and view.
+  Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`,
+  `&side=blockers&blk=AhKd`) links to the current node and view.
 - **Re-solve (#117):** at any decision of the original tree, **Re-solve…** re-solves the subtree from
   there in a second solver process. Either edit the sizes for the rest of the hand, or find the best
   N sizes out of a candidate list. At a node facing a bet on its own street the candidates are

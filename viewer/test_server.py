@@ -268,6 +268,41 @@ class ViewerTest(unittest.TestCase):
         st, _ = self.req("/api/categories?id=" + urllib.parse.quote("r:0\nshow_version"))
         self.assertEqual(st, 400)
 
+    def test_08c_blockers(self):
+        # the Blockers tab's data: both reaches, equities, villain's strategy after each actor action
+        st, d = self.req("/api/blockers?id=r:0")
+        self.assertEqual(st, 200, d)
+        self.assertEqual((d["actor"], d["villain"], d["board"]), ("OOP", "IP", CFG["board"]))
+        for k in ("hero_reach", "villain_reach", "hero_eq", "villain_eq"):
+            self.assertEqual(len(d[k]), 1326, k)
+        st, rng = self.req("/api/range?id=r:0")
+        self.assertEqual(d["villain_reach"], rng["ip"])
+        self.assertEqual(d["hero_reach"], rng["oop"])
+        for e, w in zip(d["villain_eq"], d["villain_reach"]):
+            if w:
+                self.assertTrue(e is not None and 0 <= e <= 1, e)
+        st, kids = self.req("/api/node?id=r:0")
+        self.assertEqual([r["id"] for r in d["responses"]], [c["id"] for c in kids["children"]])
+        answered = [r for r in d["responses"] if r["freq"]]
+        self.assertTrue(answered, "IP answers at least one OOP action")
+        for r in answered:
+            self.assertEqual(r["node"]["type"], "IP_DEC")
+            self.assertEqual(len(r["freq"]), len(r["children"]))
+            for i, w in enumerate(d["villain_reach"]):  # each in-range villain combo's mix sums to 1
+                if w:
+                    self.assertAlmostEqual(sum(row[i] or 0 for row in r["freq"]), 1.0, places=3)
+        self.assertEqual(len(d["cats"]["made"]), 1326)
+        self.assertIn("overpair", d["cats"]["made_names"])
+        # at IP's decision the roles swap
+        st, d2 = self.req("/api/blockers?id=r:0:c")
+        self.assertEqual(st, 200, d2)
+        self.assertEqual((d2["actor"], d2["villain"]), ("IP", "OOP"))
+        # a deal is not a decision; bad ids are refused
+        st, _ = self.req("/api/blockers?id=" + urllib.parse.quote("r:0:c:c"))
+        self.assertEqual(st, 400)
+        st, _ = self.req("/api/blockers?id=" + urllib.parse.quote("r:0\nshow_version"))
+        self.assertEqual(st, 400)
+
     def test_09_solve_with_live_progress(self):
         st, d = self.req("/api/solve", "POST", {"accuracy": 1.0})
         self.assertEqual(st, 200, d)

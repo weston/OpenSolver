@@ -4,6 +4,7 @@
 
 import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy, displayCombo } from "./cards.js";
 import { prepare as prepareBlockers, comboReport, shareChanges, cardEffects } from "./blockers.js";
+import { curves as rangeCurves, at as rangeAt, shareAbove } from "./graphs.js";
 import { nodeShown, whenReleased } from "./preview.js";
 import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips, prefs } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
@@ -33,6 +34,8 @@ const S = {
   blkFor: null,      // the player it was picked for (it only applies at that player's decisions)
   blkMetric: null,   // what the card ranking sorts by
   blkNoBoardRanks: prefs.get("blk-no-board-ranks", false),  // card ranking: leave out cards that pair the board
+  gr: null,          // {key, data} cache for the Graphs tab
+  grMetric: prefs.get("graph-metric", "eq") === "ev" ? "ev" : "eq",
   side: "hand",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
@@ -205,7 +208,8 @@ function invalidate() {
   S.decId = null;
   S.cats = null;
   S.blk = null;
-  for (const k of ["side-cats", "side-blockers"]) {
+  S.gr = null;
+  for (const k of ["side-cats", "side-blockers", "side-graphs"]) {
     const box = $(k);
     if (box) box.dataset.key = "";
   }
@@ -618,12 +622,13 @@ function markSel() {
 /* ---- side panel ---- */
 
 function renderSide() {
-  for (const k of ["hand", "node", "ranges", "cats", "blockers"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
+  for (const k of ["hand", "node", "ranges", "cats", "blockers", "graphs"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
   document.querySelectorAll(".side-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.side === S.side));
   if (S.side === "hand") renderHand();
   else if (S.side === "node") renderNodePanel();
   else if (S.side === "ranges") renderRangesPanel();
   else if (S.side === "blockers") renderBlockersPanel();
+  else if (S.side === "graphs") renderGraphsPanel();
   else renderCatsPanel();
 }
 
@@ -1227,6 +1232,157 @@ function renderCardEffects(box, P, metrics, hero) {
   box.appendChild(el("div", "hint cats-note", `Baseline: ${pctOf(rows.length ? rows[0].before : null)} with no card known. Each card removes the villain combos that contain it; a hand's effect is roughly the sum of its two cards'.`));
 }
 
+/* ---- graphs tab: each player's range sorted by equity or EV ---- */
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs, parent) => {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+};
+
+/** A "nice" tick step (1, 2 or 5 x 10^k) giving about n intervals over span. */
+function niceTick(span, n = 4) {
+  const raw = span / n, p = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+  const m = raw / p;
+  return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
+}
+
+async function renderGraphsPanel() {
+  const box = $("side-graphs");
+  const seq = S.seq;
+  const key = `${S.base}|${S.id}`;
+  if (!S.gr || S.gr.key !== key) {
+    let data;
+    try { data = await get(`${S.base}/graphs?id=${q(S.id)}`); } catch (e) { fail(e); return; }
+    if (seq !== S.seq) return;
+    S.gr = { key, data };
+  }
+  if (S.side !== "graphs") return;
+  const vkey = `${key}|${S.grMetric}`;
+  if (box.dataset.key === vkey) return;
+  box.dataset.key = vkey;
+  box.textContent = "";
+  const data = S.gr.data;
+  const metric = S.grMetric;
+
+  const head = el("div", "cats-head");
+  head.appendChild(el("span", "gr-title", metric === "eq" ? "Equity distribution" : "EV distribution"));
+  const seg = el("div", "seg small");
+  for (const [k, label] of [["eq", "Equity"], ["ev", "EV"]]) {
+    const b = el("button", k === metric ? "active" : "", label);
+    b.onclick = () => { S.grMetric = k; prefs.set("graph-metric", k); renderGraphsPanel(); };
+    seg.appendChild(b);
+  }
+  head.appendChild(seg);
+  box.appendChild(head);
+  if (data.id !== S.id) box.appendChild(el("div", "hint cats-note", `At ${data.id}: the hand has ended here, so these are the last node's values.`));
+
+  const cs = rangeCurves(data, metric, H.order);
+  if (!cs.OOP.pts.length && !cs.IP.pts.length) {
+    box.appendChild(el("div", "side-empty", "No values here: neither range reaches this node."));
+    return;
+  }
+  const legend = el("div", "gr-legend");
+  for (const pl of ["OOP", "IP"]) {
+    const it = el("span", "gr-key");
+    const sw = el("span", "gr-sw"); sw.style.background = `var(--${pl.toLowerCase()})`;
+    it.append(sw, document.createTextNode(pl));
+    legend.appendChild(it);
+  }
+  box.appendChild(legend);
+  const svg = svgEl("svg", { viewBox: "0 0 360 244", class: "gr-chart", role: "img",
+    "aria-label": `${metric === "eq" ? "Equity" : "EV"} of each combo, strongest first, for OOP and IP` });
+  box.appendChild(svg);
+  drawRangeGraph(svg, cs, metric);
+
+  // the numbers behind the picture
+  const pot = potOf(data.node) || 0;
+  const t = el("table", "act-table gr-stats");
+  t.insertAdjacentHTML("beforeend", metric === "eq"
+    ? "<tr><th></th><th>Average</th><th>Median</th><th>≥ 50%</th><th>Combos</th></tr>"
+    : "<tr><th></th><th>Average</th><th>Median</th><th>% of pot</th><th>Combos</th></tr>");
+  for (const pl of ["OOP", "IP"]) {
+    const c = cs[pl];
+    const tr = el("tr");
+    const k = el("td");
+    const sw = el("span", "sw"); sw.style.background = `var(--${pl.toLowerCase()})`;
+    k.append(sw, document.createTextNode(pl));
+    const v = (x) => (metric === "eq" ? pctOf(x) : fmtChips(x));
+    tr.append(k, el("td", "num", v(c.avg)), el("td", "num", v(c.median)),
+              el("td", "num", metric === "eq" ? pctOf(shareAbove(c, 0.5), 0) : (c.avg != null && pot > 0 ? pctOf(c.avg / pot, 0) : "—")),
+              el("td", "num", fmt(c.total, 1)));
+    t.appendChild(tr);
+  }
+  box.appendChild(t);
+  box.appendChild(el("div", "hint cats-note", metric === "eq"
+    ? "Each combo's equity against the other range at this node, combos sorted strongest first along the share of the range they make up. Averages are matchup-weighted, like Pio's."
+    : `Each combo's EV in chips (pot ${fmtChips(pot)}), sorted highest first along the share of the range. Averages are matchup-weighted, like the Node tab's.`));
+}
+
+function drawRangeGraph(svg, cs, metric) {
+  const W = 360, Hh = 244, L = 42, R = 12, T = 10, B = 34;
+  const all = [...cs.OOP.pts, ...cs.IP.pts].map((p) => p.v);
+  let lo, hi, step;
+  if (metric === "eq") { lo = 0; hi = 1; step = 0.25; } else {
+    const mn = Math.min(0, ...all), mx = Math.max(0, ...all);
+    step = niceTick(mx - mn || 1);
+    lo = Math.floor(mn / step + 1e-9) * step;   // a range with no losing hand starts at 0, not a step below
+    hi = Math.ceil(mx / step - 1e-9) * step;
+    if (hi <= lo) hi = lo + step;
+  }
+  const x = (f) => L + f * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (Hh - T - B);
+  const grid = svgEl("g", { class: "grid" }, svg), axis = svgEl("g", { class: "axis" }, svg);
+  for (let v = lo; v <= hi + step / 2; v += step) {
+    const yy = y(v);
+    svgEl("line", { x1: L, x2: W - R, y1: yy, y2: yy, class: Math.abs(v) < 1e-9 && metric === "ev" ? "zero" : "" }, grid);
+    const tx = svgEl("text", { x: L - 6, y: yy + 3, "text-anchor": "end" }, axis);
+    tx.textContent = metric === "eq" ? Math.round(v * 100) + "%" : fmtChips(v);
+  }
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const tx = svgEl("text", { x: x(f), y: Hh - B + 14, "text-anchor": f === 0 ? "start" : f === 1 ? "end" : "middle" }, axis);
+    tx.textContent = Math.round(f * 100) + "%";
+  }
+  const xl = svgEl("text", { x: (L + W - R) / 2, y: Hh - 3, "text-anchor": "middle", class: "axis-title" }, axis);
+  xl.textContent = "share of range, strongest first";
+
+  for (const pl of ["IP", "OOP"]) {
+    const pts = cs[pl].pts;
+    if (!pts.length) continue;
+    let d = `M${x(pts[0].x0).toFixed(1)},${y(pts[0].v).toFixed(1)}`;
+    for (const p of pts) d += `V${y(p.v).toFixed(1)}H${x(p.x1).toFixed(1)}`;
+    svgEl("path", { d, class: "gr-line", style: `stroke:var(--${pl.toLowerCase()})` }, svg);
+  }
+
+  // hover: a crosshair, a dot on each curve and the combos there
+  const cross = svgEl("line", { y1: T, y2: Hh - B, class: "gr-cross", visibility: "hidden" }, svg);
+  const dots = {};
+  for (const pl of ["OOP", "IP"]) dots[pl] = svgEl("circle", { r: 4, class: "gr-dot", style: `fill:var(--${pl.toLowerCase()})`, visibility: "hidden" }, svg);
+  const hit = svgEl("rect", { x: L, y: T, width: W - L - R, height: Hh - T - B, class: "gr-hit" }, svg);
+  const fmtV = (v) => (metric === "eq" ? pctOf(v) : fmtChips(v));
+  hit.addEventListener("mousemove", (ev) => {
+    const r = svg.getBoundingClientRect();
+    const sx = ((ev.clientX - r.left) / r.width) * W;
+    const f = Math.min(1, Math.max(0, (sx - L) / (W - L - R)));
+    cross.setAttribute("x1", x(f)); cross.setAttribute("x2", x(f)); cross.setAttribute("visibility", "visible");
+    let html = `<div class="t">Top ${Math.round(f * 100)}% of the range</div>`;
+    for (const pl of ["OOP", "IP"]) {
+      const p = rangeAt(cs[pl], f);
+      if (!p) { dots[pl].setAttribute("visibility", "hidden"); continue; }
+      dots[pl].setAttribute("cx", x(f)); dots[pl].setAttribute("cy", y(p.v)); dots[pl].setAttribute("visibility", "visible");
+      html += `<div class="r"><span>${pl} ${displayCombo(p.combo)}</span><b>${fmtV(p.v)}</b></div>`;
+    }
+    showTip(ev, html);
+  });
+  hit.addEventListener("mouseleave", () => {
+    cross.setAttribute("visibility", "hidden");
+    for (const pl of ["OOP", "IP"]) dots[pl].setAttribute("visibility", "hidden");
+    hideTip();
+  });
+}
+
 /** Up one node: the parent (deals are steps too); at a re-solved subtree's root, back to the original. */
 function goUp() {
   if (S.sub && S.id === S.sub.root) { exitSubgame(); return; }
@@ -1297,7 +1453,7 @@ function urlState() {
 export function applyUrlState(params) {
   if (["strategy", "range", "ev"].includes(params.mode)) S.mode = params.mode;
   if (["OOP", "IP"].includes(params.player)) S.player = params.player;
-  if (["hand", "node", "ranges", "cats", "blockers"].includes(params.side)) S.side = params.side;
+  if (["hand", "node", "ranges", "cats", "blockers", "graphs"].includes(params.side)) S.side = params.side;
   if (params.blk && H.index.has(params.blk)) { S.blkCombo = displayCombo(H.order[H.index.get(params.blk)]); S.blkFor = null; }
   if (params.pin && Object.prototype.hasOwnProperty.call(H.byClass, params.pin)) S.pinned = params.pin;
   document.querySelectorAll("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.mode === S.mode));
@@ -1311,6 +1467,7 @@ export function showEmpty() {
   cells = null;
   $("side-hand").textContent = "";
   $("side-blockers").textContent = "";
+  $("side-graphs").textContent = "";
 }
 
 /** Browse a re-solved subtree (#117) through the /api/resolve endpoints. */

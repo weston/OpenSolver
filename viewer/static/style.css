@@ -772,7 +772,7 @@ label.check input { accent-color: var(--accent); }
 .cd-deck button.picked { outline: 3px solid var(--text); outline-offset: 1px; transform: scale(1.06); z-index: 1; }
 
 /* blockers tab: what a hand's cards remove from the other range */
-.side-tabs button { padding: 0 9px; }
+.side-tabs button { padding: 0 7px; font-size: 12.5px; }
 .combos tr.pick { cursor: pointer; }
 .combos tr.pick:hover td { background: var(--surface-2); }
 .blk-pick { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 4px; }
@@ -801,3 +801,19 @@ label.check input { accent-color: var(--accent); }
 .blk-top { margin-bottom: 8px; }
 .blk-h { display: flex; align-items: center; gap: 6px; }
 .blk-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); margin: 0 0 8px; cursor: pointer; }
+
+/* graphs tab: each range sorted by equity or EV */
+.gr-title { font-weight: 650; }
+.gr-legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-2); margin: 8px 0 2px; }
+.gr-key { display: inline-flex; align-items: center; gap: 6px; }
+.gr-sw { width: 14px; height: 3px; border-radius: 2px; }
+.gr-chart { width: 100%; height: auto; display: block; margin-bottom: 8px; }
+.gr-chart .grid line { stroke: var(--border); stroke-width: 1; }
+.gr-chart .grid line.zero { stroke: var(--border-strong); }
+.gr-chart .axis text { fill: var(--text-3); font-size: 10px; font-family: var(--font); }
+.gr-chart .axis .axis-title { fill: var(--text-3); font-size: 9.5px; }
+.gr-line { fill: none; stroke-width: 2; stroke-linejoin: round; }
+.gr-cross { stroke: var(--text-3); stroke-width: 1; stroke-dasharray: 3 3; }
+.gr-dot { stroke: var(--surface); stroke-width: 2; }
+.gr-hit { fill: transparent; cursor: crosshair; }
+.gr-stats td:first-child span.sw { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 7px; }

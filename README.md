@@ -355,9 +355,14 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     its responses); **Exclude board ranks** leaves out the cards that pair the board (a K on the
     board leaves out all four kings). The equity is matchup-weighted, like Pio's range equity.
     Holding a hand changes no strategy; it only rules out the opponent's combos that share its cards.
+  - **Graphs** tab: each player's range sorted by **equity** (against the other range) or **EV**,
+    plotted against the share of the range it makes up (strongest first), both players on one
+    chart; hover for the combo at any point. Below: average (matchup-weighted, like Pio's), median,
+    and the share with 50%+ equity or the EV as % of the pot. At a fold or showdown it shows the
+    node above.
 
   Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`,
-  `&side=blockers&blk=AhKd`) links to the current node and view.
+  `&side=blockers&blk=AhKd`, `&side=graphs`) links to the current node and view.
 - **Re-solve (#117):** at any decision of the original tree, **Re-solve…** re-solves the subtree from
   there in a second solver process. Either edit the sizes for the rest of the hand, or find the best
   N sizes out of a candidate list. At a node facing a bet on its own street the candidates are

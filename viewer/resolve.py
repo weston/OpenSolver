@@ -55,7 +55,7 @@ SOLVE_TIMEOUT = 24 * 3600  # a subgame solve can legitimately take a long time
 
 BROWSE_MAP = {"/node": "/api/node", "/strategy": "/api/strategy", "/range": "/api/range",
               "/ev": "/api/ev", "/calc_results": "/api/calc_results", "/path": "/api/path",
-              "/categories": "/api/categories"}
+              "/categories": "/api/categories", "/blockers": "/api/blockers"}
 
 _tb = None  # memoized tools/tree_builder.py module
 

@@ -43,7 +43,7 @@ import server as vsrv
 import resolve as vresolve
 
 CARD = re.compile(r"^[2-9TJQKA][cdhs]$")
-OVERLAY = ("/api/strategy", "/api/range", "/api/ev", "/api/node", "/api/categories")
+OVERLAY = ("/api/strategy", "/api/range", "/api/ev", "/api/node", "/api/categories", "/api/blockers")
 
 
 def street_root(node_id):

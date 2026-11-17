@@ -770,3 +770,33 @@ label.check input { accent-color: var(--accent); }
 .cd-deck { height: 210px; margin: 4px 0 18px; }
 .cd-deck button { font-size: 13px; }
 .cd-deck button.picked { outline: 3px solid var(--text); outline-offset: 1px; transform: scale(1.06); z-index: 1; }
+
+/* blockers tab: what a hand's cards remove from the other range */
+.side-tabs button { padding: 0 9px; }
+.combos tr.pick { cursor: pointer; }
+.combos tr.pick:hover td { background: var(--surface-2); }
+.blk-pick { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 4px; }
+.blk-input { display: flex; gap: 6px; align-items: center; }
+.blk-input input { flex: 1; min-width: 0; height: 28px; }
+.blk-combos { display: flex; flex-wrap: wrap; gap: 4px; }
+.blk-combo { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); font-size: 11px; cursor: pointer; }
+.blk-combo:hover { border-color: var(--border-strong); }
+.blk-combo.sel { border-color: var(--accent); background: var(--accent-soft); }
+.blk-combo.out { opacity: .45; }
+.blk-resp { margin-bottom: 10px; }
+.blk-resp caption { text-align: left; font-size: 12px; font-weight: 650; padding: 2px 0 6px; }
+.blk-resp caption .sw { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 7px; }
+.blk-share { margin-bottom: 10px; }
+.act-table td.num { border-radius: 3px; }
+.blk-mm { max-width: 220px; margin: 0 auto 8px; }
+.blk-mm div.blank { background: var(--surface-2); }
+.blk-removed .blk-cls { width: 44px; font-weight: 650; font-size: 12px; }
+.blk-removed .blk-list { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 6px; }
+.blk-metric { width: 100%; margin-bottom: 8px; }
+.blk-cards { display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px; margin-bottom: 10px; }
+.blk-card { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 2px 0; border-radius: 4px; font-size: 9px; border: 1px solid transparent; }
+.blk-card.held { border-color: var(--accent); }
+.blk-card.on-board { opacity: .3; }
+.blk-card .pc.xs { transform: scale(.85); }
+.blk-top { margin-bottom: 8px; }
+.blk-h { display: flex; align-items: center; gap: 6px; }

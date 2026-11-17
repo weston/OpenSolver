@@ -2,7 +2,8 @@
 // action strip and 13x13 matrix in the middle, details on the right. Navigating only swaps
 // data inside these regions, so nothing moves while you click through a line.
 
-import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy } from "./cards.js";
+import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy, displayCombo } from "./cards.js";
+import { prepare as prepareBlockers, comboReport, shareChanges, cardEffects } from "./blockers.js";
 import { nodeShown, whenReleased } from "./preview.js";
 import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
@@ -27,6 +28,10 @@ const S = {
   catsPlayer: null,  // OOP/IP override in that tab; null = the actor
   catHl: null,       // Set of classes highlighted by a hovered category row
   catPin: null,      // {name, classes} pinned by clicking a category row
+  blk: null,         // {key, data, P} cache for the Blockers tab
+  blkCombo: null,    // the hand the Blockers tab shows ("AsKd"), or null
+  blkFor: null,      // the player it was picked for (it only applies at that player's decisions)
+  blkMetric: null,   // what the card ranking sorts by
   side: "hand",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
@@ -117,9 +122,9 @@ function describe(parent, tok, pi, path) {
 
 /** Actions at a decision node in display order (owner, #141): most aggressive on the left,
  *  most passive on the right: all-in, bets/raises large -> small, check/call, fold. */
-function actionsOf(data, pi) {
+function actionsOf(data, pi, path = S.path) {
   const node = data.node;
-  const acts = data.children.map((c, k) => ({ k, id: c.id, ...describe(node, lastTok(c.id), pi, S.path) }));
+  const acts = data.children.map((c, k) => ({ k, id: c.id, ...describe(node, lastTok(c.id), pi, path) }));
   const rank = (x) => (x.kind === "fold" ? -2 : x.kind === "check" || x.kind === "call" ? -1 : x.kind === "allin" ? 1e9 : x.frac);
   return acts.sort((x, y) => rank(y) - rank(x));
 }
@@ -198,8 +203,11 @@ function invalidate() {
   S.dec = null;
   S.decId = null;
   S.cats = null;
-  const box = $("side-cats");
-  if (box) box.dataset.key = "";
+  S.blk = null;
+  for (const k of ["side-cats", "side-blockers"]) {
+    const box = $(k);
+    if (box) box.dataset.key = "";
+  }
 }
 
 async function loadModeData() {
@@ -609,11 +617,12 @@ function markSel() {
 /* ---- side panel ---- */
 
 function renderSide() {
-  for (const k of ["hand", "node", "ranges", "cats"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
+  for (const k of ["hand", "node", "ranges", "cats", "blockers"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
   document.querySelectorAll(".side-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.side === S.side));
   if (S.side === "hand") renderHand();
   else if (S.side === "node") renderNodePanel();
   else if (S.side === "ranges") renderRangesPanel();
+  else if (S.side === "blockers") renderBlockersPanel();
   else renderCatsPanel();
 }
 
@@ -670,6 +679,9 @@ function renderHand() {
     const c4 = el("td", "ev num", w > 0 && ev != null ? fmtChips(ev) : "—");
     tr.append(c1, c2, c3, c4);
     if (w <= 0) tr.style.opacity = ".4";
+    tr.classList.add("pick");
+    tr.title = "Click: what this hand blocks (Blockers tab)";
+    tr.onclick = () => selectBlockerCombo(combo, d.actor);
     t.appendChild(tr);
   }
   box.appendChild(t);
@@ -875,6 +887,332 @@ function catRow(c, acts, box) {
   return row;
 }
 
+/* ---- blockers tab: what holding one combo (or one card) removes from villain's range ---- */
+
+/** A change in percentage points, signed; one decimal below 10 points, and 0.0 when it rounds to nothing. */
+function pp(x) {
+  if (x == null) return "—";
+  const d = Math.abs(x) < 0.1 ? 1 : 0, t = fmt(Math.abs(x) * 100, d);
+  return Number(t) === 0 ? fmt(0, d) : `${x > 0 ? "+" : "−"}${t}`;
+}
+const pctOf = (x, d = 1) => (x == null ? "—" : fmt(x * 100, d) + "%");
+
+/** A diverging tint for a change: green for more, red for less, alpha by |x| / scale. */
+function deltaTint(x, scale) {
+  if (x == null || !(scale > 0)) return "transparent";
+  const a = Math.min(1, Math.abs(x) / scale) * 0.85;
+  return x >= 0 ? `rgba(76,195,138,${a.toFixed(3)})` : `rgba(232,83,74,${a.toFixed(3)})`;
+}
+
+/** The combo the Blockers tab shows, if it is the current actor's (a combo picked for OOP does not
+ *  carry over to an IP decision) and a real combo. */
+function blockerHero(data) {
+  if (S.blkCombo && S.blkFor == null) S.blkFor = data.actor;   // from a link: the actor it was shared at
+  if (!S.blkCombo || S.blkFor !== data.actor) return null;
+  const i = H.index.get(S.blkCombo);
+  return i == null ? null : i;
+}
+
+/** Villain's actions after one actor action, labelled like the strip (the child is one step past
+ *  the decision at path index pi). */
+function responseActs(r, pi) {
+  const path = S.path.slice(0, pi + 1).concat([r.node]);
+  return actionsOf({ node: r.node, children: r.children }, pi + 1, path);
+}
+
+/** Metric choices for the card ranking: villain's equity, then each villain action after each actor action. */
+function blockerMetrics(P, acts, pi) {
+  const out = [{ key: "eq", label: "Villain equity vs your range", get: (s) => s.eq }];
+  P.responses.forEach((r, k) => {
+    const a = acts.find((x) => x.id === r.id);
+    const head = a ? `${a.label} ${a.sub}`.trim() : lastTok(r.id);
+    for (const va of responseActs(r, pi)) {
+      out.push({ key: `r:${r.id}:${va.k}`, label: `You ${head.toLowerCase()} → villain ${`${va.label} ${va.sub}`.trim().toLowerCase()}`,
+                 get: (s) => s.responses[k].freq[va.k], kind: va.kind });
+    }
+  });
+  return out;
+}
+
+/** Default ranking metric: villain's fold after the first bet that gets an answer, else equity. */
+function defaultMetric(metrics) {
+  return (metrics.find((m) => m.kind === "fold") || metrics[0]).key;
+}
+
+async function renderBlockersPanel() {
+  const box = $("side-blockers");
+  const seq = S.seq;
+  const d = S.dec;
+  if (!S.decId || !d || !d.freq) {
+    box.dataset.key = "";
+    box.textContent = "";
+    box.appendChild(el("div", "side-empty", "Blockers need a decision node — pick one in the action line."));
+    return;
+  }
+  const key = `${S.base}|${S.decId}`;
+  if (!S.blk || S.blk.key !== key) {
+    let data;
+    try { data = await get(`${S.base}/blockers?id=${q(S.decId)}`); } catch (e) { fail(e); return; }
+    S.blk = { key, data, P: prepareBlockers(data, H.order) };
+  }
+  if (seq !== S.seq || S.side !== "blockers") return;
+  const { data, P } = S.blk;
+  const pi = S.path.findIndex((p) => p.id === S.decId);
+  const acts = actionsOf(d, pi);
+  const metrics = blockerMetrics(P, acts, pi);
+  if (!metrics.some((m) => m.key === S.blkMetric)) S.blkMetric = defaultMetric(metrics);
+  const hero = blockerHero(data);
+  // renderSide runs on every matrix hover: rebuild only when what is shown changes (keeps the scroll)
+  const vkey = `${key}|${hero}|${S.blkMetric}|${S.pinned || ""}`;
+  if (box.dataset.key === vkey) return;
+  box.dataset.key = vkey;
+  box.textContent = "";
+
+  const head = el("div", "cats-head");
+  head.append(el("span", `badge ${data.actor.toLowerCase()}`, data.actor),
+              el("span", "muted", `hand · what it removes from ${data.villain}'s range`));
+  box.appendChild(head);
+  box.appendChild(blockerPicker(data, P, hero));
+
+  const rep = hero != null ? renderComboEffects(box, data, P, hero, acts, pi) : null;
+  renderCardEffects(box, P, metrics, hero);
+  if (rep) renderRemoved(box, data, hero, rep);
+}
+
+/** Pick the hand: the pinned class's combos as buttons, or type one. */
+function blockerPicker(data, P, hero) {
+  const wrap = el("div", "blk-pick");
+  const row = el("div", "blk-input");
+  const inp = el("input");
+  inp.type = "text";
+  inp.placeholder = "Type a hand, e.g. AsKd";
+  inp.value = hero != null ? displayCombo(H.order[hero]) : "";
+  inp.spellcheck = false;
+  const apply = () => {
+    const t = parseCards(inp.value);
+    const i = t.length === 2 ? H.index.get(t[0] + t[1]) : undefined;
+    if (i == null) { toast("Type two cards, e.g. AsKd", "err"); return; }
+    selectBlockerCombo(H.order[i], data.actor);
+  };
+  inp.onkeydown = (e) => { if (e.key === "Enter") apply(); };
+  const go = el("button", "btn small", "Show");
+  go.onclick = apply;
+  row.append(inp, go);
+  if (hero != null) {
+    const clr = el("button", "btn small ghost", "Clear");
+    clr.onclick = () => { S.blkCombo = null; renderSide(); syncUrl(); };
+    row.appendChild(clr);
+  }
+  wrap.appendChild(row);
+  const cls = S.pinned;
+  if (cls) {
+    const blocked = blockedBy(boardOf(data.node));
+    const list = el("div", "blk-combos");
+    for (const i of H.byClass[cls]) {
+      const combo = H.order[i];
+      if (blocked(combo)) continue;
+      const b = el("button", "blk-combo" + (i === hero ? " sel" : ""));
+      b.appendChild(comboEl(combo, "xs"));
+      const w = data.hero_reach[i] || 0;
+      b.appendChild(el("span", "muted num", fmt(w * 100, 0) + "%"));
+      if (w <= 0) b.classList.add("out");
+      b.title = `${displayCombo(combo)}: ${fmt(w * 100, 0)}% in ${data.actor}'s range`;
+      b.onclick = () => selectBlockerCombo(combo, data.actor);
+      list.appendChild(b);
+    }
+    wrap.appendChild(list);
+  } else if (hero == null) {
+    wrap.appendChild(el("div", "hint", "Pin a class in the matrix to pick one of its combos, type a hand, or click a combo in the Hand tab."));
+  }
+  return wrap;
+}
+
+function selectBlockerCombo(combo, actor) {
+  S.blkCombo = displayCombo(combo);
+  S.blkFor = actor;
+  S.side = "blockers";
+  renderSide();
+  syncUrl();
+}
+
+function renderComboEffects(box, data, P, hero, acts, pi) {
+  const rep = comboReport(P, hero);
+  const vil = data.villain;
+  const handTxt = displayCombo(H.order[hero]);
+  if (rep.blockedByBoard) {
+    box.appendChild(el("div", "side-empty", `${handTxt} uses a board card.`));
+    return null;
+  }
+  const grid = el("div", "kv-grid");
+  const kv = (k, v, sub) => {
+    const x = el("div", "kv");
+    x.append(el("div", "k", k), el("div", "v num", v));
+    if (sub) x.appendChild(el("div", "muted", sub));
+    grid.appendChild(x);
+  };
+  const removed = rep.before.mass - rep.after.mass;
+  kv(`${vil} combos removed`, fmt(removed, removed < 10 ? 2 : 1),
+     `${pctOf(rep.before.mass > 0 ? removed / rep.before.mass : 0)} of ${fmt(rep.before.mass, 1)}`);
+  kv("Hand equity", pctOf(rep.heroEq), rep.heroReach > 0 ? `vs ${vil}'s range` : `not in ${data.actor}'s range here`);
+  kv(`${vil} equity vs your range`, `${pctOf(rep.before.eq)} → ${pctOf(rep.after.eq)}`,
+     rep.before.eq != null && rep.after.eq != null ? `${pp(rep.after.eq - rep.before.eq)} pts` : null);
+  const h = el("h3", "blk-h", "Holding ");
+  h.appendChild(comboEl(H.order[hero], "xs"));
+  box.append(h, grid);
+
+  // villain's next action, per actor action
+  const shown = P.responses.filter((r) => acts.some((a) => a.id === r.id));
+  if (shown.length) {
+    box.appendChild(el("h3", null, `${vil}'s response`));
+    for (const r of shown) {
+      const k = P.responses.indexOf(r);
+      const a = acts.find((x) => x.id === r.id);
+      const t = el("table", "act-table blk-resp");
+      const cap = el("caption");
+      const sw = el("span", "sw"); sw.style.background = a.color;
+      cap.append(sw, document.createTextNode(`After ${`${a.label} ${a.sub}`.trim()}`));
+      t.appendChild(cap);
+      t.insertAdjacentHTML("beforeend", "<tr><th>Villain</th><th>Range</th><th>Given hand</th><th>Δ pts</th></tr>");
+      for (const va of responseActs(r, pi)) {
+        const f0 = rep.before.responses[k].freq[va.k], f1 = rep.after.responses[k].freq[va.k];
+        const tr = el("tr");
+        const c = el("td");
+        const s2 = el("span", "sw"); s2.style.background = va.color;
+        c.append(s2, document.createTextNode(`${va.label} ${va.sub}`.trim()));
+        const dl = el("td", "num", pp(f1 - f0));
+        dl.style.background = deltaTint(f1 - f0, 0.1);
+        tr.append(c, el("td", "num", pctOf(f0)), el("td", "num", pctOf(f1)), dl);
+        t.appendChild(tr);
+      }
+      box.appendChild(t);
+    }
+  } else {
+    box.appendChild(el("div", "hint", `${vil} does not act right after any action here (a fold, a showdown or a new card comes first).`));
+  }
+
+  // hand classes: which parts of villain's range get thinner or thicker
+  const cls = shareChanges(rep.before, rep.after, (s) => s.classes);
+  box.appendChild(el("h3", null, `${vil}'s range by hand class`));
+  const scale = Math.max(1e-9, ...cls.map((x) => Math.abs(x.delta)));
+  const byKey = new Map(cls.map((x) => [x.key, x]));
+  const mm = el("div", "mini-matrix blk-mm");
+  for (const c of H.classes) {
+    const x = byKey.get(c);
+    const cell = el("div");
+    if (x) {
+      cell.style.background = deltaTint(x.delta, scale);
+      cell.title = `${c}: ${pctOf(x.before)} → ${pctOf(x.after)} of ${vil}'s range (${pp(x.delta)} pts)`;
+    } else cell.classList.add("blank");
+    mm.appendChild(cell);
+  }
+  box.appendChild(mm);
+  box.appendChild(shareTable(cls.slice(0, 8), (k) => k, "Class"));
+
+  if (data.cats) {
+    const made = shareChanges(rep.before, rep.after, (s) => s.made);
+    const draw = shareChanges(rep.before, rep.after, (s) => s.draw);
+    box.appendChild(el("h3", null, `${vil}'s range by category`));
+    box.appendChild(shareTable(made.slice(0, 8), (k) => prettyCat(data.cats.made_names[k] || String(k)), "Made hand"));
+    const dr = draw.filter((x) => data.cats.draw_names[x.key] !== "no_draw").slice(0, 6);
+    if (dr.length) box.appendChild(shareTable(dr, (k) => prettyCat(data.cats.draw_names[k] || String(k)), "Draw"));
+  }
+
+  return rep;
+}
+
+/** The villain combos the hand rules out, by class, most weight first. */
+function renderRemoved(box, data, hero, rep) {
+  const vil = data.villain;
+  const h = el("h3", "blk-h", `${vil} combos blocked by `);
+  h.appendChild(comboEl(H.order[hero], "xs"));
+  box.appendChild(h);
+  const byCls = new Map();
+  for (const x of rep.removed) {
+    const g = byCls.get(x.cls) || { cls: x.cls, w: 0, combos: [] };
+    g.w += x.w; g.combos.push(x);
+    byCls.set(x.cls, g);
+  }
+  const groups = [...byCls.values()].sort((a, b) => b.w - a.w);
+  if (!groups.length) box.appendChild(el("div", "hint", `None: ${vil} has no combo with these cards.`));
+  const t = el("table", "combos blk-removed");
+  for (const g of groups) {
+    const tr = el("tr");
+    const c1 = el("td", "blk-cls", g.cls);
+    const c2 = el("td", "blk-list");
+    for (const x of g.combos) {
+      const s = el("span", "blk-item");
+      s.appendChild(comboEl(x.combo, "xs"));
+      s.title = `${displayCombo(x.combo)}: ${fmt(x.w * 100, 0)}%`;
+      c2.appendChild(s);
+    }
+    tr.append(c1, c2, el("td", "w num", fmt(g.w, 2)));
+    t.appendChild(tr);
+  }
+  box.appendChild(t);
+}
+
+function shareTable(rows, name, title) {
+  const t = el("table", "act-table blk-share");
+  t.insertAdjacentHTML("beforeend", `<tr><th>${title}</th><th>Range</th><th>Given hand</th><th>Δ pts</th></tr>`);
+  for (const x of rows) {
+    const tr = el("tr");
+    const dl = el("td", "num", pp(x.delta));
+    dl.style.background = deltaTint(x.delta, 0.05);
+    tr.append(el("td", null, name(x.key)), el("td", "num", pctOf(x.before)), el("td", "num", pctOf(x.after)), dl);
+    t.appendChild(tr);
+  }
+  return t;
+}
+
+/** Every single card, ranked by how much holding it moves the chosen number. */
+function renderCardEffects(box, P, metrics, hero) {
+  const m = metrics.find((x) => x.key === S.blkMetric) || metrics[0];
+  box.appendChild(el("h3", null, "Cards that move villain's range most"));
+  const sel = el("select", "blk-metric");
+  for (const x of metrics) {
+    const o = el("option", null, x.label);
+    o.value = x.key;
+    if (x.key === m.key) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => { S.blkMetric = sel.value; renderSide(); };
+  box.appendChild(sel);
+  const rows = cardEffects(P, m.get);
+  const held = hero != null ? P.cards[hero] : [];
+  const scale = Math.max(1e-9, ...rows.map((r) => Math.abs(r.delta ?? 0)));
+  const byCard = new Map(rows.map((r) => [r.card, r]));
+  const tip = (r) => `<div class="t">${r.card}</div><div class="r"><span>${m.label}</span><b>${pctOf(r.before)} → ${pctOf(r.after)}</b></div>` +
+    `<div class="r"><span>Combos removed</span><b>${fmt(r.removed, 2)} (${pctOf(r.removedPct)})</b></div>`;
+  const grid = el("div", "blk-cards");
+  for (const s of "shdc") {
+    for (const rk of RANKS) {
+      const card = rk + s;
+      const r = byCard.get(card);
+      const c = el("div", "blk-card" + (held.includes(card) ? " held" : ""));
+      if (!r) { c.classList.add("on-board"); c.title = `${card} is on the board`; c.appendChild(cardEl(card, "xs")); grid.appendChild(c); continue; }
+      c.style.background = deltaTint(r.delta, scale);
+      c.appendChild(cardEl(card, "xs"));
+      c.appendChild(el("span", "num", pp(r.delta)));
+      c.onmousemove = (ev) => showTip(ev, tip(r));
+      c.onmouseleave = hideTip;
+      grid.appendChild(c);
+    }
+  }
+  box.appendChild(grid);
+  const t = el("table", "act-table blk-top");
+  t.insertAdjacentHTML("beforeend", "<tr><th>Card</th><th>Removes</th><th>Given card</th><th>Δ pts</th></tr>");
+  for (const r of rows.slice(0, 10)) {
+    const tr = el("tr");
+    const c = el("td"); c.appendChild(cardEl(r.card, "xs"));
+    const dl = el("td", "num", pp(r.delta));
+    dl.style.background = deltaTint(r.delta, scale);
+    tr.append(c, el("td", "num", `${fmt(r.removed, 1)} c`), el("td", "num", pctOf(r.after)), dl);
+    t.appendChild(tr);
+  }
+  box.appendChild(t);
+  box.appendChild(el("div", "hint cats-note", `Baseline: ${pctOf(rows.length ? rows[0].before : null)} with no card known. Each card removes the villain combos that contain it; a hand's effect is roughly the sum of its two cards'.`));
+}
+
 /** Up one node: the parent (deals are steps too); at a re-solved subtree's root, back to the original. */
 function goUp() {
   if (S.sub && S.id === S.sub.root) { exitSubgame(); return; }
@@ -938,13 +1276,15 @@ function urlState() {
   if (S.player) s += "&player=" + S.player;
   if (S.side !== "hand") s += "&side=" + S.side;
   if (S.pinned) s += "&pin=" + S.pinned;
+  if (S.blkCombo) s += "&blk=" + S.blkCombo;
   return s;
 }
 
 export function applyUrlState(params) {
   if (["strategy", "range", "ev"].includes(params.mode)) S.mode = params.mode;
   if (["OOP", "IP"].includes(params.player)) S.player = params.player;
-  if (["hand", "node", "ranges", "cats"].includes(params.side)) S.side = params.side;
+  if (["hand", "node", "ranges", "cats", "blockers"].includes(params.side)) S.side = params.side;
+  if (params.blk && H.index.has(params.blk)) { S.blkCombo = displayCombo(H.order[H.index.get(params.blk)]); S.blkFor = null; }
   if (params.pin && Object.prototype.hasOwnProperty.call(H.byClass, params.pin)) S.pinned = params.pin;
   document.querySelectorAll("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.mode === S.mode));
 }
@@ -956,6 +1296,7 @@ export function showEmpty() {
   $("matrix").textContent = "";
   cells = null;
   $("side-hand").textContent = "";
+  $("side-blockers").textContent = "";
 }
 
 /** Browse a re-solved subtree (#117) through the /api/resolve endpoints. */

@@ -5,7 +5,8 @@
 // share one of its cards. Every number here is therefore villain's range (reach at the node) with
 // those combos taken out, set against the whole range:
 //   - share of each hand class and each made-hand / draw category,
-//   - villain's range equity against the actor's range (calc_eq_node per villain combo),
+//   - villain's range equity against the actor's range (calc_eq_node per villain combo, weighted by
+//     its matchups as Pio's range equity is),
 //   - villain's frequency of each action after each actor action (villain's reach is the same at
 //     the child: only the actor acted).
 
@@ -37,12 +38,12 @@ export function prepare(data, order) {
 
 /**
  * Villain's range at the node restricted to the combos `keep(i)` accepts.
- * Returns mass (weighted combos), average equity (reach-weighted, over combos with an equity),
+ * Returns mass (weighted combos), average equity (matchup-weighted, over combos with an equity),
  * per-class and per-category masses, and per response the action frequencies.
  */
 export function summarize(P, keep = () => true) {
   const { data } = P;
-  const w = data.villain_reach, eq = data.villain_eq;
+  const w = data.villain_reach, eq = data.villain_eq, mu = data.villain_matchups;
   let mass = 0, eqNum = 0, eqDen = 0;
   const classes = new Map();
   const made = new Map(), draw = new Map();
@@ -51,7 +52,9 @@ export function summarize(P, keep = () => true) {
     const r = w[i] || 0;
     if (r <= 0 || !keep(i)) continue;
     mass += r;
-    if (eq[i] != null) { eqNum += r * eq[i]; eqDen += r; }
+    // matchup-weighted, like Pio's range equity (reach-weighted if the answer has no matchups)
+    const m = mu ? mu[i] || 0 : r;
+    if (eq[i] != null && m > 0) { eqNum += m * eq[i]; eqDen += m; }
     classes.set(P.cls[i], (classes.get(P.cls[i]) || 0) + r);
     if (data.cats) {
       const m = data.cats.made[i], d = data.cats.draw[i];

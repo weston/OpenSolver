@@ -41,7 +41,12 @@ const base = summarize(P);
 // AA 6 + KK 6*0.5 + AKs 4 + QJs 4 = 17 combos
 check(near(base.mass, 17), `villain mass 17 (got ${base.mass})`);
 check(near(base.responses[0].freq[1], 9 / 17), `villain calls 9/17 (got ${base.responses[0].freq[1]})`);
-check(near(base.eq, (9 * 0.8 + 8 * 0.4) / 17), "range equity is reach-weighted");
+check(near(base.eq, (9 * 0.8 + 8 * 0.4) / 17), "range equity is reach-weighted when the answer has no matchups");
+// with matchups (reach x compatible actor mass), the range equity is weighted by them, like Pio's
+data.villain_matchups = order.map((c, i) => (vr[i] ? vr[i] * (comboClass(c) === "AA" ? 3 : 1) : 0));
+const Pm = prepare(data, order);
+check(near(summarize(Pm).eq, (6 * 3 * 0.8 + 3 * 0.8 + 8 * 0.4) / (18 + 3 + 8)), "range equity is matchup-weighted");
+delete data.villain_matchups;
 
 // holding AhKc: removes AA combos with Ah (3), KK with Kc (3 * 0.5), AKs with Ah or Kc (AhKh, AcKc) = 2
 const hero = order.findIndex((c) => (c === "AhKc" || c === "KcAh"));

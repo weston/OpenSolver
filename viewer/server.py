@@ -890,7 +890,11 @@ def blockers_at(solver, node_id):
         board = "".join(node["board"].split())
         hero_reach = parse_floats(solver.cmd(f"show_range {actor} {node_id}"), NUM_COMBOS)
         villain_reach = parse_floats(solver.cmd(f"show_range {villain} {node_id}"), NUM_COMBOS)
-        villain_eq = parse_floats(solver.cmd(f"calc_eq_node {villain} {node_id}").split("\n")[0], NUM_COMBOS)
+        # equity per villain combo and its matchups (reach x compatible actor mass): the range
+        # equity is matchup-weighted, as Pio's and the rest of the viewer's range figures are
+        veq = solver.cmd(f"calc_eq_node {villain} {node_id}").split("\n")
+        villain_eq = parse_floats(veq[0], NUM_COMBOS)
+        villain_mu = parse_floats(veq[1], NUM_COMBOS) if len(veq) > 1 and veq[1].strip() else None
         hero_eq = parse_floats(solver.cmd(f"calc_eq_node {actor} {node_id}").split("\n")[0], NUM_COMBOS)
         vdec = "OOP_DEC" if villain == "OOP" else "IP_DEC"
         responses = []
@@ -912,7 +916,7 @@ def blockers_at(solver, node_id):
             cats = {"made_names": names[0].split(), "draw_names": names[1].split(), "made": made, "draw": draw}
     return {"id": node_id, "node": node, "actor": actor, "villain": villain, "board": board,
             "hero_reach": hero_reach, "villain_reach": villain_reach, "hero_eq": hero_eq,
-            "villain_eq": villain_eq, "responses": responses, "cats": cats}
+            "villain_eq": villain_eq, "villain_matchups": villain_mu, "responses": responses, "cats": cats}
 
 
 def require_post(method):

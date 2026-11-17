@@ -5,7 +5,7 @@
 import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy, displayCombo } from "./cards.js";
 import { prepare as prepareBlockers, comboReport, shareChanges, cardEffects } from "./blockers.js";
 import { nodeShown, whenReleased } from "./preview.js";
-import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips } from "./api.js";
+import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips, prefs } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
 import { syncFurther } from "./further.js";
 
@@ -32,6 +32,7 @@ const S = {
   blkCombo: null,    // the hand the Blockers tab shows ("AsKd"), or null
   blkFor: null,      // the player it was picked for (it only applies at that player's decisions)
   blkMetric: null,   // what the card ranking sorts by
+  blkNoBoardRanks: prefs.get("blk-no-board-ranks", false),  // card ranking: leave out cards that pair the board
   side: "hand",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
@@ -963,7 +964,7 @@ async function renderBlockersPanel() {
   if (!metrics.some((m) => m.key === S.blkMetric)) S.blkMetric = defaultMetric(metrics);
   const hero = blockerHero(data);
   // renderSide runs on every matrix hover: rebuild only when what is shown changes (keeps the scroll)
-  const vkey = `${key}|${hero}|${S.blkMetric}|${S.pinned || ""}`;
+  const vkey = `${key}|${hero}|${S.blkMetric}|${S.pinned || ""}|${S.blkNoBoardRanks}`;
   if (box.dataset.key === vkey) return;
   box.dataset.key = vkey;
   box.textContent = "";
@@ -1177,15 +1178,28 @@ function renderCardEffects(box, P, metrics, hero) {
   }
   sel.onchange = () => { S.blkMetric = sel.value; renderSide(); };
   box.appendChild(sel);
-  const rows = cardEffects(P, m.get);
+  // a K on the board: leave out every K (they pair the board), so the ranking shows the other ranks
+  const boardRanks = new Set([...P.board].map((c) => c[0]));
+  const lbl = el("label", "blk-toggle");
+  const cb = el("input");
+  cb.type = "checkbox";
+  cb.checked = S.blkNoBoardRanks;
+  cb.onchange = () => { S.blkNoBoardRanks = cb.checked; prefs.set("blk-no-board-ranks", cb.checked); renderSide(); };
+  lbl.append(cb, document.createTextNode(" Exclude board ranks"));
+  lbl.title = "Leave out every card of a rank on the board (a K on the board leaves out all four kings)";
+  box.appendChild(lbl);
+  const excluded = (card) => S.blkNoBoardRanks && boardRanks.has(card[0]);
+  const rows = cardEffects(P, m.get).filter((r) => !excluded(r.card));
+  const ranks = [...RANKS].filter((rk) => !(S.blkNoBoardRanks && boardRanks.has(rk)));
   const held = hero != null ? P.cards[hero] : [];
   const scale = Math.max(1e-9, ...rows.map((r) => Math.abs(r.delta ?? 0)));
   const byCard = new Map(rows.map((r) => [r.card, r]));
   const tip = (r) => `<div class="t">${r.card}</div><div class="r"><span>${m.label}</span><b>${pctOf(r.before)} → ${pctOf(r.after)}</b></div>` +
     `<div class="r"><span>Combos removed</span><b>${fmt(r.removed, 2)} (${pctOf(r.removedPct)})</b></div>`;
   const grid = el("div", "blk-cards");
+  grid.style.gridTemplateColumns = `repeat(${ranks.length}, 1fr)`;
   for (const s of "shdc") {
-    for (const rk of RANKS) {
+    for (const rk of ranks) {
       const card = rk + s;
       const r = byCard.get(card);
       const c = el("div", "blk-card" + (held.includes(card) ? " held" : ""));

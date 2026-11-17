@@ -13,7 +13,7 @@ tree of viewer/test_resolve.py:
 - a refine rebuilds with the sizes the tree was built with, not the client's current form;
 - a rebuild drops the refined subtree;
 - once the main solve meets its target, the overlay is off;
-- a fresh solve with fast preview reports the loading modal's numbers.
+- a fresh solve with fast preview reports the progress line's numbers.
 """
 import json
 import os
@@ -94,7 +94,7 @@ class RefineIntegrationTest(unittest.TestCase):
 
     def test_preview_follows_the_main_solve(self):
         self.assertEqual(self.req("/api/build", "POST")[0], 200)
-        # no target: no loading modal
+        # no target: no progress line
         st, d = self.req("/api/solve", "POST", {"accuracy": 0, "preview": True})
         self.assertNotIn("preview", d)
         self.req("/api/stop", "POST")
@@ -126,11 +126,11 @@ class RefineIntegrationTest(unittest.TestCase):
         # seconds per iteration measured from the reports (the browse lease uses it)
         self.assertIsNotNone(self.main.iter_seconds)
         self.assertGreater(self.main.iter_seconds, 0)
-        # Resume on a solved tree: no modal again
+        # Resume on a solved tree: no progress line again
         st, d = self.req("/api/solve", "POST", {"accuracy": 0.1, "preview": True})
         self.assertNotIn("preview", d)
         self.main.cmd("wait_for_solver", timeout=600)
-        # a rebuild forgets the modal's target
+        # a rebuild forgets the progress line's target
         self.assertEqual(self.req("/api/build", "POST")[0], 200)
         self.assertNotIn("preview", self.req("/api/progress")[1])
 

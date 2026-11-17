@@ -352,8 +352,9 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     them, that range's equity against yours, and its response to each of your actions (for
     example its fold frequency facing a bet) with and without them. Below, every single card is
     ranked by how much holding it moves a number you choose (the other player's equity, or any of
-    its responses). Holding a hand changes no strategy; it only rules out the opponent's combos
-    that share its cards.
+    its responses); **Exclude board ranks** leaves out the cards that pair the board (a K on the
+    board leaves out all four kings). The equity is matchup-weighted, like Pio's range equity.
+    Holding a hand changes no strategy; it only rules out the opponent's combos that share its cards.
 
   Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`,
   `&side=blockers&blk=AhKd`) links to the current node and view.

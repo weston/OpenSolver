@@ -800,3 +800,4 @@ label.check input { accent-color: var(--accent); }
 .blk-card .pc.xs { transform: scale(.85); }
 .blk-top { margin-bottom: 8px; }
 .blk-h { display: flex; align-items: center; gap: 6px; }
+.blk-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); margin: 0 0 8px; cursor: pointer; }

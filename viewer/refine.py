@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Fast preview: hide the solve time (viewer "Fast preview" checkbox, on by default).
 
-1. Build & solve shows a loading modal on the main solve's progress. Once its exploitability is
-   within PREVIEW_FACTOR (10, the owner's choice) x the target, the modal closes and the Study
-   view opens on the still-solving tree (server.py records the target; /api/progress reports
-   {"preview": ...}).
+1. Build & solve shows a progress line on the Build view (no dialog). Once the main solve's
+   exploitability is within PREVIEW_FACTOR (10, the owner's choice) x the target, the strategy
+   counts as readable and the Study view opens on the still-solving tree (server.py records the
+   target; /api/progress reports {"preview": ...}).
 2. The node on screen refreshes at each progress report of the main solve.
 3. When you look at a node on a later street, the subtree from that street's first decision is
    re-solved here (RefineManager):
@@ -264,16 +264,16 @@ class RefineManager(vresolve.ResolveManager):
         return 404, {"error": "unknown endpoint"}
 
 
-# ---------------------------------------------------------------- the loading modal
+# ---------------------------------------------------------------- the wait for a readable strategy
 
-# The owner's choice: the loading modal ends, and the Study view opens on the still-solving tree,
+# The owner's choice: the wait ends, and the Study view opens on the still-solving tree,
 # once the main solve is within this factor of the target (3% of the pot for a 0.3% target).
 PREVIEW_FACTOR = 10
 
 
 def preview_status(solver, target):
-    """The loading modal's numbers for a solve started with fast preview to `target` chips:
-    the first and the latest reported exploitability, and where the modal hands off."""
+    """The wait's numbers for a solve started with fast preview to `target` chips: the first
+    and the latest reported exploitability, and where the Study view opens."""
     with solver.state_lock:
         series = list(solver.series)
     first = series[0]["explo"] if series else None

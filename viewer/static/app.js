@@ -175,11 +175,18 @@ async function boot() {
   initFurther();
   initLock({ changed: () => study.refresh() });
   initPreview();
-  // Fast preview: the flop strategy has settled, so show it (the solve carries on).
-  window.addEventListener("preview-ready", () => {
+  // Fast preview: the strategy is readable now (the solve carries on). From a Build view left
+  // alone since Solve, open the Study view; anywhere else, stay there and say so.
+  window.addEventListener("preview-ready", (e) => {
     app.tree = true;
-    setView("study");
-    study.reset();
+    const d = e.detail || {};
+    if (app.view === "study") { study.refresh(); return; }   // open already: start this node's refine
+    if (app.view === "build" && d.untouched && !document.querySelector("dialog[open]")) {
+      setView("study");
+      study.reset();
+    } else if (d.solving) {
+      toast(`Readable after ${fmt(d.secs, 1)} s · open Study any time`);
+    }
   });
   $("btn-resolve").onclick = () => openResolve(study.id);
   $("btn-report").onclick = async () => {

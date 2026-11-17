@@ -460,7 +460,7 @@ def node_id_arg(query, name="id", default="r:0"):
 
 _resolver = None  # resolve.ResolveManager, set by main()/tests; owns the 2nd solver
 _refiner = None   # refine.RefineManager (fast preview), set by main()/tests; owns the 3rd
-_preview = None   # fast preview's loading modal: the target (chips) of the solve it follows
+_preview = None   # fast preview's progress line: the target (chips) of the solve it follows
 
 
 def set_resolver(resolver):
@@ -531,7 +531,7 @@ def api(solver, lib, method, path, query, body):
             _refiner.invalidate()
         if method == "POST" and path == "/api/solve":
             b = need_body(body)
-            # Only a fresh tree gets the loading modal: Resume on a stopped solve just continues it.
+            # Only a fresh tree gets the progress line: Resume on a stopped solve just continues it.
             fresh = not solver.series and not solver.solving
             acc = b.get("accuracy", 0.05)
             if b.get("preview") and fresh and solver.tree_present and not solver.loaded_file \
@@ -545,7 +545,7 @@ def api(solver, lib, method, path, query, body):
                 _preview = acc
                 data["preview"] = True
                 return status, data
-            _preview = None   # any other solve (Resume, no target, preview off): no modal
+            _preview = None   # any other solve (Resume, no target, preview off): no progress line
     target = _preview         # read once: a concurrent build may clear it
     if path == "/api/progress" and _refiner is not None and target is not None:
         status, data = _api_main(solver, lib, method, path, query, body)

@@ -1,17 +1,21 @@
-// Fast preview: hide the solve time.
-//  1. Solve shows a loading modal on the main solve's progress; once it is within 10x the
-//     target (viewer/refine.py PREVIEW_FACTOR) the Study view opens on the still-solving tree.
+// Fast preview: shorten the wait for a solve, without a dialog in the way.
+//  1. After Solve nothing blocks the page. A line on the Build view shows how far the main solve
+//     is from a readable strategy: within 10x the target (viewer/refine.py PREVIEW_FACTOR). At
+//     that point the Study view opens by itself, but only if the Build view was left alone since
+//     Solve. The Study view is open all the time; until then its badge says the strategy is early.
 //  2. The node on screen refreshes whenever the solve reports progress.
 //  3. On the turn or later, the street's subtree is re-solved from its first decision (full bet
 //     sizes, current ranges) and shown instead, marked "Refined", while the full solve waits.
 
-import { get, post, prefs, fmt, toast } from "./api.js";
+import { get, post, prefs, fmt } from "./api.js";
 
 const $ = (id) => document.getElementById(id);
 const P = {
-  watching: false, t0: 0, timer: null,                // after Solve: the loading modal
+  watching: false, t0: 0, timer: null,                // after Solve: the wait for a readable strategy
   gen: 0,                                             // bumped by startPreview: an older tick chain stops (#386)
-  ringBest: 0,                                        // the ring's furthest point this solve (0..1)
+  best: 0,                                            // the bar's furthest point this solve (0..1)
+  pg: null,                                           // the wait's latest numbers (/api/progress "preview")
+  touched: false,                                     // the Build view was used or left since Solve
   solving: false,                                     // main solve running (incl. parked for a refine)
   shown: null, refineRoot: null, refineTimer: null,   // node on screen and its refine
   events: null, refresh: null,                        // last solver event count seen
@@ -19,92 +23,85 @@ const P = {
 
 export const previewOn = () => prefs.get("fast-preview", true) !== false;
 
-/* ------------------------------------------------------------------ 1. the loading modal */
+/* ------------------------------------------------------------------ 1. the wait for a readable strategy */
 
-const RING = 326.73;   // 2 * pi * r for the modal's ring (r = 52)
+const potNow = () => Number($("f-pot").value) || 0;
+const pctOfPot = (chips) => `${fmt((100 * chips) / potNow(), 2)}%`;
 
-function modal() { return $("solve-modal"); }
-
-function closeModal() {
-  const m = modal();
-  if (m && m.open) m.close();
+/** How far the solve's exploitability has come from its first report toward the point where the
+ *  strategy counts as readable (PREVIEW_FACTOR x the target), on a log scale - the scale
+ *  exploitability falls on. It never goes back: exploitability is not monotone (threebet_mono:
+ *  15.8 -> 21.7 chips right after the average restarts at iteration 33, #135), so the bar shows
+ *  the best point so far; the text keeps the current number. Null until the first report. */
+function waitFraction(pg) {
+  const { explo, first, preview_at: goal } = pg || {};
+  if (!(explo > 0 && first > 0 && goal > 0)) return null;
+  const f = first > goal ? Math.log(first / explo) / Math.log(first / goal) : 1;
+  P.best = Math.max(P.best, Math.min(1, f));
+  return P.best;
 }
 
-/** The ring: how far the solve's exploitability has come from its first report toward the
- *  point where the Study view opens (PREVIEW_FACTOR x the target), on a log scale - the scale
- *  exploitability falls on. Spins until the first report. It never goes back: exploitability is
- *  not monotone (threebet_mono: 15.8 -> 21.7 chips right after the average restarts at iteration
- *  33, #135), so it shows the best point so far; the status line keeps the current number. */
-function drawRing(pg) {
-  const ring = document.querySelector("#solve-modal .sm-ring");
-  const arc = $("sm-arc");
-  const pct = $("sm-pct");
-  if (!ring || !arc) return;
-  const { explo, first, preview_at: goal } = pg || {};
-  if (!(explo > 0 && first > 0 && goal > 0)) {
-    ring.classList.add("spin");
-    if (pct) pct.textContent = "";
-    return;
+/** The Build view's line under the Solve buttons: a thin bar and the numbers. Empty when no wait. */
+function drawWait() {
+  const box = $("preview-info");
+  if (!box) return;
+  if (!P.watching) { box.textContent = ""; return; }
+  const pg = P.pg || {};
+  const f = waitFraction(pg);
+  let bar = box.querySelector(".pv-bar"), text = box.querySelector(".pv-text");
+  if (!bar) {
+    box.textContent = "";
+    bar = document.createElement("div"); bar.className = "pv-bar"; bar.appendChild(document.createElement("i"));
+    text = document.createElement("div"); text.className = "pv-text";
+    box.append(bar, text);
   }
-  ring.classList.remove("spin");
-  let f = first > goal ? Math.log(first / explo) / Math.log(first / goal) : 1;
-  f = Math.max(P.ringBest, Math.min(1, f));
-  P.ringBest = f;
-  arc.style.strokeDashoffset = String(RING * (1 - f));
-  if (pct) pct.textContent = `${Math.round(f * 100)}%`;
+  bar.classList.toggle("wait", f == null);
+  bar.firstChild.style.width = f == null ? "" : `${Math.round(f * 100)}%`;
+  const secs = fmt((performance.now() - P.t0) / 1000, 0);
+  text.textContent = pg.explo != null && pg.preview_at && potNow()
+    ? `Now ${pctOfPot(pg.explo)} of the pot · Study opens at ${pctOfPot(pg.preview_at)} · ${secs} s`
+    : `Starting · ${secs} s`;
+}
+
+function endWait() {
+  P.watching = false;
+  clearTimeout(P.timer);
+  drawWait();
+  drawBadge();
 }
 
 async function tick() {
   if (!P.watching) return;
   const gen = P.gen;
+  if ($("view-build").classList.contains("hidden")) P.touched = true;   // left the Build view
   let st;
   try { st = await get("/api/progress"); } catch (e) { if (gen === P.gen && P.watching) P.timer = setTimeout(tick, 600); return; }
-  // dismissed ("keep solving in the background") or restarted while the request was out: this answer is
-  // not for the modal any more, and must not hand off to Study (#386)
-  if (!P.watching || gen !== P.gen) return;
+  if (!P.watching || gen !== P.gen) return;   // restarted while the request was out (#386)
   const pg = st.preview || {};
-  const secs = (performance.now() - P.t0) / 1000;
-  const status = $("sm-status");
-  let ready = null;
   if (st.solving && !pg.early) {
-    const pot = Number($("f-pot").value) || 0;
-    drawRing(pg);
-    if (status) {
-      const now = pg.explo != null && pot ? `${fmt((100 * pg.explo) / pot, 2)}% of the pot` : "Starting";
-      status.textContent = `${now} · ${fmt(secs, 0)} s`;
-    }
-  } else if (st.solving) {
-    ready = `Ready in ${fmt(secs, 1)} s · still solving in the background`;
-  } else {
-    ready = (st.iters || 0) > 0 && /required accuracy/.test(st.solver_status || "") ? `Solved in ${fmt(secs, 1)} s` : null;
-    if (!ready) { P.watching = false; closeModal(); return; }   // stopped
-  }
-  if (ready) {
-    P.watching = false;
-    drawRing({ explo: 1, first: 2, preview_at: 1 });   // full ring for the hand-off
-    closeModal();
-    window.dispatchEvent(new CustomEvent("preview-ready"));
-    toast(ready);
+    P.pg = pg;
+    drawWait();
+    drawBadge();
+    P.timer = setTimeout(tick, 400);
     return;
   }
-  P.timer = setTimeout(tick, 300);
+  const solved = !st.solving && (st.iters || 0) > 0 && /required accuracy/.test(st.solver_status || "");
+  const ready = st.solving || solved;   // else: stopped before the strategy was readable
+  const detail = { untouched: !P.touched, secs: (performance.now() - P.t0) / 1000, solving: !!st.solving };
+  endWait();
+  if (ready) window.dispatchEvent(new CustomEvent("preview-ready", { detail }));
 }
 
 /** Called right after a solve starts; on: the server follows it for fast preview (a fresh solve).
- *  Shows the solving-period modal and opens the Study view when the solve is close enough. */
+ *  Starts the Build view's progress line; "preview-ready" fires when the strategy is readable. */
 export function startPreview(on) {
   clearTimeout(P.timer);
   P.gen++;
   P.watching = false;
-  if (!previewOn() || !on) return;
-  Object.assign(P, { watching: true, t0: performance.now(), ringBest: 0 });
-  const m = modal();
-  if (m) {
-    drawRing(null);
-    $("sm-status").textContent = "Starting";
-    if (!m.open) m.showModal();
-  }
-  P.timer = setTimeout(tick, 200);
+  if (previewOn() && on) Object.assign(P, { watching: true, t0: performance.now(), best: 0, pg: null, touched: false });
+  drawWait();
+  drawBadge();
+  if (P.watching) P.timer = setTimeout(tick, 200);
 }
 
 /* ------------------------------------------------------------------ 2-3. live view and street refines */
@@ -158,6 +155,9 @@ export async function nodeShown(id, cur, { inSubgame, refresh }) {
   P.shown = { id, refined: cur && cur.refined ? cur.refined : null, sub: inSubgame, state: null };
   drawBadge();
   if (!previewOn() || inSubgame) return;
+  // not yet readable: a refine now would park the main solve to re-solve from ranges that are
+  // still far off. app.js refreshes the node at "preview-ready", which comes back here.
+  if (P.watching) return;
   const hasCard = id.split(":").some((t) => /^[2-9TJQKA][cdhs]$/.test(t));
   if (!hasCard) return;
   const build = prefs.get("build", {}) || {};
@@ -214,6 +214,13 @@ function drawBadge() {
       text = "Refining this street…";
       cls = "busy";
       title = "Re-solving from this street's first decision with the current ranges; the main solve is paused meanwhile.";
+    } else if (P.watching) {
+      const pg = P.pg || {};
+      const known = pg.explo != null && pg.preview_at && potNow();
+      text = known ? `Early · ${pctOfPot(pg.explo)} of the pot` : "Early · solve starting";
+      cls = "busy";
+      title = "The solve has only just started, so this strategy is still far from settled. The view updates as it improves"
+        + (known ? `; it is readable from about ${pctOfPot(pg.preview_at)} of the pot.` : ".");
     } else if (P.solving) {
       text = "Live · still solving";
       cls = "busy";
@@ -227,17 +234,10 @@ function drawBadge() {
 }
 
 export function initPreview() {
-  const m = modal();
-  if (m) {
-    const dismiss = () => {   // the solve keeps going; stay on this page
-      if (!P.watching) return;
-      P.watching = false;
-      clearTimeout(P.timer);
-      toast("Still solving in the background · open Study any time");
-    };
-    $("sm-close").onclick = () => { dismiss(); closeModal(); };
-    m.addEventListener("cancel", dismiss);   // Esc
-  }
+  // Using the Build view during the wait (editing the next spot, say) keeps you there: the
+  // Study view then does not open by itself.
+  const build = $("view-build");
+  if (build) for (const ev of ["pointerdown", "keydown"]) build.addEventListener(ev, () => { P.touched = true; }, true);
   const cb = $("f-preview");
   if (cb) {
     cb.checked = previewOn();

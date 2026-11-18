@@ -3,7 +3,7 @@
 // a second solver process; the main tree is untouched. Results are browsed in the Study view.
 
 import { el, cardEl, parseCards } from "./cards.js";
-import { get, post, toast, fail, prefs, fmt, fmtChips } from "./api.js";
+import { get, post, toast, fail, prefs, fmt, fmtChips, fmtEvPct } from "./api.js";
 import { enterSubgame } from "./study.js";
 import { STREETS, renderSizes, readSizes, validateSizes, SIZE_RE, RAISE_RE, sizeParts, inBounds } from "./sizes.js";
 
@@ -161,18 +161,21 @@ async function poll() {
     const isBest = (r) => (st.best && JSON.stringify(st.best.sizes) === JSON.stringify(r.sizes) ? 1 : 0);
     const rows = [...st.rows].sort((a, b) => b.ev - a.ev || isBest(b) - isBest(a));
     const top = rows[0].ev;
+    const rpot = R.ctx ? potOf(R.ctx) : 0;   // EVs as % of the re-solved node's pot
+    const pts = (d) => (rpot > 0 ? `${d >= 0 ? "+" : "−"}${fmt(Math.abs(100 * d / rpot), 1)} pts` : "—");
     t.innerHTML = `<tr><th>Sizes</th><th>${actor} EV</th><th>vs best</th><th>EV OOP</th><th>EV IP</th></tr>`;
     for (const r of rows) {
       const tr = el("tr");
       if (st.best && JSON.stringify(st.best.sizes) === JSON.stringify(r.sizes)) tr.className = "best";
-      tr.innerHTML = `<td>${sizeChips(r.sizes, st.allin)}</td><td class="num">${fmtChips(r.ev)}</td><td class="num delta">${r.ev === top ? "—" : fmt(r.ev - top, 2)}</td><td class="num">${fmtChips(r.ev_oop)}</td><td class="num">${fmtChips(r.ev_ip)}</td>`;
+      tr.innerHTML = `<td>${sizeChips(r.sizes, st.allin)}</td><td class="num">${fmtEvPct(r.ev, rpot)}</td><td class="num delta">${r.ev === top ? "—" : pts(r.ev - top)}</td><td class="num">${fmtEvPct(r.ev_oop, rpot)}</td><td class="num">${fmtEvPct(r.ev_ip, rpot)}</td>`;
       t.appendChild(tr);
     }
   } else if (!st.busy && st.result && st.result.ev) {
     t.innerHTML = `<tr><th>Re-solved</th><th>EV OOP</th><th>EV IP</th><th>Nodes</th></tr>`;
     const tr = el("tr");
     const nodes = /TOTAL\D*(\d+)/.exec(st.result.node_count || "");
-    tr.innerHTML = `<td>${st.result.lines} lines</td><td class="num">${fmtChips(st.result.ev.OOP)}</td><td class="num">${fmtChips(st.result.ev.IP)}</td><td class="num">${nodes ? Number(nodes[1]).toLocaleString() : "—"}</td>`;
+    const rpot = R.ctx ? potOf(R.ctx) : 0;
+    tr.innerHTML = `<td>${st.result.lines} lines</td><td class="num">${fmtEvPct(st.result.ev.OOP, rpot)}</td><td class="num">${fmtEvPct(st.result.ev.IP, rpot)}</td><td class="num">${nodes ? Number(nodes[1]).toLocaleString() : "—"}</td>`;
     t.appendChild(tr);
     const lk = st.result.locks;   // the main tree's locks at or below this node (#200)
     if (lk && (lk.applied.length || lk.skipped.length)) {

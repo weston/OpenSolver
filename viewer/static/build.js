@@ -4,7 +4,7 @@
 import { H, RANKS, SUITS, GLYPH, el, cardEl } from "./cards.js";
 import { startPreview, previewOn } from "./preview.js";
 import { parseRange, formatRange, rangeStats } from "./ranges.js";
-import { get, post, toast, fail, prefs, fmt, fmtChips } from "./api.js";
+import { get, post, toast, fail, prefs, fmt, fmtChips, fmtEvPct } from "./api.js";
 import { drawChart } from "./chart.js";
 import { openLibrary } from "./library.js";
 import { STREETS, renderSizes, readSizes, validateSizes as validateSizeTable } from "./sizes.js";
@@ -502,8 +502,8 @@ export function updateProgress(st, series, rootPot) {
   const kv = (k, v) => { const d = el("div", "kv"); d.append(el("div", "k", k), el("div", "v num", v)); box.appendChild(d); };
   kv("Exploitability", last ? fmt((last.explo / pot) * 100, 3) + "%" : "—");
   kv("Time", last ? fmt(last.t, 1) + "s" : "—");
-  kv("EV OOP", last ? fmtChips(last.ev_oop) : "—");
-  kv("EV IP", last ? fmtChips(last.ev_ip) : "—");
+  kv("EV OOP", last ? fmtEvPct(last.ev_oop, pot) : "—");
+  kv("EV IP", last ? fmtEvPct(last.ev_ip, pot) : "—");
   $("chart-legend").textContent = st && st.iters ? `${st.iters} iterations` : "";
 }
 

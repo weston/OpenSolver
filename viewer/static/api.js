@@ -47,6 +47,11 @@ export function fmt(v, digits = 1) {
   if (v == null || !Number.isFinite(v)) return "—";
   return v.toFixed(digits);
 }
+/** An EV as a percentage of the pot ("45.2%"), the only way the viewer shows EVs (owner, #459). */
+export function fmtEvPct(ev, pot, digits = 1) {
+  if (ev == null || !Number.isFinite(ev) || !(pot > 0)) return "—";
+  return fmt((100 * ev) / pot, digits) + "%";
+}
 export function fmtChips(v) {
   if (v == null || !Number.isFinite(v)) return "—";
   return Math.abs(v - Math.round(v)) < 1e-6 ? String(Math.round(v)) : v.toFixed(1);

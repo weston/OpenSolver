@@ -1,7 +1,7 @@
 // Jobs view (#196): queue solves of the Build tab's tree on many flops, run them one at a time,
 // open finished saves. Talks to /api/jobs/* (viewer/jobs_api.py), the same queue tools/jobs.py uses.
 
-import { get, post, toast, fail, prefs, fmt } from "./api.js";
+import { get, post, toast, fail, prefs, fmt, fmtEvPct } from "./api.js";
 import { el, cardEl } from "./cards.js";
 import { currentTree } from "./build.js";
 import { tokenColor, evColor } from "./study.js";
@@ -99,7 +99,7 @@ function render(st) {
     const ex = el("td", "num", r.exploitability != null && pot ? fmt((100 * r.exploitability) / pot, 2) + "%" : "—");
     if (r.exploitability != null) ex.title = `${fmt(r.exploitability, 3)} chips (target ${fmt(batchPct(st, j), 2)}% of the pot)`;
     tr.appendChild(ex);
-    tr.appendChild(el("td", "num", r.ev_oop != null ? fmt(r.ev_oop, 2) : "—"));
+    tr.appendChild(el("td", "num", fmtEvPct(r.ev_oop, pot)));   // the EVs add up to the pot
     tr.appendChild(el("td", "num", r.seconds != null ? fmt(r.seconds, 1) + "s" : "—"));
     const act = el("td", "jobs-actions");
     if (j.status === "done") act.appendChild(btn("Open", "", "Open the save in Study", async () => {
@@ -276,7 +276,7 @@ function stratBar(freqs, rep) {
   return bar;
 }
 
-let handSort = { key: "ev", desc: true };
+let handSort = { key: "ev_pct", desc: true };
 const RANKS = "23456789TJQKA";
 /** A hand class's strength order for sorting: AA, AKs, AKo, AQs, ... 22 (higher = first). */
 const handRank = (h) => RANKS.indexOf(h[0]) * 1000 + RANKS.indexOf(h[1]) * 10 + (h.length === 2 ? 2 : h[2] === "s" ? 1 : 0);
@@ -308,7 +308,7 @@ function renderHandGrid(rep, player, mode) {
         c.style.background = v == null ? "var(--surface-3)"
           : mode === "eqr" ? evColor(v - 1, 0.5) : evColor(v - mean, scale);
         c.appendChild(el("i", "", v == null ? "—" : mode === "eqr" ? fmt(100 * v, 0) + "%" : fmt(v, 0) + "%"));
-        c.title = `${hand}: EV ${fmt(x.ev, 2)} (${x.ev_pct == null ? "—" : fmt(x.ev_pct, 1) + "% pot"}) · equity ` +
+        c.title = `${hand}: EV ${x.ev_pct == null ? "—" : fmt(x.ev_pct, 1) + "%"} · eq ` +
           `${fmt(100 * x.equity, 1)}% · EQR ${x.eqr == null ? "—" : fmt(100 * x.eqr, 1) + "%"} · matchups ${fmt(x.matchups, 1)}`;
       } else {
         c.title = `${hand}: not in ${player}'s range here`;
@@ -327,12 +327,12 @@ function renderHands(rep, player) {
   if (mode !== "table") renderHandGrid(rep, player, mode);
   const t = $("jr-table");
   t.replaceChildren();
-  const cols = [["hand", "Hand"], ["ev", "EV"], ["ev_pct", "EV % pot"], ["equity", "Equity"], ["eqr", "EQR"],
+  const cols = [["hand", "Hand"], ["ev_pct", "EV"], ["equity", "eq"], ["eqr", "EQR"],
     ["matchups", "Matchups"]];
   const head = el("tr");
   for (const [k, label] of cols) {
     const th = el("th", k === "hand" ? "sortable" : "num sortable", label + (handSort.key === k ? (handSort.desc ? " ▾" : " ▴") : ""));
-    th.title = { ev: "Chips, weighted by matchups over the flops", ev_pct: "EV in % of the pot at this node",
+    th.title = { ev_pct: "EV as % of the pot at this node, weighted by matchups over the flops",
       equity: "Equity against the opponent's range here", eqr: "Equity realization: EV / (equity × pot)",
       matchups: "Reach × the opponent's unblocked combos, summed over the flops" }[k] || "";
     th.onclick = () => {
@@ -352,7 +352,7 @@ function renderHands(rep, player) {
   const tb = el("tbody");
   for (const x of rows) {
     const tr = el("tr");
-    const cells = [x.hand, fmt(x.ev, 2), x.ev_pct == null ? "—" : fmt(x.ev_pct, 1) + "%", fmt(100 * x.equity, 1) + "%",
+    const cells = [x.hand, x.ev_pct == null ? "—" : fmt(x.ev_pct, 1) + "%", fmt(100 * x.equity, 1) + "%",
       x.eqr == null ? "—" : fmt(100 * x.eqr, 1) + "%", fmt(x.matchups, 1)];
     cells.forEach((c, i) => tr.appendChild(el("td", i ? "num" : "", c)));
     tb.appendChild(tr);
@@ -394,6 +394,7 @@ function renderReport() {
   const tb = el("tbody");
   const pct = (v) => (v == null ? "—" : fmt(100 * v, 1) + "%");
   const gl = (v) => (v == null ? "—" : fmt(100 * v, 2) + "%");
+  const evp = (v) => fmtEvPct(v, rep.pot);   // EVs as % of the pot at the report's node
   const freqCells = (x) => (x.freqs ? x.freqs.map(pct) : rep.labels.map(() => "—"));
   const addRow = (cells, freqs, cls, title) => {
     const tr = el("tr", cls || "");
@@ -406,24 +407,24 @@ function renderReport() {
   };
   if (by) {
     for (const g of rep.groups[by] || []) {
-      addRow(atLine ? [g.key, String(g.flops), fmt(g.weight, 2), fmt(g.ev_oop, 2), fmt(g.ev_ip, 2), ...g.freqs.map(pct)]
-        : [g.key, String(g.flops), fmt(g.weight, 2), fmt(g.ev_oop, 2), ...g.freqs.map(pct)], g.freqs, "", g.boards.join(" "));
+      addRow(atLine ? [g.key, String(g.flops), fmt(g.weight, 2), evp(g.ev_oop), evp(g.ev_ip), ...g.freqs.map(pct)]
+        : [g.key, String(g.flops), fmt(g.weight, 2), evp(g.ev_oop), ...g.freqs.map(pct)], g.freqs, "", g.boards.join(" "));
     }
   } else if (atLine) {
     for (const x of rep.rows) {
-      addRow([boardEl(x.board), fmt(x.weight, 2), gl(x.global), fmt(x.ev_oop, 2), fmt(x.ev_ip, 2), ...freqCells(x)],
+      addRow([boardEl(x.board), fmt(x.weight, 2), gl(x.global), evp(x.ev_oop), evp(x.ev_ip), ...freqCells(x)],
         x.freqs, "", x.error || "");
       if (cards && x.cards) {
         for (const c of x.cards) {
           const lab = el("span", "jr-card");
           for (const k of c.cards) lab.appendChild(cardEl(k, "xs"));
-          addRow([lab, "", gl(c.global), fmt(c.ev_oop, 2), fmt(c.ev_ip, 2), ...freqCells(c)], c.freqs, "sub");
+          addRow([lab, "", gl(c.global), evp(c.ev_oop), evp(c.ev_ip), ...freqCells(c)], c.freqs, "sub");
         }
       }
     }
   } else {
     for (const x of rep.rows) {
-      addRow([boardEl(x.board), fmt(x.weight, 2), fmt(x.ev_oop, 2),
+      addRow([boardEl(x.board), fmt(x.weight, 2), evp(x.ev_oop),
         x.exploitability != null && rep.pot ? fmt((100 * x.exploitability) / rep.pot, 2) + "%" : "—",
         ...freqCells(x)], x.freqs);
     }
@@ -431,10 +432,10 @@ function renderReport() {
   if (rep.total && rep.total.freqs) {
     const T = rep.total;
     let cells;
-    if (atLine) cells = by ? ["All flops", String(T.flops), fmt(T.weight, 2), fmt(T.ev_oop, 2), fmt(T.ev_ip, 2)]
-      : [`Weighted (${T.flops})`, fmt(T.weight, 2), gl(T.global), fmt(T.ev_oop, 2), fmt(T.ev_ip, 2)];
-    else cells = by ? ["All flops", String(T.flops), fmt(T.weight, 2), fmt(T.ev_oop, 2)]
-      : [`Weighted (${T.flops})`, fmt(T.weight, 2), fmt(T.ev_oop, 2), ""];
+    if (atLine) cells = by ? ["All flops", String(T.flops), fmt(T.weight, 2), evp(T.ev_oop), evp(T.ev_ip)]
+      : [`Weighted (${T.flops})`, fmt(T.weight, 2), gl(T.global), evp(T.ev_oop), evp(T.ev_ip)];
+    else cells = by ? ["All flops", String(T.flops), fmt(T.weight, 2), evp(T.ev_oop)]
+      : [`Weighted (${T.flops})`, fmt(T.weight, 2), evp(T.ev_oop), ""];
     addRow([...cells, ...T.freqs.map(pct)], T.freqs, "total");
   }
   t.appendChild(tb);

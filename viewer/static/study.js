@@ -1327,7 +1327,9 @@ function drawRangeGraph(svg, cs, metric) {
   const x = (f) => L + f * (W - L - R);
   const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (Hh - T - B);
   const grid = svgEl("g", { class: "grid" }, svg), axis = svgEl("g", { class: "axis" }, svg);
-  for (let v = lo; v <= hi + step / 2; v += step) {
+  for (let i = 0, n = Math.round((hi - lo) / step); i <= n; i++) {
+    // from the index, not by adding the step (that drifts), and 0 exactly so it never prints "-0%"
+    const v0 = lo + i * step, v = Math.abs(v0) < step / 2 ? 0 : v0;
     const yy = y(v);
     svgEl("line", { x1: L, x2: W - R, y1: yy, y2: yy, class: Math.abs(v) < 1e-9 && metric === "ev" ? "zero" : "" }, grid);
     const tx = svgEl("text", { x: L - 6, y: yy + 3, "text-anchor": "end" }, axis);

@@ -1,4 +1,4 @@
-"""Runout lines (Beta view): how one hand plays the rest of the pot, on every runout.
+"""Runout lines (Study's Beta side tab): how one hand plays the rest of the pot, on every runout.
 
 The solver's `show_hand_lines` extension walks the tree below a node once and prints every line the
 hand takes with its weight (src/upi_nodes.cpp). This module turns those rows into what the page

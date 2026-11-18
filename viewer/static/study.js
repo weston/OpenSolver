@@ -6,6 +6,7 @@ import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy, dis
 import { prepare as prepareBlockers, comboReport, shareChanges, cardEffects } from "./blockers.js";
 import { curves as rangeCurves, at as rangeAt, shareAbove } from "./graphs.js";
 import { sideCache } from "./sidecache.js";
+import { renderRunouts, forgetRunouts } from "./beta.js";
 import { nodeShown, whenReleased } from "./preview.js";
 import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips, fmtEvPct, prefs } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
@@ -210,7 +211,8 @@ function invalidate() {
   S.dec = null;
   S.decId = null;
   side.invalidate();
-  for (const k of ["side-cats", "side-blockers", "side-graphs"]) {
+  forgetRunouts();
+  for (const k of ["side-cats", "side-blockers", "side-graphs", "side-beta"]) {
     const box = $(k);
     if (box) box.dataset.key = "";
   }
@@ -673,13 +675,28 @@ function markSel() {
 
 /* ---- side panel ---- */
 
+const SIDES = ["hand", "cats", "blockers", "graphs", "beta"];
+
 function renderSide() {
-  for (const k of ["hand", "cats", "blockers", "graphs"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
+  for (const k of SIDES) $("side-" + k).classList.toggle("hidden", k !== S.side);
   document.querySelectorAll(".side-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.side === S.side));
   if (S.side === "hand") renderHand();
   else if (S.side === "blockers") renderBlockersPanel();
   else if (S.side === "graphs") renderGraphsPanel();
+  else if (S.side === "beta") renderBetaPanel();
   else renderCatsPanel();
+}
+
+/** Beta, runout lines (beta.js): the lines the pinned class takes on every runout from this node, for
+ *  the player whose hands the matrix shows. */
+function renderBetaPanel() {
+  const seq = S.seq, n = S.path[S.path.length - 1];
+  renderRunouts($("side-beta"), {
+    base: S.base, id: S.id, board: boardOf(n), cls: S.pinned,
+    player: S.mode === "strategy" && S.dec ? S.dec.actor : viewPlayer(),
+    current: () => seq === S.seq && S.side === "beta",
+    goto: gotoNode,
+  });
 }
 
 function renderHand() {
@@ -1536,7 +1553,7 @@ function urlState() {
 export function applyUrlState(params) {
   if (["strategy", "range", "ev"].includes(params.mode)) S.mode = params.mode;
   if (["OOP", "IP"].includes(params.player)) S.player = params.player;
-  if (["hand", "cats", "blockers", "graphs"].includes(params.side)) S.side = params.side;
+  if (SIDES.includes(params.side)) S.side = params.side;
   if (params.blk && H.index.has(params.blk)) { S.blkCombo = displayCombo(H.order[H.index.get(params.blk)]); S.blkFor = null; }
   if (params.pin && Object.prototype.hasOwnProperty.call(H.byClass, params.pin)) S.pinned = params.pin;
   document.querySelectorAll("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.mode === S.mode));
@@ -1551,6 +1568,7 @@ export function showEmpty() {
   $("side-hand").textContent = "";
   $("side-blockers").textContent = "";
   $("side-graphs").textContent = "";
+  $("side-beta").textContent = "";
 }
 
 /** "OOP 50% · 125%": who plays which sizes in a shown re-solve. */
@@ -1601,9 +1619,6 @@ export const study = {
   get id() { return S.id; },
   get pot() { return S.path.length ? potOf(S.path[S.path.length - 1]) : 0; },
   get inSubgame() { return !!S.variant; },
-  get base() { return S.base; },       // "/api", or the overlay of a re-solve shown here
-  get pinned() { return S.pinned; },   // the hand class pinned in the matrix, or null
-  get actor() { const n = S.path[S.path.length - 1]; return isDec(n) ? actorOf(n) : null; },
   refresh() { invalidate(); return gotoNode(S.loaded ? S.id : "r:0"); },
   reset() { S.pinned = null; invalidate(); S.variant = null; return gotoNode("r:0"); },
 };

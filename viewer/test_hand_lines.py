@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for viewer/hand_lines.py (Beta view, runout lines, #467).
+"""Tests for viewer/hand_lines.py (Study's Beta side tab, runout lines, #467).
 
 Usage: python3 viewer/test_hand_lines.py [path-to-solver]
 

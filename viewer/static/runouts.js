@@ -1,4 +1,4 @@
-// Runout lines (Beta view): the parts with no page in them. Reading a line label, choosing what a
+// Runout lines (Study's Beta side tab): the parts with no page in them. Reading a line label, choosing what a
 // runout's box shows, which lines get a colour, and where the boxes of the turn x river map go. The report is /api/hand_lines
 // (viewer/hand_lines.py): {lines: [label], now: {reach, lines: [[line, freq]], cards: [{card, ...}]}}.
 
@@ -101,19 +101,19 @@ export function deck(board) {
   return out;
 }
 
-/** Where the boxes of one side of the map go: `size` px each, 1px apart, `gap` px more where the
- *  suit changes. {at: [px], size, end}; index(px) is the box under a pixel, or -1. */
-export function axis(cards, size, gap) {
+/** Where the boxes of one side of the map go: `size` px each, `sep` px apart (0: touching), `gap` px
+ *  more where the suit changes. {at: [px], size, end}; index(px) is the box under a pixel, or -1. */
+export function axis(cards, size, gap, sep = 1) {
   const at = [];
   let x = 0;
   cards.forEach((c, i) => {
     if (i && c[1] !== cards[i - 1][1]) x += gap;
     at.push(x);
-    x += size + 1;
+    x += size + sep;
   });
-  const end = Math.max(0, x - 1);
+  const end = Math.max(0, x - sep);
   const index = (px) => {
-    for (let i = 0; i < at.length; i++) if (px >= at[i] && px < at[i] + size + 1) return i;
+    for (let i = 0; i < at.length; i++) if (px >= at[i] && px < at[i] + size + sep) return i;
     return -1;
   };
   return { at, size, end, index };

@@ -361,7 +361,8 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     and the share with 50%+ equity or the EV as % of the pot. At a fold or showdown it shows the
     node above.
 
-  Drag the side panel's left edge to widen it (double-click it to reset); the width is remembered.
+  The side panel takes a quarter of the window; drag the grip on its left edge to resize it (double-click to
+  reset). The width is remembered.
 
   Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`,
   `&side=blockers&blk=AhKd`, `&side=graphs`) links to the current node and view.

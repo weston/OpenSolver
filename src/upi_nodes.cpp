@@ -1,6 +1,7 @@
 // UPI node navigation, queries, strategies, locking and line commands.
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <cstring>
 #include <limits>
 #include <set>
@@ -357,6 +358,131 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
     s += "\n";
   }
   return s + "\n";  // rows end in a newline; one more is the blank line Pio prints before END (#125)
+}
+
+// show_hand_lines <player> <node> <combo> [<combo> ...] (extension, the viewer's runout lines): how
+// the given combos of <player> play the rest of the hand from <node>, on every runout. One row per
+// line, "<suffix> <weight> <base>": the suffix is the rest of a node id (both players' actions and
+// the dealt cards, in display frame). A line ends where the hand does (a fold, a showdown, an all-in
+// that runs the board out) or where a card is about to be dealt: that row ends in "~", and is followed
+// by the rows of every card that can come. The id of <node> itself is the suffix "." (or "~").
+//
+// <weight> is how often the line is played: summed over the combos, the combo's reach at <node> times
+// its own action frequencies on the line, times the opponent's reach on the line (its reach at <node>
+// times its action frequencies) that neither the combo nor the dealt cards block. <base> is the same
+// figure at <node>, with the cards the line deals removed. So weight / base is the chance that the
+// hand plays the line when those cards come, and among rows with the same cards, each line's share of
+// the weights is how often the hand plays it. Lines under 1e-5 of their base are left out, and so is a
+// street a truncated save has no strategies for. Prints "combos: <c1> ... <ck>" first.
+std::string Upi::cmd_show_hand_lines(const Args& a) {
+  if (a.size() < 3) throw CmdError{"incorrect or missing argument"};
+  const int hero = player_arg(a[0]), vil = 1 - hero;
+  TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+  NodeRef r = resolve(a[1]);
+  if (r.pseudo_root) r = resolve("r:0");
+  if (r.board.size() < 3) throw CmdError{"incorrect node"};
+  ensure_recalced(r);
+  std::vector<int> combos;
+  for (size_t i = 2; i < a.size(); ++i) {
+    int c = parse_combo(a[i]);
+    if (c < 0) throw CmdError{"incorrect or missing argument"};
+    if (std::find(combos.begin(), combos.end(), c) == combos.end()) combos.push_back(c);
+  }
+  std::vector<int> idx[2];  // combo (canonical frame) -> local hand index, -1 if none
+  for (int p = 0; p < 2; ++p) {
+    idx[p].assign(NUM_COMBOS, -1);
+    for (size_t h = 0; h < tree_->hands[p].size(); ++h) idx[p][tree_->hands[p][h]] = static_cast<int>(h);
+  }
+  // Four per-hand vectors travel down the tree: both players' reaches at <node> with the dealt cards
+  // removed (own0, opp0: the base), and the same times the actions taken on the line (own, opp).
+  std::vector<float> own0, opp0;
+  if (hero == 0) node_reach(r, own0, opp0); else node_reach(r, opp0, own0);
+  std::vector<float> own = own0, opp = opp0;
+  int stop = tree_->missing_street;  // first street without strategies to read (4 = turn, 5 = river)
+  if (always_recalc_street_ >= 3 && (stop == 0 || always_recalc_street_ < stop)) stop = always_recalc_street_;
+
+  std::string out = "combos:";
+  for (int c : combos) out += " " + combo_str(c);
+  out += "\n";
+  // Sum over the combos of hv[combo] x the part of ov that neither card of the combo blocks.
+  auto weight = [&](const std::vector<float>& hv, const std::vector<float>& ov, int frame, uint64_t bm) {
+    const auto& hc = tree_->hands_with_card[vil];
+    double total = -1, w = 0;
+    for (int c : combos) {
+      if (combo_mask(c) & bm) continue;
+      int orig = PERM_COMBO[PERM_INV[frame]][c];
+      int h = idx[hero][orig];
+      if (h < 0 || hv[h] <= 0) continue;
+      if (total < 0) {
+        total = 0;
+        for (float x : ov) total += x;
+      }
+      double s = total;
+      for (uint16_t k : hc[COMBOS[orig].hi]) s -= ov[k];
+      for (uint16_t k : hc[COMBOS[orig].lo]) s -= ov[k];
+      if (idx[vil][orig] >= 0) s += ov[idx[vil][orig]];
+      if (s > 0) w += hv[h] * s;
+    }
+    return w;
+  };
+  auto row = [&](const std::string& suffix, double w, double base) {
+    out += suffix + " " + pfmt("%.6g", w) + " " + pfmt("%.6g", base) + "\n";
+  };
+  auto join = [](const std::string& suffix, const std::string& t) { return suffix.empty() ? t : suffix + ":" + t; };
+
+  std::function<void(uint32_t, int, uint64_t, const std::string&, double)> walk =
+      [&](uint32_t node, int frame, uint64_t bm, const std::string& suffix, double base) {
+    const double w = weight(own, opp, frame, bm);
+    if (!(w > 0) || w < 1e-5 * base) return;
+    const GNode& n = tree_->nodes[node];
+    if (n.kind == ANodeKind::Decision) {
+      const ActionNode& an = tree_->an(n);
+      int actor = n.player, A = n.num_children, H = tree_->num_hands(actor);
+      std::vector<float> sig(static_cast<size_t>(A) * H);
+      solver_->average_strategy(node, sig.data());
+      std::vector<float>& v = actor == hero ? own : opp;
+      std::vector<float> keep = v;
+      for (int k = 0; k < A; ++k) {
+        for (int h = 0; h < H; ++h) v[h] = keep[h] * sig[static_cast<size_t>(k) * H + h];
+        walk(n.first_child + static_cast<uint32_t>(k), frame, bm, join(suffix, action_label(an, an.actions[k])), base);
+      }
+      v = keep;
+    } else if (n.kind == ANodeKind::Chance && !tree_->chances[n.aux].flop_deal) {
+      row(join(suffix, "~"), w, base);
+      if (stop && n.board_len + 1 >= stop) return;  // no strategies past this deal
+      const ChanceInfo& ci = tree_->chances[n.aux];
+      std::vector<float>* vs[4] = {&own, &opp, &own0, &opp0};
+      const std::vector<float> src[4] = {own, opp, own0, opp0};
+      const int pl[4] = {hero, vil, hero, vil};
+      for (int x = NUM_CARDS - 1; x >= 0; --x) {
+        if (bm & card_bit(x)) continue;
+        int y = PERM_CARD[PERM_INV[frame]][x];
+        int slot = ci.slot[y];
+        if (slot < 0) continue;
+        int perm = ci.perm[y], card = ci.cards[slot];
+        for (int i = 0; i < 4; ++i) {
+          auto& v = *vs[i];
+          if (perm != IDENTITY_PERM) {
+            const auto& ph = tree_->perm_hand[pl[i]][perm];
+            for (size_t h = 0; h < v.size(); ++h) v[h] = src[i][ph[h]];
+          } else {
+            v = src[i];
+          }
+          for (uint16_t h : tree_->hands_with_card[pl[i]][card]) v[h] = 0.0f;
+        }
+        int f2 = PERM_COMPOSE[frame][perm];
+        uint64_t bm2 = bm | card_bit(x);
+        walk(n.first_child + static_cast<uint32_t>(slot), f2, bm2, join(suffix, card_str(x)),
+             weight(own0, opp0, f2, bm2));
+      }
+      for (int i = 0; i < 4; ++i) *vs[i] = src[i];
+    } else {
+      row(suffix.empty() ? "." : suffix, w, base);  // a fold, a showdown, or an all-in that runs the board out
+    }
+  };
+  uint64_t bm = board_mask(r.board);
+  walk(r.node, r.frame, bm, "", weight(own0, opp0, r.frame, bm));
+  return out;
 }
 
 std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
@@ -1014,6 +1140,7 @@ void Upi::register_node_commands() {
   };
   H["show_strategy"] = [this](const Args& a) { return cmd_show_strategy(a, false); };
   H["show_strategy_pp"] = [this](const Args& a) { return cmd_show_strategy(a, true); };
+  H["show_hand_lines"] = [this](const Args& a) { return cmd_show_hand_lines(a); };
   H["calc_ev"] = [this](const Args& a) { return cmd_calc_ev(a, false); };
   H["calc_ev_pp"] = [this](const Args& a) { return cmd_calc_ev(a, true); };
   H["calc_eq"] = [this](const Args& a) { return cmd_calc_eq(a, false, false); };

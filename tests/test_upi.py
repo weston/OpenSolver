@@ -8,6 +8,7 @@ By default the multi-street checks run on a small tree (tens of MB) so `make tes
 ~3.3 GB with small_strats) — use that on a large-RAM machine.
 """
 import math
+import random
 import shutil
 import os
 import platform
@@ -226,6 +227,76 @@ def check_isomorphism(u, order):
     check(n7s[0] == "r:0:c:c:7s" and n7s[2] == "Qh Qc 2c 7s ", "show_node keeps requested isomorphic card")
     sp = u.cmd("show_children r:0:c:c")
     check(sp.count("child ") == 49, "SPLIT_NODE lists all 49 turn cards")
+
+
+def check_hand_lines(u, order):
+    """show_hand_lines (extension, the viewer's runout lines): every row's weight and base are what
+    show_range gives at the two ends of the line. show_range is the product of the action
+    frequencies down to a node, so the weight of a line is the combos' range at its end times the
+    opponent's range there that neither the combo nor the dealt cards block, and the base is the
+    same at the node asked about. Runouts of every suit are checked, so the suit frames are too."""
+    print("[show_hand_lines: rows agree with show_range at both ends of a line]")
+    idx = {h: i for i, h in enumerate(order)}
+    ranges = {}
+
+    def rng(p, node):
+        if (p, node) not in ranges:
+            ranges[p, node] = floats(u.cmd(f"show_range {p} {node}"))
+        return ranges[p, node]
+
+    def weight(hero, node, combos, dealt):
+        own, opp = rng(hero, node), rng("IP" if hero == "OOP" else "OOP", node)
+        total = 0.0
+        for c in combos:
+            gone = {c[:2], c[2:]} | set(dealt)
+            if {c[:2], c[2:]} & set(dealt) or not own[idx[c]]:
+                continue
+            total += own[idx[c]] * sum(x for h, x in zip(order, opp) if x and h[:2] not in gone and h[2:] not in gone)
+        return total
+
+    rnd = random.Random(467)
+    cases = [("IP", "r:0:c", ["AsKs", "AdKd"]), ("OOP", "r:0", ["JhJd"]), ("OOP", "r:0:c:c:7s", ["AhKs", "AdAc", "KdKc"])]
+    # and a node where the hand faces a bet, on a turn card of a suit the tree does not store: the
+    # first one both players get to, with the three combos that get there most
+    for node in [f"r:0:c:c:{c}{way}" for c in ("7s", "As", "Td", "3s") for way in (":b20", ":c:b20")]:
+        hero = "OOP" if node.endswith(":c:b20") else "IP"   # the one the bet is made to
+        own = rng(hero, node)
+        if sum(own) > 0.5 and sum(rng("IP" if hero == "OOP" else "OOP", node)) > 0.5:
+            cases.append((hero, node, sorted(order, key=lambda h: -own[idx[h]])[:3]))
+            break
+    check(len(cases) == 4, "a turn bet that both players get to")
+    for hero, node, combos in cases:
+        out = u.cmd(f"show_hand_lines {hero} {node} " + " ".join(combos)).split("\n")
+        check(out[0] == "combos: " + " ".join(combos), f"{hero} {node}: the combos are echoed ({out[0]})")
+        rows = [r.split(" ") for r in out[1:] if r]
+        check(len(rows) > 20 and all(len(r) == 3 for r in rows), f"{hero} {node}: {len(rows)} rows of suffix, weight, base")
+        suits, worst = set(), 0.0
+        deals = [r for r in rows if r[0].endswith("~")]
+        for suffix, w, base in rnd.sample(rows, min(60, len(rows))) + rnd.sample(deals, min(20, len(deals))) + rows[:2]:
+            toks = [t for t in suffix.split(":") if t not in ("~", ".")]
+            dealt = [t for t in toks if len(t) == 2 and t[0] in "AKQJT98765432" and t[1] in "shdc"]
+            suits.update(t[1] for t in dealt)
+            end = ":".join([node] + toks)
+            scale = max(float(base), 1e-9)
+            worst = max(worst, abs(weight(hero, end, combos, dealt) - float(w)) / scale,
+                        abs(weight(hero, node, combos, dealt) - float(base)) / scale)
+        check(worst < 1e-4, f"{hero} {node}: weights and bases match show_range (worst {worst:.2e} of the base)")
+        if node.count(":") < 4:
+            check(suits == set("shdc"), f"{hero} {node}: runouts of all four suits checked")
+        # among the rows of one runout the weights are how the hand is split: no more than the base
+        by_cards = {}
+        for suffix, w, base in rows:
+            key = tuple(t for t in suffix.split(":") if len(t) == 2 and t[1] in "shdc" and t[0] in "AKQJT98765432")
+            tot, b = by_cards.get(key, (0.0, float(base)))
+            by_cards[key] = (tot + float(w), b)
+        check(all(tot <= b * (1 + 1e-4) for tot, b in by_cards.values()), f"{hero} {node}: a runout's lines add up to no more than its base")
+        check(abs(by_cards[()][0] - by_cards[()][1]) < 2e-3 * by_cards[()][1], f"{hero} {node}: before any card, the lines are all of it")
+    # a combo that is not in the range, or on the board: just the header
+    check(u.cmd("show_hand_lines OOP r:0 7h2d") == "combos: 7h2d", "a combo outside the range has no rows")
+    check(u.cmd("show_hand_lines OOP r:0 QhJh") == "combos: QhJh", "a combo the board blocks has no rows")
+    for bad in ("show_hand_lines", "show_hand_lines OOP r:0", "show_hand_lines OOP r:0 ZZ", "show_hand_lines XX r:0 AsKs",
+                "show_hand_lines OOP r:0:zz AsKs"):
+        check(u.cmd(bad).startswith("ERROR"), f"{bad!r} is an error")
 
 
 def check_locking(u):
@@ -460,6 +531,7 @@ def run_small_tree(u, order):
     check_strategies(u, order, evo)
     check_isomorphism(u, order)
     check_blocked_display(u, order)
+    check_hand_lines(u, order)
     check_locking(u)
     check_save_load(u, "r:0:c:b12", deep_paths=("r:0:c:c:3d", "r:0:c:b12:c:Ad:c", "r:0:c:c:Ks:c:c:3h", "r:0:b12:c:7d:c:c:9s"),
                     whole_tree=True)

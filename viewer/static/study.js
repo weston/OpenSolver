@@ -1601,6 +1601,9 @@ export const study = {
   get id() { return S.id; },
   get pot() { return S.path.length ? potOf(S.path[S.path.length - 1]) : 0; },
   get inSubgame() { return !!S.variant; },
+  get base() { return S.base; },       // "/api", or the overlay of a re-solve shown here
+  get pinned() { return S.pinned; },   // the hand class pinned in the matrix, or null
+  get actor() { const n = S.path[S.path.length - 1]; return isDec(n) ? actorOf(n) : null; },
   refresh() { invalidate(); return gotoNode(S.loaded ? S.id : "r:0"); },
   reset() { S.pinned = null; invalidate(); S.variant = null; return gotoNode("r:0"); },
 };

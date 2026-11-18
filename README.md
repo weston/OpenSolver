@@ -399,6 +399,22 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
   stopped}`) alongside the existing whole-solve convergence series; `loaded_file` is also in
   `/api/status`. Uses the UPI extension `go_partial <node> [N steps|seconds]` (see
   `docs/commands.md`).
+- **Beta → Runout lines (#467):** what one hand does on every runout, without clicking through the
+  tree. Type a hand (`JJ`, `AKs`, `AhKd`; a hand pinned in Study comes along) at a flop or turn node.
+  - **A line** is the hand's own actions, street by street: `bet · bet · check`, `check · xc · xf`.
+    What the other player does only decides which of them it gets to take.
+  - **From a flop node** the picture is a turn × river map: a row per turn card, a column per river
+    card, a suit at a time. Each box holds the hand's **N most common lines on that runout** (N is 3;
+    the buttons go from 1 to 5), as bands of colour, wider the more often. A line keeps its colour
+    everywhere, and the eight that weigh most have one; the rest are grey.
+  - **Reading it:** point at a box for the lines and their exact frequencies, at a line in the list
+    to see where on the map it is played (click to keep it), click a turn's label for that turn
+    enlarged with the lines written out, click a box to open that runout in Study.
+  - **From a turn node** it is one box per river card, lines written out.
+  - Frequencies are of the times the hand gets to that card (the pot has not ended before); lines
+    under 0.5% of a runout are left to "other". **Split** bet sizes tells `bet 33%` from `bet 75%`.
+  - `#beta=<node>&hand=JJ&player=IP&n=3` links to it. API: `GET /api/hand_lines?id=&player=&hand=&sizes=`,
+    over the UPI extension `show_hand_lines` (see `docs/commands.md`).
 - **Open / Save:** `dump_tree` (full / no rivers / flop only) and lazy `load_tree`. Browsing a
   truncated save re-solves missing streets on demand, as in Pio.
 - **Library (API):** named ranges and full build-form configs saved in folders under

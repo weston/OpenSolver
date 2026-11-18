@@ -167,6 +167,7 @@ class Upi {
   std::string cmd_build_tree(const Args& a);
   std::string cmd_show_strategy(const Args& a, bool pp);
   std::string cmd_calc_ev(const Args& a, bool pp);
+  std::string cmd_show_hand_lines(const Args& a);
   std::string cmd_calc_eq(const Args& a, bool pp, bool node);
   std::string cmd_set_strategy(const Args& a);
   std::string cmd_set_mes(const Args& a);

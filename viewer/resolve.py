@@ -60,7 +60,7 @@ BROWSE_MAP = {"/node": "/api/node", "/strategy": "/api/strategy", "/range": "/ap
 
 # Browse endpoints the applied re-solve answers in place of the main tree (overlay()).
 OVERLAY_PATHS = ("/api/path", "/api/node", "/api/strategy", "/api/range", "/api/ev", "/api/categories",
-                 "/api/blockers", "/api/graphs")
+                 "/api/blockers", "/api/graphs", "/api/hand_lines")
 
 _tb = None  # memoized tools/tree_builder.py module
 

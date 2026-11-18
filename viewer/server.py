@@ -32,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from library import Library, LibraryError  # noqa: E402
+import hand_lines  # noqa: E402
 
 # Run as a script this module is __main__; resolve.py and jobs_api.py `import server`. Register it
 # under that name so they share these classes (a second copy would have its own SolverError, which
@@ -581,7 +582,7 @@ def _api(solver, lib, method, path, query, body):
 
 LOCK_PATHS = ("/api/lock", "/api/unlock", "/api/lock/revert", "/api/lock/apply")
 BROWSE_PATHS = ("/api/node", "/api/strategy", "/api/path", "/api/range", "/api/categories", "/api/ev",
-                "/api/calc_results", "/api/hand_order", "/api/blockers", "/api/graphs")
+                "/api/calc_results", "/api/hand_order", "/api/blockers", "/api/graphs", "/api/hand_lines")
 
 
 def _api_main(solver, lib, method, path, query, body):
@@ -655,6 +656,14 @@ def _api_main(solver, lib, method, path, query, body):
 
     if path == "/api/graphs":
         return 200, graphs_at(solver, node_id_arg(query))
+
+    if path == "/api/hand_lines":
+        # Beta, runout lines: how one hand of `player` plays every runout from this node on
+        player = query.get("player", ["OOP"])[0].upper()
+        if player not in ("OOP", "IP"):
+            raise SolverError("player must be OOP or IP")
+        return 200, hand_lines.hand_lines_at(sys.modules[__name__], solver, node_id_arg(query), player,
+                                             query.get("hand", [""])[0], query.get("sizes", ["0"])[0] == "1")
 
     if path == "/api/ev":
         node_id = node_id_arg(query)

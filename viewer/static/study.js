@@ -1014,7 +1014,10 @@ function blockerPicker(data, P, hero) {
     if (i == null) { if (loud) toast("Type two cards, e.g. AsKd", "err"); return; }
     if (i !== hero) selectBlockerCombo(H.order[i], data.actor);
   };
-  inp.onkeydown = (e) => { if (e.key === "Enter") apply(true); if (e.key === "Escape") inp.blur(); };
+  inp.onkeydown = (e) => {
+    if (e.key === "Enter") apply(true);
+    if (e.key === "Escape") { inp.value = hero != null ? displayCombo(H.order[hero]) : ""; inp.blur(); }
+  };
   inp.onchange = () => apply(false);
   field.append(el("span", `badge ${data.actor.toLowerCase()}`, data.actor), inp);
   if (hero != null) {
@@ -1072,7 +1075,7 @@ function renderBlockerSummary(box, data, hero, rep) {
   l1.append(who(vil), document.createTextNode(" blocked"));
   stat(el("b", "num", pctOf(share)), l1, `${pctOf(share)} of ${vil}'s range: ${fmt(removed, 2)} of ${fmt(rep.before.mass, 1)} combos`);
   const v2 = el("b", "num", pctOf(rep.after.eq));
-  if (rep.before.eq != null && rep.after.eq != null) v2.appendChild(deltaEl(rep.after.eq - rep.before.eq, "blk-d sm"));
+  if (rep.before.eq != null && rep.after.eq != null) v2.appendChild(deltaEl(rep.after.eq - rep.before.eq));
   const l2 = el("span", "k");
   l2.append(who(vil), document.createTextNode(" eq"));
   stat(v2, l2, `${vil} eq ${pctOf(rep.before.eq)} vs the whole range → ${pctOf(rep.after.eq)} given the hand`);
@@ -1108,12 +1111,14 @@ function renderResponses(box, data, P, rep, acts, pi) {
     const bar = el("div", "blk-bar");
     let acc = 0;
     for (const va of vas) {
-      const seg = el("i");
-      seg.style.width = (f1(va) * 100).toFixed(2) + "%";
-      seg.style.background = va.color;
-      bar.appendChild(seg);
+      if (f1(va) > 0) {
+        const seg = el("i");
+        seg.style.width = (f1(va) * 100).toFixed(2) + "%";
+        seg.style.background = va.color;
+        bar.appendChild(seg);
+      }
       acc += f0(va);
-      if (acc < 0.999) {
+      if (acc > 0.001 && acc < 0.999) {
         const t = el("b", "tick");
         t.style.left = (acc * 100).toFixed(2) + "%";
         bar.appendChild(t);

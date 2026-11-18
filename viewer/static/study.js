@@ -926,14 +926,15 @@ function responseActs(r, pi) {
   return actionsOf({ node: r.node, children: r.children }, pi + 1, path);
 }
 
-/** Metric choices for the card ranking: villain's equity, then each villain action after each actor action. */
-function blockerMetrics(P, acts, pi) {
-  const out = [{ key: "eq", label: "Villain equity vs your range", get: (s) => s.eq }];
+/** Metric choices for the card ranking: villain's equity, then each villain action after each actor
+ *  action, named by player and sized in % of pot ("OOP Bet 100% → IP Fold"). */
+function blockerMetrics(P, acts, pi, data) {
+  const out = [{ key: "eq", label: `${data.villain} equity`, get: (s) => s.eq }];
   P.responses.forEach((r, k) => {
     const a = acts.find((x) => x.id === r.id);
-    const head = a ? `${a.label} ${a.sub}`.trim() : lastTok(r.id);
+    const head = a ? a.label : lastTok(r.id);
     for (const va of responseActs(r, pi)) {
-      out.push({ key: `r:${r.id}:${va.k}`, label: `You ${head.toLowerCase()} → villain ${`${va.label} ${va.sub}`.trim().toLowerCase()}`,
+      out.push({ key: `r:${r.id}:${va.k}`, label: `${data.actor} ${head} → ${data.villain} ${va.label}`,
                  get: (s) => s.responses[k].freq[va.k], kind: va.kind });
     }
   });
@@ -965,7 +966,7 @@ async function renderBlockersPanel() {
   const { data, P } = S.blk;
   const pi = S.path.findIndex((p) => p.id === S.decId);
   const acts = actionsOf(d, pi);
-  const metrics = blockerMetrics(P, acts, pi);
+  const metrics = blockerMetrics(P, acts, pi, data);
   if (!metrics.some((m) => m.key === S.blkMetric)) S.blkMetric = defaultMetric(metrics);
   const hero = blockerHero(data);
   // renderSide runs on every matrix hover: rebuild only when what is shown changes (keeps the scroll)
@@ -976,7 +977,7 @@ async function renderBlockersPanel() {
 
   const head = el("div", "cats-head");
   head.append(el("span", `badge ${data.actor.toLowerCase()}`, data.actor),
-              el("span", "muted", `hand · what it removes from ${data.villain}'s range`));
+              el("span", "muted", `hand vs ${data.villain}'s range`));
   box.appendChild(head);
   box.appendChild(blockerPicker(data, P, hero));
 
@@ -1060,7 +1061,7 @@ function renderComboEffects(box, data, P, hero, acts, pi) {
   kv(`${vil} combos removed`, fmt(removed, removed < 10 ? 2 : 1),
      `${pctOf(rep.before.mass > 0 ? removed / rep.before.mass : 0)} of ${fmt(rep.before.mass, 1)}`);
   kv("Hand equity", pctOf(rep.heroEq), rep.heroReach > 0 ? `vs ${vil}'s range` : `not in ${data.actor}'s range here`);
-  kv(`${vil} equity vs your range`, `${pctOf(rep.before.eq)} → ${pctOf(rep.after.eq)}`,
+  kv(`${vil} equity`, `${pctOf(rep.before.eq)} → ${pctOf(rep.after.eq)}`,
      rep.before.eq != null && rep.after.eq != null ? `${pp(rep.after.eq - rep.before.eq)} pts` : null);
   const h = el("h3", "blk-h", "Holding ");
   h.appendChild(comboEl(H.order[hero], "xs"));
@@ -1076,15 +1077,15 @@ function renderComboEffects(box, data, P, hero, acts, pi) {
       const t = el("table", "act-table blk-resp");
       const cap = el("caption");
       const sw = el("span", "sw"); sw.style.background = a.color;
-      cap.append(sw, document.createTextNode(`After ${`${a.label} ${a.sub}`.trim()}`));
+      cap.append(sw, document.createTextNode(`${data.actor} ${a.label}`));
       t.appendChild(cap);
-      t.insertAdjacentHTML("beforeend", "<tr><th>Villain</th><th>Range</th><th>Given hand</th><th>Δ pts</th></tr>");
+      t.insertAdjacentHTML("beforeend", `<tr><th>${vil}</th><th>Range</th><th>Given hand</th><th>Δ pts</th></tr>`);
       for (const va of responseActs(r, pi)) {
         const f0 = rep.before.responses[k].freq[va.k], f1 = rep.after.responses[k].freq[va.k];
         const tr = el("tr");
         const c = el("td");
         const s2 = el("span", "sw"); s2.style.background = va.color;
-        c.append(s2, document.createTextNode(`${va.label} ${va.sub}`.trim()));
+        c.append(s2, document.createTextNode(va.label));
         const dl = el("td", "num", pp(f1 - f0));
         dl.style.background = deltaTint(f1 - f0, 0.1);
         tr.append(c, el("td", "num", pctOf(f0)), el("td", "num", pctOf(f1)), dl);
@@ -1173,7 +1174,7 @@ function shareTable(rows, name, title) {
 /** Every single card, ranked by how much holding it moves the chosen number. */
 function renderCardEffects(box, P, metrics, hero) {
   const m = metrics.find((x) => x.key === S.blkMetric) || metrics[0];
-  box.appendChild(el("h3", null, "Cards that move villain's range most"));
+  box.appendChild(el("h3", null, `Cards that move ${P.data.villain}'s range`));
   const sel = el("select", "blk-metric");
   for (const x of metrics) {
     const o = el("option", null, x.label);
@@ -1218,18 +1219,7 @@ function renderCardEffects(box, P, metrics, hero) {
     }
   }
   box.appendChild(grid);
-  const t = el("table", "act-table blk-top");
-  t.insertAdjacentHTML("beforeend", "<tr><th>Card</th><th>Removes</th><th>Given card</th><th>Δ pts</th></tr>");
-  for (const r of rows.slice(0, 10)) {
-    const tr = el("tr");
-    const c = el("td"); c.appendChild(cardEl(r.card, "xs"));
-    const dl = el("td", "num", pp(r.delta));
-    dl.style.background = deltaTint(r.delta, scale);
-    tr.append(c, el("td", "num", `${fmt(r.removed, 1)} c`), el("td", "num", pctOf(r.after)), dl);
-    t.appendChild(tr);
-  }
-  box.appendChild(t);
-  box.appendChild(el("div", "hint cats-note", `Baseline: ${pctOf(rows.length ? rows[0].before : null)} with no card known. Each card removes the villain combos that contain it; a hand's effect is roughly the sum of its two cards'.`));
+  box.appendChild(el("div", "hint cats-note", `Change in points when ${P.data.actor} holds the card; ${pctOf(rows.length ? rows[0].before : null)} with none. Hover for details.`));
 }
 
 /* ---- graphs tab: each player's range sorted by equity or EV ---- */
@@ -1399,7 +1389,49 @@ export function setReportBatch(name) {
   $("btn-report").classList.toggle("hidden", !(reportBatch && n && isDec(n) && !S.sub));
 }
 
+/** The side panel's width: drag its left edge (double-click resets); remembered per browser. */
+function initSideResize() {
+  const study = document.querySelector("#view-study .study") || document.querySelector(".study");
+  const side = study && study.querySelector(".side");
+  if (!side) return;
+  const MIN = 300;
+  const maxW = () => Math.max(MIN, Math.min(960, window.innerWidth - 480));   // leave the matrix room
+  let width = null;
+  const apply = (w) => {
+    if (w == null) { study.style.removeProperty("--side-w"); width = null; return; }
+    width = Math.round(Math.min(maxW(), Math.max(MIN, w)));
+    study.style.setProperty("--side-w", width + "px");
+  };
+  apply(prefs.get("side-width", null));
+  const h = el("div", "side-resize");
+  h.title = "Drag to resize the panel; double-click to reset";
+  side.prepend(h);
+  h.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    h.setPointerCapture(e.pointerId);
+    h.classList.add("drag");
+    document.body.classList.add("col-resizing");
+    const right = side.getBoundingClientRect().right;
+    const move = (ev) => apply(right - ev.clientX);
+    const up = () => {
+      h.removeEventListener("pointermove", move);
+      h.removeEventListener("pointerup", up);
+      h.removeEventListener("pointercancel", up);
+      h.classList.remove("drag");
+      document.body.classList.remove("col-resizing");
+      prefs.set("side-width", width);
+    };
+    h.addEventListener("pointermove", move);
+    h.addEventListener("pointerup", up);
+    h.addEventListener("pointercancel", up);
+  });
+  h.addEventListener("dblclick", () => { apply(null); prefs.set("side-width", null); });
+  window.addEventListener("resize", () => { if (width != null) apply(width); });   // keep it within a smaller window
+}
+
 export function initStudy() {
+  initSideResize();
   $("view-seg").querySelectorAll("button").forEach((b) => {
     b.onclick = async () => {
       S.mode = b.dataset.mode;

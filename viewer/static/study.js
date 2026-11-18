@@ -7,7 +7,7 @@ import { prepare as prepareBlockers, comboReport, shareChanges, cardEffects } fr
 import { curves as rangeCurves, at as rangeAt, shareAbove } from "./graphs.js";
 import { sideCache } from "./sidecache.js";
 import { nodeShown, whenReleased } from "./preview.js";
-import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips, prefs } from "./api.js";
+import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips, fmtEvPct, prefs } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
 import { syncFurther } from "./further.js";
 
@@ -599,7 +599,7 @@ function renderMatrix() {
         }
         const v = den > 0 ? num / den : null;
         color = v == null ? "var(--surface-3)" : evColor(v, pot * 0.75);
-        text = v == null ? "" : fmtChips(v);
+        text = v == null ? "" : fmtEvPct(v, pot, 0);
       } else {
         text = cw.w < 0.995 ? Math.round(cw.w * 100) + "" : "";
       }
@@ -608,7 +608,7 @@ function renderMatrix() {
       x.c.classList.toggle("on-fill", cw.w > 0.62);
       x.val.textContent = text;
     }
-    note.textContent = S.mode === "ev" ? `${pl} EV per class, in chips (pot ${fmtChips(pot)})` : `${pl} range at this node — bar height = weight`;
+    note.textContent = S.mode === "ev" ? `${pl} EV per class, % of pot` : `${pl} range at this node — bar height = weight`;
   }
   markSel();
   markCatHl();
@@ -668,6 +668,8 @@ function renderHand() {
 
   box.appendChild(el("h3", null, "Combos"));
   const t = el("table", "combos");
+  t.insertAdjacentHTML("beforeend", '<tr><th></th><th class="w">Weight</th><th></th><th class="ev" title="% of the pot">EV</th></tr>');
+  const handPot = potOf(d.node);
   for (const i of H.byClass[cls]) {
     const combo = H.order[i];
     if (blocked(combo)) continue;
@@ -682,7 +684,7 @@ function renderHand() {
     c3.onmousemove = (ev) => showTip(ev, `<div class="t">${combo}</div>` + acts.map((a) => `<div class="r"><span>${a.label} ${a.sub}</span><b>${fmt((d.freq[a.k][i] || 0) * 100)}%</b></div>`).join(""));
     c3.onmouseleave = hideTip;
     const ev = d.ev && d.ev.ev ? d.ev.ev[i] : null;
-    const c4 = el("td", "ev num", w > 0 && ev != null ? fmtChips(ev) : "—");
+    const c4 = el("td", "ev num", w > 0 && ev != null ? fmtEvPct(ev, handPot, 0) : "—");
     tr.append(c1, c2, c3, c4);
     if (w <= 0) tr.style.opacity = ".4";
     tr.classList.add("pick");
@@ -704,7 +706,7 @@ async function renderNodePanel() {
   kv("Pot", fmtChips(pot));
   kv("Behind", S.eff ? fmtChips(S.eff - Math.max(n.pot[0], n.pot[1])) : "—");
   const evBox = el("div", "kv-grid");
-  box.append(el("h3", null, "Spot"), grid, el("h3", null, "Range EV at this node"), evBox);
+  box.append(el("h3", null, "Spot"), grid, el("h3", null, "Range EV (% of pot)"), evBox);
   if (isDec(n) && S.cur.freq) {
     const acts = actionsOf(S.cur, S.path.length - 1);
     const o = overallFreqs(S.cur, acts);
@@ -737,8 +739,7 @@ async function renderNodePanel() {
         num += mu * e.ev[i]; den += mu;
       }
       const d = el("div", "kv");
-      d.append(el("div", "k", pl), el("div", "v num", den > 0 ? fmtChips(num / den) : "—"));
-      if (den > 0 && pot > 0) d.appendChild(el("div", "muted", fmt((num / den / pot) * 100) + "% of pot"));
+      d.append(el("div", "k", `${pl} EV`), el("div", "v num", den > 0 ? fmtEvPct(num / den, pot) : "—"));
       evBox.appendChild(d);
     }
   } catch (e) { fail(e); }
@@ -836,7 +837,7 @@ async function renderCatsPanel() {
   }
   const section = (title, rows) => {
     box.appendChild(el("h3", null, title));
-    rows.forEach((c) => box.appendChild(catRow(c, acts, box)));
+    rows.forEach((c) => box.appendChild(catRow(c, acts, box, potOf(d.node))));
   };
   section("Made hands", data.made);
   const draws = data.draws.filter((c) => c.name !== "no_draw" || data.draws.length > 1);
@@ -844,15 +845,15 @@ async function renderCatsPanel() {
   box.appendChild(el("div", "hint cats-note", "Hover a row to light up its hands in the matrix; click to pin."));
 }
 
-function catRow(c, acts, box) {
+function catRow(c, acts, box, pot) {
   const row = el("div", "cat-row");
   row.dataset.cat = c.name;
   if (S.catPin && S.catPin.name === c.name) row.classList.add("sel");
   const top = el("div", "cat-top");
   top.append(el("span", "cat-name", prettyCat(c.name)),
              el("span", "cat-share num", `${fmt(c.combos, c.combos < 10 ? 1 : 0)} c · ${fmt(c.pct * 100, c.pct < 0.1 ? 1 : 0)}%`),
-             el("span", "cat-ev num", c.ev != null ? fmtChips(c.ev) : "—"));
-  top.title = "Combos and share of the range; EV in chips (reach- and matchup-weighted)";
+             el("span", "cat-ev num", c.ev != null ? `EV ${fmtEvPct(c.ev, pot, 0)}` : "—"));
+  top.title = "Combos and share of the range; EV as % of the pot (reach- and matchup-weighted)";
   row.appendChild(top);
   if (c.strategy) {
     const bar = el("div", "mini-bar cat-bar");
@@ -926,7 +927,7 @@ function responseActs(r, pi) {
 /** Metric choices for the card ranking: villain's equity, then each villain action after each actor
  *  action, named by player and sized in % of pot ("OOP Bet 100% → IP Fold"). */
 function blockerMetrics(P, acts, pi, data) {
-  const out = [{ key: "eq", label: `${data.villain} equity`, get: (s) => s.eq }];
+  const out = [{ key: "eq", label: `${data.villain} eq`, get: (s) => s.eq }];
   P.responses.forEach((r, k) => {
     const a = acts.find((x) => x.id === r.id);
     const head = a ? a.label : lastTok(r.id);
@@ -1055,8 +1056,8 @@ function renderComboEffects(box, data, P, hero, acts, pi) {
   const removed = rep.before.mass - rep.after.mass;
   kv(`${vil} combos removed`, fmt(removed, removed < 10 ? 2 : 1),
      `${pctOf(rep.before.mass > 0 ? removed / rep.before.mass : 0)} of ${fmt(rep.before.mass, 1)}`);
-  kv("Hand equity", pctOf(rep.heroEq), rep.heroReach > 0 ? `vs ${vil}'s range` : `not in ${data.actor}'s range here`);
-  kv(`${vil} equity`, `${pctOf(rep.before.eq)} → ${pctOf(rep.after.eq)}`,
+  kv("Hand eq", pctOf(rep.heroEq), rep.heroReach > 0 ? `vs ${vil}'s range` : `not in ${data.actor}'s range here`);
+  kv(`${vil} eq`, `${pctOf(rep.before.eq)} → ${pctOf(rep.after.eq)}`,
      rep.before.eq != null && rep.after.eq != null ? `${pp(rep.after.eq - rep.before.eq)} pts` : null);
   const h = el("h3", "blk-h", "Holding ");
   h.appendChild(comboEl(H.order[hero], "xs"));
@@ -1249,9 +1250,9 @@ async function renderGraphsPanel() {
   const metric = S.grMetric;
 
   const head = el("div", "cats-head");
-  head.appendChild(el("span", "gr-title", metric === "eq" ? "Equity distribution" : "EV distribution"));
+  head.appendChild(el("span", "gr-title", metric === "eq" ? "eq distribution" : "EV distribution (% of pot)"));
   const seg = el("div", "seg small");
-  for (const [k, label] of [["eq", "Equity"], ["ev", "EV"]]) {
+  for (const [k, label] of [["eq", "eq"], ["ev", "EV"]]) {
     const b = el("button", k === metric ? "active" : "", label);
     b.onclick = () => { S.grMetric = k; prefs.set("graph-metric", k); renderGraphsPanel(); };
     seg.appendChild(b);
@@ -1260,7 +1261,17 @@ async function renderGraphsPanel() {
   box.appendChild(head);
   if (data.id !== S.id) box.appendChild(el("div", "hint cats-note", `At ${data.id}: the hand has ended here, so these are the last node's values.`));
 
+  const pot = potOf(data.node) || 0;
   const cs = rangeCurves(data, metric, H.order);
+  if (metric === "ev") {
+    // EVs as fractions of the pot, like every EV in the viewer
+    for (const c of Object.values(cs)) {
+      for (const p of c.pts) p.v = pot > 0 ? p.v / pot : null;
+      c.avg = c.avg != null && pot > 0 ? c.avg / pot : null;
+      c.median = c.median != null && pot > 0 ? c.median / pot : null;
+      c.pts = c.pts.filter((p) => p.v != null);
+    }
+  }
   if (!cs.OOP.pts.length && !cs.IP.pts.length) {
     box.appendChild(el("div", "side-empty", "No values here: neither range reaches this node."));
     return;
@@ -1274,32 +1285,30 @@ async function renderGraphsPanel() {
   }
   box.appendChild(legend);
   const svg = svgEl("svg", { viewBox: "0 0 360 244", class: "gr-chart", role: "img",
-    "aria-label": `${metric === "eq" ? "Equity" : "EV"} of each combo, strongest first, for OOP and IP` });
+    "aria-label": `${metric === "eq" ? "eq" : "EV (% of pot)"} of each combo, strongest first, for OOP and IP` });
   box.appendChild(svg);
   drawRangeGraph(svg, cs, metric);
 
   // the numbers behind the picture
-  const pot = potOf(data.node) || 0;
   const t = el("table", "act-table gr-stats");
   t.insertAdjacentHTML("beforeend", metric === "eq"
-    ? "<tr><th></th><th>Average</th><th>Median</th><th>≥ 50%</th><th>Combos</th></tr>"
-    : "<tr><th></th><th>Average</th><th>Median</th><th>% of pot</th><th>Combos</th></tr>");
+    ? "<tr><th></th><th>Avg eq</th><th>Median</th><th>≥ 50%</th><th>Combos</th></tr>"
+    : "<tr><th></th><th>Avg EV</th><th>Median</th><th>Combos</th></tr>");
   for (const pl of ["OOP", "IP"]) {
     const c = cs[pl];
     const tr = el("tr");
     const k = el("td");
     const sw = el("span", "sw"); sw.style.background = `var(--${pl.toLowerCase()})`;
     k.append(sw, document.createTextNode(pl));
-    const v = (x) => (metric === "eq" ? pctOf(x) : fmtChips(x));
-    tr.append(k, el("td", "num", v(c.avg)), el("td", "num", v(c.median)),
-              el("td", "num", metric === "eq" ? pctOf(shareAbove(c, 0.5), 0) : (c.avg != null && pot > 0 ? pctOf(c.avg / pot, 0) : "—")),
+    tr.append(k, el("td", "num", pctOf(c.avg)), el("td", "num", pctOf(c.median)),
+              ...(metric === "eq" ? [el("td", "num", pctOf(shareAbove(c, 0.5), 0))] : []),
               el("td", "num", fmt(c.total, 1)));
     t.appendChild(tr);
   }
   box.appendChild(t);
   box.appendChild(el("div", "hint cats-note", metric === "eq"
-    ? "Each combo's equity against the other range at this node, combos sorted strongest first along the share of the range they make up. Averages are matchup-weighted, like Pio's."
-    : `Each combo's EV in chips (pot ${fmtChips(pot)}), sorted highest first along the share of the range. Averages are matchup-weighted, like the Node tab's.`));
+    ? "Each combo's eq against the other range here, strongest first along the share of the range. Averages are matchup-weighted, like Pio's."
+    : "Each combo's EV as % of the pot here, highest first along the share of the range. Averages are matchup-weighted, like the Node tab's."));
 }
 
 function drawRangeGraph(svg, cs, metric) {
@@ -1320,7 +1329,7 @@ function drawRangeGraph(svg, cs, metric) {
     const yy = y(v);
     svgEl("line", { x1: L, x2: W - R, y1: yy, y2: yy, class: Math.abs(v) < 1e-9 && metric === "ev" ? "zero" : "" }, grid);
     const tx = svgEl("text", { x: L - 6, y: yy + 3, "text-anchor": "end" }, axis);
-    tx.textContent = metric === "eq" ? Math.round(v * 100) + "%" : fmtChips(v);
+    tx.textContent = Math.round(v * 100) + "%";
   }
   for (const f of [0, 0.25, 0.5, 0.75, 1]) {
     const tx = svgEl("text", { x: x(f), y: Hh - B + 14, "text-anchor": f === 0 ? "start" : f === 1 ? "end" : "middle" }, axis);
@@ -1342,7 +1351,7 @@ function drawRangeGraph(svg, cs, metric) {
   const dots = {};
   for (const pl of ["OOP", "IP"]) dots[pl] = svgEl("circle", { r: 4, class: "gr-dot", style: `fill:var(--${pl.toLowerCase()})`, visibility: "hidden" }, svg);
   const hit = svgEl("rect", { x: L, y: T, width: W - L - R, height: Hh - T - B, class: "gr-hit" }, svg);
-  const fmtV = (v) => (metric === "eq" ? pctOf(v) : fmtChips(v));
+  const fmtV = (v) => pctOf(v);
   hit.addEventListener("mousemove", (ev) => {
     const r = svg.getBoundingClientRect();
     const sx = ((ev.clientX - r.left) / r.width) * W;
@@ -1353,7 +1362,7 @@ function drawRangeGraph(svg, cs, metric) {
       const p = rangeAt(cs[pl], f);
       if (!p) { dots[pl].setAttribute("visibility", "hidden"); continue; }
       dots[pl].setAttribute("cx", x(f)); dots[pl].setAttribute("cy", y(p.v)); dots[pl].setAttribute("visibility", "visible");
-      html += `<div class="r"><span>${pl} ${displayCombo(p.combo)}</span><b>${fmtV(p.v)}</b></div>`;
+      html += `<div class="r"><span>${pl} ${displayCombo(p.combo)}</span><b>${metric === "eq" ? "eq" : "EV"} ${fmtV(p.v)}</b></div>`;
     }
     showTip(ev, html);
   });

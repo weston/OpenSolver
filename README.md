@@ -338,14 +338,19 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
 - **Study:** a fixed layout, so nothing moves while you click through a line:
   - the board as card graphics and the line so far as colored action chips grouped by street
     (click one to return to that decision);
+  - above them on the right: pot, behind, SPR and each player's range EV as % of the pot
+    (matchup-weighted, like Pio's);
   - an action strip with the overall frequency bar and one button per action (frequency and
     combos). At chance nodes the strip becomes a card picker, and the matrix keeps showing the
     last decision.
   - the 13×13 matrix. **Bar height is the hand's weight in the acting player's range at the node**
     (not normalized, so rarely reached hands show short bars), split by action frequency.
     Strategy, Range and EV modes; OOP/IP for the latter two.
-  - side panel: per-combo strategy and EV for the hovered or pinned hand, node and range-EV
-    summary, both players' ranges, made-hand and draw categories.
+  - side panel, four tabs:
+  - **Hand** tab: per-combo strategy and EV for the hovered or pinned hand.
+  - **Cats** tab: one table row per made-hand category and draw. Each row has combos, share of
+    the range, EV (% of pot) and, for the player to act, how often it takes each action (cells
+    shaded by frequency; hover a row for all of it, click to light its hands up in the matrix).
   - **Blockers** tab: pick a combo of the player to act (type it, click one of the pinned class's
     combos, or click a combo in the Hand tab) to see what its cards remove from the other range.
     One line of numbers: how much of the other range it blocks, that range's eq given the hand

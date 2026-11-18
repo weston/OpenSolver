@@ -788,6 +788,81 @@ class ResolveIntegrationTest(unittest.TestCase):
         self.req("/api/stop", "POST", {})
         self.main.cmd("wait_for_solver", timeout=120)
 
+    def test_26_applied_resolve_is_browsed_in_place(self):
+        # the Study view's Sizes panel: new sizes at a node, shown in place of the main tree there
+        st, d = self.req("/api/resolve/start", "POST",
+                         dict(SIZING, id="r:0:c", sizes="50", apply=True, accuracy=1.0))
+        self.assertEqual(st, 200, d)
+        done = self.wait_job()
+        self.assertIsNone(done["error"], done["error"])
+        a = done["applied"]
+        self.assertEqual((a["root"], a["sub_root"], a["actor"], a["sizes"]), ("r:0:c", "r:0:c", "IP", ["50"]))
+        # at the node: the new size (IP bets 50% of 40 = 20), under the main tree's ids
+        st, d = self.req("/api/strategy?id=r:0:c")
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["variant"]["root"], "r:0:c")
+        self.assertEqual(sorted(c["id"] for c in d["children"]), ["r:0:c:b20", "r:0:c:c"])
+        # below it: the line is the main tree's down to the node, then the re-solve's
+        st, d = self.req("/api/path?id=r:0:c:b20")
+        self.assertEqual(st, 200, d)
+        self.assertEqual([n["id"] for n in d["nodes"]], ["r:0", "r:0:c", "r:0:c:b20"])
+        self.assertEqual(d["nodes"][0]["type"], "OOP_DEC")
+        self.assertEqual(d["nodes"][-1]["pot"][1], 20)
+        st, d = self.req("/api/range?id=r:0:c:b20")
+        self.assertEqual(st, 200, d)
+        self.assertIn("variant", d)
+        # above it: the main tree, untouched
+        st, d = self.req("/api/strategy?id=r:0")
+        self.assertEqual(st, 200, d)
+        self.assertNotIn("variant", d)
+        self.assertIn("r:0:b24", [c["id"] for c in d["children"]])
+        # restore: the main tree everywhere again
+        st, d = self.req("/api/resolve/restore", "POST", {})
+        self.assertEqual((st, d["restored"]), (200, "r:0:c"), d)
+        st, d = self.req("/api/strategy?id=r:0:c")
+        self.assertNotIn("variant", d)
+        self.assertEqual(sorted(c["id"] for c in d["children"]), ["r:0:c:b24", "r:0:c:c"])
+        st, d = self.req("/api/resolve/status")
+        self.assertIsNone(d["applied"])
+
+    def test_27_applied_resolve_at_the_root_and_its_end(self):
+        st, d = self.req("/api/resolve/start", "POST",
+                         dict(SIZING, id="r:0", sizes="30,45", apply=True, accuracy=1.0))
+        self.assertEqual(st, 200, d)
+        done = self.wait_job()
+        self.assertIsNone(done["error"], done["error"])
+        st, d = self.req("/api/strategy?id=r:0")
+        self.assertEqual(sorted(c["id"] for c in d["children"]), ["r:0:b12", "r:0:b18", "r:0:c"])
+        st, d = self.req("/api/path?id=r:0:b18")
+        self.assertEqual([n["id"] for n in d["nodes"]], ["r:0", "r:0:b18"])
+        # a node the new sizes don't make is an error, not the main tree's node
+        st, d = self.req("/api/strategy?id=r:0:b24")
+        self.assertEqual(st, 400, d)
+        # a lock on the main tree changes its strategies: the shown re-solve is dropped
+        self.req("/api/unlock", "POST", {"id": "r:0"})
+        st, d = self.req("/api/resolve/status")
+        self.assertIsNone(d["applied"])
+        st, d = self.req("/api/strategy?id=r:0")
+        self.assertNotIn("variant", d)
+        # nor is one that was running when the lock changed: it read the old ranges
+        st, d = self.req("/api/resolve/start", "POST",
+                         dict(SIZING, id="r:0", sizes="30,45", apply=True, accuracy=0.002))
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/unlock", "POST", {"id": "r:0"})
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/resolve/status")
+        self.assertTrue(d["busy"], "the job must still be running for this check to mean anything")
+        done = self.wait_job()
+        self.assertIsNone(done["error"], done["error"])
+        self.assertTrue(done["tree"])
+        self.assertIsNone(done["applied"])
+        # a plain re-solve (no apply) is not shown in place
+        st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", sizes="30", accuracy=1.0))
+        self.assertEqual(st, 200, d)
+        self.assertIsNone(self.wait_job()["applied"])
+        st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", sizes="", apply=True))
+        self.assertEqual(st, 400, d)
+
     def test_37_new_main_tree_drops_the_resolve(self):
         # #357: a re-solve of the old main tree must not survive a rebuild (or load) of it
         st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", accuracy=ACC))

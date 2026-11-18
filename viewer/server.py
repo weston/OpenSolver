@@ -495,8 +495,21 @@ def lib_query(query, name="name"):
     return query.get(name, [""])[0]
 
 
+# POSTs that change the main tree's strategies (or drop it): a re-solve shown in place was built on
+# the old ranges, so it is no longer shown - nor is a running one once it finishes.
+VARIANT_ENDERS = ("/api/lock", "/api/unlock", "/api/lock/revert", "/api/lock/apply", "/api/solve",
+                  "/api/solve_node", "/api/restart")
+
+
 def api(solver, lib, method, path, query, body):
     """Dispatch one API call; returns (status, data)."""
+    status, data = _api(solver, lib, method, path, query, body)
+    if method == "POST" and path in VARIANT_ENDERS and status == 200 and _resolver is not None:
+        _resolver.restore()   # only once it happened: a refused lock (while solving, say) changes nothing
+    return status, data
+
+
+def _api(solver, lib, method, path, query, body):
     if path == "/api/resolve" or path.startswith("/api/resolve/"):
         if _resolver is None:
             raise SolverError("re-solve support not initialized")
@@ -516,6 +529,10 @@ def api(solver, lib, method, path, query, body):
         return _refiner.api(method, path, query, body)
     if method == "GET" and path in BROWSE_PATHS:
         solver.lease()
+    if _resolver is not None and method == "GET":
+        served = _resolver.overlay(path, query)   # a re-solve shown in place, at or below its node
+        if served is not None:
+            return served
     global _preview
     if _refiner is not None:
         if method == "GET":

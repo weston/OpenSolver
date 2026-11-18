@@ -58,18 +58,7 @@ def street_root(node_id):
     return None, None
 
 
-def _rewrite_ids(obj, src, dst):
-    """Replace the id prefix src by dst in every "id" field (dicts and lists, recursively)."""
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k == "id" and isinstance(v, str) and (v == src or v.startswith(src + ":")):
-                obj[k] = dst + v[len(src):]
-            else:
-                _rewrite_ids(v, src, dst)
-    elif isinstance(obj, list):
-        for v in obj:
-            _rewrite_ids(v, src, dst)
-    return obj
+_rewrite_ids = vresolve.rewrite_ids
 
 
 class RefineManager(vresolve.ResolveManager):

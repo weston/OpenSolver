@@ -58,6 +58,10 @@ BROWSE_MAP = {"/node": "/api/node", "/strategy": "/api/strategy", "/range": "/ap
               "/categories": "/api/categories", "/blockers": "/api/blockers",
               "/graphs": "/api/graphs"}
 
+# Browse endpoints the applied re-solve answers in place of the main tree (overlay()).
+OVERLAY_PATHS = ("/api/path", "/api/node", "/api/strategy", "/api/range", "/api/ev", "/api/categories",
+                 "/api/blockers", "/api/graphs")
+
 _tb = None  # memoized tools/tree_builder.py module
 
 
@@ -66,6 +70,20 @@ def _tree_builder():
     if _tb is None:
         _tb = vsrv.load_tree_builder()
     return _tb
+
+
+def rewrite_ids(obj, src, dst):
+    """Replace the id prefix src by dst in every "id" field (dicts and lists, recursively)."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "id" and isinstance(v, str) and (v == src or v.startswith(src + ":")):
+                obj[k] = dst + v[len(src):]
+            else:
+                rewrite_ids(v, src, dst)
+    elif isinstance(obj, list):
+        for v in obj:
+            rewrite_ids(v, src, dst)
+    return obj
 
 
 # ---------------------------------------------------------------- config -> lines
@@ -188,11 +206,16 @@ def build_config(tb, ctx, body, bet_override=None):
     if bet_override is not None:
         s_idx, sizes = bet_override
         facing = ctx.get("facing", ctx["pot"]["oop"] != ctx["pot"]["ip"])
-        kind = "raise" if facing and s_idx == STREET_INDEX[ctx["street"]] else "bet"
+        own_street = s_idx == STREET_INDEX[ctx["street"]]
+        kind = "raise" if facing and own_street else "bet"
+        if own_street and not facing and ctx["actor"] == "OOP" and _prev_aggressor(tb, ctx) == tb.IP:
+            kind = "donk"   # OOP leads into last street's aggressor: the tree uses donk sizes there
         key = f"{STREET_NAME[s_idx]}_{kind}"
         # The candidates are the acting player's sizes; the opponent keeps theirs (#141).
         # IP inherits OOP's field when it has none of its own, so pin it before overriding.
-        if ctx["actor"] == "OOP":
+        if kind == "donk":
+            body[key] = sizes           # OOP-only field
+        elif ctx["actor"] == "OOP":
             body.setdefault(key + "_ip", body.get(key, ""))
             body[key] = sizes
         else:
@@ -325,10 +348,15 @@ class ResolveManager:
         self.carried = None              # main-tree locks set on the last subgame (#200)
         self.tree_gen = 0                # bumped by main_tree_changed: older jobs' results are dropped (#357)
         self.job_tree_gen = 0
+        # The re-solve shown in place of the main tree from its node down (the Study view's
+        # "Sizes" panel): {root, sub_root, actor, street, sizes, label, ev, accuracy}, or None.
+        # GET browse requests for ids at or below root are answered from the subgame (overlay()).
+        self.applied = None
+        self.job_apply = None            # the running job's label when it should be applied
 
     # ---- jobs (run on a daemon thread) ----
 
-    def _launch(self, kind, node_id, job):
+    def _launch(self, kind, node_id, job, apply=None):
         with self.mu:
             if self.busy:
                 raise vsrv.SolverError("a re-solve job is already running "
@@ -342,6 +370,8 @@ class ResolveManager:
             self.allin = False
             self.abort = False
             self.job_tree_gen = self.tree_gen
+            # the subgame solver's tree is about to be replaced: the shown re-solve goes with it
+            self.applied, self.job_apply = None, apply
         threading.Thread(target=self._entry, args=(job,), daemon=True).start()
 
     def main_tree_changed(self):
@@ -352,6 +382,15 @@ class ResolveManager:
             self.tree_gen += 1
             self.result, self.tree_ok, self.node, self.ctx = None, False, None, None
             self.rows, self.best, self.error, self.carried = [], None, None, None
+            self.applied = None
+
+    def restore(self):
+        """Show the main tree again everywhere (the subgame stays browsable under /api/resolve).
+        A job running now is not shown when it finishes either: it read the ranges before this."""
+        with self.mu:
+            was = self.applied
+            self.applied, self.job_apply = None, None
+        return {"ok": True, "restored": was["root"] if was else None}
 
     def _entry(self, job):
         try:
@@ -427,6 +466,11 @@ class ResolveManager:
                 return
             self.result = result
             self.tree_ok = True
+            if self.job_apply is not None and not self.abort:
+                sizes = result.get("sizes")
+                self.applied = {"root": ctx["id"], "sub_root": ctx["subgame_root"], "actor": ctx["actor"],
+                                "street": ctx["street"], "sizes": sizes, "label": self.job_apply,
+                                "ev": result["ev"], "accuracy": acc}
 
     def _fresh_ctx(self, node_id):
         with self.mu:
@@ -465,18 +509,30 @@ class ResolveManager:
     def start_resolve(self, node_id, body):
         acc = _accuracy(body)
         ctx = self._fresh_ctx(node_id)          # eager: bad nodes/sizes -> 400, not a job error
-        build_config(_tree_builder(), ctx, body)
+        # "sizes": the acting player's sizes at the node itself (bets, raises when it faces a bet,
+        # donk leads); every other size comes from the sizing fields as before
+        override = None
+        if body.get("sizes") is not None:
+            sizes = _field_sizes({"sizes": body.get("sizes", "")}, "sizes", allow_mult=True)
+            if not sizes:
+                raise vsrv.SolverError("give at least one size (or a for all-in)")
+            override = (STREET_INDEX[ctx["street"]], sizes)
+        build_config(_tree_builder(), ctx, body, override)
         locks = self.subtree_locks(ctx) if body.get("locks", True) else []
+        label = str(body.get("label") or (override[1] if override else "edited sizes"))
 
         def job():
             with self.mu:
                 self.total = 1
-            lines = self._build_and_solve(ctx, body, acc, locks=locks)
+            lines = self._build_and_solve(ctx, body, acc, override, locks=locks)
             with self.mu:
                 self.done = 1
-            self._finish(ctx, acc, lines, {"locks": self.carried} if self.carried else None)
+            extra = {"locks": self.carried} if self.carried else {}
+            if override:
+                extra["sizes"] = override[1].split(",")
+            self._finish(ctx, acc, lines, extra or None)
 
-        self._launch("resolve", node_id, job)
+        self._launch("resolve", node_id, job, label if body.get("apply") else None)
 
     def start_search(self, node_id, body):
         candidates = _field_sizes({"candidates": body.get("candidates", "")},
@@ -548,9 +604,11 @@ class ResolveManager:
                 self.done += 1
             self._finish(ctx, acc, lines, {"search": {"street": STREET_NAME[s_idx],
                                                       "n": n, "candidates": candidates,
-                                                      "allin": allin, "method": method}})
+                                                      "allin": allin, "method": method},
+                                           "sizes": sizes(best["sizes"]).split(",")})
 
-        self._launch("search", node_id, job)
+        label = "best " + str(n) + (" + all-in" if allin else "")
+        self._launch("search", node_id, job, label if body.get("apply") else None)
 
     # ---- HTTP ----
 
@@ -560,14 +618,50 @@ class ResolveManager:
                     "error": self.error, "done": self.done, "total": self.total,
                     "method": self.method, "allin": self.allin, "rows": [dict(r) for r in self.rows],
                     "best": self.best, "context": self.ctx, "result": self.result,
-                    "tree": self.tree_ok, "solve": self.rsolver.state()}
+                    "tree": self.tree_ok, "applied": dict(self.applied) if self.applied else None,
+                    "solve": self.rsolver.state()}
+
+    # ---- the re-solve shown in place (overlay) ----
+
+    def overlay(self, path, query):
+        """Answer a main-tree browse request from the applied re-solve when its id is at or below
+        the re-solved node: ids are translated both ways, so the Study view browses one tree.
+        None: not ours (the main tree answers)."""
+        if path not in OVERLAY_PATHS or "id" not in query:
+            return None
+        with self.mu:
+            a = dict(self.applied) if self.applied else None
+            if not a or self.busy or not self.tree_ok:
+                return None
+        mid = str(query["id"][0])
+        x, sroot = a["root"], a["sub_root"]
+        if not (mid == x or mid.startswith(x + ":")):
+            return None
+        q = dict(query)
+        q["id"] = [sroot + mid[len(x):]]
+        status, data = vsrv._api_main(self.rsolver, None, "GET", path, q, None)
+        if path == "/api/path" and status == 200:
+            # the main tree's line down to the node, then the subgame's from its root (an IP
+            # root's forced-check wrapper above it is not a real action: dropped)
+            _, top = vsrv._api_main(self.main, None, "GET", "/api/path", {"id": [x]}, None)
+            depth = len(sroot.split(":")) - 2
+            data["nodes"] = top["nodes"][:-1] + data["nodes"][depth:]
+            data["eff_stack"] = top["eff_stack"]
+        if status == 200 and isinstance(data, dict):
+            rewrite_ids(data, sroot, x)
+            data["variant"] = a
+        return status, data
 
     def api(self, method, path, query, body):
         sub = path[len("/api/resolve"):]
         if sub == "/context":
             if method != "GET":
                 raise vsrv.SolverError("GET required")
-            return 200, read_context(self.main, vsrv.node_id_arg(query))
+            ctx = read_context(self.main, vsrv.node_id_arg(query))
+            # the sizes the main tree was built with (None for a loaded file): the Sizes panel
+            # starts the later streets from them
+            ctx["built"] = getattr(self.main, "built_sizes", None)
+            return 200, ctx
         if sub == "/status":
             if method != "GET":
                 raise vsrv.SolverError("GET required")
@@ -590,6 +684,8 @@ class ResolveManager:
             return 200, {"started": "search"}
         if sub == "/stop":
             return 200, self.stop()
+        if sub == "/restore":
+            return 200, self.restore()
         return 404, {"error": "unknown endpoint"}
 
 

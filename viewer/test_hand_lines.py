@@ -232,6 +232,10 @@ class ApiTest(unittest.TestCase):
             self.assertAlmostEqual(got["b"], want["b"], delta=0.02, msg=hand)
             self.assertAlmostEqual(got["x"], want["x"], delta=0.02, msg=hand)
             self.assertEqual(d["now"]["reach"], 1.0)
+        # `r` is `r:0`
+        st, d = self.req("/api/hand_lines?id=r&player=OOP&hand=AhAd")
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d, self.lines("r:0", "OOP", "AhAd"))
 
     def test_every_runout(self):
         d = self.lines("r:0", "OOP", "AA")

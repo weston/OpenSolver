@@ -172,6 +172,9 @@ def hand_lines_at(vsrv, solver, node_id, player, hand, sizes=False):
     """GET /api/hand_lines: the report for `hand` of `player` from node `node_id` on."""
     with solver.cmd_lock:
         node = vsrv.parse_node_block(solver.cmd("show_node " + node_id))
+        if node["type"] == "ROOT":     # `r` is the same place as its only child, the first decision
+            node_id = "r:0"
+            node = vsrv.parse_node_block(solver.cmd("show_node " + node_id))
         board = "".join(node["board"].split())
         if len(board) < 6:
             raise vsrv.SolverError("runout lines start on the flop or later")

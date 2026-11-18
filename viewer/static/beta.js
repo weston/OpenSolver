@@ -88,7 +88,9 @@ export function showBeta(on, params) {
   B.on = on;
   if (!on) { hideTip(); return; }
   if (params) {
-    if (params.hand) B.hand = decodeURIComponent(params.hand);
+    if (params.hand) {
+      try { B.hand = decodeURIComponent(params.hand); } catch { B.hand = params.hand; }   // a mangled link
+    }
     if (params.player === "OOP" || params.player === "IP") B.player = params.player;
     if (params.n) B.n = clamp(+params.n || 3, 1, MAX_N);
     if (params.turn) { B.turn = params.turn; B.mode = "turn"; }

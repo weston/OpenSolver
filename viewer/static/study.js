@@ -418,6 +418,49 @@ function renderPotInfo() {
   kv("Pot", fmtChips(pot));
   if (behind != null) kv("Behind", fmtChips(behind));
   if (behind != null && pot > 0) kv("SPR", (behind / pot).toFixed(2));
+  const evs = {};
+  for (const pl of ["OOP", "IP"]) {
+    const d = el("div", "kv");
+    const k = el("span", "k");
+    k.append(el("span", `who ${pl.toLowerCase()}`, pl), document.createTextNode(" EV"));
+    evs[pl] = el("span", "v num", "…");
+    d.append(k, evs[pl]);
+    d.title = `${pl}'s range EV as % of the pot (matchup-weighted, like Pio's)`;
+    box.appendChild(d);
+  }
+  fillRangeEvs(evs, pot);
+}
+
+/** Each range's EV at this node as % of the pot, filled in once /api/ev answers ("—" where there is none,
+ *  e.g. at a fold or showdown). */
+async function fillRangeEvs(evs, pot) {
+  // Everything is this node's: a navigation meanwhile replaces S.ev / S.range, so the answers go
+  // into the cache captured here (never the next node's), and nothing is shown once it is stale.
+  const seq = S.seq, id = S.id, base = S.base, cache = S.ev;
+  const stale = () => seq !== S.seq || S.id !== id || S.base !== base;
+  let range;
+  try {
+    for (const pl of ["OOP", "IP"]) {
+      if (!cache[pl]) cache[pl] = await get(`${base}/ev?id=${q(id)}&player=${pl}`);
+      if (stale()) return;
+    }
+    range = await loadRange();
+  } catch (e) {
+    if (!stale()) for (const pl of ["OOP", "IP"]) evs[pl].textContent = "—";
+    return;
+  }
+  if (stale()) return;
+  for (const pl of ["OOP", "IP"]) {
+    const e = cache[pl], w = pl === "OOP" ? range.oop : range.ip;
+    let num = 0, den = 0;
+    for (let i = 0; i < 1326; i++) {
+      // matchups already include the hand's reach (see the matrix's EV mode)
+      const mu = e.matchups ? e.matchups[i] : w[i];
+      if (e.ev[i] == null || !(mu > 0) || !(w[i] > 0)) continue;
+      num += mu * e.ev[i]; den += mu;
+    }
+    evs[pl].textContent = den > 0 ? fmtEvPct(num / den, pot) : "—";
+  }
 }
 
 function renderTitle() {
@@ -624,11 +667,9 @@ function markSel() {
 /* ---- side panel ---- */
 
 function renderSide() {
-  for (const k of ["hand", "node", "ranges", "cats", "blockers", "graphs"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
+  for (const k of ["hand", "cats", "blockers", "graphs"]) $("side-" + k).classList.toggle("hidden", k !== S.side);
   document.querySelectorAll(".side-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.side === S.side));
   if (S.side === "hand") renderHand();
-  else if (S.side === "node") renderNodePanel();
-  else if (S.side === "ranges") renderRangesPanel();
   else if (S.side === "blockers") renderBlockersPanel();
   else if (S.side === "graphs") renderGraphsPanel();
   else renderCatsPanel();
@@ -697,93 +738,18 @@ function renderHand() {
   box.appendChild(t);
 }
 
-async function renderNodePanel() {
-  const box = $("side-node");
-  const n = S.path[S.path.length - 1];
-  const seq = S.seq;
-  box.textContent = "";
-  const grid = el("div", "kv-grid");
-  const kv = (k, v) => { const d = el("div", "kv"); d.append(el("div", "k", k), el("div", "v num", v)); grid.appendChild(d); };
-  const pot = potOf(n);
-  kv("Pot", fmtChips(pot));
-  kv("Behind", S.eff ? fmtChips(S.eff - Math.max(n.pot[0], n.pot[1])) : "—");
-  const evBox = el("div", "kv-grid");
-  box.append(el("h3", null, "Spot"), grid, el("h3", null, "Range EV (% of pot)"), evBox);
-  if (isDec(n) && S.cur.freq) {
-    const acts = actionsOf(S.cur, S.path.length - 1);
-    const o = overallFreqs(S.cur, acts);
-    box.appendChild(el("h3", null, `${actorOf(n)} actions`));
-    const t = el("table", "act-table");
-    t.innerHTML = "<tr><th>Action</th><th>Freq</th><th>Combos</th></tr>";
-    acts.forEach((a, j) => {
-      const tr = el("tr");
-      const c = el("td");
-      const sw = el("span", "sw"); sw.style.background = a.color;
-      c.append(sw, document.createTextNode(`${a.label} ${a.sub}`.trim()));
-      tr.append(c, el("td", "num", fmt(o.freqs[j] * 100) + "%"), el("td", "num", fmt(o.combos[j])));
-      t.appendChild(tr);
-    });
-    box.appendChild(t);
-  }
-  try {
-    for (const pl of ["OOP", "IP"]) {
-      if (!S.ev[pl]) S.ev[pl] = await get(`${S.base}/ev?id=${q(S.id)}&player=${pl}`);
-    }
-    await loadRange();
-    if (seq !== S.seq || S.side !== "node") return;
-    for (const pl of ["OOP", "IP"]) {
-      const e = S.ev[pl], w = pl === "OOP" ? S.range.oop : S.range.ip;
-      let num = 0, den = 0;
-      for (let i = 0; i < 1326; i++) {
-        // matchups already include the hand's reach (see the matrix's EV mode)
-        const mu = e.matchups ? e.matchups[i] : w[i];
-        if (e.ev[i] == null || !(mu > 0) || !(w[i] > 0)) continue;
-        num += mu * e.ev[i]; den += mu;
-      }
-      const d = el("div", "kv");
-      d.append(el("div", "k", `${pl} EV`), el("div", "v num", den > 0 ? fmtEvPct(num / den, pot) : "—"));
-      evBox.appendChild(d);
-    }
-  } catch (e) { fail(e); }
-}
-
-async function renderRangesPanel() {
-  const box = $("side-ranges");
-  const seq = S.seq;
-  try {
-    await loadRange();
-  } catch (e) { fail(e); return; }
-  if (seq !== S.seq || S.side !== "ranges") return;
-  box.textContent = "";
-  const blocked = blockedBy(boardOf(S.path[S.path.length - 1]));
-  for (const pl of ["OOP", "IP"]) {
-    const w = pl === "OOP" ? S.range.oop : S.range.ip;
-    let combos = 0;
-    for (let i = 0; i < 1326; i++) if (!blocked(H.order[i])) combos += w[i] || 0;
-    const head = el("div", "range-head");
-    head.append(el("span", `badge ${pl.toLowerCase()}`, pl), el("span", "muted num", `${fmt(combos)} combos`));
-    box.appendChild(head);
-    const mm = el("div", "mini-matrix");
-    for (const cls of H.classes) {
-      const cw = classWeight(w, cls, blocked);
-      const c = el("div");
-      const f = el("i");
-      f.style.height = (Math.min(1, cw.w) * 100).toFixed(1) + "%";
-      f.style.background = `var(--${pl.toLowerCase()})`;
-      c.appendChild(f);
-      c.title = `${cls}: ${fmt(cw.w * 100, 0)}%`;
-      mm.appendChild(c);
-    }
-    box.appendChild(mm);
-  }
-}
-
 /* ---- categories tab (#154): made-hand and draw breakdown of the range at hand ---- */
 
 const DRAW_LABEL = {
   no_draw: "No draw", bdfd_1card: "Backdoor FD (1 card)", bdfd_2card: "Backdoor FD (2 cards)",
   "4out_straight_draw": "4-out straight draw", "8out_straight_draw": "8-out straight draw",
   flush_draw: "Flush draw", combo_draw: "Combo draw",
+};
+
+/** Short names for the Cats table (the row's tooltip keeps the full one). */
+const DRAW_SHORT = {
+  bdfd_1card: "BDFD (1 card)", bdfd_2card: "BDFD (2 cards)",
+  "4out_straight_draw": "4-out straight", "8out_straight_draw": "8-out straight",
 };
 
 const prettyCat = (name) => DRAW_LABEL[name] || name.replace(/[-_]/g, " ").replace(/^\w/, (c) => c.toUpperCase());
@@ -837,52 +803,70 @@ async function renderCatsPanel() {
   if (pl !== data.actor) {
     box.appendChild(el("div", "hint cats-note", `${pl} is not to act here — shares and EVs only, no strategy.`));
   }
+  const pot = potOf(d.node);
+  const strat = pl === data.actor;
+  const t = el("table", "cats-tbl");
+  const hr = el("tr");
+  hr.append(el("th", "n"), el("th", "num", "Combos"), el("th", "num", "Range"));
+  const evh = el("th", "num", "EV");
+  evh.title = "EV as % of the pot (reach- and matchup-weighted)";
+  hr.appendChild(evh);
+  if (strat) {
+    for (const a of acts) {
+      const th = el("th", "act");
+      const sw = el("i"); sw.style.background = a.color;
+      th.append(sw, el("span", null, a.label));
+      th.title = `How often each category takes ${a.label}`;
+      hr.appendChild(th);
+    }
+  }
+  const thead = el("thead");
+  thead.appendChild(hr);
+  t.appendChild(thead);
+  const ncol = 4 + (strat ? acts.length : 0);
   const section = (title, rows) => {
-    box.appendChild(el("h3", null, title));
-    rows.forEach((c) => box.appendChild(catRow(c, acts, box, potOf(d.node))));
+    const tb = el("tbody");
+    const sr = el("tr", "sec");
+    const sc = el("td", null, title);
+    sc.colSpan = ncol;
+    sr.appendChild(sc);
+    tb.appendChild(sr);
+    rows.forEach((c) => tb.appendChild(catRow(c, strat ? acts : [], box, pot)));
+    t.appendChild(tb);
   };
   section("Made hands", data.made);
   const draws = data.draws.filter((c) => c.name !== "no_draw" || data.draws.length > 1);
   if (draws.length) section("Draws", draws);
+  const wrap = el("div", "cats-wrap");
+  wrap.appendChild(t);
+  box.appendChild(wrap);
   box.appendChild(el("div", "hint cats-note", "Hover a row to light up its hands in the matrix; click to pin."));
 }
 
+/** One category: combos, share of the range, EV (% of pot), then how often it takes each action. */
 function catRow(c, acts, box, pot) {
-  const row = el("div", "cat-row");
+  const row = el("tr", "cat-row");
   row.dataset.cat = c.name;
   if (S.catPin && S.catPin.name === c.name) row.classList.add("sel");
-  const top = el("div", "cat-top");
-  top.append(el("span", "cat-name", prettyCat(c.name)),
-             el("span", "cat-share num", `${fmt(c.combos, c.combos < 10 ? 1 : 0)} c · ${fmt(c.pct * 100, c.pct < 0.1 ? 1 : 0)}%`),
-             el("span", "cat-ev num", c.ev != null ? `EV ${fmtEvPct(c.ev, pot, 0)}` : "—"));
-  top.title = "Combos and share of the range; EV as % of the pot (reach- and matchup-weighted)";
-  row.appendChild(top);
+  const name = prettyCat(c.name);
+  const short = DRAW_SHORT[c.name] || name;
+  const share = fmt(c.pct * 100, c.pct < 0.1 ? 1 : 0) + "%";
+  const ev = c.ev != null ? fmtEvPct(c.ev, pot, 0) : "—";
+  row.append(el("td", "n", short), el("td", "num muted", fmt(c.combos, c.combos < 10 ? 1 : 0)),
+             el("td", "num", share), el("td", "num ev", ev));
+  let tip = `<div class="t">${name}</div><div class="r"><span>Combos</span><b>${fmt(c.combos, 1)} (${share} of the range)</b></div>` +
+    `<div class="r"><span>EV</span><b>${ev} of the pot</b></div>`;
   if (c.strategy) {
-    const bar = el("div", "mini-bar cat-bar");
-    const tip = `<div class="t">${prettyCat(c.name)}</div>` +
-      acts.map((a) => `<div class="r"><span>${`${a.label} ${a.sub}`.trim()}</span><b>${fmt((c.strategy[a.k] || 0) * 100)}%</b></div>`).join("");
-    acts.forEach((a) => {
+    for (const a of acts) {
       const f = c.strategy[a.k] || 0;
-      if (f <= 0.0005) return;
-      const sp = el("span");
-      sp.style.background = a.color;
-      sp.style.width = (f * 100).toFixed(1) + "%";
-      bar.appendChild(sp);
-    });
-    row.appendChild(bar);
-    const mix = el("div", "cat-mix");
-    acts.forEach((a) => {
-      const f = c.strategy[a.k] || 0;
-      if (f <= 0.0005) return;
-      const itm = el("span", "cat-mix-item");
-      const sw = el("span", "sw");
-      sw.style.background = a.color;
-      itm.append(sw, el("span", null, `${a.label} ${a.sub}`.trim()), el("b", null, fmt(f * 100, f < 0.1 ? 1 : 0) + "%"));
-      mix.appendChild(itm);
-    });
-    row.appendChild(mix);
-    row.onmousemove = (ev) => showTip(ev, tip);
+      const td = el("td", "num act");
+      if (f > 0.0005) td.append(fmt(f * 100, f < 0.1 ? 1 : 0), el("small", null, "%"));
+      if (f > 0.0005) td.style.background = `color-mix(in srgb, ${a.color} ${(6 + f * 50).toFixed(0)}%, transparent)`;
+      row.appendChild(td);
+      tip += `<div class="r"><span>${a.label}</span><b>${fmt(f * 100)}%</b></div>`;
+    }
   }
+  row.onmousemove = (ev) => showTip(ev, tip);
   row.onmouseenter = () => { S.catHl = new Set(c.classes); if (!S.catPin) markCatHl(); };
   row.onmouseleave = () => { S.catHl = null; hideTip(); if (!S.catPin) markCatHl(); };
   row.onclick = () => {
@@ -1365,7 +1349,7 @@ async function renderGraphsPanel() {
   box.appendChild(t);
   box.appendChild(el("div", "hint cats-note", metric === "eq"
     ? "Each combo's eq against the other range here, weakest first along the share of the range. Averages are matchup-weighted, like Pio's."
-    : "Each combo's EV as % of the pot here, lowest first along the share of the range. Averages are matchup-weighted, like the Node tab's."));
+    : "Each combo's EV as % of the pot here, lowest first along the share of the range. Averages are matchup-weighted, like the range EVs in the top bar."));
 }
 
 function drawRangeGraph(svg, cs, metric) {
@@ -1532,7 +1516,7 @@ function syncUrl() {
   }
 }
 
-/** View state carried in the URL after the node id: &mode=ev&player=IP&side=node&pin=AKs */
+/** View state carried in the URL after the node id: &mode=ev&player=IP&side=cats&pin=AKs */
 function urlState() {
   let s = "";
   if (S.mode !== "strategy") s += "&mode=" + S.mode;
@@ -1546,7 +1530,7 @@ function urlState() {
 export function applyUrlState(params) {
   if (["strategy", "range", "ev"].includes(params.mode)) S.mode = params.mode;
   if (["OOP", "IP"].includes(params.player)) S.player = params.player;
-  if (["hand", "node", "ranges", "cats", "blockers", "graphs"].includes(params.side)) S.side = params.side;
+  if (["hand", "cats", "blockers", "graphs"].includes(params.side)) S.side = params.side;
   if (params.blk && H.index.has(params.blk)) { S.blkCombo = displayCombo(H.order[H.index.get(params.blk)]); S.blkFor = null; }
   if (params.pin && Object.prototype.hasOwnProperty.call(H.byClass, params.pin)) S.pinned = params.pin;
   document.querySelectorAll("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.mode === S.mode));

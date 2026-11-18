@@ -5,7 +5,7 @@
 /**
  * One player's curve: combos with reach and a value, weakest first, so the curve rises to the right (owner). Each point covers
  * [x0, x1) of the range (reach-weighted shares, 0..1) at value v. `avg` is the matchup-weighted
- * average, the same range figure the Node tab and Pio report; `median` the value at half the range.
+ * average, the same range figure the study top bar and Pio report; `median` the value at half the range.
  */
 export function curve(reach, values, matchups, order) {
   const pts = [];

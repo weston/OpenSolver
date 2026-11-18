@@ -346,15 +346,18 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     Strategy, Range and EV modes; OOP/IP for the latter two.
   - side panel: per-combo strategy and EV for the hovered or pinned hand, node and range-EV
     summary, both players' ranges, made-hand and draw categories.
-  - **Blockers** tab: pick a combo of the player to act (click a combo in the Hand tab, pick one of
-    the pinned class's combos, or type it) to see what its cards remove from the other range:
-    the combos it blocks, the other player's range by hand class and by category with and without
-    them, that range's equity against yours, and its response to each of your actions (for
-    example its fold frequency facing a bet) with and without them. Below, every single card is
-    shown on a 52-card heat map of how much holding it moves a number you choose (the other player's
-    equity, or any of its responses); **Exclude board ranks** leaves out the cards that pair the board (a K on the
-    board leaves out all four kings). The equity is matchup-weighted, like Pio's range equity.
-    Holding a hand changes no strategy; it only rules out the opponent's combos that share its cards.
+  - **Blockers** tab: pick a combo of the player to act (type it, click one of the pinned class's
+    combos, or click a combo in the Hand tab) to see what its cards remove from the other range.
+    One line of numbers: how much of the other range it blocks, that range's eq given the hand
+    (and the change), and the hand's own eq. **responds**: for each action of the player to act,
+    a stacked bar of the other player's answer given the hand (ticks mark the whole range's
+    split; hover for both) and the change of each answer in points. **range shifts**: the made-hand
+    categories, draws or hand classes that get thinner or thicker, as diverging bars.
+    **Blocked combos** (folded) lists them by class. **Single cards**: a 52-card heat map of how
+    much holding each card moves a number you choose (the other player's eq, or any of its
+    answers); **No board ranks** leaves out the cards that pair the board (a K on the board
+    leaves out all four kings). The eq is matchup-weighted, like Pio's range equity. Holding a
+    hand changes no strategy; it only rules out the opponent's combos that share its cards.
   - **Graphs** tab: each player's range sorted by **equity** (against the other range) or **EV**,
     plotted against the share of the range it makes up (weakest first, so the curves rise), both players on one
     chart; hover for the combo at any point. Below: average (matchup-weighted, like Pio's), median,

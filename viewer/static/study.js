@@ -1322,6 +1322,8 @@ function drawRangeGraph(svg, cs, metric) {
     hi = Math.ceil(mx / step - 1e-9) * step;
     if (hi <= lo) hi = lo + step;
   }
+  // enough decimals that no two ticks read the same (a narrow EV range has steps under 1% of the pot)
+  const axisDigits = step * 100 >= 1 - 1e-9 ? 0 : step * 100 >= 0.1 - 1e-9 ? 1 : 2;
   const x = (f) => L + f * (W - L - R);
   const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (Hh - T - B);
   const grid = svgEl("g", { class: "grid" }, svg), axis = svgEl("g", { class: "axis" }, svg);
@@ -1329,7 +1331,7 @@ function drawRangeGraph(svg, cs, metric) {
     const yy = y(v);
     svgEl("line", { x1: L, x2: W - R, y1: yy, y2: yy, class: Math.abs(v) < 1e-9 && metric === "ev" ? "zero" : "" }, grid);
     const tx = svgEl("text", { x: L - 6, y: yy + 3, "text-anchor": "end" }, axis);
-    tx.textContent = Math.round(v * 100) + "%";
+    tx.textContent = fmt(v * 100, axisDigits) + "%";
   }
   for (const f of [0, 0.25, 0.5, 0.75, 1]) {
     const tx = svgEl("text", { x: x(f), y: Hh - B + 14, "text-anchor": f === 0 ? "start" : f === 1 ? "end" : "middle" }, axis);

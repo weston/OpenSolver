@@ -22,10 +22,12 @@ async function main() {
     const first = c.load("gr", "r:0", "/api/graphs?id=r:0", build);
     const hovers = [c.load("gr", "r:0", "/api/graphs?id=r:0", build), c.load("gr", "r:0", "/api/graphs?id=r:0", build)];
     check(srv.asks.length === 1, `one ask while it is in flight (got ${srv.asks.length})`);
-    check((await Promise.all(hovers)).every((x) => x === null), "the hovers get nothing to draw (the first call draws)");
     srv.asks[0].resolve({ v: 1 });
     const e = await first;
     check(e && e.data.v === 1 && e.key === "r:0", "the first call gets the answer");
+    // each caller gets it and runs its own checks: one that navigated away drops it, a later one with
+    // the same key (a deal under the same decision) still draws (#457 review)
+    check((await Promise.all(hovers)).every((x) => x === e), "the calls made meanwhile share the same answer");
     check((await c.load("gr", "r:0", "/x", build)) === e && srv.asks.length === 1, "later calls are served from the cache");
   }
   // an answer that comes back after invalidate() is dropped, and the next call asks again

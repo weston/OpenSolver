@@ -390,10 +390,6 @@ input.invalid, textarea.invalid { border-color: var(--danger); box-shadow: 0 0 0
 .mini-bar { height: 8px; border-radius: 4px; overflow: hidden; display: flex; background: var(--surface-3); }
 .mini-bar span { height: 100%; }
 .side-empty { color: var(--text-3); padding: 24px 4px; text-align: center; line-height: 1.6; }
-.kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.kv-grid .kv { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 11px; }
-.kv-grid .k { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
-.kv-grid .v { font-size: 17px; font-weight: 700; margin-top: 2px; }
 .act-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .act-table th { text-align: right; font-weight: 500; color: var(--text-3); padding: 0 0 6px; font-size: 11px; }
 .act-table th:first-child, .act-table td:first-child { text-align: left; }
@@ -412,7 +408,7 @@ input.invalid, textarea.invalid { border-color: var(--danger); box-shadow: 0 0 0
 .cats-wrap { overflow-x: auto; margin: 0 -4px; container: cats / inline-size; }
 .cats-tbl td.act small { font-size: inherit; }
 @container cats (max-width: 330px) { .cats-tbl td.act small { display: none; } }
-.cats-tbl th { position: sticky; top: 0; z-index: 1; background: var(--surface); padding: 0 3px 5px; font-size: 10.5px; font-weight: 500; color: var(--text-3); text-align: right; vertical-align: bottom; white-space: nowrap; }
+.cats-tbl th { padding: 0 3px 5px; font-size: 10.5px; font-weight: 500; color: var(--text-3); text-align: right; vertical-align: bottom; white-space: nowrap; }
 .cats-tbl th.act { text-align: center; white-space: normal; line-height: 1.15; min-width: 26px; }
 .cats-tbl th.act i { display: block; width: 14px; height: 3px; border-radius: 2px; margin: 0 auto 3px; }
 .cats-tbl td { padding: 4px 3px; text-align: right; white-space: nowrap; }
@@ -424,7 +420,7 @@ input.invalid, textarea.invalid { border-color: var(--danger); box-shadow: 0 0 0
 .cat-row { cursor: pointer; }
 .cat-row td:first-child { border-radius: 5px 0 0 5px; }
 .cat-row td:last-child { border-radius: 0 5px 5px 0; }
-.cat-row:hover td.n, .cat-row:hover td:not(.act) { background: var(--surface-2); }
+.cat-row:hover td:not(.act) { background: var(--surface-2); }
 .cat-row.sel td { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
 .cat-row.sel td.n { box-shadow: inset 1px 1px 0 var(--accent), inset 0 -1px 0 var(--accent); background: var(--accent-soft); }
 .cat-row.sel td:last-child { box-shadow: inset -1px 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }

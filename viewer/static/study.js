@@ -434,19 +434,24 @@ function renderPotInfo() {
 /** Each range's EV at this node as % of the pot, filled in once /api/ev answers ("—" where there is none,
  *  e.g. at a fold or showdown). */
 async function fillRangeEvs(evs, pot) {
-  const seq = S.seq, id = S.id;
+  // Everything is this node's: a navigation meanwhile replaces S.ev / S.range, so the answers go
+  // into the cache captured here (never the next node's), and nothing is shown once it is stale.
+  const seq = S.seq, id = S.id, base = S.base, cache = S.ev;
+  const stale = () => seq !== S.seq || S.id !== id || S.base !== base;
+  let range;
   try {
     for (const pl of ["OOP", "IP"]) {
-      if (!S.ev[pl]) S.ev[pl] = await get(`${S.base}/ev?id=${q(id)}&player=${pl}`);
+      if (!cache[pl]) cache[pl] = await get(`${base}/ev?id=${q(id)}&player=${pl}`);
+      if (stale()) return;
     }
-    await loadRange();
+    range = await loadRange();
   } catch (e) {
-    if (seq === S.seq) for (const pl of ["OOP", "IP"]) evs[pl].textContent = "—";
+    if (!stale()) for (const pl of ["OOP", "IP"]) evs[pl].textContent = "—";
     return;
   }
-  if (seq !== S.seq || S.id !== id) return;
+  if (stale()) return;
   for (const pl of ["OOP", "IP"]) {
-    const e = S.ev[pl], w = pl === "OOP" ? S.range.oop : S.range.ip;
+    const e = cache[pl], w = pl === "OOP" ? range.oop : range.ip;
     let num = 0, den = 0;
     for (let i = 0; i < 1326; i++) {
       // matchups already include the hand's reach (see the matrix's EV mode)
@@ -1344,7 +1349,7 @@ async function renderGraphsPanel() {
   box.appendChild(t);
   box.appendChild(el("div", "hint cats-note", metric === "eq"
     ? "Each combo's eq against the other range here, weakest first along the share of the range. Averages are matchup-weighted, like Pio's."
-    : "Each combo's EV as % of the pot here, lowest first along the share of the range. Averages are matchup-weighted, like the Node tab's."));
+    : "Each combo's EV as % of the pot here, lowest first along the share of the range. Averages are matchup-weighted, like the range EVs in the top bar."));
 }
 
 function drawRangeGraph(svg, cs, metric) {
@@ -1511,7 +1516,7 @@ function syncUrl() {
   }
 }
 
-/** View state carried in the URL after the node id: &mode=ev&player=IP&side=node&pin=AKs */
+/** View state carried in the URL after the node id: &mode=ev&player=IP&side=cats&pin=AKs */
 function urlState() {
   let s = "";
   if (S.mode !== "strategy") s += "&mode=" + S.mode;

@@ -779,8 +779,8 @@ def categories_at(solver, node_id, player):
     `player` ("actor" resolves to the decision's actor; the toggle in the UI passes
     OOP/IP explicitly). Each category row carries its weighted combos, share of the
     range, a range-weighted strategy per child action (only when the queried player
-    is the one to act), a matchups-weighted EV (the same average the Node
-    tab shows), and the matrix classes its combos live in.
+    is the one to act), a matchups-weighted EV (the same average as the
+    range EVs in the study top bar), and the matrix classes its combos live in.
     """
     player = player.upper()
     empty = {"id": None, "board": "", "actor": None, "player": player if player != "ACTOR" else None,

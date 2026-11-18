@@ -844,6 +844,18 @@ class ResolveIntegrationTest(unittest.TestCase):
         self.assertIsNone(d["applied"])
         st, d = self.req("/api/strategy?id=r:0")
         self.assertNotIn("variant", d)
+        # nor is one that was running when the lock changed: it read the old ranges
+        st, d = self.req("/api/resolve/start", "POST",
+                         dict(SIZING, id="r:0", sizes="30,45", apply=True, accuracy=0.002))
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/unlock", "POST", {"id": "r:0"})
+        self.assertEqual(st, 200, d)
+        st, d = self.req("/api/resolve/status")
+        self.assertTrue(d["busy"], "the job must still be running for this check to mean anything")
+        done = self.wait_job()
+        self.assertIsNone(done["error"], done["error"])
+        self.assertTrue(done["tree"])
+        self.assertIsNone(done["applied"])
         # a plain re-solve (no apply) is not shown in place
         st, d = self.req("/api/resolve/start", "POST", dict(SIZING, id="r:0", sizes="30", accuracy=1.0))
         self.assertEqual(st, 200, d)

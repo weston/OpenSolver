@@ -16,6 +16,7 @@ const R = {
   timer: null,     // status poll while a job runs
   job: null,       // {kind, node} of the job this page started
   shown: null,     // the applied re-solve ({root, sizes, ...}) last seen in /api/resolve/status
+  pollSeq: 0,      // only the latest status request counts (one sent before a Start says "idle")
 };
 
 const potOf = (ctx) => ctx.pot.oop + ctx.pot.ip + ctx.pot.dead;
@@ -200,8 +201,12 @@ function watch() {
 
 async function poll() {
   clearTimeout(R.timer);
+  const seq = ++R.pollSeq;
   let st;
   try { st = await get("/api/resolve/status"); } catch (e) { return; }
+  if (seq !== R.pollSeq) return;
+  // a job running from before a reload (or another tab): show its result when it ends, too
+  if (st.busy && !R.job) R.job = { kind: st.kind, node: st.node };
   const before = R.shown;
   if (!st.busy) R.shown = st.applied || null;   // before drawing: the table marks the row shown
   drawBusy(st);

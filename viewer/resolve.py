@@ -385,10 +385,11 @@ class ResolveManager:
             self.applied = None
 
     def restore(self):
-        """Show the main tree again everywhere (the subgame stays browsable under /api/resolve)."""
+        """Show the main tree again everywhere (the subgame stays browsable under /api/resolve).
+        A job running now is not shown when it finishes either: it read the ranges before this."""
         with self.mu:
             was = self.applied
-            self.applied = None
+            self.applied, self.job_apply = None, None
         return {"ok": True, "restored": was["root"] if was else None}
 
     def _entry(self, job):

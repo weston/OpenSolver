@@ -356,7 +356,7 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     board leaves out all four kings). The equity is matchup-weighted, like Pio's range equity.
     Holding a hand changes no strategy; it only rules out the opponent's combos that share its cards.
   - **Graphs** tab: each player's range sorted by **equity** (against the other range) or **EV**,
-    plotted against the share of the range it makes up (strongest first), both players on one
+    plotted against the share of the range it makes up (weakest first, so the curves rise), both players on one
     chart; hover for the combo at any point. Below: average (matchup-weighted, like Pio's), median,
     and the share with 50%+ equity or the EV as % of the pot. At a fold or showdown it shows the
     node above.

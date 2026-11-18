@@ -1285,7 +1285,7 @@ async function renderGraphsPanel() {
   }
   box.appendChild(legend);
   const svg = svgEl("svg", { viewBox: "0 0 360 244", class: "gr-chart", role: "img",
-    "aria-label": `${metric === "eq" ? "eq" : "EV (% of pot)"} of each combo, strongest first, for OOP and IP` });
+    "aria-label": `${metric === "eq" ? "eq" : "EV (% of pot)"} of each combo, weakest first, for OOP and IP` });
   box.appendChild(svg);
   drawRangeGraph(svg, cs, metric);
 
@@ -1307,8 +1307,8 @@ async function renderGraphsPanel() {
   }
   box.appendChild(t);
   box.appendChild(el("div", "hint cats-note", metric === "eq"
-    ? "Each combo's eq against the other range here, strongest first along the share of the range. Averages are matchup-weighted, like Pio's."
-    : "Each combo's EV as % of the pot here, highest first along the share of the range. Averages are matchup-weighted, like the Node tab's."));
+    ? "Each combo's eq against the other range here, weakest first along the share of the range. Averages are matchup-weighted, like Pio's."
+    : "Each combo's EV as % of the pot here, lowest first along the share of the range. Averages are matchup-weighted, like the Node tab's."));
 }
 
 function drawRangeGraph(svg, cs, metric) {
@@ -1340,7 +1340,7 @@ function drawRangeGraph(svg, cs, metric) {
     tx.textContent = Math.round(f * 100) + "%";
   }
   const xl = svgEl("text", { x: (L + W - R) / 2, y: Hh - 3, "text-anchor": "middle", class: "axis-title" }, axis);
-  xl.textContent = "share of range, strongest first";
+  xl.textContent = "share of range, weakest first";
 
   for (const pl of ["IP", "OOP"]) {
     const pts = cs[pl].pts;
@@ -1361,7 +1361,7 @@ function drawRangeGraph(svg, cs, metric) {
     const sx = ((ev.clientX - r.left) / r.width) * W;
     const f = Math.min(1, Math.max(0, (sx - L) / (W - L - R)));
     cross.setAttribute("x1", x(f)); cross.setAttribute("x2", x(f)); cross.setAttribute("visibility", "visible");
-    let html = `<div class="t">Top ${Math.round(f * 100)}% of the range</div>`;
+    let html = `<div class="t">${Math.round(f * 100)}% of the range below</div>`;
     for (const pl of ["OOP", "IP"]) {
       const p = rangeAt(cs[pl], f);
       if (!p) { dots[pl].setAttribute("visibility", "hidden"); continue; }

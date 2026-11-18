@@ -3,7 +3,7 @@
 // (no DOM), so viewer/test_graphs_js.mjs can check it.
 
 /**
- * One player's curve: combos with reach and a value, strongest first. Each point covers
+ * One player's curve: combos with reach and a value, weakest first, so the curve rises to the right (owner). Each point covers
  * [x0, x1) of the range (reach-weighted shares, 0..1) at value v. `avg` is the matchup-weighted
  * average, the same range figure the Node tab and Pio report; `median` the value at half the range.
  */
@@ -18,7 +18,7 @@ export function curve(reach, values, matchups, order) {
     const m = matchups ? matchups[i] || 0 : r;
     if (m > 0) { num += m * v; den += m; }
   }
-  pts.sort((a, b) => b.v - a.v || a.i - b.i);
+  pts.sort((a, b) => a.v - b.v || a.i - b.i);
   let x = 0;
   for (const p of pts) {
     p.x0 = total > 0 ? x / total : 0;

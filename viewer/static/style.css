@@ -280,10 +280,11 @@ input.invalid, textarea.invalid { border-color: var(--danger); box-shadow: 0 0 0
 /* ------------------------------------------------------------------ study: main */
 
 .study {
-  height: calc(100% - 76px); display: grid; grid-template-columns: minmax(0, 1fr) 372px;
+  --side-w: 372px;   /* the side panel; dragging its left edge sets it (study.js initSideResize) */
+  height: calc(100% - 76px); display: grid; grid-template-columns: minmax(0, 1fr) var(--side-w);
 }
 .study-main {
-  --mx: min(calc(100vh - 52px - 76px - 52px - 112px - 40px), calc(100vw - 372px - 64px), 720px);
+  --mx: min(calc(100vh - 52px - 76px - 52px - 112px - 40px), calc(100vw - var(--side-w) - 64px), 720px);
   padding: 14px 24px 18px; display: flex; flex-direction: column; align-items: center; overflow: hidden;
 }
 /* The head wraps rather than squeezing: with Re-solve / Solve further / Lock, the view switch and (EV, Range)
@@ -560,6 +561,7 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
   .study { grid-template-columns: 1fr; height: auto; }
   .study-main { --mx: min(calc(100vw - 32px), 640px); padding: 12px 16px; }
   .side { border-left: 0; border-top: 1px solid var(--border); }
+  .side-resize { display: none; }
   .linebar { height: auto; flex-wrap: wrap; padding: 10px 16px; }
   .editors { grid-template-columns: 1fr; }
   .deck { grid-template-columns: repeat(13, minmax(0, 1fr)); }
@@ -790,7 +792,6 @@ label.check input { accent-color: var(--accent); }
 .blk-card.held { border-color: var(--accent); }
 .blk-card.on-board { opacity: .3; }
 .blk-card .pc.xs { transform: scale(.85); }
-.blk-top { margin-bottom: 8px; }
 .blk-h { display: flex; align-items: center; gap: 6px; }
 .blk-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); margin: 0 0 8px; cursor: pointer; }
 
@@ -809,3 +810,9 @@ label.check input { accent-color: var(--accent); }
 .gr-dot { stroke: var(--surface); stroke-width: 2; }
 .gr-hit { fill: transparent; cursor: crosshair; }
 .gr-stats td:first-child span.sw { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 7px; }
+
+/* side panel resize handle */
+.side { position: relative; }
+.side-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
+.side-resize:hover, .side-resize.drag { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+body.col-resizing { cursor: col-resize; user-select: none; }

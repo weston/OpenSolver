@@ -351,8 +351,8 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     the combos it blocks, the other player's range by hand class and by category with and without
     them, that range's equity against yours, and its response to each of your actions (for
     example its fold frequency facing a bet) with and without them. Below, every single card is
-    ranked by how much holding it moves a number you choose (the other player's equity, or any of
-    its responses); **Exclude board ranks** leaves out the cards that pair the board (a K on the
+    shown on a 52-card heat map of how much holding it moves a number you choose (the other player's
+    equity, or any of its responses); **Exclude board ranks** leaves out the cards that pair the board (a K on the
     board leaves out all four kings). The equity is matchup-weighted, like Pio's range equity.
     Holding a hand changes no strategy; it only rules out the opponent's combos that share its cards.
   - **Graphs** tab: each player's range sorted by **equity** (against the other range) or **EV**,
@@ -360,6 +360,8 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     chart; hover for the combo at any point. Below: average (matchup-weighted, like Pio's), median,
     and the share with 50%+ equity or the EV as % of the pot. At a fold or showdown it shows the
     node above.
+
+  Drag the side panel's left edge to widen it (double-click it to reset); the width is remembered.
 
   Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`,
   `&side=blockers&blk=AhKd`, `&side=graphs`) links to the current node and view.

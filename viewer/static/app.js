@@ -7,7 +7,7 @@ import { initStudy, gotoNode, showEmpty, study, applyUrlState, setReportBatch } 
 import { initBuild, updateProgress, treeLoadedElsewhere } from "./build.js";
 import { drawSpark } from "./chart.js";
 import { initLibrary } from "./library.js";
-import { initResolve, openResolve } from "./resolve.js";
+import { initResolve, openSizes } from "./resolve.js";
 import { initFurther, pollFurther } from "./further.js";
 import { initLock } from "./lock.js";
 import { initJobs, showJobs, openReport } from "./jobs.js";
@@ -188,7 +188,7 @@ async function boot() {
       toast(`Readable after ${fmt(d.secs, 1)} s · open Study any time`);
     }
   });
-  $("btn-resolve").onclick = () => openResolve(study.id);
+  $("btn-resolve").onclick = () => openSizes(study.id);
   $("btn-report").onclick = async () => {
     if (!app.loadedBatch) return;
     const line = study.id;

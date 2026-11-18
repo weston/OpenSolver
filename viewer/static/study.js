@@ -39,8 +39,9 @@ const S = {
   side: "hand",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
-  base: "/api",      // "/api/resolve" while browsing a re-solved subtree (#117)
-  sub: null,         // {origin, root, label} in subtree mode
+  base: "/api",
+  variant: null,     // the re-solve shown from its node down when this node is at or below it
+                     // ({root, actor, sizes, label, ...}; viewer/resolve.py overlay), else null
 };
 
 /* ------------------------------------------------------------------ actions */
@@ -176,7 +177,8 @@ export async function gotoNode(id) {
       }
     }
     if (seq !== S.seq) return;
-    Object.assign(S, { id, path: p.nodes, eff: p.eff_stack || 0, cur, dec, decId, range: null, ev: {}, loaded: true });
+    Object.assign(S, { id, path: p.nodes, eff: p.eff_stack || 0, cur, dec, decId, range: null, ev: {}, loaded: true,
+                       variant: p.variant || null });
     if (S.pinned && !Object.prototype.hasOwnProperty.call(H.byClass, S.pinned)) S.pinned = null;
     // a pinned/hovered category is board-dependent: it does not survive navigation
     S.catPin = null; S.catHl = null;
@@ -184,8 +186,9 @@ export async function gotoNode(id) {
     await whenReleased();   // never rebuild the cards under a press (preview.js)
     if (seq !== S.seq) return;
     render();
-    nodeShown(id, cur, { inSubgame: !!S.sub, refresh: () => { if (S.loaded && S.id === id && S.target === id) { invalidate(); gotoNode(id); } } });
-    if (!S.sub && !document.getElementById("view-study").classList.contains("hidden")) history.replaceState(null, "", "#study=" + id + urlState());
+    document.dispatchEvent(new CustomEvent("study-node", { detail: id }));
+    nodeShown(id, cur, { inSubgame: !!S.variant, refresh: () => { if (S.loaded && S.id === id && S.target === id) { invalidate(); gotoNode(id); } } });
+    if (!document.getElementById("view-study").classList.contains("hidden")) history.replaceState(null, "", "#study=" + id + urlState());
   } catch (e) {
     if (seq === S.seq) fail(e);
   }
@@ -252,7 +255,7 @@ function renderBoard() {
   cards.forEach((c, i) => {
     if (i === 3 || i === 4) b.appendChild(el("span", "gap"));
     const ce = cardEl(c, "lg");
-    if (!S.sub) {   // click a card to change it (not inside a re-solved subtree)
+    {   // click a card to change it
       ce.classList.add("pickable");
       const root = boardOf(S.path[0]).length;
       ce.title = i < root ? `Change the ${root === 3 ? "flop" : "board"}: rebuild and solve on other cards`
@@ -278,7 +281,7 @@ function renderBoard() {
  *  the actions after it where the new branch has them. */
 async function openBoardPicker(i) {
   const dlg = $("card-dialog");
-  if (!dlg || S.sub || !S.path.length) return;
+  if (!dlg || !S.path.length) return;
   const root = boardOf(S.path[0]);
   const shown = boardOf(S.path[S.path.length - 1]);
   const deck = $("cd-deck");
@@ -358,16 +361,9 @@ function renderPath() {
   // Back: up one node (same as the left-arrow key), disabled at the root.
   const back = el("button", "path-back", "‹");
   back.title = "Up one node (←)";
-  back.disabled = P.length <= 1 && !S.sub;
+  back.disabled = P.length <= 1;
   back.onclick = goUp;
   box.appendChild(back);
-  if (S.sub) {
-    const back = el("button", "step origin");
-    back.append(el("span", null, "↩ Original"), el("span", "sub", S.sub.label));
-    back.title = "Leave the re-solved subtree and return to " + S.sub.origin;
-    back.onclick = exitSubgame;
-    box.appendChild(back);
-  }
   const mark = (n) => {
     const cards = boardOf(n);
     if (cards.length === lastLen) return;
@@ -376,10 +372,8 @@ function renderPath() {
     if (cards.length >= 4) m.appendChild(cardEl(cards[cards.length - 1], "sm"));
     box.appendChild(m);
   };
-  // In a re-solved subtree, nodes above the subgame root are the backend's forced-check
-  // wrapper (IP roots), not real actions: skip them.
-  const first = S.sub ? Math.max(0, P.findIndex((p) => p.id === S.sub.root)) : 0;
-  for (let i = first; i < P.length - 1; i++) {
+  const vroot = S.variant ? S.variant.root : null;
+  for (let i = 0; i < P.length - 1; i++) {
     const n = P[i];
     if (!isDec(n)) continue; // deals show up as street marks
     mark(n);
@@ -390,6 +384,7 @@ function renderPath() {
     if (d.sub) b.appendChild(el("span", "sub", d.sub));
     b.title = "Go to this decision";
     if (lockOf(n)) { b.classList.add("locked"); b.title += ` (${actorOf(n)}'s strategy here is locked)`; }
+    if (n.id === vroot) { b.classList.add("custom"); b.title += ` (custom sizes from here: ${variantText(S.variant)})`; }
     b.onclick = () => gotoNode(n.id);
     box.appendChild(b);
   }
@@ -479,15 +474,27 @@ function renderTitle() {
   } else {
     t.append(el("span", "badge neutral", n.type));
   }
-  // re-solving is offered on decisions of the original tree
-  $("btn-resolve").classList.toggle("hidden", !(isDec(n) && !S.sub && S.cur && S.cur.freq));
-  syncFurther(isDec(n) && !S.sub && S.cur && S.cur.freq);
-  $("btn-lock").classList.toggle("hidden", !(isDec(n) && !S.sub && S.cur && S.cur.freq));
-  $("btn-report").classList.toggle("hidden", !(reportBatch && isDec(n) && !S.sub));
+  // Sizes: at any decision of the main tree, and at the node custom sizes start from (to change
+  // them again); not below it, where the strategies are the re-solve's
+  const dec = isDec(n) && S.cur && S.cur.freq;
+  const v = S.variant;
+  $("btn-resolve").classList.toggle("hidden", !(dec && (!v || v.root === S.id)));
+  syncFurther(dec && !v);
+  $("btn-lock").classList.toggle("hidden", !(dec && !v));
+  $("btn-report").classList.toggle("hidden", !(reportBatch && isDec(n) && !v));
   const lk = isDec(n) ? lockOf(n) : null;
   $("lock-tag").classList.toggle("hidden", !lk);
   $("lock-tag").textContent = lk === "combos" ? "Some hands locked" : "Locked";
-  $("subgame-tag").classList.toggle("hidden", !S.sub);
+  const vt = $("variant-tag");
+  vt.classList.toggle("hidden", !v);
+  $("btn-restore").classList.toggle("hidden", !v);
+  if (v) {
+    vt.textContent = v.root === S.id ? "Custom sizes" : "Custom sizes above";
+    vt.title = `${variantText(v)}, re-solved at ${v.root}` + (v.root === S.id ? "" : " (click to go there)") +
+      ". The opponent's range there is the original's (unsafe re-solve, like Pio's).";
+    vt.onclick = v.root === S.id ? null : () => gotoNode(v.root);
+    vt.classList.toggle("link", v.root !== S.id);
+  }
   // player toggle only matters for range / EV
   const seg = $("player-seg");
   seg.classList.toggle("hidden", S.mode === "strategy");
@@ -1418,9 +1425,8 @@ function drawRangeGraph(svg, cs, metric) {
   });
 }
 
-/** Up one node: the parent (deals are steps too); at a re-solved subtree's root, back to the original. */
+/** Up one node: the parent (deals are steps too). */
 function goUp() {
-  if (S.sub && S.id === S.sub.root) { exitSubgame(); return; }
   if (S.path.length > 1) gotoNode(S.path[S.path.length - 2].id);
 }
 
@@ -1431,7 +1437,7 @@ let reportBatch = null;
 export function setReportBatch(name) {
   reportBatch = name || null;
   const n = S.path && S.path[S.path.length - 1];
-  $("btn-report").classList.toggle("hidden", !(reportBatch && n && isDec(n) && !S.sub));
+  $("btn-report").classList.toggle("hidden", !(reportBatch && n && isDec(n) && !S.variant));
 }
 
 /** The side panel's width: drag its left edge (double-click resets); remembered per browser. */
@@ -1511,7 +1517,7 @@ export function initStudy() {
 }
 
 function syncUrl() {
-  if (S.loaded && !S.sub && !document.getElementById("view-study").classList.contains("hidden")) {
+  if (S.loaded && !document.getElementById("view-study").classList.contains("hidden")) {
     history.replaceState(null, "", "#study=" + S.id + urlState());
   }
 }
@@ -1547,27 +1553,41 @@ export function showEmpty() {
   $("side-graphs").textContent = "";
 }
 
-/** Browse a re-solved subtree (#117) through the /api/resolve endpoints. */
-export function enterSubgame({ origin, root, label }) {
-  S.base = "/api/resolve";
-  S.sub = { origin, root, label };
-  S.dec = null; S.decId = null; S.pinned = null;
-  return gotoNode(root);
+/** "OOP 50% · 125%": who plays which sizes in a shown re-solve. */
+export function variantText(v) {
+  if (!v) return "";
+  const lab = (x) => (/^a$/i.test(x) ? "all-in" : /^[\d.]+$/.test(x) ? x + "%" : x);
+  return `${v.actor} ${v.sizes ? v.sizes.map(lab).join(" · ") : v.label}`;
 }
 
-export function exitSubgame() {
-  const origin = S.sub ? S.sub.origin : "r:0";
-  S.base = "/api";
-  S.sub = null;
-  S.dec = null; S.decId = null;
-  return gotoNode(origin);
+/** The acting player's sizes at the current decision, as the Sizes panel's starting text
+ *  ("33, 75, a"): bets as % of the pot, raises as % of the pot after the call, all-in as a. */
+export function sizesHere() {
+  const n = S.path[S.path.length - 1];
+  if (!S.loaded || !isDec(n) || !S.cur || !S.cur.freq) return "";
+  const out = [];
+  for (const a of actionsOf(S.cur, S.path.length - 1)) {
+    if (a.kind === "allin") out.push("a");
+    else if (a.kind === "bet") out.push(String(Math.round(a.frac * 100)));
+    else if (a.kind === "raise") out.push(String(Math.round((a.frac - 10) * 100)));
+  }
+  return [...new Set(out)].reverse().join(", ");
+}
+
+/** A re-solve was applied at (or removed from) `root`: show it. A node below root may not exist in
+ *  the new tree (other sizes, other ids), so from there the view goes back to root. */
+export function variantChanged(root) {
+  if (!S.loaded) return;
+  invalidate();
+  const below = root && S.id !== root && S.id.startsWith(root + ":");
+  return gotoNode(below ? root : S.id);
 }
 
 /** The current decision for the lock editor (#200): ids, actions in display order (label, colour,
  *  row index k into freq), the strategy and the actor's reach, all in 1326 order. */
 export function lockContext() {
   const n = S.path[S.path.length - 1];
-  if (!S.loaded || S.sub || !isDec(n) || !S.cur || !S.cur.freq) return null;
+  if (!S.loaded || S.variant || !isDec(n) || !S.cur || !S.cur.freq) return null;
   return {
     id: S.id, actor: actorOf(n), lock: lockOf(n), acts: actionsOf(S.cur, S.path.length - 1),
     freq: S.cur.freq, reach: S.cur.reach, board: boardOf(n), rootPot: potOf(S.path[0]), pot: potOf(n),
@@ -1580,7 +1600,7 @@ export const study = {
   get loaded() { return S.loaded; },
   get id() { return S.id; },
   get pot() { return S.path.length ? potOf(S.path[S.path.length - 1]) : 0; },
-  get inSubgame() { return !!S.sub; },
+  get inSubgame() { return !!S.variant; },
   refresh() { invalidate(); return gotoNode(S.loaded ? S.id : "r:0"); },
-  reset() { S.pinned = null; invalidate(); S.base = "/api"; S.sub = null; return gotoNode("r:0"); },
+  reset() { S.pinned = null; invalidate(); S.variant = null; return gotoNode("r:0"); },
 };

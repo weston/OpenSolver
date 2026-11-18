@@ -375,13 +375,20 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
 
   Keys: ← or Backspace goes up one node, Esc unpins. The URL (`#study=r:0:b12&mode=ev&pin=AQs`,
   `&side=blockers&blk=AhKd`, `&side=graphs`) links to the current node and view.
-- **Re-solve (#117):** at any decision of the original tree, **Re-solve…** re-solves the subtree from
-  there in a second solver process. Either edit the sizes for the rest of the hand, or find the best
-  N sizes out of a candidate list. At a node facing a bet on its own street the candidates are
-  raise sizes (`3x` allowed). **Plus all-in** (on by default) offers the all-in beside every
-  subset, on top of its N sizes. Results are ranked by the acting player's EV, and you can browse them
-  like the original tree; **↩ Original** in the action line, or ← at the subtree root, goes back.
-  This is unsafe re-solving: the opponent's range stays fixed at the node.
+- **Sizes (#117):** at any decision, **Sizes…** opens a small panel with the acting player's sizes
+  there (bets as % of the pot; raises as % of the pot after the call, or `2.5x`; `a` = all-in).
+  - **Solve:** edit them and press Solve (or Enter). The subtree is re-solved in a second solver
+    process and then shown **in place**: the same tree, line, tabs and URLs, with the new strategies
+    from that node down. A **Custom sizes** tag marks it, and the line marks the node it starts at.
+  - **Find best:** keeps the best N of a candidate list for the acting player (**+ all-in** offers
+    the all-in beside every subset). The table ranks them by that player's EV, the best is shown in
+    place, and **Show** on any row solves and shows that one instead.
+  - **Restore original** goes back to the original solve everywhere. Locking, unlocking, Solve
+    further or a new tree also restore it, since the re-solve used the old ranges.
+  - *Other sizes and accuracy* holds the sizes the subtree uses after this decision: the tree's own
+    sizes as built (the Build form's for a tree loaded from a file).
+  - This is unsafe re-solving, like Pio's: the opponent's range stays fixed at the node, and nothing
+    is saved.
 - **Solve further (#153):** at a solved decision, **Solve further…** continues solving from that
   node down on the *main* tree (the `solve_partial` path), to a target accuracy in % of the
   node's pot, with live progress and a Stop button. Strategies at and below the node change in
@@ -466,6 +473,18 @@ Endpoints (all JSON; ids refer to the main tree, subgame browsing uses subgame i
 | `GET /api/resolve/status` | — | `{busy, kind ("resolve"/"search"), node, error, done, total, method, rows (each `{sizes, ev, ev_oop, ev_ip}`, the acting player's EV first), best, context, result (root EVs, node count, line count, accuracy, calc_results text), tree, solve}` — poll this for progress; `solve` is the subgame solver's own status |
 | `GET /api/resolve/node`, `/strategy`, `/range`, `/ev`, `/calc_results` | same as the main-tree endpoints | browse the (re-)solved subgame. After a search these show the table's **best** subset |
 | `POST /api/resolve/stop` | — | cancels the running job (restarts the subgame solver); no-op when idle |
+| `POST /api/resolve/restore` | — | stops showing the applied re-solve in place (`{restored: <its node id> or null}`) |
+
+**Shown in place.** `/api/resolve/start` takes `sizes` (the acting player's sizes at X itself: its
+bets, its raises when X faces a bet, or its donk leads) and `apply: true`; `/api/resolve/search`
+takes `apply: true` too. Once such a job finishes, the main browse endpoints (`/api/path`, `/api/node`,
+`/api/strategy`, `/api/range`, `/api/ev`, `/api/categories`, `/api/blockers`, `/api/graphs`) answer for
+X and every id below it from the subgame, under main-tree ids (bet tokens are absolute chips, so
+only the prefix moves), with `"variant": {root, actor, sizes, ...}` in the payload. `/api/path`
+joins the main tree's line down to X with the subgame's below it. `applied` in `/api/resolve/status`
+says what is shown. Starting another job, `/api/resolve/restore`, a lock change, Solve further or a
+new main tree end it. `/api/resolve/context` also returns `built`, the sizes the main tree was built
+with (null for a loaded file).
 
 Each search candidate is solved to the requested (loose) accuracy; the comparison table
 grows under `rows` as candidates finish.

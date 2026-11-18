@@ -44,9 +44,11 @@
     <div class="study-main">
       <div class="node-head">
         <div id="node-title" class="node-title"></div>
-        <span id="subgame-tag" class="tag busy hidden" title="Browsing a re-solved subtree (opponent range fixed at the re-solve node)">Re-solved</span>
+        <span id="variant-tag" class="tag busy hidden">Custom sizes</span>
+        <button id="btn-restore" class="btn small hidden" title="Show the original solve again">Restore original</button>
+        <span id="rs-busy" class="tag busy hidden"></span>
         <span id="live-tag" class="tag hidden"></span>
-        <button id="btn-resolve" class="btn small hidden" title="Re-solve this subtree with other sizes">Re-solve…</button>
+        <button id="btn-resolve" class="btn small hidden" title="Solve from here with other sizes, or find the best ones">Sizes…</button>
         <button id="btn-further" class="btn small hidden" title="Continue solving the tree from this node down (changes its strategies in memory)">Solve further…</button>
         <span id="lock-tag" class="tag lock hidden" title="This strategy is a lock you set, not a solver output">Locked</span>
         <button id="btn-lock" class="btn small hidden" title="Set this player's strategy here by hand and lock it">Lock…</button>
@@ -61,6 +63,7 @@
           <button data-player="IP">IP</button>
         </div>
       </div>
+      <div id="rs-pop" class="rs-pop hidden" role="dialog" aria-label="Sizes at this node"></div>
       <div id="strip" class="strip"></div>
       <div class="matrix-wrap">
         <div id="matrix" class="matrix"></div>
@@ -366,58 +369,6 @@
     <div class="topbar-spacer"></div>
     <button id="lib-cancel" class="btn ghost">Cancel</button>
     <button id="lib-ok" class="btn primary">Load</button>
-  </div>
-</dialog>
-
-<dialog id="resolve-dialog" class="dialog rs">
-  <div class="rs-head">
-    <div>
-      <h2>Re-solve from here</h2>
-      <div id="rs-context" class="rs-context"></div>
-    </div>
-    <div class="seg" id="rs-tabs">
-      <button data-tab="search" class="active">Find best sizes</button>
-      <button data-tab="edit">Edit sizes</button>
-    </div>
-  </div>
-  <div class="rs-body">
-    <div id="rs-edit" class="hidden">
-      <table class="sizes rs-sizes">
-        <thead><tr><th></th><th></th><th>Bet</th><th>Raise</th><th>Donk</th><th title="Maximum bets + raises on the street">Cap</th><th>All-in</th></tr></thead>
-        <tbody id="rs-rows"></tbody>
-      </table>
-    </div>
-    <div id="rs-search">
-      <div class="rs-search-form">
-        <label class="field"><span>Street</span><select id="rs-street"></select></label>
-        <label class="field grow"><span id="rs-cand-label">Candidate bet sizes</span><input id="rs-candidates" value="25, 33, 50, 75, 100, 150" spellcheck="false"></label>
-        <label class="field"><span>Keep</span><select id="rs-n"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
-      </div>
-      <label class="check rs-allin" title="Every subset also offers the all-in, on top of its N sizes"><input type="checkbox" id="rs-allin" checked> Plus all-in (not counted in N)</label>
-      <p class="hint">Solves the subtree once per subset of N candidates (greedy above 12 subsets) and ranks them by the acting player's EV. Other streets use the sizes from <i>Edit sizes</i>.</p>
-    </div>
-    <div class="rs-acc">
-      <label class="field"><span>Accuracy per solve</span><div class="suffix"><input id="rs-accuracy" type="number" step="0.1" min="0.05" value="0.5"><i>% pot</i></div></label>
-      <p class="hint rs-caveat">The opponent's range stays fixed at this node (unsafe re-solving, as in Pio's subtree re-solves). Results are shown in memory; the saved tree is unchanged.</p>
-    </div>
-    <!-- Top-down flow: settings, then the action, then its results, then where to go next. -->
-    <div class="rs-run">
-      <button id="rs-go" class="btn primary rs-go">Search</button>
-      <button id="rs-stop" class="btn danger hidden">Stop</button>
-    </div>
-    <div id="rs-progress" class="rs-progress hidden">
-      <div class="rs-bar"><span id="rs-bar-fill"></span></div>
-      <div id="rs-status" class="rs-status"></div>
-      <table id="rs-table" class="rs-table"></table>
-      <div id="rs-next" class="rs-next hidden">
-        <div class="rs-next-text"><b>Result ready.</b> <span id="rs-next-what"></span></div>
-        <button id="rs-browse" class="btn primary">Open result in Study →</button>
-      </div>
-    </div>
-  </div>
-  <div class="lib-foot">
-    <div class="topbar-spacer"></div>
-    <button id="rs-close" class="btn ghost">Close</button>
   </div>
 </dialog>
 

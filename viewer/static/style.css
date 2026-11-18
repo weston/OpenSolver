@@ -612,22 +612,46 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
 /* ------------------------------------------------------------------ re-solve (#117) */
 
 .node-head #btn-resolve { flex: none; }
-.step.origin { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.step.origin .sub { color: var(--accent); opacity: .75; }
-.dialog.rs { width: min(820px, calc(100vw - 32px)); padding: 0; }
-.rs-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 14px; border-bottom: 1px solid var(--border); }
-.rs-head h2 { margin: 0 0 6px; }
-.rs-context { display: flex; align-items: center; gap: 10px; color: var(--text-2); font-size: 12px; flex-wrap: wrap; }
-.rs-context b { color: var(--text); }
-.rs-body { padding: 16px 20px 4px; display: flex; flex-direction: column; gap: 12px; max-height: 64vh; overflow-y: auto; }
-.rs-sizes { margin: -6px 0 0; }
-.rs-search-form { display: flex; gap: 12px; align-items: flex-end; }
-.rs-search-form .grow { flex: 1; }
-.rs-allin { margin: 8px 0 0; font-size: 12.5px; }
+.node-head #btn-resolve.active { border-color: var(--accent); color: var(--accent); }
 select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); color: var(--text); }
-.rs-acc { display: grid; grid-template-columns: 180px 1fr; gap: 16px; align-items: end; }
-.rs-caveat { margin: 0 0 4px; }
-.rs-progress { border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.study-main { position: relative; }
+.tag.link { cursor: pointer; }
+.tag.link:hover { text-decoration: underline; }
+/* the line chip of the node custom sizes start from */
+.step.custom { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* Sizes panel: drops down over the strip and matrix, under the node head */
+.rs-pop { position: absolute; z-index: 30; top: 80px; left: 50%; transform: translateX(-50%); width: min(var(--mx), 560px);
+  display: flex; flex-direction: column; gap: 8px; padding: 14px 16px 12px; background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); box-shadow: var(--shadow-pop); max-height: calc(100% - 96px); overflow-y: auto; }
+.rs-pop-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.rs-pop-head .muted { font-size: 12px; }
+.rs-x { margin-left: auto; width: 26px; height: 26px; border: 0; border-radius: 50%; background: none; color: var(--text-3); font-size: 18px; line-height: 1; cursor: pointer; }
+.rs-x:hover { background: var(--hover); color: var(--text); }
+.rs-row { display: flex; align-items: center; gap: 8px; }
+.rs-sizes-in { flex: 1; min-width: 0; height: 38px; font: 600 15px var(--mono); letter-spacing: .02em; }
+.rs-row > .btn.primary { height: 38px; padding: 0 22px; font-size: 14px; }
+.rs-hint { margin: -2px 0 4px; }
+.rs-find { padding-top: 10px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); }
+.rs-find select { height: 30px; }
+.rs-find #rs-candidates { flex: 1; min-width: 80px; height: 30px; }
+.rs-find .rs-ai { display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 12px; }
+.rs-find .btn { height: 30px; }
+.rs-word { flex: none; }
+.rs-more { border-top: 1px solid var(--border); padding-top: 8px; }
+.rs-more summary { cursor: pointer; font-size: 12px; color: var(--text-3); list-style: none; }
+.rs-more summary::-webkit-details-marker { display: none; }
+.rs-more summary::before { content: "›"; display: inline-block; width: 12px; transition: transform .15s; }
+.rs-more[open] summary::before { transform: rotate(90deg); }
+.rs-more summary:hover { color: var(--text-2); }
+.rs-more .rs-sizes { margin-top: 8px; }
+.rs-acc-row { display: grid; grid-template-columns: 130px 1fr; gap: 12px; align-items: end; margin-top: 8px; }
+.rs-acc-row .hint { margin: 0 0 6px; }
+.rs-state { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
+.rs-progress-line { display: flex; align-items: center; gap: 10px; }
+.rs-progress-line .rs-bar { flex: 1; }
+.rs-shown { font-size: 11px; font-weight: 600; color: var(--ok); }
+.rs-foot { margin: 2px 0 0; font-size: 11px; }
 .rs-bar { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
 .rs-bar span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
 .rs-bar.indet span { width: 30% !important; animation: indet 1.2s ease-in-out infinite; }
@@ -637,18 +661,10 @@ select { height: 32px; padding: 0 8px; background: var(--surface-2); border: 1px
 .rs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .rs-table th { text-align: right; color: var(--text-3); font-weight: 500; padding: 0 0 6px; }
 .rs-table th:first-child, .rs-table td:first-child { text-align: left; }
-.rs-table td { text-align: right; padding: 6px 0; border-top: 1px solid var(--border); font-weight: 600; }
-.rs-table tr.best td { color: var(--ok); }
+.rs-table td { text-align: right; padding: 5px 0 5px 8px; border-top: 1px solid var(--border); font-weight: 600; vertical-align: middle; }
+.rs-table td:first-child { padding-left: 0; }
 .rs-table .chip { display: inline-block; padding: 1px 7px; margin-right: 4px; border-radius: 10px; background: var(--surface-3); font-weight: 600; }
 .rs-table .delta { color: var(--text-3); font-weight: 500; }
-
-/* re-solve dialog: run button under the settings, results below it, next step last */
-.rs-run { display: flex; gap: 8px; }
-.rs-run .btn { flex: 1; height: 38px; font-size: 14px; }
-.rs-next { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 4px;
-  padding: 12px 14px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--accent); }
-.rs-next-text { color: var(--text-2); font-size: 12.5px; }
-.rs-next-text b { color: var(--text); }
 /* back button at the start of the action line */
 .path-back {
   flex: none; width: 28px; height: 34px; margin-right: 4px; border-radius: 8px;

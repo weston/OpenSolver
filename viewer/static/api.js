@@ -50,7 +50,8 @@ export function fmt(v, digits = 1) {
 /** An EV as a percentage of the pot ("45.2%"), the only way the viewer shows EVs (owner, #459). */
 export function fmtEvPct(ev, pot, digits = 1) {
   if (ev == null || !Number.isFinite(ev) || !(pot > 0)) return "—";
-  return fmt((100 * ev) / pot, digits) + "%";
+  const t = fmt((100 * ev) / pot, digits);
+  return (/^[-−]0(\.0*)?$/.test(t) ? t.slice(1) : t) + "%";   // no "-0%" for a tiny loss
 }
 export function fmtChips(v) {
   if (v == null || !Number.isFinite(v)) return "—";

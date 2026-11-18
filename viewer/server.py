@@ -516,6 +516,14 @@ def api(solver, lib, method, path, query, body):
         return _refiner.api(method, path, query, body)
     if method == "GET" and path in BROWSE_PATHS:
         solver.lease()
+    if _resolver is not None:
+        if method == "GET":
+            served = _resolver.overlay(path, query)   # a re-solve shown in place, at or below its node
+            if served is not None:
+                return served
+        elif path in LOCK_PATHS or path in ("/api/solve", "/api/solve_node"):
+            # the main tree's strategies change: the shown re-solve used the old ranges
+            _resolver.restore()
     global _preview
     if _refiner is not None:
         if method == "GET":

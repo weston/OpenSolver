@@ -5,6 +5,7 @@
 import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy, displayCombo } from "./cards.js";
 import { prepare as prepareBlockers, comboReport, shareChanges, cardEffects } from "./blockers.js";
 import { curves as rangeCurves, at as rangeAt, shareAbove } from "./graphs.js";
+import { sideCache } from "./sidecache.js";
 import { nodeShown, whenReleased } from "./preview.js";
 import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips, prefs } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
@@ -25,16 +26,13 @@ const S = {
   ev: {},            // player -> /api/ev of the current node
   pinned: null,      // class pinned by click
   hover: null,
-  cats: null,        // {key, data} cache for the Categories tab (#154)
   catsPlayer: null,  // OOP/IP override in that tab; null = the actor
   catHl: null,       // Set of classes highlighted by a hovered category row
   catPin: null,      // {name, classes} pinned by clicking a category row
-  blk: null,         // {key, data, P} cache for the Blockers tab
   blkCombo: null,    // the hand the Blockers tab shows ("AsKd"), or null
   blkFor: null,      // the player it was picked for (it only applies at that player's decisions)
   blkMetric: null,   // what the card ranking sorts by
   blkNoBoardRanks: prefs.get("blk-no-board-ranks", false),  // card ranking: leave out cards that pair the board
-  gr: null,          // {key, data} cache for the Graphs tab
   grMetric: prefs.get("graph-metric", "eq") === "ev" ? "ev" : "eq",
   side: "hand",
   seq: 0,            // navigation sequence, drops stale responses
@@ -206,14 +204,16 @@ async function loadRange() {
 function invalidate() {
   S.dec = null;
   S.decId = null;
-  S.cats = null;
-  S.blk = null;
-  S.gr = null;
+  side.invalidate();
   for (const k of ["side-cats", "side-blockers", "side-graphs"]) {
     const box = $(k);
     if (box) box.dataset.key = "";
   }
 }
+
+/** The Cats / Blockers / Graphs tabs' data: one ask per node at a time, none cached across a refresh. */
+const side = sideCache(get, fail);
+const sideData = (slot, key, url, build) => side.load(slot, key, url, build);
 
 async function loadModeData() {
   await loadRange();
@@ -805,16 +805,13 @@ async function renderCatsPanel() {
   }
   const pl = S.catsPlayer || d.actor;
   const key = `${S.base}|${S.decId}|${pl}`;
-  if (!S.cats || S.cats.key !== key) {
-    let data;
-    try { data = await get(`${S.base}/categories?id=${q(S.decId)}&player=${pl}`); } catch (e) { fail(e); return; }
-    S.cats = { key, data };
-  }
+  const ent = await sideData("cats", key, `${S.base}/categories?id=${q(S.decId)}&player=${pl}`, (data) => ({ key, data }));
+  if (!ent) return;
   if (seq !== S.seq || S.side !== "cats") return;
   // renderSide runs on every matrix hover; rebuilding the list then would reset its scroll
   if (box.dataset.key === key) return;
   box.dataset.key = key;
-  const data = S.cats.data;
+  const data = ent.data;
   box.textContent = "";
 
   const head = el("div", "cats-head");
@@ -956,13 +953,11 @@ async function renderBlockersPanel() {
     return;
   }
   const key = `${S.base}|${S.decId}`;
-  if (!S.blk || S.blk.key !== key) {
-    let data;
-    try { data = await get(`${S.base}/blockers?id=${q(S.decId)}`); } catch (e) { fail(e); return; }
-    S.blk = { key, data, P: prepareBlockers(data, H.order) };
-  }
+  const ent = await sideData("blk", key, `${S.base}/blockers?id=${q(S.decId)}`,
+                            (data) => ({ key, data, P: prepareBlockers(data, H.order) }));
+  if (!ent) return;
   if (seq !== S.seq || S.side !== "blockers") return;
-  const { data, P } = S.blk;
+  const { data, P } = ent;
   const pi = S.path.findIndex((p) => p.id === S.decId);
   const acts = actionsOf(d, pi);
   const metrics = blockerMetrics(P, acts, pi);
@@ -1253,18 +1248,14 @@ async function renderGraphsPanel() {
   const box = $("side-graphs");
   const seq = S.seq;
   const key = `${S.base}|${S.id}`;
-  if (!S.gr || S.gr.key !== key) {
-    let data;
-    try { data = await get(`${S.base}/graphs?id=${q(S.id)}`); } catch (e) { fail(e); return; }
-    if (seq !== S.seq) return;
-    S.gr = { key, data };
-  }
-  if (S.side !== "graphs") return;
+  const ent = await sideData("gr", key, `${S.base}/graphs?id=${q(S.id)}`, (data) => ({ key, data }));
+  if (!ent) return;
+  if (seq !== S.seq || S.side !== "graphs") return;
   const vkey = `${key}|${S.grMetric}`;
   if (box.dataset.key === vkey) return;
   box.dataset.key = vkey;
   box.textContent = "";
-  const data = S.gr.data;
+  const data = ent.data;
   const metric = S.grMetric;
 
   const head = el("div", "cats-head");

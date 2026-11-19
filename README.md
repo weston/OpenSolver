@@ -399,27 +399,45 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
   stopped}`) alongside the existing whole-solve convergence series; `loaded_file` is also in
   `/api/status`. Uses the UPI extension `go_partial <node> [N steps|seconds]` (see
   `docs/commands.md`).
-- **Study side panel → Beta, runout lines (#467, #469):** what one hand does on every runout,
+- **Study side panel → Beta, runout lines (#467, #469, #471, #472):** what one hand does on every runout,
   without clicking through the tree. Open the **Beta** tab of the side panel (next to Hand, Cats,
   Blockers, Graphs) at a flop or turn node and click a hand in the matrix; the panel follows as you
-  browse. The combo chips under the hand's name narrow it to one combo.
+  browse. The combo chips under the hand's name narrow it to one combo. Two views, **Lines** and
+  **Money in**, switched at the top of the panel.
   - **A line** is the hand's own actions, street by street: `bet · bet · check`, `check · xc · xf`.
     What the other player does only decides which of them it gets to take. The lines are those of
     the player whose hands the matrix shows.
   - **From a flop node** the picture is a turn × river map: a row per turn card, a column per river
-    card, a suit at a time. Each box holds the hand's **N most common lines on that runout** (N is 3;
-    the buttons go from 1 to 5), as bands of colour, taller the more often. A line keeps its colour
-    everywhere, and the eight that weigh most have one; the rest are grey. The map is drawn for the
-    room the panel has: drag the panel wider for bigger boxes.
+    card, a suit at a time, always 52 by 52 (a card that cannot come, on the board or in the one
+    combo asked for, keeps its row and column, of empty boxes like the diagonal's). A box is the
+    hand's **most common line on that runout**, its colour fuller the more often it is played. The
+    **Lines** buttons (1 to 5) put the N most common lines in each box instead, as bands of colour,
+    taller the more often. A line keeps its colour everywhere, and the eight that weigh most have
+    one; the rest are grey. The map is drawn for the room the panel has: drag the panel wider for
+    bigger boxes. The **Lines** buttons sit above the picture and stay put whatever N is.
   - **Reading it:** point at a box for the lines and their exact frequencies, at a line in the list
-    to see where on the map it is played (click to keep it). Click a box to enlarge its turn card:
-    a bar per river card, the bands at their true frequencies. Click a bar to go to that runout in
-    the tree.
+    to see where on the map it is played (click to keep it): with room for it, the picture stays in
+    sight while the panel is scrolled down to the list, and the panel does not scroll by itself when
+    the picture is redrawn. Click a box to enlarge its turn card:
+    a bar per river card, the three most common lines (or N, if more) at their true frequencies.
+    Click a bar to go to that runout in the tree.
   - **From a turn node** it is a bar per river card.
   - Frequencies are of the times the hand gets to that card (the pot has not ended before); lines
     under 0.5% of a runout are left to "other". **Split** bet sizes tells `bet 33%` from `bet 75%`.
-  - `#study=<node>&side=beta&pin=JJ` links to it. API: `GET /api/hand_lines?id=&player=&hand=&sizes=`,
-    over the UPI extension `show_hand_lines` (see `docs/commands.md`).
+  - **Money in** is the same map in one colour: the fuller a box, the more chips the hand puts into
+    the pot on that runout, on average, from the node to the end of the pot (calls, and bets and
+    raises whether or not they are called). Figures are in % of the pot at the node, with chips
+    beside them; the scale runs from nothing to the most over the runouts. A runout counts every
+    pot, those that ended before the card came too (at what the hand had put in by then); the tooltip
+    also gives the figure for the times the hand does see the card. The figures are exact: a pot
+    that ended before a card is weighed as it would be with that card dealt (the hands it takes from
+    the other player's range, and the combos it takes from a class, left out). A runout the hand
+    never sees, its pot always ending first, has a box too: no lines, and what those pots cost. On
+    a tree saved without its last streets the chips stop where the save does, and the panel says so.
+  - `#study=<node>&side=beta&pin=JJ` links to it. API: `GET /api/hand_lines?id=&player=&hand=&sizes=`
+    (each runout: `lines`, `reach`, `put`, `put_seen`; `pot` and `behind` at the node; `cut` for a
+    save without the later streets), over the UPI
+    extension `show_hand_lines` (see `docs/commands.md`).
 - **Open / Save:** `dump_tree` (full / no rivers / flop only) and lazy `load_tree`. Browsing a
   truncated save re-solves missing streets on demand, as in Pio.
 - **Library (API):** named ranges and full build-form configs saved in folders under

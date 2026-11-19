@@ -909,17 +909,27 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   }
 }
 
+/* Money in: one hue, fuller for more (over --cell-empty); each theme has its own step. */
+:root { --money: #35c98a; }
+:root[data-theme="light"] { --money: #0c8f5b; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) { --money: #0c8f5b; }
+}
+
 /* Study's side panel, Beta tab (beta.js). Nothing above the picture changes height from hand to
    hand, and the picture keeps its own between its two forms, so the panel does not move under the pointer. */
 #side-beta { scrollbar-gutter: stable; }
 .rl-main { display: flex; flex-direction: column; gap: 10px; padding-bottom: 12px; }
-.rl-head { margin: 0; min-height: 32px; align-items: center; }
+.rl-head { margin: 0; min-height: 32px; align-items: center; gap: 10px; }
+.rl-head .meta { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rl-views { flex: none; }
 .rl-head .cls { line-height: 32px; }
 .rl-head .cls .rl-c { font-size: 19px; letter-spacing: 0; padding: 2px 6px; margin-right: 3px; border-radius: 6px; vertical-align: 3px; }
 .rl-combos { min-height: 46px; gap: 2px; align-content: flex-start; }   /* two rows: an offsuit class has twelve combos */
 .rl-combos .blk-combo { padding: 2px; }
 .rl-combos .rl-all { padding: 2px 8px; font-size: 11px; font-weight: 600; color: var(--text-2); }
 .rl-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.rl-opts.off { display: none; }   /* not this view's; they are under the picture, which stays where it is */
 .rl-opt { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .rl-plot { display: flex; flex-direction: column; gap: 8px; min-width: 0; transition: opacity .15s; }
 .rl-main.busy .rl-plot, .rl-main.busy .rl-sec { opacity: .4; }
@@ -947,6 +957,14 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* what the hand does on this street: the row is its own meter */
 .rl-row.meter::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: calc(var(--f) * 100%); border-radius: 4px; background: var(--surface-3); }
 .rl-row.meter > * { position: relative; }
+
+/* money in: the average, and the scale of the picture's one colour */
+.rl-hero { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--text-3); }
+.rl-hero b { flex: none; font-size: 26px; font-weight: 750; letter-spacing: -.02em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+.rl-scale { display: flex; align-items: center; gap: 8px; margin: 0 6px 8px; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.rl-scale i { flex: 1; height: 8px; border-radius: 4px; background: linear-gradient(to right, var(--cell-empty), var(--money)); }
+.rl-money .rl-row.head .t { padding-left: 0; }
+.rl-money .rl-c { margin-left: 3px; }
 
 .tip .rl-sw { margin-right: 7px; }
 .rl-tip-sub { color: var(--text-3); margin: 6px 0 0; }

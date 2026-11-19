@@ -13,6 +13,9 @@ joined by spaces, and a street where the hand had nothing to do is "-".
 
 Frequencies are among the times the cards are actually dealt: a river's lines are those of the hands
 that see that river, a turn's are those that see that turn (whatever happens later).
+
+Money in (the tab's second view) is read off the same rows: the chips the hand puts into the pot from
+the node to the end of the pot, a bet or a raise counting when it is made, called or not. See money().
 """
 
 import re
@@ -36,12 +39,15 @@ def summarize(text, start, hero, sizes=False, allin=None):
     "dead": chips}. hero: 0 (OOP) or 1 (IP). allin: [oop, ip] chips in the pot when all-in, to name
     all-in bets when `sizes` is on. cards: the tuple of cards dealt below the node (() for none).
     go: the heaviest way into the last card (a node-id suffix ending in it), for "open in Study".
+    put: the sum over the rows of weight x the chips the hand has put in since the node; end, end_put:
+    the weight and that sum over the rows where the pot ends (not the ones that stop at a deal).
     """
     levels = {}
     # state: (actor, oop chips, ip chips, facing a bet, finished streets, this street, cards, go)
     first = (start["actor"], float(start["commit"][0]), float(start["commit"][1]),
              start["commit"][0] != start["commit"][1], (), "", (), "")
     dead = float(start.get("dead") or 0)
+    before = float(start["commit"][hero])
     stack, prev = [first], []
     for row in text.split("\n"):
         parts = row.split(" ")
@@ -61,10 +67,16 @@ def summarize(text, start, hero, sizes=False, allin=None):
         cards = st[6]
         lv = levels.get(cards)
         if lv is None:
-            lv = levels[cards] = {"base": base, "total": 0.0, "lines": {}, "ways": {}}
+            lv = levels[cards] = {"base": base, "total": 0.0, "lines": {}, "ways": {},
+                                  "put": 0.0, "end": 0.0, "end_put": 0.0}
         label = " ".join((s or "-") for s in st[4] + (st[5],))
         lv["total"] += weight
         lv["lines"][label] = lv["lines"].get(label, 0.0) + weight
+        chips = weight * ((st[1], st[2])[hero] - before)
+        lv["put"] += chips
+        if toks[-1] != "~":
+            lv["end"] += weight
+            lv["end_put"] += chips
         if cards:
             lv["ways"][st[7]] = lv["ways"].get(st[7], 0.0) + weight
     for lv in levels.values():
@@ -111,9 +123,63 @@ def card_order(card):
     return (RANKS.index(card[0]), SUITS.index(card[1]))
 
 
+def money(levels):
+    """summarize() levels -> {cards: (put, seen)}: the chips the hand puts in from the node on.
+
+    seen: on average over the times the hand sees these cards, to the end of the pot. put: on average
+    when these are the cards that come, whether the hand sees them or not: the times its pot ended
+    before a card (a fold, the other player's fold, an all-in) count at what it had put in by then.
+
+    Exact for what happens once the cards are seen. The pots that end before a card are taken as
+    they are played before it is known: their share is right (1 - reach), what they cost on average is
+    not corrected for the card's removal from the other range, nor (for a class) from the hand's own
+    combos. Above the last cards dealt, put and
+    seen average the cards below (by how likely each is, and by how often each is seen).
+    """
+    below = {}
+    for cards in levels:
+        if cards:
+            below.setdefault(cards[:-1], []).append(cards)
+    out = {}
+
+    def seen(cards):
+        lv = levels[cards]
+        kids, total = below.get(cards), lv["total"]
+        if not (total > 0):
+            return 0.0
+        if not kids:               # the last cards read: every row counts at what it has cost so far
+            return lv["put"] / total
+        w = sum(levels[k]["total"] for k in kids)
+        on = sum(levels[k]["total"] * seen(k) for k in kids) / w if w > 0 else 0.0
+        return (lv["end_put"] + (total - lv["end"]) * on) / total
+
+    def walk(cards, reach, early):
+        """reach: how often the hand is still in when the last of `cards` comes; early: the chips of
+        the pots that ended before it, times how often they did."""
+        lv = levels[cards]
+        kids = below.get(cards)
+        if not kids:
+            out[cards] = (early + reach * seen(cards), seen(cards))
+            return out[cards][0], lv["base"]
+        ended = lv["end_put"] / lv["end"] if lv["end"] > 0 else 0.0
+        num = den = 0.0
+        for k in kids:
+            r = min(reach, levels[k]["total"] / levels[k]["base"]) if levels[k]["base"] > 0 else 0.0
+            v, b = walk(k, r, early + (reach - r) * ended)
+            num, den = num + v * b, den + b
+        out[cards] = (num / den if den > 0 else 0.0, seen(cards))
+        return out[cards][0], lv["base"]
+
+    if () in levels:
+        walk((), 1.0, 0.0)
+    return out
+
+
 def to_payload(levels):
-    """summarize() levels -> the nested, JSON-ready report: a line table and, per level, its lines."""
+    """summarize() levels -> the nested, JSON-ready report: a line table and, per level, its lines
+    and the chips it puts in (put, put_seen: money())."""
     table, index = [], {}
+    chips = money(levels)
 
     def cell(cards):
         lv = levels[cards]
@@ -127,7 +193,8 @@ def to_payload(levels):
                 index[label] = len(table)
                 table.append(label)
             rows.append([index[label], round(f, 4)])
-        out = {"reach": round(total / lv["base"], 4) if lv["base"] > 0 else 0.0, "lines": rows}
+        out = {"reach": round(total / lv["base"], 4) if lv["base"] > 0 else 0.0, "lines": rows,
+               "put": round(chips[cards][0], 3), "put_seen": round(chips[cards][1], 3)}
         if cards:
             out["card"] = cards[-1]
             out["go"] = lv["go"]
@@ -194,11 +261,12 @@ def hand_lines_at(vsrv, solver, node_id, player, hand, sizes=False):
             return out
         pot = node["pot"] + [0, 0, 0]
         start = {"actor": {"OOP_DEC": 0, "IP_DEC": 1}.get(node["type"]), "commit": pot[:2], "dead": pot[2]}
-        allin = None
-        if sizes:
-            root = vsrv.parse_node_block(solver.cmd("show_node r:0"))["pot"] + [0, 0]
-            stack = vsrv.parse_num(solver.cmd("show_effective_stack").split()[0])
-            allin = [root[0] + stack, root[1] + stack]
+        root = vsrv.parse_node_block(solver.cmd("show_node r:0"))["pot"] + [0, 0]
+        stack = vsrv.parse_num(solver.cmd("show_effective_stack").split()[0])
+        allin = [root[0] + stack, root[1] + stack]
+        hero = 0 if player == "OOP" else 1
+        # money in is told in the pot at the node, and can be no more than what the hand has behind
+        out.update({"pot": sum(pot[:3]), "behind": max(0, allin[hero] - pot[hero])})
         text = solver.cmd(f"show_hand_lines {player} {node_id} " + " ".join(live), timeout=1800)
-    out.update(to_payload(summarize(text, start, 0 if player == "OOP" else 1, sizes, allin)))
+    out.update(to_payload(summarize(text, start, hero, sizes, allin if sizes else None)))
     return out

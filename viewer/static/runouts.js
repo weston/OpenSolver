@@ -1,6 +1,6 @@
 // Runout lines (Study's Beta side tab): the parts with no page in them. Reading a line label, choosing what a
 // runout's box shows, which lines get a colour, and where the boxes of the turn x river map go. The report is /api/hand_lines
-// (viewer/hand_lines.py): {lines: [label], now: {reach, lines: [[line, freq]], cards: [{card, ...}]}}.
+// (viewer/hand_lines.py): {lines: [label], now: {reach, lines: [[line, freq]], put, put_seen, cards: [{card, ...}]}}.
 
 const TOKEN = /([xbcfr])(a|\d+)?/g;
 const WORD = { x: "check", b: "bet", c: "call", f: "fold", r: "raise" };
@@ -93,9 +93,10 @@ export function slots(stats, k) {
 
 const RANKS = "AKQJT98765432", SUITS = "shdc";
 
-/** The cards still in the deck, a suit at a time (spades A..2, hearts, ...): the order of the rows
- *  and the columns of the turn x river map. */
-export function deck(board) {
+/** The cards not on `board`, a suit at a time (spades A..2, hearts, ...). With no board, all 52: the
+ *  rows and the columns of the turn x river map, where a card that cannot come keeps its place (every
+ *  suit is a block of 13) and is left empty. */
+export function deck(board = []) {
   const out = [];
   for (const s of SUITS) for (const r of RANKS) if (!board.includes(r + s)) out.push(r + s);
   return out;
@@ -154,4 +155,23 @@ export function split(size, ws, min = 1) {
     }
   });
   return out;
+}
+
+/** The least and the most the hand puts in (cell.put) over cells (of cellsAt): {min, max}, each
+ *  {put, cards}; null with no cells. The first of equals, in the order given. */
+export function putRange(cells) {
+  let min = null, max = null;
+  for (const { cards, cell } of cells) {
+    if (!(cell.put >= 0)) continue;
+    if (!min || cell.put < min.put) min = { put: cell.put, cards };
+    if (!max || cell.put > max.put) max = { put: cell.put, cards };
+  }
+  return min ? { min, max } : null;
+}
+
+/** How full a box's colour is for a value v on a scale that ends at max: in proportion, 0 for
+ *  nothing, and never under `floor` for something (a box with a little in it must not read as empty). */
+export function strength(v, max, floor = 0) {
+  if (!(v > 0) || !(max > 0)) return 0;
+  return Math.max(floor, Math.min(1, v / max));
 }

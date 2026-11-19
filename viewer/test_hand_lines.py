@@ -146,6 +146,49 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual(len(table), len(set(table)))
         self.assertEqual(hl.to_payload({}), {"lines": [], "now": None})
 
+    def test_money(self):
+        # 10 pots from a flop node with 40 in the middle; cumulative chips, as node ids have them
+        rows = """combos: AhAd
+b20:f 2 10
+b20:c:~ 3 10
+c:c:~ 5 10
+b20:c:Ks:b60:f 1 10
+b20:c:Ks:c:c:~ 2 10
+c:c:Ks:c:b30:f 1 10
+c:c:Ks:c:c:~ 4 10
+b20:c:Ks:c:c:2h:b60:c 2 10
+c:c:Ks:c:c:2h:c:c 4 10
+"""
+        lv = hl.summarize(rows, FLOP, 0)
+        self.assertEqual((lv[()]["put"], lv[()]["end"], lv[()]["end_put"]), (100, 2, 40))
+        self.assertEqual((lv[("Ks",)]["put"], lv[("Ks",)]["end"], lv[("Ks",)]["end_put"]), (100, 2, 60))
+        m = hl.money(lv)
+        # the 6 pots that see the river put in 60 twice and nothing four times
+        self.assertAlmostEqual(m[("Ks", "2h")][1], 20)
+        # all 10: 2 ended on the flop at 20, 2 on the turn at 60 and 0, 6 saw the river
+        self.assertAlmostEqual(m[("Ks", "2h")][0], (2 * 20 + 60 + 0 + 2 * 60) / 10)
+        self.assertAlmostEqual(m[("Ks",)][1], (60 + 2 * 60) / 8)     # the 8 that see the turn
+        self.assertAlmostEqual(m[("Ks",)][0], 22)
+        self.assertAlmostEqual(m[()][0], 22)
+        self.assertAlmostEqual(m[()][1], 22)                          # from the node, the two are one
+        # read for the other player: its own chips, not the hand's
+        mi = hl.money(hl.summarize(rows, FLOP, 1))
+        self.assertAlmostEqual(mi[("Ks", "2h")][1], 2 * 60 / 6)
+        # 2 folds; on the turn a fold after calling 20 and its own bet of 30; 2 calls of the 60
+        self.assertAlmostEqual(mi[()][1], (20 + 30 + 2 * 60) / 10)
+        # chips in before the node are not counted
+        start = {"actor": 1, "commit": [24, 0], "dead": 40}
+        ms = hl.money(hl.summarize("combos: AhAd\nf 1 4\nc:~ 2 4\nb72:c:~ 1 4\n", start, 0))
+        self.assertAlmostEqual(ms[()][1], 48 / 4)                     # only the call of the raise to 72
+        # a river that is seen more often than its turn (a class, a card that takes combos): no pot is
+        # counted twice
+        lv2 = hl.summarize("combos: AhAd\nb20:f 5 10\nc:c:~ 5 10\nc:c:Ks:c:c:~ 5 10\nc:c:Ks:c:c:2h:b40:c 9 10\n", FLOP, 0)
+        self.assertAlmostEqual(hl.money(lv2)[("Ks", "2h")][0], 0.5 * 20 + 0.5 * 40)
+        p = hl.to_payload(lv)
+        self.assertEqual((p["now"]["put"], p["now"]["put_seen"]), (22, 22))
+        self.assertEqual(p["now"]["cards"][0]["cards"][0]["put_seen"], 20)
+        self.assertEqual(hl.money({}), {})
+
 
 class ApiTest(unittest.TestCase):
     @classmethod
@@ -212,6 +255,44 @@ class ApiTest(unittest.TestCase):
             self.assertTrue(kid["go"].endswith(kid["card"]))
             n += self.check_cells(d, depth + 1, kid)
         return n
+
+    def check_money(self, d, cell=None, reach=1.0):
+        """Every cell: chips between nothing and the stack; a pot that ended early cost that much too."""
+        cell = cell or d["now"]
+        top = d["behind"] + 0.01
+        self.assertTrue(0 <= cell["put_seen"] <= top, cell)
+        self.assertTrue(0 <= cell["put"] <= top, cell)
+        kids = cell.get("cards", [])
+        if not kids:
+            r = min(reach, cell["reach"])
+            self.assertGreaterEqual(cell["put"], r * cell["put_seen"] - 0.01)
+            self.assertLessEqual(cell["put"], r * cell["put_seen"] + (1 - r) * top + 0.01)
+        for kid in kids:
+            self.check_money(d, kid, min(reach, cell["reach"]))
+
+    def test_money(self):
+        d = self.lines("r:0", "OOP", "AA")
+        self.assertEqual((d["pot"], d["behind"]), (CFG["pot"], CFG["stack"]))
+        self.check_money(d)
+        # from the node, the average over the runouts is the average over the pots (to the chip: the
+        # pots that end before a card are not corrected for it)
+        self.assertAlmostEqual(d["now"]["put"], d["now"]["put_seen"], delta=0.01 * d["pot"])
+        self.assertGreater(d["now"]["put"], 0)
+        # facing a bet: its chips are in the pot, the caller's are not in yet
+        f = self.lines("r:0:b24", "IP", "AA")
+        self.assertEqual((f["pot"], f["behind"]), (CFG["pot"] + 24, CFG["stack"]))
+        self.check_money(f)
+        self.assertGreaterEqual(f["now"]["put_seen"], 24 * (1 - self.fold(f)) - 0.01)
+        # a river node: nothing to average over
+        r = self.lines("r:0:c:c:7d:c:c:3s", "IP", "KK")
+        self.assertEqual(r["now"]["put"], r["now"]["put_seen"])
+        self.check_money(r)
+        t = self.lines("r:0:c:c:7d", "IP", "KK")
+        self.check_money(t)
+
+    def fold(self, d):
+        """How often the hand's first action is a fold."""
+        return sum(f for k, f in d["now"]["lines"] if d["lines"][k].split(" ")[0] == "f")
 
     def test_first_action_agrees_with_the_strategy(self):
         order = vsrv.hand_order(self.solver)

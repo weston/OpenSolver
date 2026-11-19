@@ -1,6 +1,6 @@
 // Unit test for the runout lines helpers of Study's Beta side tab (viewer/static/runouts.js, #467).
 // usage: node viewer/test_runouts_js.mjs
-import { streets, words, short, depth, cellsAt, pick, bands, lineStats, slots, deck, axis, shareOf, split } from "./static/runouts.js";
+import { streets, words, short, depth, cellsAt, pick, bands, lineStats, slots, deck, axis, shareOf, split, putRange, strength } from "./static/runouts.js";
 
 let fails = 0;
 const check = (cond, msg) => { console.log((cond ? "  ok: " : "  FAIL: ") + msg); if (!cond) fails++; };
@@ -65,6 +65,19 @@ check(same(tie.map((s) => s.line), [3, 1]), "lineStats: equal mass -> the one th
 const d = deck(["Td", "9d", "2c"]);
 check(d.length === 49 && d[0] === "As" && d[12] === "2s" && d[13] === "Ah" && d[48] === "3c", "deck: 49 cards, a suit at a time, the board's left out");
 check(!d.includes("Td") && !d.includes("2c"), "deck: no board card");
+const all = deck();
+check(all.length === 52 && all[0] === "As" && all[13] === "Ah" && all[26] === "Ad" && all[51] === "2c", "deck: with no board, all 52, 13 to a suit");
+{
+  const cells = [{ cards: ["Ks", "2h"], cell: { put: 30 } }, { cards: ["Ks", "3h"], cell: { put: 12.5 } }, { cards: ["As", "2h"], cell: { put: 30 } }, { cards: ["As", "3h"], cell: {} }];
+  const r = putRange(cells);
+  check(r.min.put === 12.5 && r.min.cards.join("") === "Ks3h", "putRange: the least, and where");
+  check(r.max.put === 30 && r.max.cards.join("") === "Ks2h", "putRange: the most, the first of equals");
+  check(putRange([]) === null && putRange([{ cards: ["As"], cell: {} }]) === null, "putRange: nothing to range over");
+  check(putRange([{ cards: ["As"], cell: { put: 0 } }]).max.put === 0, "putRange: nothing put in is a value");
+}
+check(strength(5, 10) === 0.5 && strength(20, 10) === 1, "strength: in proportion, full at the top of the scale");
+check(strength(0, 10, 0.1) === 0 && strength(0.2, 10, 0.1) === 0.1, "strength: nothing is empty, a little is not");
+check(strength(5, 0) === 0 && strength(undefined, 10) === 0, "strength: no scale or no value is empty");
 const ax = axis(["As", "Ks", "Ah", "Kh", "Ad"], 10, 6);
 check(same(ax.at, [0, 11, 28, 39, 56]) && ax.end === 66, `axis: 1px between boxes, a gap where the suit changes (${ax.at})`);
 check(ax.index(0) === 0 && ax.index(10) === 0 && ax.index(11) === 1 && ax.index(24) === -1 && ax.index(28) === 2 && ax.index(66) === 4 && ax.index(67) === -1,

@@ -12,7 +12,6 @@ import { initFurther, pollFurther } from "./further.js";
 import { initLock } from "./lock.js";
 import { initJobs, showJobs, openReport } from "./jobs.js";
 import { initPreview, previewStatus } from "./preview.js";
-import { initBeta, showBeta } from "./beta.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,13 +19,12 @@ const app = { view: "study", tree: false, solving: false, rootPot: 0, series: []
 
 /* ------------------------------------------------------------------ views */
 
-const VIEWS = ["study", "build", "jobs", "beta"];
+const VIEWS = ["study", "build", "jobs"];
 
-function setView(v, params) {
+function setView(v) {
   app.view = v;
   for (const name of VIEWS) $("view-" + name).classList.toggle("hidden", name !== v);
   showJobs(v === "jobs");
-  showBeta(v === "beta", params);
   document.querySelectorAll(".view-tab").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   if (!location.hash.startsWith("#" + v)) history.replaceState(null, "", "#" + v);
   if (v === "study") {
@@ -179,7 +177,6 @@ async function boot() {
   initFurther();
   initLock({ changed: () => study.refresh() });
   initPreview();
-  initBeta();
   // Fast preview: the strategy is readable now (the solve carries on). From a Build view left
   // alone since Solve, open the Study view; anywhere else, stay there and say so.
   window.addEventListener("preview-ready", (e) => {
@@ -216,13 +213,8 @@ async function boot() {
   // #build, #study, or #study=<node id> (deep link to a node; also restores the spot on reload)
   const [head, ...rest] = (location.hash || "").slice(1).split("&");
   const [want, node] = head.split("=");
-  const params = Object.fromEntries(rest.map((kv) => kv.split("=")));
-  applyUrlState(params);
-  if (want === "beta" && app.tree) {
-    // #beta=<node id>&hand=JJ&player=IP: the Beta view at a node (Study follows, out of sight)
-    if (node) await gotoNode(node);
-    setView("beta", params);
-  } else if (want === "study" && node && app.tree) {
+  applyUrlState(Object.fromEntries(rest.map((kv) => kv.split("="))));
+  if (want === "study" && node && app.tree) {
     for (const name of VIEWS) $("view-" + name).classList.toggle("hidden", name !== "study");
     document.querySelectorAll(".view-tab").forEach((b) => b.classList.toggle("active", b.dataset.view === "study"));
     app.view = "study";
@@ -234,7 +226,7 @@ async function boot() {
   addEventListener("hashchange", () => {
     const [h] = location.hash.slice(1).split("&");
     const [v, id] = h.split("=");
-    if ((v === "build" || v === "jobs" || v === "beta") && app.view !== v) setView(v);
+    if ((v === "build" || v === "jobs") && app.view !== v) setView(v);
     else if (v === "study") {
       if (app.view !== "study") setView("study");
       if (id && app.tree && id !== study.id) gotoNode(id);

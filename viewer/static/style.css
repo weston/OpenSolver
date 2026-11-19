@@ -890,7 +890,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .combos th.w, .combos th.ev { text-align: right; }
 .combos th.w { padding-right: 10px; }
 
-/* ------------------------------------------------------------------ beta: runout lines */
+/* ------------------------------------------------------------------ study side panel, beta tab: runout lines */
 
 /* A colour per line, for the eight that weigh most in the picture (beta.js); the rest are --line-other.
    Fixed order, never cycled; each theme has its own steps of the same eight hues. */
@@ -909,26 +909,30 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   }
 }
 
-.beta { height: 100%; display: flex; flex-direction: column; }
-.beta-bar { display: flex; align-items: center; gap: 12px; padding: 10px 18px 0; min-height: 40px; }
-.beta-sp { flex: 1; }
-.rl-spot { display: flex; align-items: center; gap: 4px; }
-.rl-spot code { margin-left: 6px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rl-controls { display: flex; align-items: center; gap: 12px; padding: 8px 18px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.rl-hand { width: 150px; height: 30px; padding: 0 10px; }
+/* Study's side panel, Beta tab (beta.js). Nothing above the picture changes height from hand to
+   hand, and the picture keeps its own between its two forms, so the panel does not move under the pointer. */
+#side-beta { scrollbar-gutter: stable; }
+.rl-main { display: flex; flex-direction: column; gap: 10px; padding-bottom: 12px; }
+.rl-head { margin: 0; min-height: 32px; align-items: center; }
+.rl-head .cls { line-height: 32px; }
+.rl-head .cls .rl-c { font-size: 19px; letter-spacing: 0; padding: 2px 6px; margin-right: 3px; border-radius: 6px; vertical-align: 3px; }
+.rl-combos { min-height: 46px; gap: 2px; align-content: flex-start; }   /* two rows: an offsuit class has twelve combos */
+.rl-combos .blk-combo { padding: 2px; }
+.rl-combos .rl-all { padding: 2px 8px; font-size: 11px; font-weight: 600; color: var(--text-2); }
+.rl-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .rl-opt { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
-.rl-body { flex: 1; min-height: 0; display: flex; }
-.rl-plot { flex: 1; min-width: 0; padding: 12px 4px 4px 18px; overflow: auto; position: relative; transition: opacity .15s; }
-.rl-plot.busy { opacity: .45; }
-.rl-empty { position: absolute; inset: 0; display: grid; place-items: center; }
-.rl-empty .empty-card p { margin: 0; max-width: 360px; }
-.rl-side { flex: none; width: 318px; padding: 12px 16px 16px; border-left: 1px solid var(--border); overflow-y: auto; }
-.rl-sec { margin-bottom: 18px; }
-.rl-sec h3 { margin: 0 0 8px; font-size: 12px; font-weight: 700; letter-spacing: .02em; }
+.rl-plot { display: flex; flex-direction: column; gap: 8px; min-width: 0; transition: opacity .15s; }
+.rl-main.busy .rl-plot, .rl-main.busy .rl-sec { opacity: .4; }
+/* the picture is the last node's until the report is in: not to be clicked */
+.rl-main.busy .rl-plot { pointer-events: none; }
+.rl-note { display: flex; flex-direction: column; gap: 4px; padding: 28px 8px; text-align: center; color: var(--text-3); line-height: 1.5; }
+.rl-note b { color: var(--text-2); font-weight: 650; }
+.rl-sec { margin: 0; }
+.rl-sec h3 { margin: 4px 0 8px; }
 .rl-sec .hint { margin: 0 0 8px; line-height: 1.45; }
 .rl-sw { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 3px; }
 .rl-sw.other { background: var(--line-other); }
-.rl-row { position: relative; display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 6px; margin: 0 -6px; border-radius: 6px; font-size: 12px; }
+.rl-row { position: relative; display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 6px; border-radius: 6px; font-size: 12px; }
 .rl-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rl-row .p, .rl-row .m { flex: none; width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
 .rl-row .m { color: var(--text-3); }
@@ -953,39 +957,30 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .rl-c.s-s { background: var(--suit-s); } .rl-c.s-h { background: var(--suit-h); }
 .rl-c.s-d { background: var(--suit-d); } .rl-c.s-c { background: var(--suit-c); }
 
-/* the picture: the turn x river map of every runout, or one card's boxes with writing */
-.rl-view { display: flex; flex-direction: column; gap: 8px; padding-right: 14px; }
-.rl-cap { display: flex; align-items: center; gap: 7px; min-height: 20px; font-size: 12px; color: var(--text-3); }
-.rl-cap b { color: var(--text); font-weight: 700; white-space: nowrap; }
+/* the picture: the turn x river map of every runout, or a bar per river card */
+.rl-cap { height: 32px; overflow: hidden; font-size: 12px; line-height: 16px; color: var(--text-3); }
+.rl-cap b { color: var(--text); font-weight: 700; }
+.rl-cap .rl-sw { margin-right: 6px; }
 .rl-mapw { position: relative; flex: none; }
 .rl-mapw canvas { display: block; }
-.rl-cur { position: absolute; box-sizing: border-box; border: 2px solid var(--text); border-radius: 3px; pointer-events: none; }
-.rl-tag { position: absolute; transform: translate(-100%, -50%); font-size: 11px; line-height: 16px; white-space: nowrap; pointer-events: none; box-shadow: 0 0 0 2px var(--bg); }
-.rl-tag.col { transform: translate(-50%, -100%); }
+.rl-cur, .rl-rowcur { position: absolute; box-sizing: border-box; border-radius: 3px; pointer-events: none; }
+.rl-cur { border: 2px solid var(--text); }
+.rl-rowcur { border: 1px solid var(--text-3); }
 
-.rl-zoom { display: flex; align-items: center; gap: 10px; }
+.rl-zoom { display: flex; align-items: center; gap: 6px; height: 26px; }
+.rl-zoom .sp { flex: 1; }
 .rl-zoom .lbl { font-size: 12px; color: var(--text-3); }
 .rl-back { height: 24px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); font-size: 12px; cursor: pointer; white-space: nowrap; }
 .rl-back:hover { background: var(--hover); }
-.rl-strip { display: flex; flex-wrap: wrap; gap: 2px; }
-.rl-chip { width: 18px; height: 20px; padding: 0; border: 0; border-radius: 3px; color: #fff; font-size: 9px; font-weight: 700; cursor: pointer; opacity: .55; }
-.rl-chip:hover { opacity: .85; }
-.rl-chip.sel { opacity: 1; box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--text); }
-.rl-chip.s-s { background: var(--suit-s); } .rl-chip.s-h { background: var(--suit-h); }
-.rl-chip.s-d { background: var(--suit-d); } .rl-chip.s-c { background: var(--suit-c); }
+.rl-step { width: 24px; padding: 0; }
 
-.rl-grid { display: grid; grid-template-columns: repeat(13, minmax(78px, 1fr)); gap: 3px; margin-bottom: 6px; min-width: 1050px; }
-.rl-card { display: flex; flex-direction: column; gap: 3px; min-height: 34px; padding: 4px; border: 1px solid transparent; border-radius: 6px; background: var(--cell-empty); color: var(--text); text-align: left; cursor: pointer; overflow: hidden; }
-.rl-card.off { background: none; border: 1px dashed var(--border); cursor: default; opacity: .45; }
-.rl-card:not(.off):hover { border-color: var(--text-3); }
-.rl-card-h { align-self: flex-start; font-size: 10px; font-weight: 700; line-height: 14px; padding: 0 4px; border-radius: 3px; color: #fff; white-space: nowrap; }
+.rl-grid { display: grid; grid-template-columns: repeat(13, minmax(0, 1fr)); column-gap: 2px; }
+.rl-card { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 0; border: 0; background: none; color: var(--text); cursor: pointer; }
+.rl-card.off { cursor: default; opacity: .3; }
+.rl-card-h { height: 13px; font-size: 9.5px; font-weight: 700; line-height: 13px; text-align: center; border-radius: 3px; color: #fff; overflow: hidden; }
 .rl-card-h.s-s { background: var(--suit-s); } .rl-card-h.s-h { background: var(--suit-h); }
 .rl-card-h.s-d { background: var(--suit-d); } .rl-card-h.s-c { background: var(--suit-c); }
-.rl-stack { display: flex; height: 7px; gap: 1px; border-radius: 2px; overflow: hidden; }
-.rl-stack i { min-width: 1px; }
-.rl-stack i.rest { min-width: 0; background: var(--surface-3); }
-.rl-ln { display: flex; align-items: center; gap: 5px; height: 14px; font: 10px var(--mono); }
-.rl-ln .rl-sw { width: 7px; height: 7px; border-radius: 2px; }
-.rl-ln .t { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; color: var(--text-2); }
-.rl-ln .p { color: var(--text); font-weight: 600; }
-.rl-heat { flex: 1; display: grid; place-items: center; min-height: 30px; border-radius: 4px; font: 600 11px var(--mono); }
+.rl-bar { display: flex; flex-direction: column-reverse; gap: 1px; border-radius: 3px; overflow: hidden; background: var(--cell-empty); }
+.rl-bar i { flex-grow: 0; flex-shrink: 1; min-height: 1px; }
+.rl-card.off .rl-bar { background: none; box-shadow: inset 0 0 0 1px var(--border); }
+button.rl-card:hover .rl-bar { box-shadow: 0 0 0 2px var(--text); }

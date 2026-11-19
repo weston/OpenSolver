@@ -19,7 +19,6 @@
     <button class="view-tab" data-view="study" role="tab">Study</button>
     <button class="view-tab" data-view="build" role="tab">Build</button>
     <button class="view-tab" data-view="jobs" role="tab">Jobs</button>
-    <button class="view-tab" data-view="beta" role="tab" title="Experimental features">Beta</button>
   </nav>
   <div class="topbar-spacer"></div>
   <button id="solve-pill" class="solve-pill" title="Solver status">
@@ -88,11 +87,13 @@
         <button data-side="cats">Cats</button>
         <button data-side="blockers" title="What a hand's cards remove from the other range">Blockers</button>
         <button data-side="graphs" title="Each range sorted by eq or EV">Graphs</button>
+        <button data-side="beta" title="Experimental. Runout lines: the lines a hand takes on every turn and river">Beta</button>
       </div>
       <div id="side-hand" class="side-page"></div>
       <div id="side-cats" class="side-page hidden"></div>
       <div id="side-blockers" class="side-page hidden"></div>
       <div id="side-graphs" class="side-page hidden"></div>
+      <div id="side-beta" class="side-page hidden"></div>
     </aside>
   </section>
 </main>
@@ -306,36 +307,6 @@
         </div>
       </section>
     </aside>
-  </div>
-</main>
-
-<!-- ============================== BETA ============================== -->
-<!-- Features still finding their shape. Runout lines: the lines one hand plays on every runout (beta.js). -->
-<main id="view-beta" class="view hidden">
-  <div class="beta">
-    <header class="beta-bar">
-      <span class="tag">Beta</span>
-      <div class="seg small" id="beta-feats"><button class="active">Runout lines</button></div>
-      <span class="hint">The lines one hand plays most often on every runout, from the node open in Study.</span>
-      <span class="beta-sp"></span>
-      <div id="rl-spot" class="rl-spot"></div>
-    </header>
-    <div class="rl-controls">
-      <div class="seg small" id="rl-player"><button data-p="OOP">OOP</button><button data-p="IP">IP</button></div>
-      <label class="blk-field rl-hand"><input id="rl-hand" type="text" placeholder="JJ, AKs, AhKd" spellcheck="false" autocomplete="off" aria-label="Hand"></label>
-      <div id="rl-combos" class="blk-combos"></div>
-      <span class="beta-sp"></span>
-      <div class="rl-opt" id="rl-mode-opt"><span>Show</span>
-        <div class="seg small" id="rl-mode"><button data-m="all" title="Every runout: a row per turn card, a column per river card">Every runout</button><button data-m="turn" title="One turn card, its river cards enlarged">One turn</button></div></div>
-      <div class="rl-opt"><span id="rl-n-label">Lines per runout</span>
-        <div class="seg small" id="rl-n"><button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button><button data-n="5">5</button></div></div>
-      <div class="rl-opt"><span>Bet sizes</span>
-        <div class="seg small" id="rl-sizes"><button data-s="merged" title="A bet is a bet, whatever its size">Merged</button><button data-s="split" title="Each bet size is its own line">Split</button></div></div>
-    </div>
-    <div class="rl-body">
-      <div id="rl-plot" class="rl-plot"></div>
-      <aside id="rl-side" class="rl-side"></aside>
-    </div>
   </div>
 </main>
 

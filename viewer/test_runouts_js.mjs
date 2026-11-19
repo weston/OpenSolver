@@ -1,4 +1,4 @@
-// Unit test for the Beta view's runout lines helpers (viewer/static/runouts.js, #467).
+// Unit test for the runout lines helpers of Study's Beta side tab (viewer/static/runouts.js, #467).
 // usage: node viewer/test_runouts_js.mjs
 import { streets, words, short, depth, cellsAt, pick, bands, lineStats, slots, deck, axis, shareOf, split } from "./static/runouts.js";
 
@@ -70,6 +70,9 @@ check(same(ax.at, [0, 11, 28, 39, 56]) && ax.end === 66, `axis: 1px between boxe
 check(ax.index(0) === 0 && ax.index(10) === 0 && ax.index(11) === 1 && ax.index(24) === -1 && ax.index(28) === 2 && ax.index(66) === 4 && ax.index(67) === -1,
   "axis: the box under a pixel, none in a gap or past the end");
 check(axis([], 10, 6).end === 0 && axis([], 10, 6).index(0) === -1, "axis: no cards");
+const snug = axis(["As", "Ks", "Ah"], 5.5, 4, 0);
+check(same(snug.at, [0, 5.5, 15]) && snug.end === 20.5 && snug.index(5.4) === 0 && snug.index(5.5) === 1 && snug.index(12) === -1 && snug.index(20.4) === 2 && snug.index(20.5) === -1,
+  `axis: boxes that touch (sep 0), of a width that is not a whole pixel (${snug.at})`);
 
 // ---- one line over the map (the legend's heat map)
 check(near(shareOf(report.lines, ks2h, "b b b"), 0.7), "shareOf: a river line on a river cell");

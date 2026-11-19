@@ -410,15 +410,14 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
   - **From a flop node** the picture is a turn × river map: a row per turn card, a column per river
     card, a suit at a time, always 52 by 52 (a card that cannot come, on the board or in the one
     combo asked for, keeps its row and column, of empty boxes like the diagonal's). A box is the
-    hand's **most common line on that runout**, its colour fuller the more often it is played. The
+    hand's **most common line on that runout**, in that line's colour (how often is in the tooltip). The
     **Lines** buttons (1 to 5) put the N most common lines in each box instead, as bands of colour,
     taller the more often. A line keeps its colour everywhere, and the eight that weigh most have
     one; the rest are grey. The map is drawn for the room the panel has: drag the panel wider for
     bigger boxes. The **Lines** buttons sit above the picture and stay put whatever N is.
   - **Reading it:** point at a box for the lines and their exact frequencies, at a line in the list
-    to see where on the map it is played (click to keep it): with room for it, the picture stays in
-    sight while the panel is scrolled down to the list, and the panel does not scroll by itself when
-    the picture is redrawn. Click a box to enlarge its turn card:
+    to see where on the map it is played (click to keep it). The panel scrolls as one piece, and
+    not by itself when the picture is redrawn. Click a box to enlarge its turn card:
     a bar per river card, the three most common lines (or N, if more) at their true frequencies.
     Click a bar to go to that runout in the tree.
   - **From a turn node** it is a bar per river card.

@@ -234,7 +234,12 @@ def check_hand_lines(u, order):
     show_range gives at the two ends of the line. show_range is the product of the action
     frequencies down to a node, so the weight of a line is the combos' range at its end times the
     opponent's range there that neither the combo nor the dealt cards block, and the base is the
-    same at the node asked about. Runouts of every suit are checked, so the suit frames are too."""
+    same at the node asked about. Runouts of every suit are checked, so the suit frames are too.
+
+    The "$" rows (what the pots that end before a card, or two, have cost the player on that runout)
+    are the same sum made here: over the rows that end before the cards, the chips show_node has the
+    player in for at the row's end, less those at the node, times the row's weight with the cards
+    taken out of both ranges."""
     print("[show_hand_lines: rows agree with show_range at both ends of a line]")
     idx = {h: i for i, h in enumerate(order)}
     ranges = {}
@@ -255,6 +260,11 @@ def check_hand_lines(u, order):
         return total
 
     rnd = random.Random(467)
+    pots, costly, deep = {}, 0, 0
+
+    def is_card(t):
+        return len(t) == 2 and t[0] in "AKQJT98765432" and t[1] in "shdc"
+
     cases = [("IP", "r:0:c", ["AsKs", "AdKd"]), ("OOP", "r:0", ["JhJd"]), ("OOP", "r:0:c:c:7s", ["AhKs", "AdAc", "KdKc"])]
     # and a node where the hand faces a bet, on a turn card of a suit the tree does not store: the
     # first one both players get to, with the three combos that get there most
@@ -268,8 +278,46 @@ def check_hand_lines(u, order):
     for hero, node, combos in cases:
         out = u.cmd(f"show_hand_lines {hero} {node} " + " ".join(combos)).split("\n")
         check(out[0] == "combos: " + " ".join(combos), f"{hero} {node}: the combos are echoed ({out[0]})")
-        rows = [r.split(" ") for r in out[1:] if r]
+        rows = [r.split(" ") for r in out[1:] if r and not r.startswith("$")]
+        early = [r.split(" ") for r in out[1:] if r.startswith("$")]
         check(len(rows) > 20 and all(len(r) == 3 for r in rows), f"{hero} {node}: {len(rows)} rows of suffix, weight, base")
+        check(out[1 + len(rows):] == [" ".join(r) for r in early], f"{hero} {node}: the \"$\" rows come last")
+        board = len(u.cmd("show_node " + node).split("\n")[2].split())
+        left, flop = 52 - board, board == 3       # the cards that can come (the cases are flop and turn nodes)
+        check(len(early) == (left + left * (left - 1) if flop else left) and all(len(r) == 2 for r in early),
+              f"{hero} {node}: a \"$\" row per card{' and per two cards' if flop else ''} that can come ({len(early)})")
+        me = 0 if hero == "OOP" else 1
+
+        def chips(at):
+            if (at, me) not in pots:
+                pots[at, me] = float(u.cmd("show_node " + at).split("\n")[3].split()[me])
+            return pots[at, me]
+
+        ended = {}                                # cards dealt -> [(the node the pot ends at, chips)]
+        for suffix, w, base in rows:
+            toks = [t for t in suffix.split(":") if t != "."]
+            if toks and toks[-1] == "~":
+                continue
+            dealt = tuple(t for t in toks if is_card(t))
+            if len(dealt) + board < 5:
+                ended.setdefault(dealt, []).append(":".join([node] + toks))
+        check(sum(len(v) for v in ended.values()) > 0, f"{hero} {node}: pots end before the river")
+        keys = [tuple(r[0].split(":")[1:]) for r in early]
+        check(len(set(keys)) == len(keys) and all(is_card(c) for k in keys for c in k) and all(len(set(k)) == len(k) for k in keys),
+              f"{hero} {node}: each names its cards, in the order dealt")
+        # some at random, some on a card of the first combo (it is out of those), and the dearest
+        picks = rnd.sample(early, 12) + [r for r in early if combos[0][:2] in r[0] or combos[0][2:] in r[0]][:6] \
+            + sorted(early, key=lambda r: -float(r[1]))[:4]
+        worst, big = 0.0, 0.0
+        for key, got in picks:
+            cards = tuple(key.split(":")[1:])
+            part = [sum((chips(at) - chips(node)) * weight(hero, at, combos, cards) for at in ended.get(cards[:k], []))
+                    for k in range(len(cards))]
+            want = sum(part)
+            worst, big = max(worst, abs(want - float(got))), max(big, want)
+            deep += len(part) == 2 and part[1] > 0
+        check(worst <= 1e-4 * big, f"{hero} {node}: the \"$\" rows are the early pots' chips (worst {worst:.2e} of {big:.4g})")
+        costly += big > 0
         suits, worst = set(), 0.0
         deals = [r for r in rows if r[0].endswith("~")]
         for suffix, w, base in rnd.sample(rows, min(60, len(rows))) + rnd.sample(deals, min(20, len(deals))) + rows[:2]:
@@ -291,9 +339,12 @@ def check_hand_lines(u, order):
             by_cards[key] = (tot + float(w), b)
         check(all(tot <= b * (1 + 1e-4) for tot, b in by_cards.values()), f"{hero} {node}: a runout's lines add up to no more than its base")
         check(abs(by_cards[()][0] - by_cards[()][1]) < 2e-3 * by_cards[()][1], f"{hero} {node}: before any card, the lines are all of it")
+    check(costly >= 2 and deep > 0, f"the early pots cost chips in {costly} of the cases, {deep} times with pots that ended on the turn")
+    # a river node deals no card: no "$" rows
+    check("$" not in u.cmd("show_hand_lines OOP r:0:c:c:7s:c:c:3d AhKs AdAc"), "a river node has no \"$\" rows")
     # a combo that is not in the range, or on the board: just the header
-    check(u.cmd("show_hand_lines OOP r:0 7h2d") == "combos: 7h2d", "a combo outside the range has no rows")
-    check(u.cmd("show_hand_lines OOP r:0 QhJh") == "combos: QhJh", "a combo the board blocks has no rows")
+    check(u.cmd("show_hand_lines OOP r:0 7h2d").split("\n$")[0] == "combos: 7h2d", "a combo outside the range has no rows")
+    check(u.cmd("show_hand_lines OOP r:0 QhJh").split("\n$")[0] == "combos: QhJh", "a combo the board blocks has no rows")
     for bad in ("show_hand_lines", "show_hand_lines OOP r:0", "show_hand_lines OOP r:0 ZZ", "show_hand_lines XX r:0 AsKs",
                 "show_hand_lines OOP r:0:zz AsKs"):
         check(u.cmd(bad).startswith("ERROR"), f"{bad!r} is an error")

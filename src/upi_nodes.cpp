@@ -1,5 +1,6 @@
 // UPI node navigation, queries, strategies, locking and line commands.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <cstring>
@@ -374,6 +375,13 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
 // hand plays the line when those cards come, and among rows with the same cards, each line's share of
 // the weights is how often the hand plays it. Lines under 1e-5 of their base are left out, and so is a
 // street a truncated save has no strategies for. Prints "combos: <c1> ... <ck>" first.
+//
+// Last come the rows "$:<card> <chips>" and, from a flop node, "$:<card>:<card> <chips>", one per
+// card (and pair of cards, in the order dealt) that can still come: what the lines that end before
+// those cards are all dealt have cost <player>. It is the sum over those lines of the chips <player>
+// has put in since <node> times the line's weight when those cards come: the opponent hands that the
+// cards block are left out, as if the cards had been dealt, although the pot ended first. Divided by
+// the <base> of the rows with those cards, it is the chips those pots cost on that runout.
 std::string Upi::cmd_show_hand_lines(const Args& a) {
   if (a.size() < 3) throw CmdError{"incorrect or missing argument"};
   const int hero = player_arg(a[0]), vil = 1 - hero;
@@ -430,8 +438,30 @@ std::string Upi::cmd_show_hand_lines(const Args& a) {
   };
   auto join = [](const std::string& suffix, const std::string& t) { return suffix.empty() ? t : suffix + ":" + t; };
 
-  std::function<void(uint32_t, int, uint64_t, const std::string&, double)> walk =
-      [&](uint32_t node, int frame, uint64_t bm, const std::string& suffix, double base) {
+  // The pots that end before the river, for the "$" rows: per combo, chips x its reach x the
+  // opponent's reach, by opponent combo (display frame), so that the hands a later card blocks can
+  // be taken out. early0: before any card; early1[c]: after the card c, from a flop node.
+  using Early = std::vector<std::vector<double>>;
+  const size_t K = combos.size();
+  const int32_t inv0 = tree_->an(tree_->nodes[r.node]).inv[hero];
+  Early early0;
+  std::vector<Early> early1(NUM_CARDS);
+  auto charge = [&](Early& acc, double chips, int frame, uint64_t bm) {
+    if (!(chips > 0)) return;
+    if (acc.empty()) acc.assign(K, std::vector<double>(NUM_COMBOS, 0.0));
+    for (size_t i = 0; i < K; ++i) {
+      if (combo_mask(combos[i]) & bm) continue;
+      int h = idx[hero][PERM_COMBO[PERM_INV[frame]][combos[i]]];
+      if (h < 0 || own[h] <= 0) continue;
+      const double f = chips * own[h];
+      for (size_t k = 0; k < opp.size(); ++k)
+        if (opp[k] > 0) acc[i][PERM_COMBO[frame][tree_->hands[vil][k]]] += f * opp[k];
+    }
+  };
+
+  // first: the first card dealt below <node> (-1: none yet)
+  std::function<void(uint32_t, int, uint64_t, const std::string&, double, int)> walk =
+      [&](uint32_t node, int frame, uint64_t bm, const std::string& suffix, double base, int first) {
     const double w = weight(own, opp, frame, bm);
     if (!(w > 0) || w < 1e-5 * base) return;
     const GNode& n = tree_->nodes[node];
@@ -444,7 +474,7 @@ std::string Upi::cmd_show_hand_lines(const Args& a) {
       std::vector<float> keep = v;
       for (int k = 0; k < A; ++k) {
         for (int h = 0; h < H; ++h) v[h] = keep[h] * sig[static_cast<size_t>(k) * H + h];
-        walk(n.first_child + static_cast<uint32_t>(k), frame, bm, join(suffix, action_label(an, an.actions[k])), base);
+        walk(n.first_child + static_cast<uint32_t>(k), frame, bm, join(suffix, action_label(an, an.actions[k])), base, first);
       }
       v = keep;
     } else if (n.kind == ANodeKind::Chance && !tree_->chances[n.aux].flop_deal) {
@@ -473,15 +503,59 @@ std::string Upi::cmd_show_hand_lines(const Args& a) {
         int f2 = PERM_COMPOSE[frame][perm];
         uint64_t bm2 = bm | card_bit(x);
         walk(n.first_child + static_cast<uint32_t>(slot), f2, bm2, join(suffix, card_str(x)),
-             weight(own0, opp0, f2, bm2));
+             weight(own0, opp0, f2, bm2), first < 0 ? x : first);
       }
       for (int i = 0; i < 4; ++i) *vs[i] = src[i];
     } else {
       row(suffix.empty() ? "." : suffix, w, base);  // a fold, a showdown, or an all-in that runs the board out
+      if (n.board_len < 5) charge(first < 0 ? early0 : early1[first], tree_->an(n).inv[hero] - inv0, frame, bm);
     }
   };
-  uint64_t bm = board_mask(r.board);
-  walk(r.node, r.frame, bm, "", weight(own0, opp0, r.frame, bm));
+  const uint64_t bm = board_mask(r.board);
+  walk(r.node, r.frame, bm, "", weight(own0, opp0, r.frame, bm), -1);
+  const int len = static_cast<int>(r.board.size());
+  if (len >= 5 || (stop && len + 1 >= stop)) return out;  // no card is dealt below <node>
+
+  // The "$" rows. Per combo: all it is charged (s), and the part against opponent hands with a
+  // given card (a), neither counting the hands the combo itself blocks.
+  struct Sum {
+    double s = 0;
+    std::array<double, NUM_CARDS> a{};
+  };
+  auto sums = [&](const Early& acc) {
+    std::vector<Sum> t(K);
+    for (size_t i = 0; i < K && !acc.empty(); ++i) {
+      const uint64_t mine = combo_mask(combos[i]);
+      for (int d = 0; d < NUM_COMBOS; ++d) {
+        const double v = acc[i][d];
+        if (v == 0 || (combo_mask(d) & mine)) continue;
+        t[i].s += v;
+        t[i].a[COMBOS[d].hi] += v;
+        t[i].a[COMBOS[d].lo] += v;
+      }
+    }
+    return t;
+  };
+  const std::vector<Sum> s0 = sums(early0);
+  for (int x = NUM_CARDS - 1; x >= 0; --x) {
+    if (bm & card_bit(x)) continue;
+    double e = 0;
+    for (size_t i = 0; i < K; ++i)
+      if (!(combo_mask(combos[i]) & card_bit(x))) e += s0[i].s - s0[i].a[x];
+    out += "$:" + card_str(x) + " " + pfmt("%.6g", e) + "\n";
+    if (len != 3 || stop) continue;  // no second card
+    const std::vector<Sum> s1 = sums(early1[x]);
+    for (int y = NUM_CARDS - 1; y >= 0; --y) {
+      if (y == x || (bm & card_bit(y))) continue;
+      double e2 = 0;
+      for (size_t i = 0; i < K; ++i) {
+        if (combo_mask(combos[i]) & (card_bit(x) | card_bit(y))) continue;
+        e2 += s0[i].s - s0[i].a[x] - s0[i].a[y] + (early0.empty() ? 0.0 : early0[i][combo_index(x, y)])
+              + s1[i].s - s1[i].a[y];
+      }
+      out += "$:" + card_str(x) + ":" + card_str(y) + " " + pfmt("%.6g", e2) + "\n";
+    }
+  }
   return out;
 }
 

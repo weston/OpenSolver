@@ -184,10 +184,58 @@ c:c:Ks:c:c:2h:c:c 4 10
         # counted twice
         lv2 = hl.summarize("combos: AhAd\nb20:f 5 10\nc:c:~ 5 10\nc:c:Ks:c:c:~ 5 10\nc:c:Ks:c:c:2h:b40:c 9 10\n", FLOP, 0)
         self.assertAlmostEqual(hl.money(lv2)[("Ks", "2h")][0], 0.5 * 20 + 0.5 * 40)
+        # no pot of its own ends on the turn, yet fewer see the river (lines too rare to be listed):
+        # those are charged what the turn has cost, not nothing (#472)
+        lv3 = hl.summarize("combos: AhAd\nb20:f 5 10\nb20:c:~ 5 10\nb20:c:Ks:c:c:~ 5 10\nb20:c:Ks:c:c:2h:c:c 4 10\n", FLOP, 0)
+        self.assertAlmostEqual(hl.money(lv3)[("Ks", "2h")][0], 20)     # every pot costs the bet of 20
+        self.money_per_combo()
         p = hl.to_payload(lv)
+        self.assertFalse(p["cut"])
+        self.assertTrue(hl.to_payload(hl.summarize("combos: AhAd\nb20:f 5 10\nb20:c:~ 5 10\n", FLOP, 0))["cut"])
         self.assertEqual((p["now"]["put"], p["now"]["put_seen"]), (22, 22))
         self.assertEqual(p["now"]["cards"][0]["cards"][0]["put_seen"], 20)
         self.assertEqual(hl.money({}), {})
+
+
+    def money_per_combo(self):
+        """A class on a card that takes one of its combos away: the figure is the other combo's
+        (#472). AhAd always bets 20, and half the time folds to a raise; AsAc always check-folds. On
+        the As only AhAd is left, and it has put 20 in every time. The solver's "$" rows say what the
+        pots that ended before the cards cost with those cards out (here 5 x 20, AhAd's folds: AsAc's
+        cost nothing, on the Ks, and are not there, on the As)."""
+        rows = """combos: AhAd AsAc
+b20:c:~ 5 20
+b20:b60:f 5 20
+c:b20:f 10 20
+b20:c:As:c:c:~ 5 10
+b20:c:As:c:c:2h:c:c 5 10
+b20:c:Ks:c:c:~ 5 20
+b20:c:Ks:c:c:2h:c:c 5 20
+$:As 100
+$:As:2h 100
+$:Ks 100
+$:Ks:2h 100
+$:Ks:3h 100
+"""
+        lv = hl.summarize(rows, FLOP, 0)
+        self.assertEqual(sorted(lv), [(), ("As",), ("As", "2h"), ("Ks",), ("Ks", "2h")])   # "$" rows are not lines
+        self.assertEqual((lv[("As", "2h")]["early"], lv[("Ks",)]["early"]), (100, 100))
+        self.assertNotIn("early", lv[()])
+        m = hl.money(lv)
+        self.assertAlmostEqual(m[("As", "2h")][0], 20)
+        self.assertAlmostEqual(m[("As",)][0], 20)
+        self.assertAlmostEqual(m[("Ks", "2h")][0], 10)               # both combos: one at 20, one at 0
+        self.assertAlmostEqual(m[("Ks", "2h")][1], 20)               # the one that sees it
+        self.assertAlmostEqual(m[()][0], (10 * 20 + 20 * 10) / 30)   # the two turns, by how likely each is
+        # a save without rivers: the last cards read are the turns
+        cut = "\n".join(r for r in rows.split("\n") if "2h" not in r and "3h" not in r)
+        mc = hl.money(hl.summarize(cut, FLOP, 0))
+        self.assertAlmostEqual(mc[("As",)][0], 20)
+        self.assertAlmostEqual(mc[("Ks",)][0], 10)
+        # without the "$" rows (an older solver) the class is read as one hand, whose pots that ended
+        # on the flop cost what the two combos' did on average
+        plain = "\n".join(r for r in rows.split("\n") if not r.startswith("$"))
+        self.assertAlmostEqual(hl.money(hl.summarize(plain, FLOP, 0))[("As", "2h")][0], 0.5 * 20 / 3 + 0.5 * 20)
 
 
 class ApiTest(unittest.TestCase):
@@ -274,9 +322,8 @@ class ApiTest(unittest.TestCase):
         d = self.lines("r:0", "OOP", "AA")
         self.assertEqual((d["pot"], d["behind"]), (CFG["pot"], CFG["stack"]))
         self.check_money(d)
-        # from the node, the average over the runouts is the average over the pots (to the chip: the
-        # pots that end before a card are not corrected for it)
-        self.assertAlmostEqual(d["now"]["put"], d["now"]["put_seen"], delta=0.01 * d["pot"])
+        # from the node, the average over the runouts is the average over the pots
+        self.assertAlmostEqual(d["now"]["put"], d["now"]["put_seen"], delta=0.001 * d["pot"])
         self.assertGreater(d["now"]["put"], 0)
         # facing a bet: its chips are in the pot, the caller's are not in yet
         f = self.lines("r:0:b24", "IP", "AA")

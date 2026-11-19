@@ -3,8 +3,8 @@
 // viewed (server side: viewer/hand_lines.py).
 //
 // A line is the hand's own actions street by street ("bet · bet · check"). From a flop node the
-// picture is a map of every runout: a row per turn card, a column per river card, 52 by 52 (a card
-// that cannot come keeps its place, empty). A box is the line the hand plays most often on that
+// picture is a map of every runout: a row per turn card, a column per river card, 52 by 52 (a runout
+// that cannot be, a card of the board among them, keeps its box, empty). A box is the line the hand plays most often on that
 // runout, its colour the fuller the more often it is played; or, asked for more lines than one, the
 // few most common as bands of colour, taller the more often. The lines that matter most over the whole
 // map get a colour of their own (the list under the map is the key); the rest share a grey. From a
@@ -12,6 +12,10 @@
 //
 // The second view, Money in, is the same map in one colour: the fuller, the more chips the hand puts
 // into the pot on that runout, on average, from the node to the end of the pot.
+//
+// Nothing moves under the pointer: what changes the picture's height is over it, the picture is
+// rebuilt at the height it had, and with room under it for the list it stays in sight while the
+// panel is scrolled (the list's lines repaint it when pointed at).
 //
 // The hand is never typed: it is the class clicked in the matrix, or one of its combos clicked here.
 
@@ -27,6 +31,7 @@ const COLORS = 8;   // lines with a colour of their own (--line-1 .. --line-8)
 const MAX_N = 5;
 const LISTED = 12;  // lines in the list; the rest are counted
 const CAP = 32, GAP = 8, HEAD = 26, CARD_H = 13;   // the picture's fixed heights (style.css: .rl-cap, .rl-plot, .rl-zoom, .rl-card-h)
+const UNDER = 160;   // the picture stays in sight while the panel is scrolled if this much of the panel is left under it: the list's first lines
 const DETAIL = 3;   // lines where there is room for them (a bar, the tooltip), however few a box shows
 const VIEWS = ["lines", "money"];
 // The colour of a box's most common line when it is hardly played: it must still be told from the
@@ -69,7 +74,7 @@ function palette() {
   const g = (v) => cs.getPropertyValue(v).trim();
   const line = [];
   for (let i = 1; i <= COLORS; i++) line.push(g("--line-" + i));
-  return { line, other: g("--line-other"), money: g("--money"), none: g("--cell-empty"), dim: g("--text-3"), text: g("--text"), spade: g("--text-2"),
+  return { line, other: g("--line-other"), money: g("--money"), none: g("--cell-empty"), blank: g("--rl-blank"), dim: g("--text-3"), text: g("--text"), spade: g("--text-2"),
            suit: { s: g("--suit-s"), h: g("--suit-h"), d: g("--suit-d"), c: g("--suit-c") } };
 }
 /** A line's colour for the canvas (a value), and for the page (the variable: it follows the theme). */
@@ -101,6 +106,9 @@ function ensure(box) {
   const empty = el("div", "side-empty", "Click a hand in the matrix to see the lines it takes on every runout from here.");
   const main = el("div", "rl-main hidden");
   const head = el("div", "hand-head rl-head"), combos = el("div", "blk-combos rl-combos"), opts = el("div", "rl-opts");
+  // over the picture, one row of a fixed height: what sets the picture's own height (the lines in a
+  // box), so that it stays under the pointer when clicked; in its place the Money in view's scale
+  const top = el("div", "rl-top"), scale = el("div", "rl-scale");
   const views = el("div", "seg small rl-views");
   for (const [v, text, tip] of [["lines", "Lines", "The line the hand takes on each runout"], ["money", "Money in", "How much the hand puts into the pot on each runout"]]) {
     const b = el("button", "", text);
@@ -121,7 +129,7 @@ function ensure(box) {
   }
   const plot = el("div", "rl-plot"), legend = el("section", "rl-sec"), now = el("section", "rl-sec"), key = el("section", "rl-sec");
 
-  const seg = (label, title, items, pick) => {
+  const seg = (into, label, title, items, pick) => {
     const o = el("div", "rl-opt");
     o.title = title;
     const s = el("div", "seg small");
@@ -133,26 +141,27 @@ function ensure(box) {
       s.appendChild(b);
     }
     o.append(el("span", "", label), s);
-    opts.appendChild(o);
+    into.appendChild(o);
     return s;
   };
-  const nSeg = seg("Lines", "How many lines a box of the map shows. 1: the most common, its colour the fuller the more often it is played", [1, 2, 3, 4, 5].map((n) => [String(n), String(n)]), (v) => {
+  const nSeg = seg(top, "Lines", "How many lines a box of the map shows. 1: the most common, its colour the fuller the more often it is played", [1, 2, 3, 4, 5].map((n) => [String(n), String(n)]), (v) => {
     B.n = +v;
     prefs.set("beta-lines", B.n);
     syncOpts();
     drawKey();
     paint();
   });
-  const sSeg = seg("Bet sizes", "", [["merged", "Merged", "A bet is a bet, whatever its size"], ["split", "Split", "Each bet size is its own line"]], (v) => {
+  const sSeg = seg(opts, "Bet sizes", "", [["merged", "Merged", "A bet is a bet, whatever its size"], ["split", "Split", "Each bet size is its own line"]], (v) => {
     B.sizes = v === "split";
     prefs.set("beta-sizes", B.sizes);
     syncOpts();
     again();
   });
 
-  main.append(head, combos, plot, opts, legend, now, key);
+  top.appendChild(scale);
+  main.append(head, combos, top, plot, opts, legend, now, key);
   box.append(empty, main);
-  B.el = { box, empty, main, head, combos, opts, plot, legend, now, key, nSeg, sSeg, views };
+  B.el = { box, empty, main, head, combos, top, scale, opts, plot, legend, now, key, nSeg, sSeg, views };
   B.data = null;
   B.want = null;
   if (!B.watching) {
@@ -174,6 +183,7 @@ function syncOpts() {
   act(B.el.nSeg, B.n);
   act(B.el.sSeg, B.sizes ? "split" : "merged");
   act(B.el.views, B.view);
+  B.el.top.classList.toggle("money", B.view !== "lines");  // the scale in place of the lines in a box
   B.el.opts.classList.toggle("off", B.view !== "lines");   // they are about lines
 }
 
@@ -224,7 +234,7 @@ export async function renderRunouts(box, ctx) {
     if (!B.err) return;              // dropped by a refresh, which asks again
     Object.assign(B, { data: null, stats: [], slot: new Map(), put: null, hl: null, pin: null });
     box.dataset.key = key;
-    for (const s of [E.legend, E.now, E.key]) s.textContent = "";
+    for (const s of [E.scale, E.legend, E.now, E.key]) s.textContent = "";
     return message("Nothing to show here", String(B.err.message || B.err));
   }
   box.dataset.key = key;
@@ -276,24 +286,49 @@ function message(title, text) {
   plot.appendChild(m);
 }
 
-/** The picture alone (also when a line is pointed at in the list, which must stay under the pointer). */
+/** The picture alone (also when a line is pointed at in the list, which must stay under the pointer).
+ *  It is built anew: meanwhile the panel must not get shorter, or one scrolled down to the list
+ *  jumps back up. */
 function paint() {
   const d = B.data;
   if (!d) return;
   hideTip();
   B.size = sizeKey();
-  B.el.plot.style.minHeight = "";
+  const { plot, box } = B.el;
+  const at = box.scrollTop;
+  plot.style.minHeight = plot.offsetHeight + "px";
+  const pic = draw(d);
+  plot.style.minHeight = pic && pic.fill ? pic.fill + "px" : "";
+  stick(pic ? pic.el : null);
+  if (box.scrollTop !== at) box.scrollTop = at;
+}
+
+/** Draws the picture; returns its part to keep in sight (el) and the height the whole is to take (fill), or nothing for a note. */
+function draw(d) {
   if (!d.now) {
     return message(`${d.hand} is not here`, d.combos.length ? `${d.player} never gets to this node with ${d.hand}.` : `The board takes every combo of ${d.hand}.`);
   }
   const dep = depth(d);
-  if (dep === 0) return message("No cards to come", `What ${d.hand} does from here is below.`);
-  if (!(B.el.plot.clientWidth > 0)) return;   // out of sight: drawn when shown (ensure's observer)
+  if (dep === 0) {
+    return d.cut && d.board.length < 5
+      ? message(`No ${STREET[d.board.length + 1]} in this tree`, `It was saved without it. What ${d.hand} does on the ${STREET[d.board.length]} is below.`)
+      : message("No cards to come", `What ${d.hand} does from here is below.`);
+  }
+  if (!(B.el.plot.clientWidth > 0)) return null;   // out of sight: drawn when shown (ensure's observer)
   if (dep === 1) return renderBars(d, d.now.cards, [], null, 0);
   const open = B.mode === "turn" && (d.now.cards.find((t) => t.card === B.turn && t.cards && t.cards.length) || d.now.cards.find((t) => t.cards && t.cards.length));
   if (!open) return renderMap(d);
   B.turn = open.card;
-  renderBars(d, open.cards, [open.card], zoomHead(d, open), CAP + GAP + mapDims(d).h);
+  return renderBars(d, open.cards, [open.card], zoomHead(d, open), CAP + GAP + mapDims(d).h);
+}
+
+/** With room left under it for the list, the picture stays in sight while the panel is scrolled:
+ *  pointing at a line of the list repaints it. Its caption scrolls away. */
+function stick(pic) {
+  const { plot, box } = B.el;
+  const on = !!pic && box.clientHeight - pic.offsetHeight >= UNDER;
+  plot.classList.toggle("stick", on);
+  plot.style.top = on ? -pic.offsetTop + "px" : "";
 }
 
 function caption(...parts) {
@@ -341,7 +376,9 @@ function mapDims(d) {
   const sep = wide ? 1 : striped ? 0 : 1 / dpr;
   const TOP = wide ? 30 : 16;
   // what is left of the panel under the caption: the whole map in sight without scrolling
-  const above = E.plot.getBoundingClientRect().top - E.box.getBoundingClientRect().top + E.box.scrollTop + CAP + GAP;
+  // (measured from the row over the picture: the picture itself may be held at the top of a scrolled panel)
+  const lead = parseFloat(getComputedStyle(E.main).rowGap) || 0;
+  const above = E.top.getBoundingClientRect().bottom - E.box.getBoundingClientRect().top + E.box.scrollTop + lead + CAP + GAP;
   const room = Math.floor((E.box.clientHeight - above - 8 - TOP - groups * GROUP) / n);
   // a row is at least tall enough for its bands to be told apart, when the panel is tall enough for 52 of them
   const row = clamp(Math.min(Math.max(Math.round(col), striped ? 3 * B.n + 3 : 0), room), 8, 15);
@@ -412,6 +449,10 @@ function renderMap(d) {
   };
   const unit = Math.max(1, Math.round(dpr)), gap = ch >= 11 ? 1 : 0;
   const cellOf = new Map();   // "turn river" -> the river's cell
+  // every box of the 52 by 52 is there: empty where the runout cannot be (the same card twice, a
+  // card of the board, a card of the one combo asked for), then the others over them
+  ctx.fillStyle = pal.blank;
+  for (const y of Y.at) for (const x of X.at) ctx.fillRect(LEFT + x, TOP + y, cw, ch);
   for (const t of d.now.cards) {
     const j = index.get(t.card);
     for (const r of t.cards || []) {
@@ -473,6 +514,7 @@ function renderMap(d) {
   };
   wrap.append(c, rowCur, cur);
   plot.appendChild(wrap);
+  return { el: wrap, fill: 0 };
 }
 
 /* ------------------------------------------------------------------ one card at a time: a bar per river card */
@@ -502,7 +544,6 @@ function renderBars(d, cells, before, head, fill) {
   plot.textContent = "";
   const hl = heat();
   const next = STREET[d.board.length + before.length + 1];
-  if (head) plot.appendChild(head);
   const label = hl != null ? d.lines[hl] : null;
   const shown = Math.max(B.n, DETAIL);
   const top = B.put ? B.put.max.put : 0;   // the scale of every bar: the most over all the runouts
@@ -515,8 +556,9 @@ function renderBars(d, cells, before, head, fill) {
   const ROWS = SUITS.length, ROW_GAP = 6;
   const used = (head ? HEAD + GAP : 0) + CAP + GAP + (ROWS - 1) * ROW_GAP + ROWS * (CARD_H + 2);
   const bar = fill ? clamp(Math.floor((fill - used) / ROWS), 30, 140) : 56;
-  const g = el("div", "rl-grid");
+  const pic = el("div", "rl-pic"), g = el("div", "rl-grid");
   g.style.rowGap = ROW_GAP + "px";
+  if (head) pic.appendChild(head);
   const by = new Map(cells.map((c) => [c.card, c]));
   for (const s of SUITS) {
     for (const r of RANKS) {
@@ -552,8 +594,9 @@ function renderBars(d, cells, before, head, fill) {
       b.onclick = () => { if (cell.go) { hideTip(); B.ctx.goto(d.id + ":" + cell.go); } };
     }
   }
-  plot.appendChild(g);
-  if (fill) plot.style.minHeight = fill + "px";
+  pic.appendChild(g);
+  plot.appendChild(pic);
+  return { el: pic, fill };
 }
 
 /* ------------------------------------------------------------------ tooltip, the lists */
@@ -598,10 +641,11 @@ function drawLegend() {
   const sec = B.el.legend, d = B.data;
   sec.textContent = "";
   B.rows = new Map();
+  drawScale();
   if (!d || !d.now) return;
   const dep = depth(d);
   if (!dep) return;
-  const cells = cellsAt(d, dep), what = dep === 2 ? "runouts" : "river cards";
+  const cells = cellsAt(d, dep), what = over(d);
   if (money()) return drawMoney(sec, d, what);
   sec.appendChild(el("h3", "", "Lines"));
   sec.appendChild(el("div", "hint", `Over the ${cells.length} ${what}. Point at a line to see where it is played; click to keep it.`));
@@ -631,7 +675,27 @@ function drawLegend() {
   }
 }
 
-/** The key to the Money in view: the average, the scale, and where the hand puts in the most and the least. */
+/** What the picture is drawn over: the runouts, or the cards of the one street dealt below the node. */
+function over(d) {
+  return depth(d) === 2 ? "runouts" : `${STREET[d.board.length + 1]} cards`;
+}
+
+/** Where the chips are counted to: the end of the pot, or of the last street the tree has (a save
+ *  without the later streets). */
+function until(d) {
+  return d.cut ? `the end of the ${STREET[d.board.length + depth(d)]}` : "the pot ends";
+}
+
+/** The Money in view's scale, over the picture: from nothing put in to the most over the runouts. */
+function drawScale() {
+  const s = B.el.scale, d = B.data, r = B.put;
+  s.textContent = "";
+  if (!d || !d.now || !r || !depth(d)) return;
+  s.title = "The colour of a box: empty for nothing put in, full for the most over the " + over(d);
+  s.append(el("span", "", "0"), el("i"), el("span", "", `${ofPot(d, r.max.put)}${d.pot > 0 ? " of the pot" : " chips"}`));
+}
+
+/** The key to the Money in view: the average, and where the hand puts in the most and the least. */
 function drawMoney(sec, d, what) {
   sec.appendChild(el("h3", "", "Money in"));
   const r = B.put;
@@ -639,12 +703,8 @@ function drawMoney(sec, d, what) {
   const unit = d.pot > 0 ? "of the pot" : "chips";
   const hero = el("div", "rl-hero");
   hero.append(el("b", "", ofPot(d, d.now.put)),
-    el("span", "", `${unit}: what ${d.hand} puts in from here on average, over the ${what}. ${chips(d.now.put)} of the ${fmt(d.behind, 0)} chips ${d.player} has behind; the pot is ${fmt(d.pot, 0)} now.`));
+    el("span", "", `${unit}: what ${d.hand} puts in from here${d.cut ? " to " + until(d) : ""} on average, over the ${what}. ${chips(d.now.put)} of the ${fmt(d.behind, 0)} chips ${d.player} has behind; the pot is ${fmt(d.pot, 0)} now.`));
   sec.appendChild(hero);
-  const scale = el("div", "rl-scale");
-  scale.title = "The colour of a box: empty for nothing put in, full for the most over the " + what;
-  scale.append(el("span", "", "0"), el("i"), el("span", "", `${ofPot(d, r.max.put)} ${unit}`));
-  sec.appendChild(scale);
   const row = (name, at) => {
     const x = el("div", "rl-row"), on = el("span", "t");
     on.append(name + " on ", ...at.cards.map(cardTag));
@@ -665,7 +725,7 @@ function drawNow() {
   if (!d || !d.now) return;
   sec.appendChild(el("h3", "", `${d.hand} on the ${STREET[d.board.length]}`));
   if (money() && !depth(d)) {
-    sec.appendChild(el("div", "hint", `From here ${d.hand} puts in ${ofPot(d, d.now.put)}${d.pot > 0 ? " of the pot" : ""} on average (${chips(d.now.put)} chips).`));
+    sec.appendChild(el("div", "hint", `From here${d.cut ? " to " + until(d) : ""} ${d.hand} puts in ${ofPot(d, d.now.put)}${d.pot > 0 ? " of the pot" : ""} on average (${chips(d.now.put)} chips).`));
   }
   for (const [i, f] of d.now.lines.slice(0, 6)) {
     const row = lineRow(null, d.lines[i], pct(f));
@@ -683,8 +743,11 @@ function drawKey() {
   const dep = depth(d), street = STREET[d.board.length];
   sec.appendChild(el("h3", "", "Reading it"));
   if (money()) {
-    sec.appendChild(el("div", "hint", `Money in is every chip ${d.hand} puts into the pot from this node until the pot ends: calls, and bets and raises `
+    sec.appendChild(el("div", "hint", `Money in is every chip ${d.hand} puts into the pot from this node ${d.cut ? "to " + until(d) : "until the pot ends"}: calls, and bets and raises `
       + `whether or not they are called. It is an average over the ways ${d.hand} and the other player play it.`));
+    if (d.cut) {
+      sec.appendChild(el("div", "hint warn", `This tree was saved without the ${STREET[d.board.length + dep + 1]}: what ${d.hand} puts in after the ${STREET[d.board.length + dep]} is not counted.`));
+    }
     if (dep > 0) {
       sec.appendChild(el("div", "hint", `A runout counts all of them, the pots that ended before the card came too (a fold, an all-in): those at what `
         + `${d.hand} had put in by then. The tooltip also gives the figure for the times it does get to the card.`));
@@ -693,7 +756,7 @@ function drawKey() {
   }
   sec.appendChild(el("div", "hint", (dep === 0 ? `A line is what ${d.hand} itself does from here. `
     : `A line is what ${d.hand} itself does, street by street: ` + (dep === 2 ? `bet · bet · check is a bet on the ${street}, a bet on the turn and a check on the river. `
-      : `bet · check is a bet on the ${street}, then a check on the river. `))
+      : `bet · check is a bet on the ${street}, then a check on the ${STREET[d.board.length + 1]}. `))
     + `Two letters on one street are two actions there: xc check then call, xf check then fold, xr check-raise, bc bet then call, bf bet then fold. `
     + `A dash is a street with nothing left to do.`));
   if (dep > 0) {

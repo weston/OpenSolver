@@ -376,12 +376,14 @@ std::string Upi::cmd_show_strategy(const Args& a, bool pp) {
 // the weights is how often the hand plays it. Lines under 1e-5 of their base are left out, and so is a
 // street a truncated save has no strategies for. Prints "combos: <c1> ... <ck>" first.
 //
-// Last come the rows "$:<card> <chips>" and, from a flop node, "$:<card>:<card> <chips>", one per
-// card (and pair of cards, in the order dealt) that can still come: what the lines that end before
-// those cards are all dealt have cost <player>. It is the sum over those lines of the chips <player>
-// has put in since <node> times the line's weight when those cards come: the opponent hands that the
-// cards block are left out, as if the cards had been dealt, although the pot ended first. Divided by
-// the <base> of the rows with those cards, it is the chips those pots cost on that runout.
+// Last come the rows "$:<card> <chips> <base>" and, from a flop node, "$:<card>:<card> <chips> <base>",
+// one per card (and pair of cards, in the order dealt) that can still come: what the lines that end
+// before those cards are all dealt have cost <player>. <chips> is the sum over those lines of the
+// chips <player> has put in since <node> times the line's weight when those cards come: the opponent
+// hands that the cards block are left out, as if the cards had been dealt, although the pot ended
+// first. <base> is the <base> of the rows with those cards, also when there are no such rows (the
+// combos left never see the cards; 0 when the cards take every combo). <chips> / <base> is what
+// those pots cost on that runout.
 std::string Upi::cmd_show_hand_lines(const Args& a) {
   if (a.size() < 3) throw CmdError{"incorrect or missing argument"};
   const int hero = player_arg(a[0]), vil = 1 - hero;
@@ -512,6 +514,8 @@ std::string Upi::cmd_show_hand_lines(const Args& a) {
     }
   };
   const uint64_t bm = board_mask(r.board);
+  Early node0;  // the same at <node>, one chip a pot: the bases of the "$" rows
+  charge(node0, 1.0, r.frame, bm);
   walk(r.node, r.frame, bm, "", weight(own0, opp0, r.frame, bm), -1);
   const int len = static_cast<int>(r.board.size());
   if (len >= 5 || (stop && len + 1 >= stop)) return out;  // no card is dealt below <node>
@@ -536,24 +540,28 @@ std::string Upi::cmd_show_hand_lines(const Args& a) {
     }
     return t;
   };
-  const std::vector<Sum> s0 = sums(early0);
+  const std::vector<Sum> s0 = sums(early0), n0 = sums(node0);
   for (int x = NUM_CARDS - 1; x >= 0; --x) {
     if (bm & card_bit(x)) continue;
-    double e = 0;
-    for (size_t i = 0; i < K; ++i)
-      if (!(combo_mask(combos[i]) & card_bit(x))) e += s0[i].s - s0[i].a[x];
-    out += "$:" + card_str(x) + " " + pfmt("%.6g", e) + "\n";
+    double e = 0, b = 0;
+    for (size_t i = 0; i < K; ++i) {
+      if (combo_mask(combos[i]) & card_bit(x)) continue;
+      e += s0[i].s - s0[i].a[x];
+      b += n0[i].s - n0[i].a[x];
+    }
+    out += "$:" + card_str(x) + " " + pfmt("%.6g", e) + " " + pfmt("%.6g", b) + "\n";
     if (len != 3 || stop) continue;  // no second card
     const std::vector<Sum> s1 = sums(early1[x]);
     for (int y = NUM_CARDS - 1; y >= 0; --y) {
       if (y == x || (bm & card_bit(y))) continue;
-      double e2 = 0;
+      double e2 = 0, b2 = 0;
       for (size_t i = 0; i < K; ++i) {
         if (combo_mask(combos[i]) & (card_bit(x) | card_bit(y))) continue;
         e2 += s0[i].s - s0[i].a[x] - s0[i].a[y] + (early0.empty() ? 0.0 : early0[i][combo_index(x, y)])
               + s1[i].s - s1[i].a[y];
+        b2 += n0[i].s - n0[i].a[x] - n0[i].a[y] + (node0.empty() ? 0.0 : node0[i][combo_index(x, y)]);
       }
-      out += "$:" + card_str(x) + ":" + card_str(y) + " " + pfmt("%.6g", e2) + "\n";
+      out += "$:" + card_str(x) + ":" + card_str(y) + " " + pfmt("%.6g", e2) + " " + pfmt("%.6g", b2) + "\n";
     }
   }
   return out;

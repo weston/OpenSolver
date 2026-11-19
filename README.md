@@ -431,8 +431,9 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     pot, those that ended before the card came too (at what the hand had put in by then); the tooltip
     also gives the figure for the times the hand does see the card. The figures are exact: a pot
     that ended before a card is weighed as it would be with that card dealt (the hands it takes from
-    the other player's range, and the combos it takes from a class, left out). On a tree saved
-    without its last streets the chips stop where the save does, and the panel says so.
+    the other player's range, and the combos it takes from a class, left out). A runout the hand
+    never sees, its pot always ending first, has a box too: no lines, and what those pots cost. On
+    a tree saved without its last streets the chips stop where the save does, and the panel says so.
   - `#study=<node>&side=beta&pin=JJ` links to it. API: `GET /api/hand_lines?id=&player=&hand=&sizes=`
     (each runout: `lines`, `reach`, `put`, `put_seen`; `pot` and `behind` at the node; `cut` for a
     save without the later streets), over the UPI

@@ -239,7 +239,8 @@ def check_hand_lines(u, order):
     The "$" rows (what the pots that end before a card, or two, have cost the player on that runout)
     are the same sum made here: over the rows that end before the cards, the chips show_node has the
     player in for at the row's end, less those at the node, times the row's weight with the cards
-    taken out of both ranges."""
+    taken out of both ranges. Their last field is the base of the rows with those cards, there
+    also for the cards no row has (the hand's pot always ends before them)."""
     print("[show_hand_lines: rows agree with show_range at both ends of a line]")
     idx = {h: i for i, h in enumerate(order)}
     ranges = {}
@@ -260,7 +261,7 @@ def check_hand_lines(u, order):
         return total
 
     rnd = random.Random(467)
-    pots, costly, deep = {}, 0, 0
+    pots, costly, deep, unseen = {}, 0, 0, 0
 
     def is_card(t):
         return len(t) == 2 and t[0] in "AKQJT98765432" and t[1] in "shdc"
@@ -284,7 +285,7 @@ def check_hand_lines(u, order):
         check(out[1 + len(rows):] == [" ".join(r) for r in early], f"{hero} {node}: the \"$\" rows come last")
         board = len(u.cmd("show_node " + node).split("\n")[2].split())
         left, flop = 52 - board, board == 3       # the cards that can come (the cases are flop and turn nodes)
-        check(len(early) == (left + left * (left - 1) if flop else left) and all(len(r) == 2 for r in early),
+        check(len(early) == (left + left * (left - 1) if flop else left) and all(len(r) == 3 for r in early),
               f"{hero} {node}: a \"$\" row per card{' and per two cards' if flop else ''} that can come ({len(early)})")
         me = 0 if hero == "OOP" else 1
 
@@ -309,15 +310,30 @@ def check_hand_lines(u, order):
         picks = rnd.sample(early, 12) + [r for r in early if combos[0][:2] in r[0] or combos[0][2:] in r[0]][:6] \
             + sorted(early, key=lambda r: -float(r[1]))[:4]
         worst, big = 0.0, 0.0
-        for key, got in picks:
+        off = 0.0                                 # the bases, as a part of the node's
+        whole = weight(hero, node, combos, ())
+        for key, got, base in picks:
             cards = tuple(key.split(":")[1:])
             part = [sum((chips(at) - chips(node)) * weight(hero, at, combos, cards) for at in ended.get(cards[:k], []))
                     for k in range(len(cards))]
             want = sum(part)
             worst, big = max(worst, abs(want - float(got))), max(big, want)
+            off = max(off, abs(weight(hero, node, combos, cards) - float(base)) / whole)
             deep += len(part) == 2 and part[1] > 0
         check(worst <= 1e-4 * big, f"{hero} {node}: the \"$\" rows are the early pots' chips (worst {worst:.2e} of {big:.4g})")
+        check(off < 1e-4, f"{hero} {node}: and their bases match show_range (worst {off:.2e} of the node's)")
         costly += big > 0
+        # the base is the one of the rows with those cards, and it is there for the cards without rows
+        based = {}
+        for suffix, w, base in rows:
+            based[tuple(t for t in suffix.split(":") if is_card(t))] = float(base)
+        same = [abs(float(b) - based[k]) / whole for (key, _, b), k in zip(early, keys) if k in based]
+        bare = [float(b) for (key, _, b), k in zip(early, keys) if k not in based]
+        check(len(same) > 40 and max(same) < 1e-4, f"{hero} {node}: a \"$\" row has the base of its cards' rows ({len(same)} of them)")
+        gone = [k for k in keys if all(set(k) & {c[:2], c[2:]} for c in combos)]
+        check(all(float(b) == 0 for (key, _, b), k in zip(early, keys) if k in gone),
+              f"{hero} {node}: the base is 0 where the cards take every combo ({len(gone)} rows)")
+        unseen += sum(b > 0 for b in bare)
         suits, worst = set(), 0.0
         deals = [r for r in rows if r[0].endswith("~")]
         for suffix, w, base in rnd.sample(rows, min(60, len(rows))) + rnd.sample(deals, min(20, len(deals))) + rows[:2]:
@@ -340,6 +356,7 @@ def check_hand_lines(u, order):
         check(all(tot <= b * (1 + 1e-4) for tot, b in by_cards.values()), f"{hero} {node}: a runout's lines add up to no more than its base")
         check(abs(by_cards[()][0] - by_cards[()][1]) < 2e-3 * by_cards[()][1], f"{hero} {node}: before any card, the lines are all of it")
     check(costly >= 2 and deep > 0, f"the early pots cost chips in {costly} of the cases, {deep} times with pots that ended on the turn")
+    print(f"  ({unseen} runouts that can come have no rows: the combos never see them)")
     # a river node deals no card: no "$" rows
     check("$" not in u.cmd("show_hand_lines OOP r:0:c:c:7s:c:c:3d AhKs AdAc"), "a river node has no \"$\" rows")
     # a combo that is not in the range, or on the board: just the header

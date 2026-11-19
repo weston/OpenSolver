@@ -312,6 +312,7 @@ function draw(d) {
   if (dep === 0) {
     return d.cut && d.board.length < 5
       ? message(`No ${STREET[d.board.length + 1]} in this tree`, `It was saved without it. What ${d.hand} does on the ${STREET[d.board.length]} is below.`)
+      : d.board.length < 5 ? message(`Nothing after the ${STREET[d.board.length]} for ${d.hand}`, `Its pot always ends here: a fold, or all the chips in. What it does is below.`)
       : message("No cards to come", `What ${d.hand} does from here is below.`);
   }
   if (!(B.el.plot.clientWidth > 0)) return null;   // out of sight: drawn when shown (ensure's observer)
@@ -607,7 +608,7 @@ function tipHtml(d, cards, cell, click) {
   const last = names[cards.length - 1].toLowerCase();
   if (money()) {
     h += `<div class="r"><span>${d.hand} puts in, on average</span><b>${ofPot(d, cell.put)}</b></div>`;
-    if (cell.reach < 0.995) {
+    if (cell.reach < 0.995 && cell.lines.length) {
       h += `<div class="r rl-tip-more"><span>when it sees this ${last} (${pct(cell.reach)} of the time)</span><b>${ofPot(d, cell.put_seen)}</b></div>`;
     }
     if (d.pot > 0) h += `<div class="rl-tip-sub">${chips(cell.put)} chips: ${ofPot(d, cell.put)} of the ${fmt(d.pot, 0)} in the pot now</div>`;
@@ -619,6 +620,8 @@ function tipHtml(d, cards, cell, click) {
     sum += f;
     h += `<div class="r${k < shown && !money() ? "" : " rl-tip-more"}"><span>${swatchHtml(i)}${words(d.lines[i])}</span><b>${pct(f)}</b></div>`;
   });
+  // a runout the hand never plays (its pot always ends first) has no lines: only what it has put in
+  if (!cell.lines.length) return h + `<div class="rl-tip-sub">${d.hand} has nothing left to do by this ${last}: its pot always ends first (a fold, or all the chips in)</div>`;
   if (sum < 0.995 && !money()) h += `<div class="r rl-tip-other"><span>other lines</span><b>${pct(1 - sum)}</b></div>`;
   if (cell.reach < 0.995 && !money()) h += `<div class="rl-tip-sub">${d.hand} gets to this ${last} ${pct(cell.reach)} of the time</div>`;
   h += `<div class="rl-tip-sub">${click}</div>`;

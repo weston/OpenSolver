@@ -43,8 +43,12 @@ def summarize(text, start, hero, sizes=False, allin=None):
     the weight and that sum over the rows where the pot ends (not the ones that stop at a deal); open:
     the weight of the rows that stop at a deal.
 
-    early (from the solver's "$:<cards> <chips>" rows, if it prints them): the same sum over the rows
-    that ended before these cards were all dealt, each at its weight when these are the cards.
+    early (from the solver's "$:<cards> <chips> <base>" rows, if it prints them): the same sum over
+    the rows that ended before these cards were all dealt, each at its weight when these are the cards.
+    Cards that can come but that the hand never sees (its pot always ends first) have no rows; they
+    get a level from their "$" row all the same, with no lines, so that the runout is not lost.
+    Not when the hand sees no card at all (every pot ends on this street): there is no runout to tell
+    apart then.
     """
     levels = {}
     # state: (actor, oop chips, ip chips, facing a bet, finished streets, this street, cards, go)
@@ -55,8 +59,9 @@ def summarize(text, start, hero, sizes=False, allin=None):
     stack, prev, early = [first], [], {}
     for row in text.split("\n"):
         parts = row.split(" ")
-        if len(parts) == 2 and parts[0].startswith("$:"):
-            early[tuple(parts[0].split(":")[1:])] = float(parts[1])
+        if parts[0].startswith("$:"):
+            if len(parts) in (2, 3):   # 2: a solver that does not print the base
+                early[tuple(parts[0].split(":")[1:])] = (float(parts[1]), float(parts[2]) if len(parts) == 3 else 0.0)
             continue
         if len(parts) != 3 or parts[0] == "combos:":
             continue
@@ -92,8 +97,13 @@ def summarize(text, start, hero, sizes=False, allin=None):
     for cards, lv in levels.items():
         ways = lv.pop("ways")
         lv["go"] = max(ways, key=ways.get) if ways else ""
-        if cards in early:
-            lv["early"] = early[cards]
+    dealt = any(levels)   # some row has a card
+    for cards, (chips, base) in early.items():
+        if cards in levels:
+            levels[cards]["early"] = chips
+        elif base > 0 and dealt:
+            levels[cards] = {"base": base, "total": 0.0, "lines": {}, "put": 0.0, "end": 0.0,
+                             "end_put": 0.0, "open": 0.0, "go": "", "early": chips}
     return levels
 
 

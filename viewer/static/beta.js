@@ -131,6 +131,7 @@ function ensure(box) {
     if (window.ResizeObserver) new ResizeObserver(() => { if (B.data && sizeKey() !== B.size) paint(); }).observe(box);
     // the canvas holds colours, not variables
     new MutationObserver(() => { if (B.data) paint(); }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (B.data) paint(); });
   }
   syncOpts();
   return B.el;
@@ -165,7 +166,8 @@ export async function renderRunouts(box, ctx) {
     hideTip();
     return;
   }
-  if (B.combo && comboClass(B.combo) !== cls) B.combo = null;
+  // one combo, until another class is clicked or the board takes one of its cards
+  if (B.combo && (comboClass(B.combo) !== cls || blockedBy(ctx.board)(B.combo))) B.combo = null;
   const hand = B.combo || cls;
   const key = [ctx.base, ctx.id, ctx.player, hand, B.sizes ? 1 : 0].join("|");
   const fresh = B.want !== key;

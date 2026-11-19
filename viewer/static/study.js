@@ -1506,7 +1506,7 @@ export function initStudy() {
       $("view-seg").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
       if (!S.loaded) return;
       try { if (S.mode !== "strategy") await loadModeData(); } catch (e) { fail(e); }
-      renderTitle(); renderMatrix(); syncUrl();
+      renderTitle(); renderMatrix(); renderSide(); syncUrl();
     };
   });
   $("player-seg").querySelectorAll("button").forEach((b) => {
@@ -1514,7 +1514,7 @@ export function initStudy() {
       S.player = b.dataset.player;
       if (!S.loaded) return;
       try { await loadModeData(); } catch (e) { fail(e); }
-      renderTitle(); renderMatrix(); syncUrl();
+      renderTitle(); renderMatrix(); renderSide(); syncUrl();
     };
   });
   document.querySelectorAll(".side-tabs button").forEach((b) => {

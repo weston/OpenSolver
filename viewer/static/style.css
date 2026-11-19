@@ -923,6 +923,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .rl-opt { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .rl-plot { display: flex; flex-direction: column; gap: 8px; min-width: 0; transition: opacity .15s; }
 .rl-main.busy .rl-plot, .rl-main.busy .rl-sec { opacity: .4; }
+/* the picture is the last node's until the report is in: not to be clicked */
+.rl-main.busy .rl-plot { pointer-events: none; }
 .rl-note { display: flex; flex-direction: column; gap: 4px; padding: 28px 8px; text-align: center; color: var(--text-3); line-height: 1.5; }
 .rl-note b { color: var(--text-2); font-weight: 650; }
 .rl-sec { margin: 0; }

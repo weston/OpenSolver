@@ -937,10 +937,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .rl-plot { position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .rl-plot > *, .rl-sec { transition: opacity .15s; }
 .rl-main.busy .rl-plot > *, .rl-main.busy .rl-sec { opacity: .4; }
-/* With room under it, the picture stays in sight while the panel is scrolled (beta.js: stick); the
-   list goes under it. Opaque, the dimming above is its parts' for that reason. */
-.rl-plot.stick { position: sticky; z-index: 2; background: var(--surface); }
-.rl-plot.stick::after { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 10px; background: linear-gradient(var(--surface), transparent); pointer-events: none; }
 .rl-pic { display: flex; flex-direction: column; gap: 8px; }
 /* the picture is the last node's until the report is in: not to be clicked */
 .rl-main.busy .rl-plot { pointer-events: none; }

@@ -5,7 +5,7 @@
 // A line is the hand's own actions street by street ("bet · bet · check"). From a flop node the
 // picture is a map of every runout: a row per turn card, a column per river card, 52 by 52 (a runout
 // that cannot be, a card of the board among them, keeps its box, empty). A box is the line the hand plays most often on that
-// runout, its colour the fuller the more often it is played; or, asked for more lines than one, the
+// runout, in that line's colour (how often is in the tooltip); or, asked for more lines than one, the
 // few most common as bands of colour, taller the more often. The lines that matter most over the whole
 // map get a colour of their own (the list under the map is the key); the rest share a grey. From a
 // turn node, or with one turn card enlarged, it is a bar per river card.
@@ -13,9 +13,8 @@
 // The second view, Money in, is the same map in one colour: the fuller, the more chips the hand puts
 // into the pot on that runout, on average, from the node to the end of the pot.
 //
-// Nothing moves under the pointer: what changes the picture's height is over it, the picture is
-// rebuilt at the height it had, and with room under it for the list it stays in sight while the
-// panel is scrolled (the list's lines repaint it when pointed at).
+// Nothing moves under the pointer: what changes the picture's height is over it, and the picture is
+// rebuilt at the height it had. The panel scrolls as one piece: nothing in it stays behind.
 //
 // The hand is never typed: it is the class clicked in the matrix, or one of its combos clicked here.
 
@@ -31,12 +30,8 @@ const COLORS = 8;   // lines with a colour of their own (--line-1 .. --line-8)
 const MAX_N = 5;
 const LISTED = 12;  // lines in the list; the rest are counted
 const CAP = 32, GAP = 8, HEAD = 26, CARD_H = 13;   // the picture's fixed heights (style.css: .rl-cap, .rl-plot, .rl-zoom, .rl-card-h)
-const UNDER = 160;   // the picture stays in sight while the panel is scrolled if this much of the panel is left under it: the list's first lines
 const DETAIL = 3;   // lines where there is room for them (a bar, the tooltip), however few a box shows
 const VIEWS = ["lines", "money"];
-// The colour of a box's most common line when it is hardly played: it must still be told from the
-// other lines' colours. From there to the full colour, in proportion to how often it is played.
-const FAINT = 0.3;
 
 const B = {
   view: VIEWS.includes(prefs.get("beta-view", "lines")) ? prefs.get("beta-view", "lines") : "lines",
@@ -144,7 +139,7 @@ function ensure(box) {
     into.appendChild(o);
     return s;
   };
-  const nSeg = seg(top, "Lines", "How many lines a box of the map shows. 1: the most common, its colour the fuller the more often it is played", [1, 2, 3, 4, 5].map((n) => [String(n), String(n)]), (v) => {
+  const nSeg = seg(top, "Lines", "How many lines a box of the map shows. 1: the most common, in its colour", [1, 2, 3, 4, 5].map((n) => [String(n), String(n)]), (v) => {
     B.n = +v;
     prefs.set("beta-lines", B.n);
     syncOpts();
@@ -297,13 +292,12 @@ function paint() {
   const { plot, box } = B.el;
   const at = box.scrollTop;
   plot.style.minHeight = plot.offsetHeight + "px";
-  const pic = draw(d);
-  plot.style.minHeight = pic && pic.fill ? pic.fill + "px" : "";
-  stick(pic ? pic.el : null);
+  const fill = draw(d);
+  plot.style.minHeight = fill ? fill + "px" : "";
   if (box.scrollTop !== at) box.scrollTop = at;
 }
 
-/** Draws the picture; returns its part to keep in sight (el) and the height the whole is to take (fill), or nothing for a note. */
+/** Draws the picture; returns the height it is to take (the map's, for one turn card enlarged), or nothing. */
 function draw(d) {
   if (!d.now) {
     return message(`${d.hand} is not here`, d.combos.length ? `${d.player} never gets to this node with ${d.hand}.` : `The board takes every combo of ${d.hand}.`);
@@ -321,15 +315,6 @@ function draw(d) {
   if (!open) return renderMap(d);
   B.turn = open.card;
   return renderBars(d, open.cards, [open.card], zoomHead(d, open), CAP + GAP + mapDims(d).h);
-}
-
-/** With room left under it for the list, the picture stays in sight while the panel is scrolled:
- *  pointing at a line of the list repaints it. Its caption scrolls away. */
-function stick(pic) {
-  const { plot, box } = B.el;
-  const on = !!pic && box.clientHeight - pic.offsetHeight >= UNDER;
-  plot.classList.toggle("stick", on);
-  plot.style.top = on ? -pic.offsetTop + "px" : "";
 }
 
 function caption(...parts) {
@@ -377,7 +362,7 @@ function mapDims(d) {
   const sep = wide ? 1 : striped ? 0 : 1 / dpr;
   const TOP = wide ? 30 : 16;
   // what is left of the panel under the caption: the whole map in sight without scrolling
-  // (measured from the row over the picture: the picture itself may be held at the top of a scrolled panel)
+  // (measured from the row over the picture, whatever the panel's scroll)
   const lead = parseFloat(getComputedStyle(E.main).rowGap) || 0;
   const above = E.top.getBoundingClientRect().bottom - E.box.getBoundingClientRect().top + E.box.scrollTop + lead + CAP + GAP;
   const room = Math.floor((E.box.clientHeight - above - 8 - TOP - groups * GROUP) / n);
@@ -397,7 +382,7 @@ function renderMap(d) {
   const index = new Map(cards.map((c, i) => [c, i]));
   plot.appendChild(hl != null ? heatCaption(d, hl, "on each runout: the fuller the colour, the more often.")
     : money() ? caption(el("b", "", "Money in"), ` Turn cards down, river cards across. The fuller a box, the more ${d.hand} puts into the pot on that runout.`)
-    : B.n === 1 ? caption(el("b", "", "Every runout"), ` Turn cards down, river cards across. A box is ${d.hand}'s most common line there, fuller the more often.`)
+    : B.n === 1 ? caption(el("b", "", "Every runout"), ` Turn cards down, river cards across. A box is the colour of ${d.hand}'s most common line there.`)
     : caption(el("b", "", "Every runout"), ` Turn cards down, river cards across. Each box holds the ${B.n} lines ${d.hand} plays most often there.`));
 
   const wrap = el("div", "rl-mapw");
@@ -436,8 +421,8 @@ function renderMap(d) {
     ctx.fillText(GLYPH[s], LEFT + (X.at[of[0]] + X.at[of[of.length - 1]] + cw) / 2, wide ? TOP - 21 : TOP - 8);
   }
 
-  // the boxes. One colour: the chips put in, the line pointed at, or the most common line, the fuller
-  // the more. Bands: the most common line at the bottom, the next ones on top of it.
+  // the boxes. One colour: the chips put in or the line pointed at, the fuller the more; or the most
+  // common line, in full. Bands: the most common line at the bottom, the next ones on top of it.
   const label = hl != null ? d.lines[hl] : null;
   let max = 0;
   if (label != null) for (const { cell } of cellsAt(d, 2)) max = Math.max(max, shareOf(d.lines, cell, label));
@@ -466,7 +451,7 @@ function renderMap(d) {
       if (money()) { tint(x, y, pal.money, strength(r.put, B.put ? B.put.max.put : 0, 0.06)); continue; }
       if (label != null) { tint(x, y, colorOf(hl, pal), strength(shareOf(d.lines, r, label), max, 0.08)); continue; }
       if (B.n === 1) {
-        if (r.lines.length) tint(x, y, colorOf(r.lines[0][0], pal), FAINT + (1 - FAINT) * r.lines[0][1]);
+        if (r.lines.length) tint(x, y, colorOf(r.lines[0][0], pal), 1);
         continue;
       }
       const bs = bands(r, B.n);
@@ -515,7 +500,7 @@ function renderMap(d) {
   };
   wrap.append(c, rowCur, cur);
   plot.appendChild(wrap);
-  return { el: wrap, fill: 0 };
+  return 0;
 }
 
 /* ------------------------------------------------------------------ one card at a time: a bar per river card */
@@ -597,7 +582,7 @@ function renderBars(d, cells, before, head, fill) {
   }
   pic.appendChild(g);
   plot.appendChild(pic);
-  return { el: pic, fill };
+  return fill;
 }
 
 /* ------------------------------------------------------------------ tooltip, the lists */
@@ -763,7 +748,7 @@ function drawKey() {
     + `Two letters on one street are two actions there: xc check then call, xf check then fold, xr check-raise, bc bet then call, bf bet then fold. `
     + `A dash is a street with nothing left to do.`));
   if (dep > 0) {
-    sec.appendChild(el("div", "hint", (dep === 2 && B.n === 1 ? `A box of the map is the line played most often on that runout; the fuller its colour, the more often. ` : "")
+    sec.appendChild(el("div", "hint", (dep === 2 && B.n === 1 ? `A box of the map is the colour of the line played most often on that runout; point at it for how often. ` : "")
       + `The percentages are of the times ${d.hand} gets to that card: the pot has not ended before it.`
       + (B.stats.length > COLORS ? ` The ${COLORS} lines that weigh most in the picture have a colour of their own; the others are grey.` : "")));
   }

@@ -10,8 +10,12 @@
 // map get a colour of their own (the list under the map is the key); the rest share a grey. From a
 // turn node, or with one turn card enlarged, it is a bar per river card.
 //
-// The second view, Money in, is the same map in one colour: the fuller, the more chips the hand puts
-// into the pot on that runout, on average, from the node to the end of the pot.
+// The second view, Money in, is the same map with a column in each box: the taller, the more chips the
+// hand puts into the pot on that runout, on average, from the node to the end of the pot. The chips
+// are told apart by the action that put them in: the ones bet or raised at the bottom, the ones called
+// on top of them, in two colours, a full box being the most the hand puts in over the runouts (one
+// scale: the two compare). Either can be shown alone, from the bottom of the box, on its own scale.
+// A report that does not tell them apart (an older solver) is one colour, fuller the more.
 //
 // Nothing moves under the pointer: what changes the picture's height is over it, and the picture is
 // rebuilt at the height it had. The panel scrolls as one piece: nothing in it stays behind.
@@ -21,7 +25,7 @@
 import { get, q, prefs, showTip, hideTip, fmt } from "./api.js";
 import { H, RANKS, SUITS, GLYPH, el, comboEl, displayCombo, comboClass, blockedBy } from "./cards.js";
 import { sideCache } from "./sidecache.js";
-import { words, depth, cellsAt, bands, lineStats, slots, shareOf, split, deck, axis, putRange, strength } from "./runouts.js";
+import { words, depth, cellsAt, bands, lineStats, slots, shareOf, split, deck, axis, putRange, chipsOf, stack, strength } from "./runouts.js";
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const pct = (f, digits = 0) => fmt(100 * f, digits) + "%";
@@ -32,11 +36,19 @@ const LISTED = 12;  // lines in the list; the rest are counted
 const CAP = 32, GAP = 8, HEAD = 26, CARD_H = 13;   // the picture's fixed heights (style.css: .rl-cap, .rl-plot, .rl-zoom, .rl-card-h)
 const DETAIL = 3;   // lines where there is room for them (a bar, the tooltip), however few a box shows
 const VIEWS = ["lines", "money"];
+// The chips of the Money in view, by the action that put them in. color: the variable of the part's
+// colour; name, does, by: the part in words; most, least: the rows of the key.
+const PARTS = {
+  all: { color: "--money", name: "Money in", does: "puts into the pot", by: "", most: "Most on", least: "Least on" },
+  bet: { color: "--money-bet", name: "Bets and raises", does: "bets and raises", by: " by betting and raising", most: "Most bet on", least: "Least bet on" },
+  call: { color: "--money-call", name: "Calls", does: "calls", by: " by calling", most: "Most called on", least: "Least called on" },
+};
 
 const B = {
   view: VIEWS.includes(prefs.get("beta-view", "lines")) ? prefs.get("beta-view", "lines") : "lines",
   n: clamp(+prefs.get("beta-lines", 1) || 1, 1, MAX_N), // lines a box of the map shows: 1, the most common, shaded by how often
   sizes: !!prefs.get("beta-sizes", false),               // each bet size its own line
+  part: ["bet", "call"].includes(prefs.get("beta-money", "all")) ? prefs.get("beta-money", "all") : "all",   // the chips Money in shows
   combo: null,                  // one combo of the pinned class, when narrowed to it
   mode: "all",                  // from a flop node: every runout ("all"), or one turn enlarged ("turn")
   turn: null,                   // the enlarged turn card
@@ -47,6 +59,7 @@ const B = {
   data: null,                   // the report drawn
   stats: [], slot: new Map(),   // lineStats over the runouts, and the lines with a colour (line -> 0..7)
   put: null,                    // putRange over the runouts: the least and the most the hand puts in
+  parts: {},                    // the same of the chips bet or raised, and of the chips called: {bet, call}
   reach: new Map(),             // "base|id|player" -> Map(combo -> reach): which combos get here at all
   rows: new Map(),              // line -> its row in the list
   el: null,                     // the panel's parts
@@ -69,7 +82,7 @@ function palette() {
   const g = (v) => cs.getPropertyValue(v).trim();
   const line = [];
   for (let i = 1; i <= COLORS; i++) line.push(g("--line-" + i));
-  return { line, other: g("--line-other"), money: g("--money"), none: g("--cell-empty"), blank: g("--rl-blank"), dim: g("--text-3"), text: g("--text"), spade: g("--text-2"),
+  return { line, other: g("--line-other"), money: g("--money"), bet: g("--money-bet"), call: g("--money-call"), none: g("--cell-empty"), blank: g("--rl-blank"), dim: g("--text-3"), text: g("--text"), spade: g("--text-2"),
            suit: { s: g("--suit-s"), h: g("--suit-h"), d: g("--suit-d"), c: g("--suit-c") } };
 }
 /** A line's colour for the canvas (a value), and for the page (the variable: it follows the theme). */
@@ -85,6 +98,12 @@ const swatchHtml = (line) => `<i class="rl-sw" style="background:${cssColor(line
 function swatch(line) {
   const i = el("i", "rl-sw");
   i.style.background = cssColor(line);
+  return i;
+}
+const dotHtml = (part) => `<i class="rl-dot" style="background:var(${PARTS[part].color})"></i>`;
+function dot(part) {
+  const i = el("i", "rl-dot");
+  i.style.background = `var(${PARTS[part].color})`;
   return i;
 }
 const cardHtml = (c) => `<span class="rl-c s-${c[1]}">${c[0]}${GLYPH[c[1]]}</span>`;
@@ -146,6 +165,10 @@ function ensure(box) {
     drawKey();
     paint();
   });
+  const pSeg = seg(top, "", "The chips the picture shows, by the action that put them in. One scale for the three",
+    [["all", "Both", "Every chip the hand puts in: its bets and raises, and its calls on top of them"], ["bet", "Bets & raises", "The chips it bets or raises (a raise whole: the part that matches the bet it answers too)"],
+     ["call", "Calls", "The chips it calls with"]], setPart);
+  pSeg.parentNode.classList.add("rl-part");
   const sSeg = seg(opts, "Bet sizes", "", [["merged", "Merged", "A bet is a bet, whatever its size"], ["split", "Split", "Each bet size is its own line"]], (v) => {
     B.sizes = v === "split";
     prefs.set("beta-sizes", B.sizes);
@@ -156,7 +179,7 @@ function ensure(box) {
   top.appendChild(scale);
   main.append(head, combos, top, plot, opts, legend, now, key);
   box.append(empty, main);
-  B.el = { box, empty, main, head, combos, top, scale, opts, plot, legend, now, key, nSeg, sSeg, views };
+  B.el = { box, empty, main, head, combos, top, scale, opts, plot, legend, now, key, nSeg, sSeg, pSeg, views };
   B.data = null;
   B.want = null;
   if (!B.watching) {
@@ -178,8 +201,33 @@ function syncOpts() {
   act(B.el.nSeg, B.n);
   act(B.el.sSeg, B.sizes ? "split" : "merged");
   act(B.el.views, B.view);
+  act(B.el.pSeg, part());
+  // no choice of chips with a report that does not tell the calls apart, nor with no picture to show them on
+  B.el.top.classList.toggle("whole", !told() || !!(B.data && !depth(B.data)));
   B.el.top.classList.toggle("money", B.view !== "lines");  // the scale in place of the lines in a box
   B.el.opts.classList.toggle("off", B.view !== "lines");   // they are about lines
+}
+
+/** Whether the report tells the chips called from the ones bet (not one of a solver from before it
+ *  did). Until a report is in, it is taken to. */
+const told = () => !B.data || !B.data.now || B.data.now.call != null;
+/** The chips the Money in view shows: "all", "bet" or "call". */
+const part = () => (told() ? B.part : "all");
+
+/** What a full box or bar is, in chips: the most the hand puts in over the runouts. Both parts together
+ *  share that scale (they compare); one alone fills the box at its own most. */
+function full() {
+  const r = part() === "all" ? B.put : B.parts[part()];
+  return r ? r.max.put : 0;
+}
+
+function setPart(v) {
+  if (B.part === v) return;
+  B.part = v;
+  prefs.set("beta-money", v);
+  syncOpts();
+  drawLegend();
+  paint();
 }
 
 /** Draw for what Study shows now, as last told. */
@@ -220,20 +268,22 @@ export async function renderRunouts(box, ctx) {
       const dep = depth(data);
       const cells = dep ? cellsAt(data, dep) : [];
       const stats = lineStats(cells);
-      return { data, stats, slot: slots(stats, COLORS), put: putRange(cells) };
+      return { data, stats, slot: slots(stats, COLORS), put: putRange(cells), parts: { bet: putRange(cells, "bet"), call: putRange(cells, "call") } };
     });
   if (B.want !== key) return;        // another hand or node was asked for meanwhile: that one draws
   E.main.classList.remove("busy");
   if (!ctx.current()) return;
   if (!ent) {
     if (!B.err) return;              // dropped by a refresh, which asks again
-    Object.assign(B, { data: null, stats: [], slot: new Map(), put: null, hl: null, pin: null });
+    Object.assign(B, { data: null, stats: [], slot: new Map(), put: null, parts: {}, hl: null, pin: null });
     box.dataset.key = key;
+    syncOpts();
     for (const s of [E.scale, E.legend, E.now, E.key]) s.textContent = "";
     return message("Nothing to show here", String(B.err.message || B.err));
   }
   box.dataset.key = key;
-  Object.assign(B, { data: ent.data, stats: ent.stats, slot: ent.slot, put: ent.put, hl: null, pin: null });
+  Object.assign(B, { data: ent.data, stats: ent.stats, slot: ent.slot, put: ent.put, parts: ent.parts, hl: null, pin: null });
+  syncOpts();
   const rk = [ctx.base, ctx.id, ctx.player].join("|");
   if (!B.reach.has(rk)) B.reach.set(rk, new Map());
   for (const c of ent.data.combos) B.reach.get(rk).set(displayCombo(c.combo), c.reach);
@@ -381,7 +431,8 @@ function renderMap(d) {
   const { cards, LEFT, TOP, wide, cw, ch, X, Y, w, h } = mapDims(d);
   const index = new Map(cards.map((c, i) => [c, i]));
   plot.appendChild(hl != null ? heatCaption(d, hl, "on each runout: the fuller the colour, the more often.")
-    : money() ? caption(el("b", "", "Money in"), ` Turn cards down, river cards across. The fuller a box, the more ${d.hand} puts into the pot on that runout.`)
+    : money() && told() && part() === "all" ? caption(el("b", "", "Money in"), ` Turn cards down, river cards across. A box fills with what ${d.hand} puts in there: `, dot("bet"), "bets and raises, ", dot("call"), "calls.")
+    : money() ? caption(el("b", "", PARTS[part()].name), ` Turn cards down, river cards across. The fuller a box, the more ${d.hand} ${PARTS[part()].does} on that runout.`)
     : B.n === 1 ? caption(el("b", "", "Every runout"), ` Turn cards down, river cards across. A box is the colour of ${d.hand}'s most common line there.`)
     : caption(el("b", "", "Every runout"), ` Turn cards down, river cards across. Each box holds the ${B.n} lines ${d.hand} plays most often there.`));
 
@@ -434,6 +485,7 @@ function renderMap(d) {
     ctx.globalAlpha = 1;
   };
   const unit = Math.max(1, Math.round(dpr)), gap = ch >= 11 ? 1 : 0;
+  const top = full();   // Money in: a full box
   const cellOf = new Map();   // "turn river" -> the river's cell
   // every box of the 52 by 52 is there: empty where the runout cannot be (the same card twice, a
   // card of the board, a card of the one combo asked for), then the others over them
@@ -448,7 +500,18 @@ function renderMap(d) {
       const x = LEFT + X.at[i], y = TOP + Y.at[j];
       ctx.fillStyle = pal.none;
       ctx.fillRect(x, y, cw, ch);
-      if (money()) { tint(x, y, pal.money, strength(r.put, B.put ? B.put.max.put : 0, 0.06)); continue; }
+      if (money() && told()) {       // a column: the bets and raises, the calls on top of them; or one of the two
+        const ks = part() === "all" ? ["bet", "call"] : [part()];
+        let yy = y + ch;
+        stack(ch * unit, ks.map((k) => strength(chipsOf(r, k), top))).forEach((px, k) => {
+          if (!px) return;
+          yy -= px / unit;
+          ctx.fillStyle = pal[ks[k]];
+          ctx.fillRect(x, yy, cw, px / unit);
+        });
+        continue;
+      }
+      if (money()) { tint(x, y, pal.money, strength(r.put, top, 0.06)); continue; }
       if (label != null) { tint(x, y, colorOf(hl, pal), strength(shareOf(d.lines, r, label), max, 0.08)); continue; }
       if (B.n === 1) {
         if (r.lines.length) tint(x, y, colorOf(r.lines[0][0], pal), 1);
@@ -522,6 +585,13 @@ function zoomHead(d, open) {
   return head;
 }
 
+/** The caption of the bars that hold both parts of the chips: which colour is which. */
+function barKey(d, top) {
+  const s = el("span");
+  s.append(` What ${d.hand} puts into the pot on that card: `, dot("bet"), "bets and raises, ", dot("call"), `calls. A full bar is ${ofPot(d, top)}${d.pot > 0 ? " of the pot" : " chips"}.`);
+  return s;
+}
+
 /** cells: the river cards of the node itself or of the enlarged turn; before: the cards dealt on the
  *  way ([] or [turn]). A column per rank, a row per suit; `fill` is the height to take (the map's, so
  *  that nothing under the picture moves), or 0. */
@@ -532,12 +602,13 @@ function renderBars(d, cells, before, head, fill) {
   const next = STREET[d.board.length + before.length + 1];
   const label = hl != null ? d.lines[hl] : null;
   const shown = Math.max(B.n, DETAIL);
-  const top = B.put ? B.put.max.put : 0;   // the scale of every bar: the most over all the runouts
+  const top = full();   // the scale of every bar: the most over all the runouts
   if (label != null) plot.appendChild(heatCaption(d, hl, `on each ${next} card.`));
   else {
     plot.appendChild(caption(el("b", "", before.length ? `Every river on the ${before[0][0]}${GLYPH[before[0][1]]} turn` : `Every ${next} card`),
-      money() ? ` The taller a bar, the more ${d.hand} puts into the pot on that card. A full bar is ${ofPot(d, top)}${d.pot > 0 ? " of the pot" : " chips"}.`
-        : ` Each bar holds the ${shown} lines ${d.hand} plays most often on that card.`));
+      !money() ? ` Each bar holds the ${shown} lines ${d.hand} plays most often on that card.`
+        : part() === "all" && told() ? barKey(d, top)
+        : ` The taller a bar, the more ${d.hand} ${PARTS[part()].does} on that card. A full bar is ${ofPot(d, top)}${d.pot > 0 ? " of the pot" : " chips"}.`));
   }
   const ROWS = SUITS.length, ROW_GAP = 6;
   const used = (head ? HEAD + GAP : 0) + CAP + GAP + (ROWS - 1) * ROW_GAP + ROWS * (CARD_H + 2);
@@ -564,8 +635,11 @@ function renderBars(d, cells, before, head, fill) {
       };
       let lit = null;
       if (money()) {
-        const f = strength(cell.put, top);
-        if (f > 0) seg("var(--money)", f);
+        // all of them: the two parts, one on the other (a report that does not tell them: one bar)
+        for (const k of part() !== "all" ? [part()] : told() ? ["bet", "call"] : ["all"]) {
+          const f = strength(chipsOf(cell, k), top);
+          if (f > 0) seg(`var(${PARTS[k].color})`, f);
+        }
       } else if (label != null) {
         const f = shareOf(d.lines, cell, label);
         if (f > 0) seg(cssColor(hl), f);
@@ -592,9 +666,16 @@ function tipHtml(d, cards, cell, click) {
   let h = `<div class="t">${cards.map((c, i) => `${names[i]} ${cardHtml(c)}`).join(" &nbsp; ")}</div>`;
   const last = names[cards.length - 1].toLowerCase();
   if (money()) {
-    h += `<div class="r"><span>${d.hand} puts in, on average</span><b>${ofPot(d, cell.put)}</b></div>`;
+    const p = part();
+    h += `<div class="r${p === "all" ? "" : " rl-tip-more"}"><span>${d.hand} puts in, on average</span><b>${ofPot(d, cell.put)}</b></div>`;
+    // the two parts of it, the one the picture shows in full ink
+    if (told()) {
+      for (const k of ["bet", "call"]) {
+        h += `<div class="r${p === "all" || p === k ? "" : " rl-tip-more"}"><span>${dotHtml(k)}${PARTS[k].by.trim()}</span><b>${ofPot(d, chipsOf(cell, k))}</b></div>`;
+      }
+    }
     if (cell.reach < 0.995 && cell.lines.length) {
-      h += `<div class="r rl-tip-more"><span>when it sees this ${last} (${pct(cell.reach)} of the time)</span><b>${ofPot(d, cell.put_seen)}</b></div>`;
+      h += `<div class="r rl-tip-more"><span>${p === "all" ? "" : PARTS[p].name.toLowerCase() + ", "}when it sees this ${last} (${pct(cell.reach)} of the time)</span><b>${ofPot(d, chipsOf(cell, p, true))}</b></div>`;
     }
     if (d.pot > 0) h += `<div class="rl-tip-sub">${chips(cell.put)} chips: ${ofPot(d, cell.put)} of the ${fmt(d.pot, 0)} in the pot now</div>`;
     if (cell.lines.length) h += `<div class="rl-tip-sub">Its lines there</div>`;
@@ -679,8 +760,15 @@ function drawScale() {
   const s = B.el.scale, d = B.data, r = B.put;
   s.textContent = "";
   if (!d || !d.now || !r || !depth(d)) return;
-  s.title = "The colour of a box: empty for nothing put in, full for the most over the " + over(d);
-  s.append(el("span", "", "0"), el("i"), el("span", "", `${ofPot(d, r.max.put)}${d.pot > 0 ? " of the pot" : " chips"}`));
+  const most = `${ofPot(d, full())}${d.pot > 0 ? " of the pot" : " chips"}`;
+  s.classList.toggle("full", told());
+  if (told()) {      // columns: what a full box is
+    s.title = `A box is empty for nothing and full for the most ${d.hand} ${PARTS[part()].does} over the ${over(d)}: ${most}`;
+    s.append(el("span", "", `full ${depth(d) === 2 ? "box" : "bar"}: ${most}`));
+    return;
+  }
+  s.title = `The colour of a box: empty for nothing put in, full for the most ${d.hand} puts in over the ${over(d)}`;
+  s.append(el("span", "", "0"), el("i"), el("span", "", most));
 }
 
 /** The key to the Money in view: the average, and where the hand puts in the most and the least. */
@@ -693,16 +781,29 @@ function drawMoney(sec, d, what) {
   hero.append(el("b", "", ofPot(d, d.now.put)),
     el("span", "", `${unit}: what ${d.hand} puts in from here${d.cut ? " to " + until(d) : ""} on average, over the ${what}. ${chips(d.now.put)} of the ${fmt(d.behind, 0)} chips ${d.player} has behind; the pot is ${fmt(d.pot, 0)} now.`));
   sec.appendChild(hero);
-  const row = (name, at) => {
+  const p = part(), range = p === "all" ? r : B.parts[p];
+  const row = (k, name, v, cards = []) => {
     const x = el("div", "rl-row"), on = el("span", "t");
-    on.append(name + " on ", ...at.cards.map(cardTag));
-    x.append(on, el("span", "p", ofPot(d, at.put)), el("span", "m", chips(at.put)));
+    on.append(name, ...cards.map(cardTag));
+    x.append(k === "all" && told() ? el("i", "rl-dot") : dot(k), on, el("span", "p", ofPot(d, v)), el("span", "m", chips(v)));
     return x;
   };
   const head = el("div", "rl-row head");
   head.append(el("span", "t", ""), el("span", "p", d.pot > 0 ? "of pot" : ""), el("span", "m", "chips"));
   const list = el("div", "rl-list rl-money");
-  list.append(head, row("Most", r.max), row("Least", r.min));
+  list.appendChild(head);
+  // the two parts of the average; a click shows one alone on the picture, another all of them again
+  if (told()) {
+    for (const k of ["bet", "call"]) {
+      const x = row(k, PARTS[k].name, chipsOf(d.now, k));
+      x.classList.add("pick");
+      x.classList.toggle("sel", p === k);
+      x.title = `What ${d.hand} puts in${PARTS[k].by}, on average over the ${what}. Click to see ${p === k ? "both again" : "these alone"} on the picture`;
+      x.onclick = () => setPart(p === k ? "all" : k);
+      list.appendChild(x);
+    }
+  }
+  if (range) list.append(row(p, PARTS[p].most + " ", range.max.put, range.max.cards), row(p, PARTS[p].least + " ", range.min.put, range.min.cards));
   sec.appendChild(list);
 }
 
@@ -713,7 +814,8 @@ function drawNow() {
   if (!d || !d.now) return;
   sec.appendChild(el("h3", "", `${d.hand} on the ${STREET[d.board.length]}`));
   if (money() && !depth(d)) {
-    sec.appendChild(el("div", "hint", `From here${d.cut ? " to " + until(d) : ""} ${d.hand} puts in ${ofPot(d, d.now.put)}${d.pot > 0 ? " of the pot" : ""} on average (${chips(d.now.put)} chips).`));
+    sec.appendChild(el("div", "hint", `From here${d.cut ? " to " + until(d) : ""} ${d.hand} puts in ${ofPot(d, d.now.put)}${d.pot > 0 ? " of the pot" : ""} on average (${chips(d.now.put)} chips)`
+      + (told() ? `: ${ofPot(d, chipsOf(d.now, "bet"))} by betting and raising, ${ofPot(d, chipsOf(d.now, "call"))} by calling.` : ".")));
   }
   for (const [i, f] of d.now.lines.slice(0, 6)) {
     const row = lineRow(null, d.lines[i], pct(f));
@@ -733,6 +835,11 @@ function drawKey() {
   if (money()) {
     sec.appendChild(el("div", "hint", `Money in is every chip ${d.hand} puts into the pot from this node ${d.cut ? "to " + until(d) : "until the pot ends"}: calls, and bets and raises `
       + `whether or not they are called. It is an average over the ways ${d.hand} and the other player play it.`));
+    if (told()) {
+      sec.appendChild(el("div", "hint", `A chip counts by the action that puts it in: a call's chips are calls, a bet's or a raise's are bets and raises. A raise counts whole, `
+        + `the part that matches the bet it answers too. ` + (dep > 0 ? `Both together, a box is full for the most ${d.hand} puts in over the ${over(d)}: one scale, so the two colours compare, with each other and from box to box. `
+          + `Alone, each fills a box at its own most; the figure over the picture says what a full box is.` : "")));
+    }
     if (d.cut) {
       sec.appendChild(el("div", "hint warn", `This tree was saved without the ${STREET[d.board.length + dep + 1]}: what ${d.hand} puts in after the ${STREET[d.board.length + dep]} is not counted.`));
     }

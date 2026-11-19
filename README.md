@@ -423,10 +423,17 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
   - **From a turn node** it is a bar per river card.
   - Frequencies are of the times the hand gets to that card (the pot has not ended before); lines
     under 0.5% of a runout are left to "other". **Split** bet sizes tells `bet 33%` from `bet 75%`.
-  - **Money in** is the same map in one colour: the fuller a box, the more chips the hand puts into
-    the pot on that runout, on average, from the node to the end of the pot (calls, and bets and
-    raises whether or not they are called). Figures are in % of the pot at the node, with chips
-    beside them; the scale runs from nothing to the most over the runouts. A runout counts every
+  - **Money in** is the same map with a column in each box: the taller, the more chips the hand
+    puts into the pot on that runout, on average, from the node to the end of the pot (calls, and
+    bets and raises whether or not they are called). The column is in two colours, by the action
+    that puts a chip in: the chips bet or raised at the bottom (a raise whole, the part that
+    matches the bet it answers too), the chips called on top of them. A full box is the most the
+    hand puts in over the runouts, so the two compare, with each other and from box to box.
+    **Both / Bets & raises / Calls** over the picture shows one of them alone, from the bottom of
+    the box and on its own scale (the figure beside the choice says what a full box is); the rows
+    of the key do the same on a click. The bars of an enlarged turn, and of a turn node, are
+    stacked the same way. Figures are in % of the pot at the node, with chips beside them. With a
+    solver from before the split the map is one colour, fuller the more. A runout counts every
     pot, those that ended before the card came too (at what the hand had put in by then); the tooltip
     also gives the figure for the times the hand does see the card. The figures are exact: a pot
     that ended before a card is weighed as it would be with that card dealt (the hands it takes from
@@ -434,7 +441,8 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     never sees, its pot always ending first, has a box too: no lines, and what those pots cost. On
     a tree saved without its last streets the chips stop where the save does, and the panel says so.
   - `#study=<node>&side=beta&pin=JJ` links to it. API: `GET /api/hand_lines?id=&player=&hand=&sizes=`
-    (each runout: `lines`, `reach`, `put`, `put_seen`; `pot` and `behind` at the node; `cut` for a
+    (each runout: `lines`, `reach`, `put`, `put_seen`, and `call`, `call_seen`, the part of them
+    that was called; `pot` and `behind` at the node; `cut` for a
     save without the later streets), over the UPI
     extension `show_hand_lines` (see `docs/commands.md`).
 - **Open / Save:** `dump_tree` (full / no rivers / flop only) and lazy `load_tree`. Browsing a

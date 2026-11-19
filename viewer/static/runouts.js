@@ -1,6 +1,6 @@
 // Runout lines (Study's Beta side tab): the parts with no page in them. Reading a line label, choosing what a
 // runout's box shows, which lines get a colour, and where the boxes of the turn x river map go. The report is /api/hand_lines
-// (viewer/hand_lines.py): {lines: [label], now: {reach, lines: [[line, freq]], put, put_seen, cards: [{card, ...}]}}.
+// (viewer/hand_lines.py): {lines: [label], now: {reach, lines: [[line, freq]], put, put_seen, call, call_seen, cards: [{card, ...}]}}.
 
 const TOKEN = /([xbcfr])(a|\d+)?/g;
 const WORD = { x: "check", b: "bet", c: "call", f: "fold", r: "raise" };
@@ -157,14 +157,56 @@ export function split(size, ws, min = 1) {
   return out;
 }
 
-/** The least and the most the hand puts in (cell.put) over cells (of cellsAt): {min, max}, each
- *  {put, cards}; null with no cells. The first of equals, in the order given. */
-export function putRange(cells) {
+/** The parts of a column `size` pixels tall, part k the fraction fs[k] of it: whole pixels each, bottom
+ *  first, so that the top of each is where it belongs (the column's own top too). A part that is
+ *  something shows: it has `min` pixels, taken from the tallest when the column is full. */
+export function stack(size, fs, min = 1) {
+  const room = Math.max(0, Math.round(size));
+  const out = [];
+  let acc = 0, used = 0;
+  for (const f of fs) {
+    acc += f > 0 ? f : 0;
+    const px = clampTo(Math.round(acc * size), room) - used;
+    out.push(px);
+    used += px;
+  }
+  fs.forEach((f, i) => {
+    while (f > 0 && out[i] < min) {
+      if (used < room) used++;
+      else {
+        let j = -1;
+        out.forEach((px, k) => { if (k !== i && px > min && (j < 0 || px > out[j])) j = k; });
+        if (j < 0) break;
+        out[j]--;
+      }
+      out[i]++;
+    }
+  });
+  return out;
+}
+const clampTo = (v, hi) => Math.max(0, Math.min(hi, v));
+
+/** A cell's chips by the action that put them in. part: "all"; "call", the chips of its calls;
+ *  "bet", the rest, which went in as bets and raises (a raise whole). seen: the figure for the times
+ *  the hand sees the cell's card, not for every pot. null for a part when the report does not tell
+ *  the calls apart (a solver from before it did). */
+export function chipsOf(cell, part = "all", seen = false) {
+  const put = seen ? cell.put_seen : cell.put, call = seen ? cell.call_seen : cell.call;
+  if (part === "all") return put;
+  if (call == null || put == null) return null;
+  return part === "call" ? call : Math.max(0, put - call);
+}
+
+/** The least and the most the hand puts in (chipsOf, for a part of the chips or all of them) over
+ *  cells (of cellsAt): {min, max}, each {put, cards}; null with no cells, or when the part is not
+ *  told. The first of equals, in the order given. */
+export function putRange(cells, part = "all") {
   let min = null, max = null;
   for (const { cards, cell } of cells) {
-    if (!(cell.put >= 0)) continue;
-    if (!min || cell.put < min.put) min = { put: cell.put, cards };
-    if (!max || cell.put > max.put) max = { put: cell.put, cards };
+    const put = chipsOf(cell, part);
+    if (put == null || !(put >= 0)) continue;
+    if (!min || put < min.put) min = { put, cards };
+    if (!max || put > max.put) max = { put, cards };
   }
   return min ? { min, max } : null;
 }

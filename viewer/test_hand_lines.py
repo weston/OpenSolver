@@ -176,10 +176,21 @@ c:c:Ks:c:c:2h:c:c 4 10
         self.assertAlmostEqual(mi[("Ks", "2h")][1], 2 * 60 / 6)
         # 2 folds; on the turn a fold after calling 20 and its own bet of 30; 2 calls of the 60
         self.assertAlmostEqual(mi[()][1], (20 + 30 + 2 * 60) / 10)
+        # the chips by the action that put them in: the hand only bets, the other player calls the 20
+        # once and the 60 twice (its own bet of 30 is not a call)
+        self.assertEqual(hl.money(lv, "call"), {k: (0, 0) for k in m})
+        ci = hl.money(hl.summarize(rows, FLOP, 1), "call")
+        self.assertAlmostEqual(ci[()][1], (20 + 2 * 60) / 10)
+        self.assertAlmostEqual(ci[("Ks", "2h")][1], 2 * 60 / 6)
         # chips in before the node are not counted
         start = {"actor": 1, "commit": [24, 0], "dead": 40}
         ms = hl.money(hl.summarize("combos: AhAd\nf 1 4\nc:~ 2 4\nb72:c:~ 1 4\n", start, 0))
         self.assertAlmostEqual(ms[()][1], 48 / 4)                     # only the call of the raise to 72
+        self.assertAlmostEqual(hl.money(hl.summarize("combos: AhAd\nf 1 4\nc:~ 2 4\nb72:c:~ 1 4\n", start, 0), "call")[()][1], 48 / 4)
+        # the other player there: a call of the 24 twice, a raise to 72 once (whole: not a call)
+        other = hl.summarize("combos: AhAd\nf 1 4\nc:~ 2 4\nb72:c:~ 1 4\n", start, 1)
+        self.assertAlmostEqual(hl.money(other)[()][1], (2 * 24 + 72) / 4)
+        self.assertAlmostEqual(hl.money(other, "call")[()][1], 2 * 24 / 4)
         # a river that is seen more often than its turn (a class, a card that takes combos): no pot is
         # counted twice
         lv2 = hl.summarize("combos: AhAd\nb20:f 5 10\nc:c:~ 5 10\nc:c:Ks:c:c:~ 5 10\nc:c:Ks:c:c:2h:b40:c 9 10\n", FLOP, 0)
@@ -189,10 +200,12 @@ c:c:Ks:c:c:2h:c:c 4 10
         lv3 = hl.summarize("combos: AhAd\nb20:f 5 10\nb20:c:~ 5 10\nb20:c:Ks:c:c:~ 5 10\nb20:c:Ks:c:c:2h:c:c 4 10\n", FLOP, 0)
         self.assertAlmostEqual(hl.money(lv3)[("Ks", "2h")][0], 20)     # every pot costs the bet of 20
         self.money_per_combo()
+        self.money_called()
         p = hl.to_payload(lv)
         self.assertFalse(p["cut"])
         self.assertTrue(hl.to_payload(hl.summarize("combos: AhAd\nb20:f 5 10\nb20:c:~ 5 10\n", FLOP, 0))["cut"])
         self.assertEqual((p["now"]["put"], p["now"]["put_seen"]), (22, 22))
+        self.assertEqual((p["now"]["call"], p["now"]["call_seen"]), (0, 0))
         self.assertEqual(p["now"]["cards"][0]["cards"][0]["put_seen"], 20)
         self.assertEqual(hl.money({}), {})
 
@@ -236,6 +249,8 @@ $:Ks:3h 100 20
         self.assertAlmostEqual(m[()][0], (10 * 20 + 20 * 7.5) / 30)  # the two turns, by how likely each is
         box = hl.to_payload(lv)["now"]["cards"][1]["cards"][0]
         self.assertEqual(box, {"reach": 0.0, "lines": [], "put": 5.0, "put_seen": 0.0, "card": "3h", "go": ""})
+        # these "$" rows do not tell the called chips apart (a solver from before they did): no split
+        self.assertNotIn("call", hl.to_payload(lv)["now"])
         # a hand whose pot always ends before any card: no boxes
         self.assertEqual(sorted(hl.summarize("combos: AsAc\nc:b20:f 10 10\n$:Ks 0 10\n$:Ks:2h 0 10\n", FLOP, 0)), [()])
         # a solver that prints no base: the chips are read, the unseen river has no box
@@ -252,6 +267,52 @@ $:Ks:3h 100 20
         # on the flop cost what the two combos' did on average
         plain = "\n".join(r for r in rows.split("\n") if not r.startswith("$"))
         self.assertAlmostEqual(hl.money(hl.summarize(plain, FLOP, 0))[("As", "2h")][0], 0.5 * 20 / 3 + 0.5 * 20)
+
+    def money_called(self):
+        """The solver's "$" rows with the called chips (#475). The hand is in position and faces a bet
+        of 20 on the flop: it folds, raises to 60 and folds to the all-in, or calls. On the Ks it
+        folds to 60 or calls it (20 + 40 called); on the 2h it bets 40 and folds to a raise (20
+        called, 40 bet) or calls a bet of 60 (all 80 called). The "$" rows: on the Ks the pots that
+        ended on the flop cost 2 x 0 + 2 x 60, none of it called; with the 2h as well, the fold on
+        the turn after a call of 20 is added, called whole."""
+        rows = """combos: AhAd
+b20:f 2 10
+b20:b60:b300:f 2 10
+b20:c:~ 6 10
+b20:c:Ks:b60:f 2 6
+b20:c:Ks:b60:c:~ 4 6
+b20:c:Ks:b60:c:2h:c:b100:b300:f 2 6
+b20:c:Ks:b60:c:2h:b120:c 2 6
+$:Ks 120 6 0
+$:Ks:2h 160 6 40
+"""
+        lv = hl.summarize(rows, FLOP, 1)
+        self.assertEqual((lv[()]["call"], lv[()]["end_call"]), (6 * 20, 0))
+        self.assertEqual((lv[("Ks",)]["call"], lv[("Ks",)]["end_call"]), (2 * 20 + 4 * 60, 2 * 20))
+        self.assertEqual((lv[("Ks", "2h")]["early"], lv[("Ks", "2h")]["early_call"]), (160, 40))
+        m, c = hl.money(lv), hl.money(lv, "call")
+        # the 4 pots that see the river: 60 called and 40 bet, or 120 called
+        self.assertAlmostEqual(m[("Ks", "2h")][1], (100 + 120) / 2)
+        self.assertAlmostEqual(c[("Ks", "2h")][1], (60 + 120) / 2)
+        # all 10 with these cards... the base is the 6 that the "$" rows count over
+        self.assertAlmostEqual(m[("Ks", "2h")][0], (160 + 2 * 100 + 2 * 120) / 6)
+        self.assertAlmostEqual(c[("Ks", "2h")][0], (40 + 2 * 60 + 2 * 120) / 6)
+        for cards in m:
+            self.assertLessEqual(c[cards][0], m[cards][0] + 1e-9)
+            self.assertLessEqual(c[cards][1], m[cards][1] + 1e-9)
+        now = hl.to_payload(lv)["now"]
+        box = now["cards"][0]["cards"][0]
+        self.assertEqual((box["put"], box["call"], box["put_seen"], box["call_seen"]), (100, 66.667, 110, 90))
+        self.assertEqual((now["call"], now["cards"][0]["call"]), (66.667, 66.667))
+        # a solver that prints the chips and the base only: the cells have no called part
+        old = "\n".join(r.rsplit(" ", 1)[0] if r.startswith("$") else r for r in rows.split("\n"))
+        p = hl.to_payload(hl.summarize(old, FLOP, 1))
+        self.assertEqual(p["now"]["cards"][0]["cards"][0]["put"], 100)
+        self.assertNotIn("call", p["now"])
+        self.assertNotIn("call", p["now"]["cards"][0]["cards"][0])
+        # and one that prints no "$" rows at all: the split is read off the rows, like the chips
+        plain = "\n".join(r for r in rows.split("\n") if not r.startswith("$"))
+        self.assertIn("call", hl.to_payload(hl.summarize(plain, FLOP, 1))["now"])
 
 
 class ApiTest(unittest.TestCase):
@@ -326,6 +387,9 @@ class ApiTest(unittest.TestCase):
         top = d["behind"] + 0.01
         self.assertTrue(0 <= cell["put_seen"] <= top, cell)
         self.assertTrue(0 <= cell["put"] <= top, cell)
+        # the called part of them (the solver here prints it)
+        self.assertTrue(0 <= cell["call"] <= cell["put"] + 0.002, cell)
+        self.assertTrue(0 <= cell["call_seen"] <= cell["put_seen"] + 0.002, cell)
         kids = cell.get("cards", [])
         if not kids:
             r = min(reach, cell["reach"])
@@ -346,6 +410,16 @@ class ApiTest(unittest.TestCase):
         self.assertEqual((f["pot"], f["behind"]), (CFG["pot"] + 24, CFG["stack"]))
         self.check_money(f)
         self.assertGreaterEqual(f["now"]["put_seen"], 24 * (1 - self.fold(f)) - 0.01)
+        # ... and what it calls there is a call of the 24, whatever it calls later
+        first = {}
+        for i, freq in f["now"]["lines"]:
+            tok = f["lines"][i].split(" ")[0][:1]
+            first[tok] = first.get(tok, 0.0) + freq
+        self.assertGreater(first.get("c", 0), 0.01)
+        self.assertGreaterEqual(f["now"]["call"], 24 * first["c"] - 0.01)
+        # the one who checks the flop through and is first to act has called nothing by the turn
+        o = self.lines("r:0:c:c:7d:c", "IP", "KK")
+        self.assertGreater(o["now"]["put"], o["now"]["call"])
         # a river node: nothing to average over
         r = self.lines("r:0:c:c:7d:c:c:3s", "IP", "KK")
         self.assertEqual(r["now"]["put"], r["now"]["put_seen"])

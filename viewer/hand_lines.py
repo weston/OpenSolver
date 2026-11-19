@@ -16,6 +16,8 @@ that see that river, a turn's are those that see that turn (whatever happens lat
 
 Money in (the tab's second view) is read off the same rows: the chips the hand puts into the pot from
 the node to the end of the pot, a bet or a raise counting when it is made, called or not. See money().
+Each chip is also counted by the action that put it in: a call's chips are called, the rest went in as
+bets and raises (a raise whole, the part that matches the bet it faces too).
 """
 
 import re
@@ -41,27 +43,31 @@ def summarize(text, start, hero, sizes=False, allin=None):
     go: the heaviest way into the last card (a node-id suffix ending in it), for "open in Study".
     put: the sum over the rows of weight x the chips the hand has put in since the node; end, end_put:
     the weight and that sum over the rows where the pot ends (not the ones that stop at a deal); open:
-    the weight of the rows that stop at a deal.
+    the weight of the rows that stop at a deal. call, end_call: put and end_put for the chips that
+    went in by calling alone.
 
-    early (from the solver's "$:<cards> <chips> <base>" rows, if it prints them): the same sum over
-    the rows that ended before these cards were all dealt, each at its weight when these are the cards.
+    early (from the solver's "$:<cards> <chips> <base> <called>" rows, if it prints them): the same
+    sum over the rows that ended before these cards were all dealt, each at its weight when these are
+    the cards; early_call: the called part of it (not from a solver that does not print it).
     Cards that can come but that the hand never sees (its pot always ends first) have no rows; they
     get a level from their "$" row all the same, with no lines, so that the runout is not lost.
     Not when the hand sees no card at all (every pot ends on this street): there is no runout to tell
     apart then.
     """
     levels = {}
-    # state: (actor, oop chips, ip chips, facing a bet, finished streets, this street, cards, go)
+    # state: (actor, oop chips, ip chips, facing a bet, finished streets, this street, cards, go,
+    #         the chips the hand has called)
     first = (start["actor"], float(start["commit"][0]), float(start["commit"][1]),
-             start["commit"][0] != start["commit"][1], (), "", (), "")
+             start["commit"][0] != start["commit"][1], (), "", (), "", 0.0)
     dead = float(start.get("dead") or 0)
     before = float(start["commit"][hero])
     stack, prev, early = [first], [], {}
     for row in text.split("\n"):
         parts = row.split(" ")
         if parts[0].startswith("$:"):
-            if len(parts) in (2, 3):   # 2: a solver that does not print the base
-                early[tuple(parts[0].split(":")[1:])] = (float(parts[1]), float(parts[2]) if len(parts) == 3 else 0.0)
+            if len(parts) in (2, 3, 4):   # 2: a solver that does not print the base; 3: nor the called part
+                early[tuple(parts[0].split(":")[1:])] = (float(parts[1]), float(parts[2]) if len(parts) > 2 else 0.0,
+                                                         float(parts[3]) if len(parts) > 3 else None)
             continue
         if len(parts) != 3 or parts[0] == "combos:":
             continue
@@ -79,17 +85,19 @@ def summarize(text, start, hero, sizes=False, allin=None):
         cards = st[6]
         lv = levels.get(cards)
         if lv is None:
-            lv = levels[cards] = {"base": base, "total": 0.0, "lines": {}, "ways": {},
-                                  "put": 0.0, "end": 0.0, "end_put": 0.0, "open": 0.0}
+            lv = levels[cards] = {"base": base, "total": 0.0, "lines": {}, "ways": {}, "put": 0.0, "end": 0.0,
+                                  "end_put": 0.0, "open": 0.0, "call": 0.0, "end_call": 0.0}
         label = " ".join((s or "-") for s in st[4] + (st[5],))
         lv["total"] += weight
         lv["lines"][label] = lv["lines"].get(label, 0.0) + weight
         cost = (st[1], st[2])[hero] - before
         ended = toks[-1] != "~"
         lv["put"] += weight * cost
+        lv["call"] += weight * st[8]
         if ended:
             lv["end"] += weight
             lv["end_put"] += weight * cost
+            lv["end_call"] += weight * st[8]
         else:
             lv["open"] += weight
         if cards:
@@ -98,29 +106,34 @@ def summarize(text, start, hero, sizes=False, allin=None):
         ways = lv.pop("ways")
         lv["go"] = max(ways, key=ways.get) if ways else ""
     dealt = any(levels)   # some row has a card
-    for cards, (chips, base) in early.items():
-        if cards in levels:
-            levels[cards]["early"] = chips
-        elif base > 0 and dealt:
-            levels[cards] = {"base": base, "total": 0.0, "lines": {}, "put": 0.0, "end": 0.0,
-                             "end_put": 0.0, "open": 0.0, "go": "", "early": chips}
+    for cards, (chips, base, called) in early.items():
+        if cards not in levels:
+            if not (base > 0 and dealt):
+                continue
+            levels[cards] = {"base": base, "total": 0.0, "lines": {}, "put": 0.0, "end": 0.0, "end_put": 0.0,
+                             "open": 0.0, "call": 0.0, "end_call": 0.0, "go": ""}
+        levels[cards]["early"] = chips
+        if called is not None:
+            levels[cards]["early_call"] = called
     return levels
 
 
 def _step(st, tok, toks, i, hero, sizes, dead, allin):
-    actor, c0, c1, facing, done, cur, cards, go = st
+    actor, c0, c1, facing, done, cur, cards, go, called = st
     if tok in ("~", "."):
         return st
     if is_card(tok):  # a new street: OOP first
-        return (0, c0, c1, False, done + (cur,), "", cards + (tok,), ":".join(toks[:i + 1]))
+        return (0, c0, c1, False, done + (cur,), "", cards + (tok,), ":".join(toks[:i + 1]), called)
     mine = actor == hero
     if tok == "f":
-        return (1 - actor, c0, c1, facing, done, cur + "f" if mine else cur, cards, go)
+        return (1 - actor, c0, c1, facing, done, cur + "f" if mine else cur, cards, go, called)
     if tok == "c":
         if facing:
             top = max(c0, c1)
-            return (1 - actor, top, top, False, done, cur + "c" if mine else cur, cards, go)
-        return (1 - actor, c0, c1, False, done, cur + "x" if mine else cur, cards, go)
+            if mine:
+                called += top - (c0, c1)[actor]
+            return (1 - actor, top, top, False, done, cur + "c" if mine else cur, cards, go, called)
+        return (1 - actor, c0, c1, False, done, cur + "x" if mine else cur, cards, go, called)
     m = BET_RE.fullmatch(tok)
     if not m:
         raise ValueError(f"unexpected action {tok!r} in a line")
@@ -138,15 +151,16 @@ def _step(st, tok, toks, i, hero, sizes, dead, allin):
         c0 = to
     else:
         c1 = to
-    return (1 - actor, c0, c1, True, done, cur, cards, go)
+    return (1 - actor, c0, c1, True, done, cur, cards, go, called)
 
 
 def card_order(card):
     return (RANKS.index(card[0]), SUITS.index(card[1]))
 
 
-def money(levels):
+def money(levels, part="put"):
     """summarize() levels -> {cards: (put, seen)}: the chips the hand puts in from the node on.
+    part: "put" for all of them, "call" for the ones that go in by calling.
 
     seen: on average over the times the hand sees these cards, to the end of the pot. put: on average
     when these are the cards that come, whether the hand sees them or not: the times its pot ended
@@ -167,6 +181,7 @@ def money(levels):
         if cards:
             below.setdefault(cards[:-1], []).append(cards)
     exact = all("early" in lv for cards, lv in levels.items() if cards and cards not in below)
+    ends, early_of = "end_" + part, "early" if part == "put" else "early_" + part
     out = {}
 
     def seen(cards):
@@ -175,10 +190,10 @@ def money(levels):
         if not (total > 0):
             return 0.0
         if not kids:               # the last cards read: every row counts at what it has cost so far
-            return lv["put"] / total
+            return lv[part] / total
         w = sum(levels[k]["total"] for k in kids)
         on = sum(levels[k]["total"] * seen(k) for k in kids) / w if w > 0 else 0.0
-        return (lv["end_put"] + (total - lv["end"]) * on) / total
+        return (lv[ends] + (total - lv["end"]) * on) / total
 
     def walk(cards, reach, early):
         """reach: how often the hand is still in when the last of `cards` comes; early: the chips of
@@ -187,7 +202,7 @@ def money(levels):
         kids = below.get(cards)
         if not kids:
             if exact:
-                v = (lv.get("early", 0.0) + lv["put"]) / lv["base"] if lv["base"] > 0 else 0.0
+                v = (lv.get(early_of, 0.0) + lv[part]) / lv["base"] if lv["base"] > 0 else 0.0
             else:
                 v = early + reach * seen(cards)
             out[cards] = (v, seen(cards))
@@ -195,8 +210,8 @@ def money(levels):
         # What a pot that ends on this street has cost. With none ending here (the chance of seeing
         # the next card can still be under one: lines too rare to be listed), what the pots that go
         # on have cost by the deal.
-        ended = lv["end_put"] / lv["end"] if lv["end"] > 0 else \
-            (lv["put"] - lv["end_put"]) / (lv["total"] - lv["end"]) if lv["total"] > lv["end"] else 0.0
+        ended = lv[ends] / lv["end"] if lv["end"] > 0 else \
+            (lv[part] - lv[ends]) / (lv["total"] - lv["end"]) if lv["total"] > lv["end"] else 0.0
         num = den = 0.0
         for k in kids:
             r = min(reach, levels[k]["total"] / levels[k]["base"]) if levels[k]["base"] > 0 else 0.0
@@ -212,10 +227,13 @@ def money(levels):
 
 def to_payload(levels):
     """summarize() levels -> the nested, JSON-ready report: a line table and, per level, its lines
-    and the chips it puts in (put, put_seen: money()). "cut": pots go on past the last cards read
+    and the chips it puts in (put, put_seen: money()), with the part of them that goes in by calling
+    (call, call_seen; the rest is bets and raises). "cut": pots go on past the last cards read
     (a save without the later streets), so the chips are what is put in up to there."""
     table, index = [], {}
     chips = money(levels)
+    # not from a solver whose "$" rows do not tell the called chips apart
+    calls = None if any("early" in lv and "early_call" not in lv for lv in levels.values()) else money(levels, "call")
 
     def cell(cards):
         lv = levels[cards]
@@ -231,6 +249,8 @@ def to_payload(levels):
             rows.append([index[label], round(f, 4)])
         out = {"reach": round(total / lv["base"], 4) if lv["base"] > 0 else 0.0, "lines": rows,
                "put": round(chips[cards][0], 3), "put_seen": round(chips[cards][1], 3)}
+        if calls is not None:
+            out["call"], out["call_seen"] = round(calls[cards][0], 3), round(calls[cards][1], 3)
         if cards:
             out["card"] = cards[-1]
             out["go"] = lv["go"]

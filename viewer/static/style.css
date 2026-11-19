@@ -911,6 +911,9 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* Money in: one hue, fuller for more (over --cell-empty); each theme has its own step. */
 :root { --money: #35c98a; }
+/* its two parts, by the action that put the chips in: bets and raises warm, calls cool (the first two
+   steps of the lines' palette: told apart by every kind of colour vision, in both themes) */
+:root { --money-bet: var(--line-2); --money-call: var(--line-1); }
 :root[data-theme="light"] { --money: #0c8f5b; }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) { --money: #0c8f5b; }
@@ -931,8 +934,9 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .rl-combos .rl-all { padding: 2px 8px; font-size: 11px; font-weight: 600; color: var(--text-2); }
 .rl-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .rl-opts.off { display: none; }   /* not this view's; they are under the picture, which stays where it is */
-.rl-top { display: flex; align-items: center; height: 24px; }   /* over the picture: the same height in both views */
-.rl-top.money .rl-opt, .rl-top:not(.money) .rl-scale { display: none; }
+.rl-top { display: flex; align-items: center; gap: 14px; height: 24px; }   /* over the picture: the same height in both views */
+.rl-top.money .rl-opt:not(.rl-part), .rl-top:not(.money) .rl-scale, .rl-top:not(.money) .rl-part, .rl-top.whole .rl-part { display: none; }
+.rl-opt > span:empty { display: none; }
 .rl-opt { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .rl-plot { position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .rl-plot > *, .rl-sec { transition: opacity .15s; }
@@ -948,6 +952,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .rl-sec .hint.warn { color: var(--text-2); }
 .rl-sw { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 3px; }
 .rl-sw.other { background: var(--line-other); }
+.rl-dot { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; }   /* a part of the chips: not a line's square */
 .rl-row { position: relative; display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 6px; border-radius: 6px; font-size: 12px; }
 .rl-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rl-row .p, .rl-row .m { flex: none; width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -964,15 +969,17 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .rl-row.meter::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: calc(var(--f) * 100%); border-radius: 4px; background: var(--surface-3); }
 .rl-row.meter > * { position: relative; }
 
-/* money in: the average, and the scale of the picture's one colour */
+/* money in: the average, and what a full box is (a strip of the one colour with a solver that does not tell the calls apart) */
 .rl-hero { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--text-3); }
 .rl-hero b { flex: none; font-size: 26px; font-weight: 750; letter-spacing: -.02em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
-.rl-scale { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.rl-scale i { flex: 1; height: 8px; border-radius: 4px; background: linear-gradient(to right, var(--cell-empty), var(--money)); }
-.rl-money .rl-row.head .t { padding-left: 0; }
+.rl-scale { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rl-scale.full { justify-content: flex-end; }
+.rl-scale span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }   /* a narrow panel: the strip stays */
+.rl-scale i { flex: 1; min-width: 28px; height: 8px; border-radius: 4px; background: linear-gradient(to right, var(--cell-empty), var(--money)); }
 .rl-money .rl-c { margin-left: 3px; }
 
-.tip .rl-sw { margin-right: 7px; }
+.tip .rl-sw, .tip .rl-dot { margin-right: 7px; }
+.rl-cap .rl-dot { margin: 0 5px 0 1px; vertical-align: -1px; }
 .rl-tip-sub { color: var(--text-3); margin: 6px 0 0; }
 .rl-tip-sub + .rl-tip-sub { margin-top: 2px; }
 .rl-tip-other, .rl-tip-more { color: var(--text-3); }

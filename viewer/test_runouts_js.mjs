@@ -1,6 +1,6 @@
 // Unit test for the runout lines helpers of Study's Beta side tab (viewer/static/runouts.js, #467).
 // usage: node viewer/test_runouts_js.mjs
-import { streets, words, short, depth, cellsAt, pick, bands, lineStats, slots, deck, axis, shareOf, split, putRange, strength } from "./static/runouts.js";
+import { streets, words, short, depth, cellsAt, pick, bands, lineStats, slots, deck, axis, shareOf, split, putRange, chipsOf, strength, stack } from "./static/runouts.js";
 
 let fails = 0;
 const check = (cond, msg) => { console.log((cond ? "  ok: " : "  FAIL: ") + msg); if (!cond) fails++; };
@@ -75,6 +75,26 @@ check(all.length === 52 && all[0] === "As" && all[13] === "Ah" && all[26] === "A
   check(putRange([]) === null && putRange([{ cards: ["As"], cell: {} }]) === null, "putRange: nothing to range over");
   check(putRange([{ cards: ["As"], cell: { put: 0 } }]).max.put === 0, "putRange: nothing put in is a value");
 }
+{
+  // the chips by the action that put them in (#475): calls, and the rest (bets and raises)
+  const cell = { put: 30, put_seen: 40, call: 12.5, call_seen: 10 };
+  check(chipsOf(cell) === 30 && chipsOf(cell, "all", true) === 40, "chipsOf: all of them, over every pot or the ones that see the card");
+  check(chipsOf(cell, "call") === 12.5 && chipsOf(cell, "bet") === 17.5, "chipsOf: the calls, and the rest");
+  check(chipsOf(cell, "call", true) === 10 && chipsOf(cell, "bet", true) === 30, "chipsOf: the same of the pots that see the card");
+  check(chipsOf({ put: 5, call: 5.001 }, "bet") === 0, "chipsOf: a rounding in the report does not make bets negative");
+  check(chipsOf({ put: 5 }, "call") === null && chipsOf({ put: 5 }, "bet") === null && chipsOf({ put: 5 }) === 5, "chipsOf: a report that does not tell the calls apart");
+  const cells = [{ cards: ["Ks", "2h"], cell: { put: 30, call: 0 } }, { cards: ["Ks", "3h"], cell: { put: 20, call: 20 } }, { cards: ["As", "2h"], cell: { put: 25, call: 5 } }];
+  const calls = putRange(cells, "call"), bets = putRange(cells, "bet");
+  check(calls.max.put === 20 && calls.max.cards.join("") === "Ks3h" && calls.min.put === 0 && calls.min.cards.join("") === "Ks2h", "putRange: of the calls");
+  check(bets.max.put === 30 && bets.max.cards.join("") === "Ks2h" && bets.min.put === 0 && bets.min.cards.join("") === "Ks3h", "putRange: of the bets and raises");
+  check(putRange(cells).max.put >= Math.max(calls.max.put, bets.max.put), "putRange: no part is over the top of all of them (both together fit the scale of all of them)");
+  check(putRange([{ cards: ["As"], cell: { put: 5 } }], "call") === null, "putRange: a part that is not told");
+}
+check(same(stack(12, [0.5, 0.25]), [6, 3]) && same(stack(12, [0, 0.5]), [0, 6]), "stack: in proportion to the column, bottom first");
+check(same(stack(13, [0.3, 0.3]), [4, 4]) && stack(13, [0.3, 0.3]).reduce((a, b) => a + b) === Math.round(13 * 0.6), "stack: the top of the column is where the sum is");
+check(same(stack(12, [0.9, 0.001]), [11, 1]) && same(stack(12, [0.001, 0.001]), [1, 1]), "stack: a part that is something has a pixel");
+check(same(stack(12, [1, 0.01]), [11, 1]) && same(stack(12, [0.7, 0.4]), [8, 4]), "stack: never over the column; the tallest gives way");
+check(same(stack(12, [0, 0]), [0, 0]) && same(stack(0, [0.5, 0.5]), [0, 0]) && same(stack(1, [0.5, 0.5]), [1, 0]), "stack: nothing to show, or no room");
 check(strength(5, 10) === 0.5 && strength(20, 10) === 1, "strength: in proportion, full at the top of the scale");
 check(strength(0, 10, 0.1) === 0 && strength(0.2, 10, 0.1) === 0.1, "strength: nothing is empty, a little is not");
 check(strength(5, 0) === 0 && strength(undefined, 10) === 0, "strength: no scale or no value is empty");

@@ -87,7 +87,7 @@ check(all.length === 52 && all[0] === "As" && all[13] === "Ah" && all[26] === "A
   const calls = putRange(cells, "call"), bets = putRange(cells, "bet");
   check(calls.max.put === 20 && calls.max.cards.join("") === "Ks3h" && calls.min.put === 0 && calls.min.cards.join("") === "Ks2h", "putRange: of the calls");
   check(bets.max.put === 30 && bets.max.cards.join("") === "Ks2h" && bets.min.put === 0 && bets.min.cards.join("") === "Ks3h", "putRange: of the bets and raises");
-  check(putRange(cells).max.put >= Math.max(calls.max.put, bets.max.put), "putRange: no part is over the top of all of them (one scale for the three)");
+  check(putRange(cells).max.put >= Math.max(calls.max.put, bets.max.put), "putRange: no part is over the top of all of them (both together fit the scale of all of them)");
   check(putRange([{ cards: ["As"], cell: { put: 5 } }], "call") === null, "putRange: a part that is not told");
 }
 check(same(stack(12, [0.5, 0.25]), [6, 3]) && same(stack(12, [0, 0.5]), [0, 6]), "stack: in proportion to the column, bottom first");

@@ -165,7 +165,7 @@ function ensure(box) {
     drawKey();
     paint();
   });
-  const pSeg = seg(top, "", "The chips the picture shows, by the action that put them in. One scale for the three",
+  const pSeg = seg(top, "", "The chips the picture shows, by the action that put them in: both parts together, or one alone on its own scale",
     [["all", "Both", "Every chip the hand puts in: its bets and raises, and its calls on top of them"], ["bet", "Bets & raises", "The chips it bets or raises (a raise whole: the part that matches the bet it answers too)"],
      ["call", "Calls", "The chips it calls with"]], setPart);
   pSeg.parentNode.classList.add("rl-part");

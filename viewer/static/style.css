@@ -921,7 +921,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* Study's side panel, Beta tab (beta.js). Nothing above the picture changes height from hand to
    hand, and the picture keeps its own between its two forms, so the panel does not move under the pointer. */
-:root { --rl-blank: var(--bg); }   /* a box of the map for a runout that cannot be */
+:root { --rl-blank: var(--bg); --rl-frame: var(--text-3); }   /* a box of the map for a runout that cannot be; the outline of a block of it */
 #side-beta { scrollbar-gutter: stable; }
 .rl-main { display: flex; flex-direction: column; gap: 10px; padding-bottom: 12px; }
 .rl-head { margin: 0; min-height: 32px; align-items: center; gap: 10px; }
@@ -936,6 +936,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .rl-opts.off { display: none; }   /* not this view's; they are under the picture, which stays where it is */
 .rl-top { display: flex; align-items: center; gap: 14px; height: 24px; }   /* over the picture: the same height in both views */
 .rl-top.money .rl-opt:not(.rl-part), .rl-top:not(.money) .rl-scale, .rl-top:not(.money) .rl-part, .rl-top.whole .rl-part { display: none; }
+.rl-ctl { display: flex; flex-direction: column; gap: 10px; }   /* the controls over the picture: two rows, or one in a wide panel (beta.js fit()) */
+.rl-ctl.row { flex-direction: row; align-items: center; gap: 14px; }
+.rl-ctl.row .rl-pick { flex: none; justify-content: flex-start; }
+.rl-ctl.row .rl-top { flex: 1; min-width: 0; }
+.rl-pick { display: flex; align-items: center; justify-content: space-between; gap: 14px; height: 24px; }   /* what the picture is: there at every node, the same height */
+.rl-pick.flat .rl-lvl { display: none; }
 .rl-opt > span:empty { display: none; }
 .rl-opt { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .rl-plot { position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
@@ -1015,3 +1021,4 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .rl-bar i { flex-grow: 0; flex-shrink: 1; min-height: 1px; }
 .rl-card.off .rl-bar { background: none; box-shadow: inset 0 0 0 1px var(--border); }
 button.rl-card:hover .rl-bar { box-shadow: 0 0 0 2px var(--text); }
+button.rl-card.end { cursor: default; }

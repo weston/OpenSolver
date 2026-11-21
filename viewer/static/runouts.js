@@ -103,13 +103,17 @@ export function deck(board = []) {
 }
 
 /** Where the boxes of one side of the map go: `size` px each, `sep` px apart (0: touching), `gap` px
- *  more where the suit changes. {at: [px], size, end}; index(px) is the box under a pixel, or -1. */
+ *  more where the suit changes. {at: [px], size, end, spans}; index(px) is the box under a pixel, or
+ *  -1; spans: the blocks the gaps make, one per run of a suit, [first px, last px) each. */
 export function axis(cards, size, gap, sep = 1) {
-  const at = [];
+  const at = [], spans = [];
   let x = 0;
   cards.forEach((c, i) => {
-    if (i && c[1] !== cards[i - 1][1]) x += gap;
+    const first = !i || c[1] !== cards[i - 1][1];
+    if (i && first) x += gap;
+    if (first) spans.push([x, x]);
     at.push(x);
+    spans[spans.length - 1][1] = x + size;
     x += size + sep;
   });
   const end = Math.max(0, x - sep);
@@ -117,7 +121,7 @@ export function axis(cards, size, gap, sep = 1) {
     for (let i = 0; i < at.length; i++) if (px >= at[i] && px < at[i] + size + sep) return i;
     return -1;
   };
-  return { at, size, end, index };
+  return { at, size, end, index, spans };
 }
 
 /** How often a cell's hand is on a line that starts like `label` does, as far as the cell's own lines

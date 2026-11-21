@@ -103,6 +103,9 @@ check(same(ax.at, [0, 11, 28, 39, 56]) && ax.end === 66, `axis: 1px between boxe
 check(ax.index(0) === 0 && ax.index(10) === 0 && ax.index(11) === 1 && ax.index(24) === -1 && ax.index(28) === 2 && ax.index(66) === 4 && ax.index(67) === -1,
   "axis: the box under a pixel, none in a gap or past the end");
 check(axis([], 10, 6).end === 0 && axis([], 10, 6).index(0) === -1, "axis: no cards");
+check(same(ax.spans, [[0, 21], [28, 49], [56, 66]]), `axis: the blocks, one per run of a suit, from its first box to the end of its last (${JSON.stringify(ax.spans)})`);
+check(same(axis([], 10, 6).spans, []) && same(axis(deck(), 6, 9, 1).spans.map(([a, b]) => b - a), [90, 90, 90, 90]),
+  "axis: no blocks with no cards; the four suits of the whole deck are blocks of one size");
 const snug = axis(["As", "Ks", "Ah"], 5.5, 4, 0);
 check(same(snug.at, [0, 5.5, 15]) && snug.end === 20.5 && snug.index(5.4) === 0 && snug.index(5.5) === 1 && snug.index(12) === -1 && snug.index(20.4) === 2 && snug.index(20.5) === -1,
   `axis: boxes that touch (sep 0), of a width that is not a whole pixel (${snug.at})`);

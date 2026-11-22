@@ -197,8 +197,9 @@ def test_macos_app():
 
     # The version the package is named after must be one a property list and a path can carry.
     check(re.fullmatch(r"[0-9]+(\.[0-9]+){1,2}", version() or "") is not None, f"the version fits a bundle ({version()})")
-    r = make("-n", "macos-pkg")
-    check(r.returncode == 0 and "packaging/macos/build.sh" in r.stdout, "make macos-pkg is a target that runs build.sh")
+    if sys.platform == "darwin" and os.uname().machine == "arm64":   # elsewhere the target only says where it is built
+        r = make("-n", "macos-pkg")
+        check(r.returncode == 0 and "packaging/macos/build.sh" in r.stdout, "make macos-pkg is a target that runs build.sh")
     try:
         import xml.dom.minidom
         xml.dom.minidom.parse(os.path.join(pk, "distribution.xml.in"))

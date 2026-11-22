@@ -58,7 +58,8 @@ static NSDictionary *getJSON(NSString *url) {
 @end
 
 @implementation App {
-  pid_t _pid;            // the viewer (and its process group); 0 when there is none
+  pid_t _pid;            // the viewer (and its process group); 0 when there is none, or it has ended
+  dispatch_source_t _ended;   // fires when the viewer process ends
   BOOL _quitting;
   NSString *_url;        // nil until the viewer is up
   NSString *_logPath;
@@ -159,12 +160,12 @@ static NSDictionary *getJSON(NSString *url) {
   NSArray<NSString *> *args = @[python, @"-u", @"-B", @"-E", @"-s",
                                 [res stringByAppendingPathComponent:@"viewer/server.py"],
                                 @"--solver", [res stringByAppendingPathComponent:@"solver"],
-                                @"--port", port, @"--exit-with-parent"];
-  char **argv = calloc(args.count + 1, sizeof(char *));
-  for (NSUInteger i = 0; i < args.count; i++) argv[i] = strdup(args[i].fileSystemRepresentation);
-
+                                @"--port", port,
+                                @"--exit-with-parent", [NSString stringWithFormat:@"%d", getpid()]];
   int fds[2];
   if (pipe(fds) != 0) return -1;
+  char **argv = calloc(args.count + 1, sizeof(char *));
+  for (NSUInteger i = 0; i < args.count; i++) argv[i] = strdup(args[i].fileSystemRepresentation);
   posix_spawn_file_actions_t fa;
   posix_spawn_file_actions_init(&fa);
   posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
@@ -188,6 +189,8 @@ static NSDictionary *getJSON(NSString *url) {
   int rc = posix_spawn(&pid, argv[0], &fa, &at, argv, environ);
   posix_spawn_file_actions_destroy(&fa);
   posix_spawnattr_destroy(&at);
+  for (NSUInteger i = 0; i < args.count; i++) free(argv[i]);
+  free(argv);
   close(fds[1]);
   if (rc != 0) {
     close(fds[0]);
@@ -233,10 +236,24 @@ static NSDictionary *getJSON(NSString *url) {
       dispatch_async(dispatch_get_main_queue(), ^{ [self ready:url]; });
     }
     close(fd);
+  });
+
+  // The viewer's end is its process ending, not the end of what is read above: its solvers write
+  // their errors to the same pipe, and one that outlived it would keep that open.
+  _ended = dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC, (uintptr_t)pid, DISPATCH_PROC_EXIT, dispatch_get_main_queue());
+  dispatch_source_set_event_handler(_ended, ^{
+    dispatch_source_cancel(self->_ended);
+    // Whatever is left of its group has nothing to run for. Sent before the viewer is reaped:
+    // until then its pid, which names the group, cannot have become another process's.
+    killpg(pid, SIGKILL);
     int st = 0;
     while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
-    dispatch_async(dispatch_get_main_queue(), ^{ [self viewerEnded]; });
+    self->_pid = 0;
+    if (self->_quitting) return;
+    // a moment for its last words to reach the log, which the alert quotes
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4), dispatch_get_main_queue(), ^{ [self viewerEnded]; });
   });
+  dispatch_resume(_ended);
 }
 
 - (void)ready:(NSString *)url {
@@ -247,7 +264,6 @@ static NSDictionary *getJSON(NSString *url) {
 }
 
 - (void)viewerEnded {
-  _pid = 0;
   if (_quitting) return;
   [self failed:_url ? @"The viewer stopped unexpectedly." : @"The viewer did not start."];
 }
@@ -278,7 +294,7 @@ static NSDictionary *getJSON(NSString *url) {
   killpg(pid, SIGINT);
   for (int i = 0; i < 50 && _pid; i++)   // _pid is cleared on the main queue when the viewer has ended
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
-  killpg(pid, SIGKILL);   // the group outlives its leader while a solver is left in it; none is, usually
+  if (_pid) killpg(pid, SIGKILL);   // still there (so the pid is still its own): no more asking
 }
 
 // ----- the application --------------------------------------------------------------------------

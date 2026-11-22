@@ -1626,9 +1626,14 @@ def main(argv=None):
     ap.add_argument("--flops-dir", default=None,
                     help="folder of flop files for the Jobs view (default: a PioSOLVER install's "
                          "preflop_subsets, or $WSOLVER_FLOPS_DIR)")
-    ap.add_argument("--exit-with-parent", action="store_true",
-                    help="stop when the process that started this one is gone (the macOS app's launcher, #479)")
+    ap.add_argument("--exit-with-parent", nargs="?", type=int, const=0, default=None, metavar="PID",
+                    help="stop when the process that started this one is gone (the macOS app's launcher, #479); "
+                         "with its PID, also when it was gone before this one started")
     args = ap.parse_args(argv)
+    # Read before anything slow (the solver starts below): a parent that goes during start-up must
+    # not be missed. Without the PID, one that went before this line can only be told on a system
+    # that hands orphans to process 1.
+    parent = args.exit_with_parent or os.getppid()
 
     solver = Solver(os.path.abspath(args.solver))
     import resolve as vresolve  # local import: server/main <-> resolve module cycle
@@ -1646,14 +1651,12 @@ def main(argv=None):
     srv.library = Library(args.library)
     print(f"WSolver viewer: solver {solver.exe!r}, library {srv.library.root!r}, "
           f"UI on http://127.0.0.1:{srv.server_port}", flush=True)
-    if args.exit_with_parent:
+    if args.exit_with_parent is not None:
         # Started by a launcher that owns this viewer: if it dies without stopping us (a crash, a
         # force quit), nobody else will, and the port stays taken and the solvers keep running. A
         # parent that is gone shows as a new parent pid (the process is adopted).
-        parent = os.getppid()
-
         def watch():
-            while os.getppid() == parent:
+            while os.getppid() == parent and (parent != 1 or args.exit_with_parent):
                 time.sleep(1)
             if os.getpgrp() == os.getpid():
                 # In a process group of our own, as the launcher starts us: do what its Quit does,

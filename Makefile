@@ -258,9 +258,14 @@ build/macos/obj/%.o: src/%.cpp $(wildcard src/*.hpp) | build/macos/obj
 build/macos/solver: $(MACOS_OBJ)
 	$(CXX) $(MACOS_CXXFLAGS) $^ -o $@ $(LDLIBS)
 
+ifeq ($(shell uname -sm),Darwin arm64)
 macos-pkg: build/macos/solver
 	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
 	VERSION=$(VERSION) MACOS_MIN=$(MACOS_MIN) SOLVER=build/macos/solver packaging/macos/build.sh
+else
+macos-pkg:
+	@echo "the macOS package is built on an Apple Silicon Mac"; exit 1
+endif
 
 clean:
 	rm -rf build solver solver-release dist

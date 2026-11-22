@@ -66,7 +66,8 @@ def main():
         [python, "-u", "-B", "-E", "-s", os.path.join(res, "viewer", "server.py"),
          "--solver", os.path.join(res, "solver"), "--port", "0",
          "--library", os.path.join(tmp, "library"), "--jobs", os.path.join(tmp, "jobs"), "--exit-with-parent"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True)   # a process group of its own, as the launcher gives it
     try:
         line = srv.stdout.readline()
         check(READY in line, f"the viewer starts ({line.strip()[:120]})")
@@ -106,7 +107,7 @@ def main():
 
         kids = children(srv.pid)
         check(len(kids) >= 1, f"the viewer runs its solvers as children ({len(kids)})")
-        srv.send_signal(signal.SIGINT)   # what quitting the app sends
+        os.killpg(srv.pid, signal.SIGINT)   # what quitting the app sends: an interrupt to the whole group
         try:
             srv.wait(timeout=15)
         except subprocess.TimeoutExpired:
@@ -117,8 +118,8 @@ def main():
             time.sleep(0.1)
         check(not any(alive(k) for k in kids), "and leaves no solver behind")
     finally:
-        if srv.poll() is None:
-            srv.kill()
+        if srv.poll() is None:   # a failed run: not reaped, so the pid still names its group
+            os.killpg(srv.pid, signal.SIGKILL)
         shutil.rmtree(tmp, ignore_errors=True)
 
 

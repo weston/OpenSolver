@@ -50,6 +50,13 @@ SOLVER="${SOLVER:-build/macos/solver}"
 [ "$(uname -m)" = arm64 ] || { echo "the macOS package is built on an Apple Silicon Mac"; exit 1; }
 [ -x "$SOLVER" ] || { echo "no solver at $SOLVER: run make macos-pkg"; exit 1; }
 
+# The files are picked by what git tracks, but copied as they are here: say so when that differs
+# from what is committed (make dist, which packs the commit itself, warns the other way round).
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! git diff-index --quiet HEAD -- src viewer tools packaging Makefile; then
+  echo "WARNING: uncommitted changes to tracked files ARE in this package:"
+  git diff-index --name-only HEAD -- src viewer tools packaging Makefile | sed 's/^/  /'
+fi
+
 OUT=build/macos
 STAGE="$OUT/stage"
 APP="$STAGE/WSolver.app"
@@ -103,14 +110,14 @@ PYLIB="$PY/lib/python${PY_VERSION%.*}"
 rm -rf "$PY/include" "$PY/share" "$PY/lib/pkgconfig" "$PY"/lib/libpython*.dylib \
        "$PY"/lib/libtcl* "$PY"/lib/tcl* "$PY"/lib/tk* "$PY"/lib/itcl* "$PY"/lib/thread* \
        "$PYLIB/site-packages" "$PYLIB/ensurepip" "$PYLIB/idlelib" "$PYLIB/tkinter" "$PYLIB/turtledemo" \
-       "$PYLIB/test" "$PYLIB/lib2to3" "$PYLIB"/config-*
+       "$PYLIB/test" "$PYLIB/lib2to3" "$PYLIB"/config-* "$PYLIB"/lib-dynload/_tkinter.*
 find "$PY/bin" -mindepth 1 -not -name python3 -not -name "python${PY_VERSION%.*}" -delete
 find "$PYLIB" -type d -name __pycache__ -prune -exec rm -rf {} +
 mkdir -p "$PYLIB/site-packages"   # site looks for it
 
 chmod -R u+w,go-w,a+rX "$APP"
 xattr -cr "$APP"
-codesign --force --deep --sign - "$APP" 2>&1 | grep -v ': replacing existing signature$' || true
+codesign --force --deep --sign - "$APP" >"$OUT/codesign.log" 2>&1 || { cat "$OUT/codesign.log"; exit 1; }
 codesign --verify --deep --strict "$APP"
 
 # ----- does it run? ------------------------------------------------------------------------------

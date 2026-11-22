@@ -642,11 +642,14 @@ class SolverTimeoutTest(unittest.TestCase):
 class ExitWithParentTest(unittest.TestCase):
     """--exit-with-parent (#479): a viewer started by the macOS app's launcher stops, and takes its
     solvers with it, when the launcher is gone without having stopped it."""
-    # stands in for the launcher: starts the viewer, says its pid, and waits to be killed
-    PARENT = ("import subprocess, sys, time\n"
-              "p = subprocess.Popen(sys.argv[2:], start_new_session=sys.argv[1] == 'own-group')\n"
+    # stands in for the launcher: starts the viewer, says its pid, and waits to be killed -- or, as
+    # "gone-at-once", has told the viewer its own pid and is gone before the viewer is up
+    PARENT = ("import os, subprocess, sys, time\n"
+              "mode = sys.argv[1]\n"
+              "p = subprocess.Popen(sys.argv[2:] + ([str(os.getpid())] if mode == 'gone-at-once' else []),\n"
+              "                     start_new_session=mode != 'shared-group')\n"
               "print(p.pid, flush=True)\n"
-              "time.sleep(600)\n")
+              "time.sleep(0 if mode == 'gone-at-once' else 600)\n")
 
     @staticmethod
     def alive(pid):
@@ -670,21 +673,27 @@ class ExitWithParentTest(unittest.TestCase):
                 ready = parent.stdout.readline()
                 self.assertIn("UI on http://127.0.0.1:", ready)
                 base = "http://" + ready.split("UI on http://")[1].strip()
-                with urllib.request.urlopen(base + "/api/status", timeout=30) as r:
-                    self.assertTrue(json.loads(r.read())["ok"])
-                ps = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True).stdout
-                solvers = [int(a) for a, b in (ln.split() for ln in ps.splitlines() if ln.strip()) if int(b) == viewer]
-                pids += solvers
-                self.assertTrue(solvers, "the viewer has a solver running")
-                self.assertTrue(self.alive(viewer))
-                parent.kill()   # no chance to stop anything, as in a crash
-                parent.wait()
+                if group == "gone-at-once":   # it is already on its way out: nothing to ask it
+                    self.assertEqual(parent.wait(timeout=30), 0)
+                else:
+                    with urllib.request.urlopen(base + "/api/status", timeout=30) as r:
+                        self.assertTrue(json.loads(r.read())["ok"])
+                    ps = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True).stdout
+                    solvers = [int(a) for a, b in (ln.split() for ln in ps.splitlines() if ln.strip()) if int(b) == viewer]
+                    pids += solvers
+                    self.assertTrue(solvers, "the viewer has a solver running")
+                    self.assertTrue(self.alive(viewer))
+                    parent.kill()   # no chance to stop anything, as in a crash
+                    parent.wait()
                 deadline = time.time() + 20
                 while time.time() < deadline and any(self.alive(p) for p in pids):
                     time.sleep(0.1)
                 self.assertEqual([p for p in pids if self.alive(p)], [], "the viewer and its solvers are gone")
                 with self.assertRaises(OSError):   # and so is the port
                     urllib.request.urlopen(base + "/api/status", timeout=5)
+                if group != "shared-group":   # nothing else of the viewer's group either
+                    ps = subprocess.run(["ps", "-axo", "pid=,pgid="], capture_output=True, text=True).stdout
+                    self.assertEqual([ln for ln in ps.splitlines() if ln.split()[1:] == [str(viewer)]], [])
             finally:
                 parent.kill()
                 parent.stdout.close()
@@ -699,6 +708,9 @@ class ExitWithParentTest(unittest.TestCase):
 
     def test_in_its_parents_process_group(self):
         self.run_case("shared-group")   # then only the viewer shuts down (and stops its solvers)
+
+    def test_parent_gone_before_the_viewer_is_up(self):
+        self.run_case("gone-at-once")   # told the parent's pid, it sees at once that this is not its parent
 
 
 if __name__ == "__main__":

@@ -234,7 +234,35 @@ dist:
 	@echo "dist/$(DISTNAME).tar.gz"
 	@cat dist/$(DISTNAME).tar.gz.sha256
 
+# ----- macOS installer (#479) --------------------------------------------------
+# `make macos-pkg` writes dist/WSolver-<version>-macos-arm64.pkg (and its .sha256):
+# an installer for /Applications/WSolver.app, which holds the solver, the viewer
+# and a Python to run it, and starts the viewer when opened. See README, "macOS
+# installer", and packaging/macos/build.sh.
+# The solver in it is a build of its own: for any Apple Silicon Mac rather than
+# this one (-mcpu=apple-m1, where the default build is -mcpu=native), with LTO
+# as in `make release`, in its own object directory so that neither build is
+# linked from the other's objects.
+# MACOS_MIN is the oldest macOS the app runs on. 13.3 is the first whose C++
+# library has the floating-point std::to_chars that src/upi.cpp prints with.
+MACOS_MIN      ?= 13.3
+MACOS_CXXFLAGS := -std=c++20 -O3 -mcpu=apple-m1 -arch arm64 -mmacosx-version-min=$(MACOS_MIN) $(LTO_FLAG) -Wall -Wextra -DNDEBUG
+MACOS_OBJ      := $(SRC:src/%.cpp=build/macos/obj/%.o) build/macos/obj/main.o
+
+build/macos/obj:
+	mkdir -p $@
+
+build/macos/obj/%.o: src/%.cpp $(wildcard src/*.hpp) | build/macos/obj
+	$(CXX) $(MACOS_CXXFLAGS) -c $< -o $@
+
+build/macos/solver: $(MACOS_OBJ)
+	$(CXX) $(MACOS_CXXFLAGS) $^ -o $@ $(LDLIBS)
+
+macos-pkg: build/macos/solver
+	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
+	VERSION=$(VERSION) MACOS_MIN=$(MACOS_MIN) SOLVER=build/macos/solver packaging/macos/build.sh
+
 clean:
 	rm -rf build solver solver-release dist
 
-.PHONY: all test test-big windows bench release install uninstall dist clean
+.PHONY: all test test-big windows bench release install uninstall dist macos-pkg clean

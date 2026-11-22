@@ -9,6 +9,7 @@ range/EV views, live solving progress, save + load. Runs in well under 20 s.
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -636,6 +637,68 @@ class SolverTimeoutTest(unittest.TestCase):
             self.assertEqual(s.cmd("echo next"), "next")
         finally:
             s.proc.kill()
+
+
+class ExitWithParentTest(unittest.TestCase):
+    """--exit-with-parent (#479): a viewer started by the macOS app's launcher stops, and takes its
+    solvers with it, when the launcher is gone without having stopped it."""
+    # stands in for the launcher: starts the viewer, says its pid, and waits to be killed
+    PARENT = ("import subprocess, sys, time\n"
+              "p = subprocess.Popen(sys.argv[2:], start_new_session=sys.argv[1] == 'own-group')\n"
+              "print(p.pid, flush=True)\n"
+              "time.sleep(600)\n")
+
+    @staticmethod
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def run_case(self, group):
+        with tempfile.TemporaryDirectory() as td:
+            parent = subprocess.Popen(
+                [sys.executable, "-c", self.PARENT, group, sys.executable, "-u", os.path.join(HERE, "server.py"),
+                 "--solver", SOLVER, "--port", "0", "--library", os.path.join(td, "library"),
+                 "--jobs", os.path.join(td, "jobs"), "--exit-with-parent"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            pids = []
+            try:
+                viewer = int(parent.stdout.readline())
+                pids.append(viewer)
+                ready = parent.stdout.readline()
+                self.assertIn("UI on http://127.0.0.1:", ready)
+                base = "http://" + ready.split("UI on http://")[1].strip()
+                with urllib.request.urlopen(base + "/api/status", timeout=30) as r:
+                    self.assertTrue(json.loads(r.read())["ok"])
+                ps = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True).stdout
+                solvers = [int(a) for a, b in (ln.split() for ln in ps.splitlines() if ln.strip()) if int(b) == viewer]
+                pids += solvers
+                self.assertTrue(solvers, "the viewer has a solver running")
+                self.assertTrue(self.alive(viewer))
+                parent.kill()   # no chance to stop anything, as in a crash
+                parent.wait()
+                deadline = time.time() + 20
+                while time.time() < deadline and any(self.alive(p) for p in pids):
+                    time.sleep(0.1)
+                self.assertEqual([p for p in pids if self.alive(p)], [], "the viewer and its solvers are gone")
+                with self.assertRaises(OSError):   # and so is the port
+                    urllib.request.urlopen(base + "/api/status", timeout=5)
+            finally:
+                parent.kill()
+                parent.stdout.close()
+                for p in pids:   # only what a failed run left behind
+                    try:
+                        os.kill(p, 9)
+                    except OSError:
+                        pass
+
+    def test_in_a_process_group_of_its_own(self):
+        self.run_case("own-group")   # as the launcher starts it: the whole group is interrupted
+
+    def test_in_its_parents_process_group(self):
+        self.run_case("shared-group")   # then only the viewer shuts down (and stops its solvers)
 
 
 if __name__ == "__main__":

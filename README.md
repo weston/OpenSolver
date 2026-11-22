@@ -62,6 +62,50 @@ It builds the tarball with `git archive`, so the contents are exactly what is
 committed — no build output and no stray local files — and it warns when
 uncommitted or untracked files are being left out.
 
+### macOS installer
+
+`make macos-pkg` writes `dist/WSolver-<version>-macos-arm64.pkg` and a matching `.sha256`: an
+installer that puts **WSolver.app** in `/Applications` (#479). The app is the solver and the
+[viewer](#viewer) with everything they need, so the Mac it is installed on needs no compiler, no
+Python and no checkout. For Apple Silicon Macs with macOS 13.3 or later.
+
+```sh
+make macos-pkg
+shasum -a 256 -c dist/WSolver-0.1.0-macos-arm64.pkg.sha256     # in dist/
+open dist/WSolver-0.1.0-macos-arm64.pkg
+```
+
+Opening WSolver starts the viewer and opens it in the browser. A small window shows the address,
+with **Open in Browser** and **Quit**; closing the window leaves the viewer running (a click on
+the Dock icon brings the page back), and quitting WSolver stops the viewer and its solvers. It asks
+first while a solve or the job queue is running. The viewer takes port 8765 when that is free and
+any free port otherwise (when a viewer from a checkout is already running, say); the two then
+share the library and the job queue. What the viewer prints goes to
+`~/Library/Logs/WSolver/viewer.log` (File > Show Log).
+
+- **What is in the app.** A launcher (`packaging/macos/launcher.m`), a solver built for any Apple
+  Silicon Mac (`-mcpu=apple-m1` with LTO, where plain `make` builds for the machine it runs on),
+  the viewer's files and the two tools it uses, and a Python to run them: a
+  [python-build-standalone](https://github.com/astral-sh/python-build-standalone) build of CPython
+  3.13, pinned by checksum in `packaging/macos/build.sh`, downloaded on the first build into
+  `build/macos/cache/` and trimmed of what a viewer has no use for (Tk, pip, the test suites). To
+  build offline, set `PYTHON_TARBALL` to a copy of that file. About 11 MB to download, 30 MB installed.
+- **Your data is not in the app.** Ranges, tree configs and the job queue stay in `~/.wsolver`,
+  as for a viewer run from a checkout: installing a new version over an old one leaves them alone.
+- **It is not signed with a Developer ID or notarized.** The app is ad-hoc signed, which is what
+  lets it run on Apple Silicon at all; the package is unsigned. On the Mac that built it, it opens
+  like any other. On another Mac, a package that was downloaded or sent is held back by Gatekeeper
+  the first time: after trying to open it, allow it under System Settings > Privacy & Security >
+  **Open Anyway**. Signing needs an Apple Developer account, which the project does not have.
+- **Before it is packed, the app is run.** `build.sh` starts the staged app's viewer with the app's
+  own Python in an empty environment, builds and solves a small tree through it and checks that
+  nothing is left running afterwards (`packaging/macos/smoke.py`); a package is written only when
+  that passes. `make test` checks, without building anything, that every module the viewer imports
+  and every file its page loads is on the list of what goes in.
+- **Uninstalling:** quit WSolver, then
+  `sudo rm -rf /Applications/WSolver.app && sudo pkgutil --forget com.wsolver.WSolver.pkg`.
+  `~/.wsolver` and `~/Library/Logs/WSolver` are yours to keep or delete.
+
 `make release` leaves the default build untouched and produces a second binary,
 `./solver-release`, with link-time optimization. Results are identical to the
 default build.
@@ -743,6 +787,7 @@ src/equity.*       calc_eq family
 src/categories.*   range explorer
 src/upi*.cpp       command processor, node queries, save/load
 tests/             unit tests (eval, range, categories, solver, tree builder) + end-to-end UPI test
+packaging/macos/   what `make macos-pkg` builds WSolver.app and its installer from
 tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue;
                    fuzz.py: randomised invariant / concurrency / save / preflop / lock / truncated-save checks over UPI)
 ```

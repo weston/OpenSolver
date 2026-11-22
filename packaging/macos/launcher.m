@@ -61,6 +61,8 @@ static NSDictionary *getJSON(NSString *url) {
   pid_t _pid;            // the viewer (and its process group); 0 when there is none, or it has ended
   dispatch_source_t _ended;   // fires when the viewer process ends
   BOOL _quitting;
+  BOOL _asking;          // the "quit while it is running?" alert is up
+  BOOL _failed;          // the failure has been said (once is enough)
   NSString *_url;        // nil until the viewer is up
   NSString *_logPath;
   NSWindow *_win;
@@ -264,11 +266,12 @@ static NSDictionary *getJSON(NSString *url) {
 }
 
 - (void)viewerEnded {
-  if (_quitting) return;
+  if (_quitting || _asking || _failed) return;   // asking: said when that alert is answered, not on top of it
   [self failed:_url ? @"The viewer stopped unexpectedly." : @"The viewer did not start."];
 }
 
 - (void)failed:(NSString *)what {
+  _failed = YES;
   _url = nil;
   _open.enabled = NO;
   _status.stringValue = what;
@@ -337,7 +340,13 @@ static NSDictionary *getJSON(NSString *url) {
                                   : @"Quitting stops the job that is running.";
       [a addButtonWithTitle:@"Quit"];
       [a addButtonWithTitle:@"Cancel"];
-      if ([a runModal] != NSAlertFirstButtonReturn) return NSTerminateCancel;
+      _asking = YES;
+      NSModalResponse answer = [a runModal];
+      _asking = NO;
+      if (answer != NSAlertFirstButtonReturn) {
+        if (!_pid) dispatch_async(dispatch_get_main_queue(), ^{ [self viewerEnded]; });   // it ended meanwhile
+        return NSTerminateCancel;
+      }
     }
   }
   _quitting = YES;

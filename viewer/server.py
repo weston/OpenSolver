@@ -1667,8 +1667,10 @@ def main(argv=None):
                 srv.shutdown()
             time.sleep(10)   # a thread that will not end must not keep the process
             os._exit(0)
-        threading.Thread(target=watch, daemon=True).start()
     try:
+        if args.exit_with_parent is not None:
+            # started in here: its interrupt can come at once, and must find the clean-up below in place
+            threading.Thread(target=watch, daemon=True).start()
         srv.serve_forever()
     except KeyboardInterrupt:
         pass

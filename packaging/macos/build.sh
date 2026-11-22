@@ -52,9 +52,9 @@ SOLVER="${SOLVER:-build/macos/solver}"
 
 # The files are picked by what git tracks, but copied as they are here: say so when that differs
 # from what is committed (make dist, which packs the commit itself, warns the other way round).
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! git diff-index --quiet HEAD -- src viewer tools packaging Makefile; then
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! git diff --quiet HEAD -- src viewer tools packaging Makefile; then
   echo "WARNING: uncommitted changes to tracked files ARE in this package:"
-  git diff-index --name-only HEAD -- src viewer tools packaging Makefile | sed 's/^/  /'
+  git diff --name-only HEAD -- src viewer tools packaging Makefile | sed 's/^/  /'
 fi
 
 OUT=build/macos

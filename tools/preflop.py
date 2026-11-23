@@ -525,7 +525,8 @@ def _built_note(built: int | None, estimated: int, outcome_tables: str = "auto",
     if built is None:
         return ""
     if built > estimated:   # a larger one has the tables that `auto` adds when they fit
-        return f"the tree built: {built} MB with outcome tables at every level (they fit in the memory that is free)"
+        return (f"the tree built: {built} MB with outcome tables at every level (they fit in nine tenths of the memory "
+                "that is free)")
     if built != estimated:
         return f"the tree built: {built} MB"
     if outcome_tables == "auto" and tables_mb is not None and tables_mb > built:
@@ -697,13 +698,14 @@ def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
     started = time.time()
     if estimated_mb is None:
         # in a process of its own: the solver builds a whole second tree to answer, and in the solving
-        # process that would stand next to the real one
-        estimated_mb = estimate_mb(exe, s, flops)
+        # process that would stand next to the real one. Both trees, so that which one the solver
+        # builds can be said with no budget too
+        estimated_mb, tables_mb = estimates_mb(exe, s, flops)
         if log:
             mem = physical_memory_mb()
             print(f"{len(flops)} flops: estimated {estimated_mb} MB"
-                  + (f", more than this machine's {mem} MB" if mem and estimated_mb > mem else ""),
-                  file=sys.stderr, flush=True)
+                  + (f", more than this machine's {mem} MB" if mem and estimated_mb > mem else "")
+                  + _tables_note(estimated_mb, tables_mb, tables_mb), file=sys.stderr, flush=True)
     tree_error = None
     with Solver(exe) as u:
         for line in setup_lines(s, flops, root, outcome_tables):
@@ -1019,10 +1021,11 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
             print(text, file=sys.stderr, flush=True)
 
     if estimated_mb is None:
-        estimated_mb = estimate_mb(exe, s, flops)
+        estimated_mb, tables_mb = estimates_mb(exe, s, flops)
         mem = physical_memory_mb()
         say(f"{len(flops)} flops: estimated {estimated_mb} MB"
-            + (f", more than this machine's {mem} MB" if mem and estimated_mb > mem else ""))
+            + (f", more than this machine's {mem} MB" if mem and estimated_mb > mem else "")
+            + _tables_note(estimated_mb, tables_mb, tables_mb))
     with Solver(exe) as u:
         for line in setup_lines(s, flops, root, outcome_tables):
             u.need(line)
@@ -1318,7 +1321,8 @@ def pick_flops(a: argparse.Namespace, s: Settings) -> tuple[str, list[tuple[str,
     smallest tree's estimate in MB when one was made, the `set_outcome_tables` to build under, the
     estimate of the tree with outcome tables at every level when one was made.) The
     budget holds the tree that is built: the solver adds outcome tables to a tree with turn bets when
-    there is memory free for them (#496), so a tree that only fits without them is built `small`."""
+    they fit in nine tenths of the memory that is free (#496), so a tree that only fits without them
+    is built `small`."""
     if a.flops:
         name, flops = choose_flops(a.flops)
         if not a.memory:

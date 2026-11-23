@@ -482,20 +482,20 @@ class PreflopBuildTest(unittest.TestCase):
         form = dict(FORM, stack="5", limp=False, depth="turn")
         st, e = self.v.req("/api/preflop/estimate", "POST", form)
         self.assertEqual(st, 200, e)
-        # a build is refused by the smallest tree, the one that can always be built: a machine that holds
-        # it and not the tree with the tables builds, one MB under the smallest tree does not
+        # a build is refused by the smallest tree, the one that can always be built: a machine of exactly
+        # its size, which does not hold the tree with the tables, builds; one MB under it does not
         machine = self.pf.physical_memory_mb
         try:
             self.pf.physical_memory_mb = lambda: e["mb"] - 1
             st, d = self.v.req("/api/preflop/build", "POST", form)
             self.assertEqual(st, 400, d)
             self.assertIn(f"This tree is about {e['mb']:,} MB and this machine has {e['mb'] - 1:,} MB", d["error"])
-            self.pf.physical_memory_mb = lambda: e["mb_tables"] - 1
+            self.pf.physical_memory_mb = lambda: e["mb"]
             st, d = self.v.req("/api/preflop/build", "POST", form)
         finally:
             self.pf.physical_memory_mb = machine
         self.assertEqual(st, 200, d)
-        self.assertEqual(d["memory_mb"], e["mb_tables"] - 1)
+        self.assertEqual(d["memory_mb"], e["mb"])
         self.assertEqual((d["mb"], d["mb_tables"]), (e["mb"], e["mb_tables"]))
         self.assertLess(d["mb"], d["mb_tables"])
         self.assertEqual(d["built_mb"], d["mb_tables"])
@@ -509,14 +509,18 @@ class PreflopBuildTest(unittest.TestCase):
         import re
         static = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
         src = {n: open(os.path.join(static, n)).read() for n in os.listdir(static) if n.endswith(".js")}
-        given = set(re.findall(r"^export (?:async )?(?:function|const|let|class) (\w+)", src["preflop.js"], re.M))
-        users = 0
-        for name, text in src.items():
-            for names in re.findall(r'import \{([^}]*)\} from "\./preflop\.js"', text):
-                users += 1
-                for taken in (n.strip() for n in names.split(",")):
-                    self.assertIn(taken, given, f"{name} imports {taken} from preflop.js")
+        given = {name: set(re.findall(r"^export (?:async )?(?:function\*?|const|let|class) (\w+)", text, re.M))
+                 | {n.split(" as ")[-1].strip() for names in re.findall(r"^export \{([^}]*)\}", text, re.M) for n in names.split(",") if n.strip()}
+                 for name, text in src.items()}
+        users, others = 0, 0
+        for name, text in src.items():   # a name no module gives stops the whole page: its modules do not link
+            for names, source in re.findall(r'import \{([^}]*)\} from "\./(\w+\.js)"', text):
+                users += source == "preflop.js"
+                others += source != "preflop.js"
+                for taken in (n.split(" as ")[0].strip() for n in names.split(",") if n.strip()):
+                    self.assertIn(taken, given[source], f"{name} imports {taken} from {source}")
         self.assertGreaterEqual(users, 4)
+        self.assertGreaterEqual(others, 20)
         build, form = src["build.js"], src["preflop_build.js"]
         self.assertIn("info(builtLine(b));", build)
         for other in ("builtSize", "mb_tables", "built_mb", "fmtMemory"):

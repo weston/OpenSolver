@@ -831,18 +831,18 @@ def integration(exe):
               f"estimates: the two trees of a tree with turn bets as they are built ({small} and {with_tables} MB), "
               "one figure where the turn has no bets")
 
-        def budget_solve(name, mb, free=None, checked=None):
-            """solve under --memory of `mb` megabytes, the solver told that `free` MB are free -> (status,
-            stderr, the result). With `checked`, a result's name: `check` of that result instead, and its
-            report."""
+        def budget_solve(name, mb, free=None, checked=None, flops=flop_file, opts=turn):
+            """solve under --memory of `mb` megabytes (None: without --memory), the solver told that `free`
+            MB are free -> (status, stderr, the result). With `checked`, a result's name: `check` of that
+            result instead, and its report. `flops`: None leaves the subset to the tool."""
             path = os.path.join(d, name)
             old = os.environ.get("WSOLVER_FREE_MB")
             if free is not None:
                 os.environ["WSOLVER_FREE_MB"] = str(free)
             command = ("check", os.path.join(d, checked), "--report", path) if checked else ("solve", path)
+            given = (("--flops", flops) if flops else ()) + (("--memory", repr(mb / 1024)) if mb is not None else ())
             try:
-                status, _, err = run(*command, "--flops", flop_file, "--memory", repr(mb / 1024), "--accuracy", "50",
-                                     "--time", "1", *turn)
+                status, _, err = run(*command, *given, "--accuracy", "50", "--time", "1", *opts)
             finally:
                 if old is None:
                     os.environ.pop("WSOLVER_FREE_MB", None)
@@ -876,8 +876,23 @@ def integration(exe):
         check(status == 0 and (r.get("estimated_mb"), r.get("built_mb"), r.get("outcome_tables")) == (small, with_tables, "auto")
               and f"the tree built: {with_tables} MB" in err,
               "a budget that holds the tables leaves the choice to the solver, and the report has the solver's count of the tree")
+        status, err, r = budget_solve("short.report.json", with_tables, with_tables, checked="between.json")
+        check(status == 0 and (r.get("built_mb"), r.get("outcome_tables")) == (small, "auto")
+              and f"the tree built: {small} MB without outcome tables at every level (the {with_tables} MB" in err,
+              "check says it too when too little is free for the tables")
         status, err, r = budget_solve("over.report.json", small - 1, 4096, checked="between.json")
         check(status == 1 and f"estimated at {small} MB" in err and not r, "and flops over the budget are refused, with no report")
+        # without a budget the choice is the solver's, and the tool says what it was
+        left_out = f"the tree built: {small} MB without outcome tables at every level (the {with_tables} MB"
+        both = f"flops: estimated {small} MB; {with_tables} MB with outcome tables at every level"
+        runs = [budget_solve("free_short.json", None, with_tables), budget_solve("free_room.json", None, 4096),
+                budget_solve("free_short.report.json", None, with_tables, checked="between.json")]
+        check(all(status == 0 and both in err and r.get("estimated_mb") == small and r.get("outcome_tables") == "auto"
+                  for status, err, r in runs)
+              and [r.get("built_mb") for _, _, r in runs] == [small, with_tables, small]
+              and [left_out in err for _, err, _ in runs] == [True, False, True]
+              and f"the tree built: {with_tables} MB with outcome tables at every level" in runs[1][1],
+              "--flops without --memory: both sizes are estimated, and solve and check say which tree the solver built")
         status, out, err = run("script", "--flops", flop_file, "--memory", repr(between / 1024), *turn)
         lines = out.splitlines()
         status2, out2, err2 = run("script", "--flops", flop_file, "--memory", repr(with_tables / 1024), *turn)
@@ -900,6 +915,19 @@ def integration(exe):
               == [(True, True), (False, False)],
               f"without --flops: 10 flops by the smallest tree ({small10} MB), built without the tables one MB under "
               f"the {with10} they take and left to the solver at it")
+        own5 = ("--stack", "5", "--no-limp", "--depth", "turn", "--solver", exe)
+        status, err, r = budget_solve("own_small.json", with10 - 1, 4096, flops=None, opts=own5)
+        check(status == 0 and "the tree built" not in err
+              and [r.get(key) for key in ("flop_count", "estimated_mb", "built_mb", "outcome_tables")] == [10, small10, small10, "small"],
+              "solve on the tool's own subset builds within the budget: without the tables one MB under them, whatever is free")
+        status, err, r = budget_solve("own_short.json", with10, with10, flops=None, opts=own5)
+        check(status == 0 and [r.get(key) for key in ("flop_count", "built_mb", "outcome_tables")] == [10, small10, "auto"]
+              and f"the tree built: {small10} MB without outcome tables at every level (the {with10} MB" in err,
+              "and says when the solver left the tables out of it for lack of free memory")
+        status, err, r = budget_solve("own_small.report.json", with10 - 1, 4096, checked="own_small.json", flops=None, opts=own5)
+        check(status == 0 and "the tree built" not in err
+              and [r.get(key) for key in ("estimated_mb", "built_mb", "outcome_tables")] == [small10, small10, "small"],
+              "check without --flops takes the budget the same way")
         # the budget nobody typed, half of the machine's memory, decides the same way
         machine = preflop.physical_memory_mb
         try:

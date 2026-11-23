@@ -175,8 +175,8 @@ class Estimates:
     """Megabytes of a preflop tree, asked of a solver process of its own: with a preflop tree set up,
     `estimate_tree` builds the whole tree but its strategies to count it, and in the viewer's solver that
     would stand beside the tree being looked at. Two figures (#504): the smallest tree, and the tree with
-    outcome tables at every level, which is the one the solver builds when there is memory free for it
-    (`set_outcome_tables auto`, the state a build here runs in). The same process says whether the two ranges can be dealt
+    outcome tables at every level, which is the one the solver builds when it fits in nine tenths of the
+    memory that is free (`set_outcome_tables auto`, the state a build here runs in). The same process says whether the two ranges can be dealt
     against each other, so a build is refused before the viewer's solver is touched. Of the form's own
     estimates one runs at a time, a newer request ends the older one; the estimate a build waits for is
     not one of those, nothing ends it."""

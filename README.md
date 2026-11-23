@@ -427,7 +427,9 @@ takes more than the figure: 462 MB at its peak for the 200 flops estimated at 36
 `turn` estimated at 802 (1,004 with the turn tables, estimated at 888). The estimate is not free at
 `turn` and `river`: the solver builds the tree without the
 strategy storage to count it, boards included (down to `flop` there are none to build, and all flops
-take half a second). `--flops` takes a number we ship a
+take half a second; the default command's choice among the shipped subsets, which counts one after
+another until one is over the budget, took 109 seconds on a busy 16 GB machine and 3.6 GB at its
+peak, and the one count of 100 flops 21 seconds and 1.9 GB). `--flops` takes a number we ship a
 file for (10, 25, 50, 100, 200), a flop file (`flop:weight` lines, the format of `flops/`), or `all` for
 the 1,755 suit classes with the number of flops each stands for. Without it the tool takes the largest
 shipped subset whose estimate is within `--memory` gigabytes (default half of the machine's, which leaves
@@ -600,8 +602,8 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     chosen number of flops and then for the other numbers (a row under the button; a click on one takes
     it, and all 1,755 flops are only asked for when chosen, that one takes a minute). With bets on
     the turn there are two sizes, and the row shows both ("802–888 MB"): the smallest tree, and the
-    tree with the tables that make a solve faster, which the solver builds when that much memory is
-    free as it builds. **Build**
+    tree with the tables that make a solve faster, which the solver builds when it fits in nine tenths
+    of the memory that is free as it builds. **Build**
     does that first too, and refuses a tree whose smallest size is larger than the machine's memory
     before it touches the one that is there; its line then says the size of the tree that was built
     and which of the two it is. The target is in **bb/100**, and the chart, the top bar and the Exploitability

@@ -4,7 +4,7 @@
 
 import { get, post, prefs } from "./api.js";
 import { el } from "./cards.js";
-import { memoryNote, fmtMemoryRange, streetsBet, flopsLabel, nextEstimate, treeSummary } from "./preflop.js";
+import { memoryNote, fmtMemoryRange, estimateCell, streetsBet, flopsLabel, nextEstimate, treeSummary } from "./preflop.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -130,7 +130,7 @@ export function noteEstimate(form, e) {
   if (!defaults || sig !== memSig(readPreflopForm())) return;   // the form changed while the server worked
   if (!mem || mem.sig !== sig) { mem = { sig, machine: 0, cells: {}, running: false, error: null }; memRun++; }
   mem.machine = e.memory_mb || 0;
-  mem.cells[form.flops] = { mb: e.mb, mbTables: e.mb_tables, flops: e.flops };
+  mem.cells[form.flops] = estimateCell(e);
   mem.error = null;
   renderMem();
 }
@@ -151,7 +151,7 @@ async function estimate() {
       const e = await post("/api/preflop/estimate", { ...form, flops: c });
       if (run !== memRun || mem !== mine) return;   // the form is another one now, or a newer run took over
       mine.machine = e.memory_mb || 0;
-      mine.cells[c] = { mb: e.mb, mbTables: e.mb_tables, flops: e.flops };
+      mine.cells[c] = estimateCell(e);
       renderMem();
     }
   } catch (e) {

@@ -217,7 +217,7 @@ class Estimates:
             for line in lines:
                 u.need(line)
             mb = pf._estimate(u)
-            u.need("set_outcome_tables fast")   # the second count is of what the first one built: no time to speak of
+            u.need("set_outcome_tables fast")   # a count of its own (seconds at river depth): nothing of the first is used
             with_tables = pf._estimate(u)
             order = " ".join(u.cmd("show_hand_order")).split()
             sb, bb = (pf._floats(u.cmd(f"show_range {who} r:0"), vsrv.NUM_COMBOS, "show_range r:0")[0]

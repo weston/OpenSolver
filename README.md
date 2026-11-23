@@ -430,12 +430,15 @@ strategy storage to count it, boards included (down to `flop` there are none to 
 take half a second). `--flops` takes a number we ship a
 file for (10, 25, 50, 100, 200), a flop file (`flop:weight` lines, the format of `flops/`), or `all` for
 the 1,755 suit classes with the number of flops each stands for. Without it the tool takes the largest
-shipped subset whose estimate is under `--memory` gigabytes (default half of the machine's, which leaves
+shipped subset whose estimate is within `--memory` gigabytes (default half of the machine's, which leaves
 room for that) and says which. `--memory` holds the tree that is built: where the smallest tree is
-under it and the tree with the tables is not, the tool builds the smallest (`set_outcome_tables small`,
-in the script it prints too), and `--flops` with a `--memory` its smallest tree is over is refused. The
-result records both figures, `estimated_mb` (the smallest tree) and `built_mb` (the solver's count of
-the one it built). What a subset costs, for the default tree: the preflop strategy solved on it, played in the
+within it and the tree with the tables is not, the tool builds the smallest (`set_outcome_tables small`,
+in the script it prints too), and `--flops` with a `--memory` its smallest tree is over is refused.
+That is the default command's case on a 16 GB machine: 100 flops down to `turn` are 7,948 MB, within
+the 8,192 of the default, and 8,854 with the tables, so they are built without. Where the choice is
+left to the solver it adds the tables when they fit in nine tenths of the memory that is free, and
+the tool says which tree was built. The result records both figures, `estimated_mb` (the smallest
+tree) and `built_mb` (the solver's count of the one it built). What a subset costs, for the default tree: the preflop strategy solved on it, played in the
 game with all 1,755 flops against an opponent who knows it, gives up this many bb/100 (`check`, below;
 both solves to 0.02, each figure good to 0.04):
 

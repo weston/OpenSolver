@@ -485,9 +485,10 @@ def _estimate(u: Solver) -> int:
 def estimates_mb(exe: str, s: Settings, flops: list[tuple[str, float]]) -> tuple[int, int]:
     """What the solver says the tree takes (16-bit storage), without building it: the smallest tree, and
     the tree with outcome tables at every level (`set_outcome_tables fast`), which is the one the solver
-    builds on its own when that fits in the memory that is free (`auto`, #496). One figure twice where
-    the smallest tree has the tables already (no bets on the turn). The second costs no time to speak
-    of: what the first one built to count is still there."""
+    builds on its own when that fits in nine tenths of the memory that is free (`auto`, #496). One
+    figure twice where the smallest tree has the tables already (no bets on the turn). The two are
+    counts of their own in one process, with nothing shared: at turn depth the smallest tree's takes a
+    second or two and the other hundredths of one, at river depth each takes seconds."""
     with Solver(exe) as u:
         for line in script(s, flops):
             u.need(line)
@@ -517,10 +518,20 @@ def built_mb(u: Solver) -> int | None:
     return None
 
 
-def _built_note(built: int, estimated: int) -> str:
-    # the estimate is the smallest tree's: a larger one has the tables that `auto` adds when they fit
-    return f"the tree built: {built} MB" + (" with outcome tables at every level (they fit in the memory that is free)"
-                                            if built > estimated else "")
+def _built_note(built: int | None, estimated: int, outcome_tables: str = "auto", tables_mb: int | None = None) -> str:
+    """Which tree the solver built, where the estimate does not say it already: "" when the tree is the
+    estimate's and there was no other to build. `estimated`: the smallest tree; `tables_mb`: the tree
+    with outcome tables at every level, when that was estimated too."""
+    if built is None:
+        return ""
+    if built > estimated:   # a larger one has the tables that `auto` adds when they fit
+        return f"the tree built: {built} MB with outcome tables at every level (they fit in the memory that is free)"
+    if built != estimated:
+        return f"the tree built: {built} MB"
+    if outcome_tables == "auto" and tables_mb is not None and tables_mb > built:
+        return (f"the tree built: {built} MB without outcome tables at every level (the {tables_mb} MB with them "
+                "are more than nine tenths of the memory that is free)")
+    return ""
 
 
 def setup_lines(s: Settings, flops: list[tuple[str, float]], root: Node | None = None,
@@ -681,7 +692,7 @@ def solve_on(u: Solver, s: Settings, accuracy_bb100: float, seconds: int, log: b
 
 def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]], accuracy_bb100: float,
           seconds: int, threads: int | None, save_tree: str | None, estimated_mb: int | None = None,
-          log: bool = True, outcome_tables: str = "auto") -> dict:
+          log: bool = True, outcome_tables: str = "auto", tables_mb: int | None = None) -> dict:
     root = build_tree(s)
     started = time.time()
     if estimated_mb is None:
@@ -701,8 +712,8 @@ def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
             u.cmd(f"set_threads {threads}")
         u.need("add_all_flops")
         built = built_mb(u)
-        if log and built is not None and built != estimated_mb:
-            print(_built_note(built, estimated_mb), file=sys.stderr, flush=True)
+        if log and _built_note(built, estimated_mb, outcome_tables, tables_mb):
+            print(_built_note(built, estimated_mb, outcome_tables, tables_mb), file=sys.stderr, flush=True)
         order = " ".join(u.cmd("show_hand_order")).split()
         sb, bb = (_floats(u.cmd(f"show_range {who} r:0"), 1326, "show_range r:0")[0] for who in ("IP", "OOP"))
         if len(order) != 1326 or not ranges_meet(order, sb, bb):
@@ -993,7 +1004,7 @@ def _sum(r: dict[str, float], s: Settings) -> float:
 
 def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]], results: list[tuple[str, dict]],
           accuracy_bb100: float, seconds: int, threads: int | None, estimated_mb: int | None = None,
-          log: bool = True, outcome_tables: str = "auto") -> dict:
+          log: bool = True, outcome_tables: str = "auto", tables_mb: int | None = None) -> dict:
     """What each result's preflop strategy gives up in the game with these flops. One player at a time:
     the player's preflop decisions are the result's, locked; everything else (the opponent's preflop
     play, all play after the flop) is solved against them; the value of that game for the player, under
@@ -1019,8 +1030,8 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
             u.cmd(f"set_threads {threads}")
         u.need("add_all_flops")
         built = built_mb(u)
-        if built is not None and built != estimated_mb:
-            say(_built_note(built, estimated_mb))
+        if _built_note(built, estimated_mb, outcome_tables, tables_mb):
+            say(_built_note(built, estimated_mb, outcome_tables, tables_mb))
         order = " ".join(u.cmd("show_hand_order")).split()
         sb, bb = (_floats(u.cmd(f"show_range {who} r:0"), 1326, "show_range r:0")[0] for who in ("IP", "OOP"))
         if len(order) != 1326 or not ranges_meet(order, sb, bb):
@@ -1296,28 +1307,30 @@ def _tables_note(small: int, with_tables: int, budget: int) -> str:
     if with_tables == small:
         return ""
     if with_tables <= budget:
-        return f"; {with_tables} MB with outcome tables at every level, which the solver builds when they fit in free memory"
+        return (f"; {with_tables} MB with outcome tables at every level, which the solver builds when they fit in "
+                "nine tenths of the memory that is free")
     return (f"; {with_tables} MB with outcome tables at every level, over the {budget}: built without them "
             "(set_outcome_tables small)")
 
 
-def pick_flops(a: argparse.Namespace, s: Settings) -> tuple[str, list[tuple[str, float]], list[str], int | None, str]:
+def pick_flops(a: argparse.Namespace, s: Settings) -> tuple[str, list[tuple[str, float]], list[str], int | None, str, int | None]:
     """`--flops`, or the largest shipped subset the memory budget holds. (name, flops, notes, the
-    smallest tree's estimate in MB when one was made, the `set_outcome_tables` to build under.) The
+    smallest tree's estimate in MB when one was made, the `set_outcome_tables` to build under, the
+    estimate of the tree with outcome tables at every level when one was made.) The
     budget holds the tree that is built: the solver adds outcome tables to a tree with turn bets when
     there is memory free for them (#496), so a tree that only fits without them is built `small`."""
     if a.flops:
         name, flops = choose_flops(a.flops)
         if not a.memory:
-            return name, flops, [], None, "auto"
+            return name, flops, [], None, "auto", None
         budget = int(a.memory * 1024)
         small, with_tables = estimates_mb(a.solver, s, flops)
         tables = tables_within(small, with_tables, budget)
         if tables is None:
             raise PreflopError(f"{len(flops)} flops are estimated at {small} MB with this postflop tree, over "
                                f"--memory's {budget} MB: take fewer flops, bet on fewer streets (--depth), or raise --memory")
-        note = f"{len(flops)} flops: estimated {small} MB, under --memory's {budget} MB" + _tables_note(small, with_tables, budget)
-        return name, flops, [note], small, tables
+        note = f"{len(flops)} flops: estimated {small} MB, within --memory's {budget} MB" + _tables_note(small, with_tables, budget)
+        return name, flops, [note], small, tables, with_tables
     budget = int(a.memory * 1024) if a.memory else (physical_memory_mb() or 16384) // 2
     # the budget is for the estimate; the process takes more (README), which the default's half leaves room for
     best = None
@@ -1333,10 +1346,11 @@ def pick_flops(a: argparse.Namespace, s: Settings) -> tuple[str, list[tuple[str,
         raise PreflopError(f"not even {SHIPPED[0]} flops fit in {budget} MB with this postflop tree: "
                            "bet on fewer streets (--depth), or raise --memory")
     count, small, with_tables = best
-    note = (f"{count} flops: the largest shipped subset under {budget} MB "
+    note = (f"{count} flops: the largest shipped subset within {budget} MB "
             f"({'--memory' if a.memory else 'half of this machine'}); estimated {small} MB"
             + _tables_note(small, with_tables, budget))
-    return f"flops/wsolver_{count}.txt", read_flop_file(flop_path(count)), [note], small, tables_within(small, with_tables, budget)
+    return (f"flops/wsolver_{count}.txt", read_flop_file(flop_path(count)), [note], small,
+            tables_within(small, with_tables, budget), with_tables)
 
 
 def estimate_table(a: argparse.Namespace, s: Settings) -> list[str]:
@@ -1411,7 +1425,7 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("--flops", help=f"a number we ship a subset for ({', '.join(map(str, SHIPPED))}), a flop file, "
                    "or `all`; default: the largest shipped subset that fits --memory")
     g.add_argument("--memory", type=float, help="GB the estimate of the tree that is built may take: the tool "
-                   "chooses the subset under it (default: half of this machine's), --flops over it is refused, "
+                   "chooses the largest shipped subset within it (default: half of this machine's), --flops over it is refused, "
                    "and the outcome tables the solver adds to a tree with turn bets are left out when they "
                    "would pass it (the solver process takes about 1.1 times the estimate)")
     g.add_argument("--limit", type=float, help="estimate: stop a row once a cell is over this many GB")
@@ -1480,7 +1494,7 @@ def main(argv: list[str] | None = None) -> int:
             raise PreflopError("--threads is 1 or more")
         for name in ("memory", "limit"):
             value = getattr(a, name)
-            if value is not None and not (value > 0 and math.isfinite(value)):
+            if value is not None and not (value > 0 and math.isfinite(value * 1024)):   # megabytes are counted
                 raise PreflopError(f"--{name} is a number of gigabytes over 0")
         if a.accuracy is None:
             a.accuracy = CHECK_ACCURACY if a.command == "check" else SOLVE_ACCURACY
@@ -1527,7 +1541,7 @@ def main(argv: list[str] | None = None) -> int:
                 _fits(path, r, s, [n for n in walk(root) if n.kind == "decision"])
             if a.report:
                 _can_write(a.report, "--report")
-        name, flops, notes, estimated, tables = pick_flops(a, s)
+        name, flops, notes, estimated, tables, tables_mb = pick_flops(a, s)
         for note in notes:
             print(note, file=sys.stderr)
         if a.command == "script":
@@ -1535,7 +1549,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.command == "check":
             report = check(a.solver, s, name, flops, results, a.accuracy, a.time, a.threads, estimated,
-                           outcome_tables=tables)
+                           outcome_tables=tables, tables_mb=tables_mb)
             if a.report:
                 try:
                     with open(a.report, "w") as f:
@@ -1545,7 +1559,7 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(check_text(report)))
             return 0
         result = solve(a.solver, s, name, flops, a.accuracy, a.time, a.threads, a.save_tree, estimated,
-                       outcome_tables=tables)
+                       outcome_tables=tables, tables_mb=tables_mb)
         try:
             with open(a.args[0], "w") as f:
                 json.dump(result, f)

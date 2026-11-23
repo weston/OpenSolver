@@ -117,13 +117,14 @@ export function fmtMemoryRange(mb, mbTables) {
 }
 
 /** What a memory estimate says. mb is the smallest tree; mbTables, when larger, the tree with the tables
- *  the solver adds when that much memory is free as it builds (#504: either can be what a build takes).
+ *  the solver adds when they fit in nine tenths of the memory that is free as it builds (#504: either
+ *  can be what a build takes); one figure where the two print the same.
  *  fits is false when even the smallest tree is larger than all of the machine's memory (the one case
  *  that is certain; below it the solver decides when it builds). */
 export function memoryNote(mb, machineMb, flops, mbTables) {
   const fits = !(machineMb > 0) || mb <= machineMb;
-  const size = mbTables > mb
-    ? `about ${fmtMemory(mb)}, or ${fmtMemory(mbTables)} with the tables that make a solve faster (built when that much memory is free)`
+  const size = mbTables > mb && fmtMemory(mbTables) !== fmtMemory(mb)
+    ? `about ${fmtMemory(mb)}, or ${fmtMemory(mbTables)} with the tables that make a solve faster (built when they fit in nine tenths of the memory that is free)`
     : `about ${fmtMemory(mb)}`;
   const parts = [`${Number(flops).toLocaleString("en-US")} flop${flops === 1 ? "" : "s"}`, size];
   if (machineMb > 0) parts.push(fits ? `this machine has ${fmtMemory(machineMb)}` : `more than this machine's ${fmtMemory(machineMb)}`);
@@ -136,7 +137,19 @@ export function builtSize(b) {
   const built = Number.isFinite(b.built_mb) ? b.built_mb : b.mb;
   if (!(b.mb_tables > b.mb) || !Number.isFinite(b.built_mb)) return `about ${fmtMemory(built)}`;
   return `about ${fmtMemory(built)}, ${built > b.mb ? "with the tables that make a solve faster"
-    : "without the tables that make a solve faster (not that much memory free)"}`;
+    : "without the tables that make a solve faster (they did not fit in nine tenths of the memory that was free)"}`;
+}
+
+/** The line after a build, from the server's answer ({node_count, flops, mb, mb_tables, built_mb}). */
+export function builtLine(b) {
+  const total = /TOTAL\D*(\d+)/.exec(b.node_count);
+  return `Built: ${total ? Number(total[1]).toLocaleString("en-US") + " nodes" : "ok"} · ${Number(b.flops).toLocaleString("en-US")} flops · ${builtSize(b)}`;
+}
+
+/** What the form keeps of an estimate the server gave ({mb, mb_tables, flops}: Build answers with one
+ *  too), under the names `memoryNote` and `fmtMemoryRange` take. */
+export function estimateCell(e) {
+  return { mb: e.mb, mbTables: e.mb_tables, flops: e.flops };
 }
 
 /** The streets a tree bets on when its betting goes through `depth` (none, flop, turn or river):

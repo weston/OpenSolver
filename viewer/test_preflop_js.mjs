@@ -1,7 +1,7 @@
 // Unit test for what Study knows about preflop trees (viewer/static/preflop.js, #490).
 // usage: node viewer/test_preflop_js.mjs
 import { dealName, seat, flopCards, sortFlops, parseFilter, flopMatches, preflopRaise, bigBlindOf, bb100ToChips, chipsToBb100,
-  fmtMemory, fmtMemoryRange, memoryNote, builtSize, streetsBet, flopsLabel, flopsCount, nextEstimate, treeSummary } from "./static/preflop.js";
+  fmtMemory, fmtMemoryRange, memoryNote, builtSize, builtLine, estimateCell, streetsBet, flopsLabel, flopsCount, nextEstimate, treeSummary } from "./static/preflop.js";
 
 let fails = 0;
 const check = (cond, msg) => { console.log((cond ? "  ok: " : "  FAIL: ") + msg); if (!cond) fails++; };
@@ -72,19 +72,32 @@ check(unknown.fits && unknown.text === "1,755 flops · about 396 MB" && memoryNo
   "memoryNote: a machine of unknown size refuses nothing; a tree of exactly the machine's size is not refused here");
 // two trees where the turn has bets (#504): the smallest, and the one with the tables the solver adds when memory is free
 const two = memoryNote(802, 16384, 10, 888), one = memoryNote(396, 16384, 25, 396), tight = memoryNote(802, 850, 10, 888);
-check(two.fits && two.text === "10 flops · about 802 MB, or 888 MB with the tables that make a solve faster (built when that much memory is free) · this machine has 16.0 GB"
+check(two.fits && two.text === "10 flops · about 802 MB, or 888 MB with the tables that make a solve faster (built when they fit in nine tenths of the memory that is free) · this machine has 16.0 GB"
   && one.text === fit.text && memoryNote(396, 16384, 25, undefined).text === fit.text && memoryNote(396, 16384, 25, null).text === fit.text
   && memoryNote(396, 16384, 25, 300).text === fit.text, `memoryNote: both sizes where they differ, one where they do not (${two.text})`);
 check(tight.fits && !memoryNote(802, 801, 10, 888).fits, "memoryNote: only a smallest tree over the machine's memory is refused");
+check(memoryNote(1500, 16384, 3, 1540).text === "3 flops · about 1.5 GB · this machine has 16.0 GB",
+  "memoryNote: two sizes that print the same are one figure, as in the row");
 check(fmtMemoryRange(802, 888) === "802–888 MB" && fmtMemoryRange(2039, 2270) === "2.0–2.2 GB" && fmtMemoryRange(980, 1100) === "980 MB – 1.1 GB"
   && fmtMemoryRange(364, 364) === "364 MB" && fmtMemoryRange(85988, 86184) === "84.0–84.2 GB" && fmtMemoryRange(3194, 3195) === "3.1 GB"
   && fmtMemoryRange(18, undefined) === "18 MB" && fmtMemoryRange(18, null) === "18 MB" && fmtMemoryRange(NaN, 5) === "—",
   `fmtMemoryRange: the smallest tree to the one with the tables, one figure where they print the same (${fmtMemoryRange(802, 888)})`);
 check(builtSize({ mb: 802, mb_tables: 888, built_mb: 888 }) === "about 888 MB, with the tables that make a solve faster"
-  && builtSize({ mb: 802, mb_tables: 888, built_mb: 802 }) === "about 802 MB, without the tables that make a solve faster (not that much memory free)"
+  && builtSize({ mb: 802, mb_tables: 888, built_mb: 802 }) === "about 802 MB, without the tables that make a solve faster (they did not fit in nine tenths of the memory that was free)"
+  && builtSize({ mb: 802, mb_tables: 888, built_mb: 850 }) === "about 850 MB, with the tables that make a solve faster"
   && builtSize({ mb: 18, mb_tables: 18, built_mb: 18 }) === "about 18 MB" && builtSize({ mb: 802, mb_tables: 888, built_mb: null }) === "about 802 MB"
   && builtSize({ mb: 18 }) === "about 18 MB" && builtSize({ mb: 18, built_mb: 19 }) === "about 19 MB",
-  "builtSize: what the solver counted for the built tree, and which of the two trees it is");
+  "builtSize: what the solver counted for the built tree, and which of the two trees it is (any count over the smallest has tables)");
+const answer = { node_count: "Flop: 1\nTOTAL: 13201", flops: 1755, mb: 802, mb_tables: 888, built_mb: 888, memory_mb: 16384, chips: 100 };
+check(builtLine(answer) === "Built: 13,201 nodes · 1,755 flops · about 888 MB, with the tables that make a solve faster"
+  && builtLine({ ...answer, node_count: "?", built_mb: 802 }).startsWith("Built: ok · 1,755 flops · about 802 MB, without the tables")
+  && builtLine({ node_count: "TOTAL: 5", flops: 10, mb: 18, mb_tables: 18, built_mb: 18 }) === "Built: 5 nodes · 10 flops · about 18 MB",
+  `builtLine: the line after a build has the size of the tree that was built (${builtLine(answer)})`);
+const cell = estimateCell(answer);
+check(same(cell, { mb: 802, mbTables: 888, flops: 1755 }) && fmtMemoryRange(cell.mb, cell.mbTables) === "802–888 MB"
+  && memoryNote(cell.mb, 16384, cell.flops, cell.mbTables).text.includes("or 888 MB with the tables")
+  && same(estimateCell({ mb: 18, flops: 10 }), { mb: 18, mbTables: undefined, flops: 10 }),
+  "estimateCell: the form keeps both sizes of the server's answer, under the names the note and the row read");
 check(same(streetsBet("none"), { flop: false, turn: false, river: false }) && same(streetsBet("flop"), { flop: true, turn: false, river: false })
   && same(streetsBet("turn"), { flop: true, turn: true, river: false }) && same(streetsBet("river"), { flop: true, turn: true, river: true })
   && same(streetsBet("x"), { flop: false, turn: false, river: false }), "streetsBet: the streets up to the depth");

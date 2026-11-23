@@ -1706,6 +1706,173 @@ def check_compact_rows(exe):
     shutil.rmtree(td, ignore_errors=True)
 
 
+def check_free_memory(exe):
+    """#508: what the solver decides from the memory that is free, on any machine. WSOLVER_FREE_MB stands in
+    for the figure, so both sides of each choice are reached: the storage of a postflop tree, a build
+    refused, the outcome tables of a preflop tree at a build and at a load (#496), the switch of a stalled
+    16-bit solve to 32-bit storage, and ICM on a preflop tree that has no showdown boards (#494)."""
+    print("[choices made from the memory that is free]")
+    every = "22+,A2s+,K2s+,Q2s+,J2s+,T2s+,92s+,82s+,72s+,62s+,52s+,42s+,32s,A2o+,K2o+,Q2o+,J2o+,T2o+,92o+,82o+,72o+,62o+,52o+,42o+,32o"
+    roomy = 1 << 40  # the most that is taken: "with room" below is also "the margins do not wrap there"
+
+    def run(lines, free):
+        env = dict(os.environ)
+        env.pop("WSOLVER_FREE_MB", None)
+        if free is not None:
+            env["WSOLVER_FREE_MB"] = str(free)
+        # four threads: on x86, auto also takes 16-bit storage when the 32-bit tree times the threads reaches
+        # 2 GB (build_from), which the 58 MB tree below would on a machine of 36 threads or more
+        p = subprocess.run([exe], input="\n".join(["set_end_string END", "set_threads 4"] + lines + ["exit"]) + "\n",
+                           capture_output=True, text=True, timeout=600, env=env)
+        return p.stdout
+
+    def answers(out):  # the answer of each command, the solver's own reports left out
+        return [b.strip() for b in out.split("END") if b.strip() and not b.strip().startswith(("SOLVER", "running time"))]
+
+    def needed(out):  # MB of each tree that was in memory when estimate_rebuild_tree was asked
+        return [int(x) for x in re.findall(r"Memory needed: (\d+) MB", out)]
+
+    def results(out):  # the five figures of the last calc_results
+        blocks = [b for b in answers(out) if b.startswith("EV OOP")]
+        return [float(l.split(": ")[1]) for l in blocks[-1].split("\n")[:5]] if blocks else []
+
+    near = lambda a, b: len(a) == len(b) == 5 and all(abs(x - y) <= 0.0015 + 1e-5 * abs(x) for x, y in zip(a, b))
+    # A tree that is said to be m MB is m MB or more and under m + 1. The whole numbers of MB free on the
+    # two sides of "it fits in nine tenths of what is free" that are sure whatever the part of a MB is:
+    most_without = lambda m: (m * 10 - 1) // 9  # nine tenths of it are under m MB
+    least_with = lambda m: -(-(m + 1) * 10 // 9)  # nine tenths of it are m + 1 MB or more
+
+    # the figure itself
+    said = lambda v: re.findall(r"Available Phys Memory: (\d+) MB", run(["show_memory"], v))
+    check(said(123) == ["123"] and said(0) == ["0"] and said("007") == ["7"] and said(roomy) == [str(roomy)],
+          "WSOLVER_FREE_MB is the memory the solver takes to be free, up to 2^40 MB")
+    # what is not taken leaves the machine's own figure, which moves from one call to the next: it is told
+    # from a figure made of the text by being more than nothing and no more than the memory the machine has
+    total = [int(x) for x in re.findall(r"Total Physical Memory: (\d+) MB", run(["show_memory"], None))]
+    real = said(None)
+    own = lambda v: len(said(v)) == 1 and len(total) == 1 and 0 < int(said(v)[0]) <= total[0] and said(v) != ["12"]
+    check(len(real) == 1 and all(own(v) for v in ("12x", "-12", "12.5", "+12", " 12", "")),
+          f"anything but digits is not taken (the machine's own figure, {real[0] if real else '?'} MB here)")
+    check(all(own(v) for v in (roomy + 1, 99999999999999, 2 ** 64, 2 ** 64 + 12)),
+          "nor is a figure over 2^40 MB")
+
+    # a postflop tree: 32-bit storage with room, 16-bit when that does not fit in nine tenths, refused
+    # when 16-bit does not fit either, and built all the same when the check is turned off
+    post = ["set_range OOP 22+,A2s+,K9s+,QTs+,JTs,ATo+,KJo+,76s,65s", "set_range IP 22+,A2s+,K9s+,Q9s+,J9s+,T9s,98s,ATo+,KTo+",
+            "set_board Qs8s7d", "set_pot 0 0 60", "set_eff_stack 300", "add_line 0 20 20 60 60 300",
+            "add_line 20 60 60 300", "add_line 0 0 30 30 90 300"]
+    built = lambda mode, free, pre=(): run(list(pre) + post + ["small_strats " + mode, "build_tree", "estimate_rebuild_tree"], free)
+    full, small = (needed(built("off", roomy)) + [0])[0], (needed(built("on", roomy)) + [0])[0]
+    check(0 < small < full and full > 20, f"the postflop tree of this test: {full} MB in 32-bit storage, {small} MB in 16-bit")
+    check(needed(built("auto", roomy)) == [full], "auto with room: 32-bit storage")
+    # it fits, but not in the nine tenths of the free memory that auto keeps to
+    tight32, roomy32 = most_without(full), least_with(full)
+    check(full + 1 < tight32 and needed(built("auto", tight32)) == [small],
+          f"auto with {tight32} MB free, which the 32-bit tree fits in but not by the margin: 16-bit storage ({small} MB)")
+    check(needed(built("auto", roomy32)) == [full], f"auto with {roomy32} MB free, nine tenths of which hold it: 32-bit storage")
+    out = built("auto", small // 2)
+    check(re.search(rf"ERROR: build_tree not enough memory: need \d+ MB \(\d+ MB compressed\), available {small // 2} MB", out) is not None
+          and needed(out) == [], f"auto with {small // 2} MB free: the build is refused, with the figures")
+    out = built("auto", small // 2, ["ignore_mem_check on"])
+    check("build_tree ok!" in answers(out) and 0 < (needed(out) + [0])[0] <= small,
+          "and goes through in 16-bit storage with ignore_mem_check on")
+    # a tree is refused when it does not fit in the memory that is free, all of it: no margin there
+    o_over, o_under = built("on", small + 1), built("on", small - 1)
+    check(needed(o_over) == [small] and "ERROR: build_tree not enough memory" in o_under and needed(o_under) == [],
+          f"the {small} MB tree is built with {small + 1} MB free and refused with {small - 1}")
+    # and the tree a build replaces counts as free: with one in memory, the same build goes through
+    o = run(["ignore_mem_check on"] + post + ["small_strats on", "build_tree", "ignore_mem_check off", "build_tree",
+                                               "estimate_rebuild_tree"], small - 1)
+    check(answers(o).count("build_tree ok!") == 2 and needed(o) == [small],
+          f"with {small - 1} MB free and a tree of {small} MB in memory, which the build lets go: built")
+    # a 32-bit save loaded under auto stays 32-bit where that fits (no margin either) and is 16-bit where not
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "post.cfr")
+        o = run(post + ["small_strats off", "build_tree", f'dump_tree "{path}"'], roomy)
+        load = lambda mode, free: run(["small_strats " + mode, f'load_tree "{path}" full', "estimate_rebuild_tree"], free)
+        l32, l16 = (needed(load("off", roomy)) + [0])[0], (needed(load("on", roomy)) + [0])[0]
+        check("dump_tree ok!" in answers(o) and 0 < l16 < l32 and needed(load("auto", roomy)) == [l32] and
+              needed(load("auto", l32 + 1)) == [l32] and needed(load("auto", l32 - 1)) == [l16],
+              f"a 32-bit save of it loaded under auto: 32-bit ({l32} MB) with {l32 + 1} MB free, 16-bit ({l16} MB) with {l32 - 1}")
+        # the tree a load replaces counts as free too: the 16-bit tree in memory makes up what is short
+        over = lambda free: run(["ignore_mem_check on"] + post + ["small_strats on", "build_tree", "ignore_mem_check off", "small_strats auto",
+                                                                  f'load_tree "{path}" full', "estimate_rebuild_tree"], free)
+        short, shorter = l32 + 1 - small, l32 - 1 - small
+        o = over(short)
+        check(0 < shorter and short < l32 - 1 and answers(o).count("build_tree ok!") == 1 and needed(o) == [l32] and
+              needed(load("auto", short)) == [l16] and needed(over(shorter)) == [l16],
+              f"with {short} MB free it is loaded 32-bit over a tree of {small} MB, which the load lets go, and 16-bit over none; "
+              f"16-bit over that tree with {shorter}")
+
+    # a preflop tree with turn bets and every hand (check_outcome_tables' tree): the tables are more bytes
+    def pre(mode, hands=every, turn=True):
+        return ["set_outcome_tables " + mode, "set_range OOP " + hands, "set_range IP " + hands, "set_pot 10 5 0",
+                "set_eff_stack 1000", "set_collapse_checkdowns on", "clear_preflop_lines", "add_preflop_line 25 25",
+                "add_preflop_line 1000 1000", "build_preflop_tree", "reset_subset", "add_to_subset 1 Qs 4h 2s",
+                "add_to_subset 1 7s 7h 3d", "set_board Qs4h2s", "set_pot 25 25 0", "set_eff_stack 1000", "clear_lines"] + (
+                ["add_line 25 50 50 100", "add_line 25 25 50 1000", "add_line 25 1000"] if turn else ["add_line 25 1000", "add_line 25 25"]) + [
+                "add_schematic_tree r:0:b25:c", "add_all_flops", "estimate_rebuild_tree"]
+
+    three = ["set_accuracy 0", "go 3 steps", "wait_for_solver", "calc_results"]
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "tables.cfr")
+        o_small, o_fast = run(pre("small") + three, roomy), run(pre("fast") + three + [f'dump_tree "{path}"'], roomy)
+        lean, fat = (needed(o_small) + [0])[0], (needed(o_fast) + [0])[0]
+        check(0 < lean < fat and fat > 20 and "dump_tree ok!" in answers(o_fast),
+              f"the preflop tree of this test: {lean} MB without tables for its turn all-ins, {fat} MB with them")
+        fits, tight = least_with(fat), most_without(fat)
+        o_room, o_none = run(pre("auto") + three, fits), run(pre("auto") + three, tight)
+        check(needed(o_room) == [fat] and needed(run(pre("auto"), roomy)) == [fat],
+              f"set_outcome_tables auto with {fits} MB free, and with 2^40: the tree with the tables")
+        check(fat + 1 < tight and needed(o_none) == [lean] and near(results(o_none), results(o_small)) and near(results(o_none), results(o_fast)),
+              f"with {tight} MB free, which that tree fits in but not by the margin: the smallest tree, worth the same "
+              f"after three iterations ({results(o_none)})")
+        out = run(pre("auto"), lean // 2)
+        check(re.search(rf"ERROR: add_all_flops not enough memory: need \d+ MB \(\d+ MB compressed\), available {lean // 2} MB", out)
+              is not None and needed(out) == [0], f"with {lean // 2} MB free the build is refused")
+        # the same choice when a save is loaded (a loaded tree is not the size of a built one: its own figures)
+        load = lambda mode, free: run(["set_outcome_tables " + mode, f'load_tree "{path}" full', "estimate_rebuild_tree", "calc_results"], free)
+        l_small, l_fast = load("small", roomy), load("fast", roomy)
+        lean, fat = (needed(l_small) + [0])[0], (needed(l_fast) + [0])[0]
+        fits, tight = least_with(fat), most_without(fat)
+        l_room, l_none = load("auto", fits), load("auto", tight)
+        check(0 < lean < fat and fat > 20 and "load_tree ok!" in answers(l_room) and needed(l_room) == [fat] and near(results(l_room), results(l_fast)),
+              f"a save of the tree with the tables, loaded under auto with {fits} MB free: with the tables ({fat} MB)")
+        check(fat + 1 < tight and "load_tree ok!" in answers(l_none) and needed(l_none) == [lean] and near(results(l_none), results(l_fast)) and
+              near(results(l_none), results(l_small)),
+              f"loaded with {tight} MB free: into the smallest tree ({lean} MB), worth the same ({results(l_none)})")
+
+    # ICM on a preflop tree whose flops are valued on tables: the boards it needs are built at set_icm,
+    # if they fit (the check there had no test)
+    icm = [f"set_icm_point {p} {x} {y}" for p in ("OOP", "IP") for x, y in ((0, 0), (1000, 50), (2000, 100))]
+    o = run(pre("auto", turn=False) + icm + ["set_icm 1000 1000", "estimate_rebuild_tree"], roomy)
+    flat, boards = (needed(o) + [0, 0])[:2]
+    check(answers(o).count("set_icm ok!") == 1 and 0 < flat < boards,
+          f"set_icm on a preflop tree without boards builds them when they fit ({flat} -> {boards} MB)")
+    # what the boards need is in the refusal (the two sizes above are not it to the MB: other parts of the tree
+    # change with the boards), and a refusal is had with just enough free for the tree to be built
+    refusal = r"ERROR: set_icm not enough memory: ICM values this tree's all-ins on their showdown boards, which need (\d+) MB more, available %d MB"
+    m = re.search(refusal % (flat + 1), run(pre("auto", turn=False) + icm + ["set_icm 1000 1000"], flat + 1))
+    need = int(m.group(1)) if m else 0
+    o = run(pre("auto", turn=False) + icm + ["set_icm 1000 1000", "estimate_rebuild_tree", "ignore_mem_check on", "set_icm 1000 1000",
+                                              "estimate_rebuild_tree"], need - 1)
+    check(need - 1 > flat + 1 and re.search(refusal % (need - 1), o) is not None and needed(o) == [flat, flat, boards],
+          f"the boards need {need} MB: with {need - 1} MB free it is refused and the tree is left as it was; with ignore_mem_check on it goes through")
+    # the boards are refused when they do not fit in what is free, all of it: no margin
+    o = run(pre("auto", turn=False) + icm + ["set_icm 1000 1000", "estimate_rebuild_tree"], need + 1)
+    check(answers(o).count("set_icm ok!") == 1 and needed(o) == [flat, boards], f"with {need + 1} MB free: built")
+
+    # a 16-bit solve that stops improving moves to 32-bit storage if that fits (preflop trees are 16-bit under auto)
+    stall = pre("auto", "22+,A2s+,K9s+,QTs+,JTs,ATo+,KJo+", turn=False) + ["set_accuracy 0.0000001", "set_info_freq 1",
+                                                                         "go 300 steps", "wait_for_solver", "calc_results"]
+    o_fit, o_not = run(stall, roomy), run(["ignore_mem_check on"] + stall, 0)
+    moved, stayed = "SOLVER: 16-bit storage stopped improving; switched to 32-bit storage", "SOLVER: 16-bit storage stopped improving; 32-bit storage does not fit"
+    check(o_fit.count(moved) == 1 and stayed not in o_fit and len(results(o_fit)) == 5,
+          "a stalled 16-bit solve with room: switched to 32-bit storage, once")
+    check(o_not.count(stayed) >= 1 and moved not in o_not and len(results(o_not)) == 5 and all(x == x for x in results(o_not)),
+          f"with nothing free: it says that 32-bit storage does not fit and carries on ({results(o_not)})")
+
+
 def check_core_review(exe):
     """#380: 16-bit combo-locked rows hold their values; pruning periods below 2 are refused; set_mes
     plays the best response for the unlocked hands of a combo-locked node."""
@@ -2217,6 +2384,7 @@ def main(exe, big=False):
     check_save_robustness(exe)
     check_tree_construction_edges(exe)
     check_compact_rows(exe)
+    check_free_memory(exe)
     check_core_review(exe)
     check_exit_while_parked(exe)
     u = Upi(exe)

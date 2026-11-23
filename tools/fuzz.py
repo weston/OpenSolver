@@ -13,7 +13,8 @@ Usage:
     python3 tools/fuzz.py locks ./solver --seconds 300        # locked strategies stay put, MES >= EV
     python3 tools/fuzz.py edits ./solver --seconds 300        # eliminate_path, set_mes, rebuild_tree, ... between solves
     python3 tools/fuzz.py truncated ./solver --seconds 300    # no_rivers/no_turns saves: re-solved streets
-    add --seed N to replay one case, --iso11 to force set_isomorphism 1 1 (invariants)
+    add --seed N to replay one case, --iso11 to force set_isomorphism 1 1 (invariants),
+    --collapse to build every postflop spot with set_collapse_checkdowns on (#484)
 
 What each mode found when it was written (2026-11-05): invariants, flop isomorphism with a flop all-in
 breaking suit symmetry and the EV sum (#300); concurrency, a lost wake-up that left a solve parked for
@@ -44,6 +45,9 @@ def run(exe, cmds, timeout=120):
     return p.returncode, p.stdout.split("END\n")
 
 
+COLLAPSE = False  # --collapse: set_collapse_checkdowns on in every spot (the seeds give the same spots)
+
+
 def spot(rng, iso11=False):
     """A random small postflop spot: (setup commands, dead money)."""
     deck = [r + s for r in RANKS for s in SUITS]
@@ -72,6 +76,8 @@ def spot(rng, iso11=False):
         pre.append(f"set_isomorphism {rng.randint(0, 1)} {rng.randint(0, 1)}")
     cmds = [f"set_range OOP {r0}", f"set_range IP {r1}", f"set_board {board}", f"set_pot 0 0 {pot}",
             f"set_eff_stack {stack}"] + [f"add_line {x}" for x in lines] + pre
+    if COLLAPSE:
+        cmds.append("set_collapse_checkdowns on")
     return cmds, pot
 
 
@@ -436,7 +442,10 @@ def main(argv=None):
     ap.add_argument("--seconds", type=float, default=120)
     ap.add_argument("--seed", type=int, help="run this one case only")
     ap.add_argument("--iso11", action="store_true", help="invariants: set_isomorphism 1 1 in every spot")
+    ap.add_argument("--collapse", action="store_true", help="set_collapse_checkdowns on in every postflop spot")
     args = ap.parse_args(argv)
+    global COLLAPSE
+    COLLAPSE = args.collapse
     case = MODES[args.mode]
     t0, n, failed = time.time(), 0, 0
     while True:

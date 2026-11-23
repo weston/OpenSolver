@@ -602,3 +602,60 @@ The implementation is not committed. A note on validating any future attempt: `t
 the batched path is never entered. I confirmed that with a call counter before trusting it. Validate
 instead by A/B-ing the two kernels under the same two-phase walk on `threebet_mono` or `srp_big` and
 comparing solver output byte for byte.
+
+## Check-downs are most of a tree whose late streets have no bets (#484)
+
+A line with no bets left is checked down: on every turn and river card there is a decision node with
+one action, for each player, and each stores a regret row and a strategy row per hand although there is
+nothing to decide. In a postflop tree with three streets of betting that is a small share. In a
+**preflop** tree it is nearly everything as soon as the schematics stop betting early, because every
+subset flop carries the check-downs of every exit: 49 turns x 48 rivers x 2 nodes per check-down.
+
+`set_collapse_checkdowns on` (off by default: Pio keeps those nodes, and they can be browsed per card)
+builds such a subtree as one showdown node valued over the runouts, which is what an all-in at that
+point already is (`showdown_value` over `AllinRunouts`). Same values; no nodes, no rows, no walk.
+
+Memory, `estimate_tree`, heads-up preflop, full ranges, 6 exits, 5 subset flops, 16-bit rows:
+
+| Postflop betting in the schematics | off | on |
+|---|---|---|
+| none | 631 MB | 76 MB |
+| flop only (bet, raise) | 2,735 MB | 78 MB |
+| flop and turn | 8,976 MB | 443 MB |
+| flop, turn and river | 53,896 MB | 53,896 MB (nothing is checked down without a choice) |
+
+The ~76 MB floor is the showdown boards themselves: 1,176 runouts per flop at about 16 KB each, 19 MB
+per subset flop. That is the next thing in the way of many flops (below).
+
+Time, the "flop only" tree above solved to `set_accuracy 0.05` (both stop at the report of iteration
+70), M4 (4P+6E), default threads, wall time of the whole run with `/usr/bin/time -l`, two runs each:
+
+```
+                         wall            user     peak RSS    EV OOP / IP       exploitable for
+off                      41.03, 41.33 s  401 s    2,970 MB    -0.069 / 0.748    0.043
+set_collapse_checkdowns  15.43, 15.42 s  148 s      148 MB    -0.069 / 0.748    0.043
+                         2.7x
+```
+
+A postflop tree with flop bets only (Qs8d7s, 5 lines) goes from 32 MB to 3 MB and from about 0.123 s to
+about 0.001 s per 25 iterations: there the collapsed nodes also get the hand-vs-hand all-in tables.
+
+**Not bit-identical to the default, by nature**, and not expected to be: the value of a check-down is
+the same sum taken in another order, so regrets differ in the last bit after one iteration (measured:
+4.9e-3 on 2.4e3 at a root). CFR then amplifies that wherever a hand's regret is exactly zero -- a hand
+that wins the same pot by betting into folds as by checking -- because rounding decides whether it bets
+or checks next. On a small turn tree the two solves were 1.5 chips apart at iteration 2 and 1.2e-4 apart
+at iteration 400, both inside their own exploitability all the way. Nothing to fix; it means a test has
+to compare the collapsed node with the subtree it replaces (`test_solver`'s `[checkdowns]`, worst
+relative difference 1.6e-6 over 600+ node/player pairs), not two solves at a fixed tolerance.
+
+With the setting off nothing changes: `turn`, `flop_srp_2` and the preflop tree above print the same
+results and root strategy as before the change, character for character, after 24 / 24 / 12 iterations.
+
+**Left on the table.**
+- Preflop trees get no all-in tables (`allin_table_plan` returns 0 for them), so a collapsed check-down
+  there still sums over its 48 or 1,176 showdown boards each time it is valued. A table per flop is
+  1326 x 1326 x 2 bytes = 3.5 MB, less than the 19 MB of showdown boards it would replace when nothing
+  else on that flop needs them. Expected to be the larger part of what is left of the 15 s above.
+- A forced node with real decisions beneath it (OOP's check in a tree without donk bets) still stores
+  its rows. Dropping those changes 16-bit results and the save layout; not done.

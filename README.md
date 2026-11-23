@@ -615,6 +615,7 @@ UPI probe matches the macOS build up to floating-point rounding).
 | Children order | Bets/raises largest first, then check/call, then fold; dealt cards from `As` down to `2c`. `show_all_lines` walks the reverse order with `?` card markers. |
 | EVs | Chips relative to the tree start: payoff = share of the final pot - own chips invested in the tree, so `EV OOP + EV IP` = the dead money (`set_pot`'s third number: the players' own chips there are investments, so `set_pot 10 5 0` sums to 0). It held only approximately on boards with a suit symmetry and a flop all-in until #300. `calc_ev` matchups are weighted by the hand's own reach (Pio semantics); out-of-range hands print `nan`/`inf`, and an in-range hand that never reaches the node prints its counterfactual EV with matchups 0, as Pio does (#247). |
 | Hands of either range | By default each player's hand list is their own range. `set_union_hands on` (before `build_tree`) makes it the union of both, like Pio: a hand only in the opponent's range gets a slot with reach 0, so `calc_ev` reports the **sign** of its counterfactual value (`inf`/`-inf` rather than a bare `inf`) and `calc_ev_pp`/`show_strategy_pp` list it. The equilibrium is unchanged; vectors get wider (about +23% solve time on `bench_flop`), which is why it is off by default. |
+| Check-downs | A line with no bets left (only checks down to the showdown) keeps its nodes, as in Pio: every turn and river card is there to browse, each with a one-action node that stores a row per hand. `set_collapse_checkdowns on` (before `build_tree` / `build_preflop_tree`) builds each such subtree as one `END_NODE` valued over the runouts, exactly as an all-in is: same values and strategies, a fraction of the memory and time when the late streets have no bets (see *Preflop trees*). The nodes inside it then don't exist (a node id inside it answers `incorrect path`); `calc_ev` at the `END_NODE` works. "No choice left" is meant literally: one-action bets and calls (what `remove_line` can leave) collapse too, and the `END_NODE` shows the pot of the showdown it stands for. A save of such a tree is version 6 and carries the setting: `load_tree` turns it on for a version 6 file and off for an older one, as it replaces the rest of the configuration. |
 | SOLVER output | `SOLVER: started`, periodic `SOLVER:` blocks (running time, EVs, MES, `Exploitable for`) ending in END, and `SOLVER: stopped (<reason>)`. Command responses never interleave with these. |
 | Isomorphism | Querying a non-canonical card (e.g. `7s` when it mirrors `7d`) returns the suit-swapped strategy; node IDs keep the card you asked for. |
 
@@ -629,7 +630,7 @@ their implementation status, known differences, and regression/probe coverage.
 show_settings, bench, load_script, load_script_silent, skip_if_done, LABEL:, echo, repeat,
 show_hand_order, show_preflop_order, go, stop, wait_for_solver, take_a_break, solver_time,
 set_threads, set_info_freq, set_accuracy, set_recalc_accuracy, set_always_recalc (stored),
-set_isomorphism, set_union_hands, change_step / show_step (stored), show_iters, set_first_iteration_player,
+set_isomorphism, set_union_hands, set_collapse_checkdowns, change_step / show_step (stored), show_iters, set_first_iteration_player,
 set_range, set_eff_stack, set_board, set_pot, add_line, remove_line, force_line, clear_lines,
 build_tree, list_algorithms, set_algorithm, ignore_mem_check, small_strats,
 estimate_schematic_tree, show_memory, is_tree_present, show_node, show_children,
@@ -689,6 +690,14 @@ hand-vs-hand table (see below). As in Pio, each schematic's
 For whole-hand accounting give the preflop investments per player (e.g. `set_pot 100 100 0` after a
 3-bet to 100); `set_pot 0 0 200` makes the 200 dead money.
 
+**Memory of preflop trees.** Every subset flop gets a copy of its exit's postflop tree, so what the
+schematics allow decides the size. A schematic that stops betting early is checked down from there, and
+by default those checks are real nodes on every turn and river (as in Pio), which is most of the tree:
+`set_collapse_checkdowns on` before `build_preflop_tree` makes each check-down one showdown node instead.
+With full ranges, six exits and five flops (16-bit rows): bets on the flop only 2,735 MB -> 78 MB, flop
+and turn 8,976 -> 443 MB; three streets of betting have no check-downs and stay as they are. The same
+equilibrium either way (#484).
+
 ## Known differences from PioSOLVER
 
 Policy (owner decision, #10): match Pio wherever tools may depend on it (formats, codes, node ids,
@@ -700,7 +709,7 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   `set_dcfr 1.5 0 2` restores the published values if exact parity matters.
 - **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip files with one
   member per street segment plus an index (`src/upi_save.cpp`), and `show_save_version` reports our own
-  format (5).
+  format (5; 6 for a tree built with `set_collapse_checkdowns on`).
 - **One algorithm.** `set_algorithm` accepts every Pio code but all map to DCFR; `list_algorithms`
   keeps Pio's codes with honest descriptions.
 - **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.

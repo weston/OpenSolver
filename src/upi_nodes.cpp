@@ -1534,10 +1534,9 @@ void Upi::register_node_commands() {
       if (parent.kind != ANodeKind::Decision) return;
       const ActionNode& an = tree_->an(parent);
       const ActKind kind = an.actions[st.choice].kind;
-      // a check that closes the betting round (its child is no decision) is refused like a call (probe 21)
-      const bool closing_check =
-          kind == ActKind::Check &&
-          tree_->nodes[parent.first_child + static_cast<uint32_t>(st.choice)].kind != ANodeKind::Decision;
+      // a check that closes the betting round (its child is no decision) is refused like a call (probe 21).
+      // Asked of the action tree: a collapsed check-down's node is a showdown whatever the action led to.
+      const bool closing_check = kind == ActKind::Check && an.children[st.choice]->kind != ANodeKind::Decision;
       if (kind == ActKind::Call || kind == ActKind::Fold || closing_check) {
         passive_path = true;
         return;

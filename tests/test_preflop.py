@@ -231,6 +231,49 @@ def unit():
           "which tree was built is said where the estimate does not say it: the tables added, the tables left out for "
           "lack of free memory, a count that is not the estimate's; nothing where the tool chose, or there is one tree")
 
+    # the table of `estimate` (#521): both sizes where they differ, a row stopped by the smallest tree
+    counts = {"none": 1, "flop": 2, "turn": 10, "river": 40}
+    asked = []
+
+    def two_sizes(exe, st, flops):
+        asked.append((st.depth, len(flops)))
+        small = counts[st.depth] * len(flops)
+        return small, small * 3 if st.depth in ("turn", "river") else small
+    table = lambda *opts: preflop.estimate_table(  # noqa: E731
+        *(lambda a: (a, preflop.settings_from(a)))(preflop.parser().parse_intermixed_args(["estimate", *opts])))
+    real = preflop.estimates_mb, preflop.physical_memory_mb
+    try:
+        preflop.estimates_mb, preflop.physical_memory_mb = two_sizes, lambda: 16384
+        limited = table("--limit", "0.5")
+        calls = len(asked)
+        one_depth = table("--depth", "flop")
+        preflop.physical_memory_mb = lambda: 600
+        by_machine = table()
+        preflop.physical_memory_mb = lambda: None
+        unknown = table("--depth", "turn")
+    finally:
+        preflop.estimates_mb, preflop.physical_memory_mb = real
+    legend = ("Two sizes in a cell: the smallest tree, then the tree with outcome tables at every level, which the "
+              "solver builds when they fit in nine tenths of the memory that is free.")
+    rows = ["                   10           25           50          100          200   flops",
+            "none               10           25           50          100          200",
+            "flop               20           50          100          200          400",
+            "turn          100-300      250-750    500-1,500  1,000-3,000            -",
+            "river       400-1,200  1,000-3,000            -            -            -"]
+    check(limited[2:] == rows + ["", legend, "", "This machine has 16,384 MB. A row stops at the first cell whose smallest "
+                                                 "tree is over --limit 0.5 GB."] and calls == 16,
+          "estimate: a cell with two sizes shows both and the legend says which is which; a row goes on while the "
+          "smallest tree is within --limit (250-750 under half a gigabyte) and asks for nothing after it stops")
+    check(by_machine[2:7] == rows and by_machine[-1] == "This machine has 600 MB. A row stops at the first cell whose smallest "
+          "tree is over that (--limit GB for another bound).",
+          "and without --limit the bound is the machine's memory, by the smallest tree as well")
+    check(one_depth[2:] == ["                 10         25         50        100        200   flops",
+                            "flop             20         50        100        200        400", "",
+                            "This machine has 16,384 MB. A row stops at the first size over that (--limit GB for another bound)."],
+          "a table of single sizes is the table it was: the columns as wide, no legend, the last line's words")
+    check(unknown[3:] == ["turn          100-300      250-750    500-1,500  1,000-3,000  2,000-6,000", "", legend],
+          "a machine whose memory is not known: no row stops, no last line")
+
     print("results and charts")
     check([preflop.hand_class(h) for h in ("AhKh", "KdAs", "7c7d", "2s3s")] == ["AKs", "AKo", "77", "32s"]
           and (preflop.cell_class(0, 0), preflop.cell_class(0, 1), preflop.cell_class(1, 0), preflop.cell_class(12, 12))
@@ -934,7 +977,7 @@ def integration(exe):
               and set(cn["r:0:b250"]["hands"]) == {"AA"},
               "--range-bb AhAs: every small blind class has an EV, the big blind's chart is the one hand, no nan")
         status, out, _ = run("estimate", "--stack", "20", "--flops", flop_file, "--depth", "flop", "--solver", exe)
-        check(status == 0 and f"{before:,}" in out, "estimate prints that figure")
+        check(status == 0 and f"{before:,}" in out and "Two sizes" not in out, "estimate prints that figure, and one size a cell")
         # a quarter of a gigabyte: more than the smallest file and less than the largest (#494 made the
         # flop-depth tree a quarter of what it was, so half a gigabyte holds 100 flops now)
         status, out, err = run("script", "--stack", "20", "--memory", "0.25", "--solver", exe)
@@ -960,6 +1003,10 @@ def integration(exe):
               and preflop.estimate_mb(exe, st, flops) == small and len(set(preflop.estimates_mb(exe, s, flops))) == 1,
               f"estimates: the two trees of a tree with turn bets as they are built ({small} and {with_tables} MB), "
               "one figure where the turn has no bets")
+        status, out, _ = run("estimate", "--flops", flop_file, *turn)
+        check(status == 0 and f"turn {f'{small:,}-{with_tables:,}':>{max(11, len(f'{small:,}-{with_tables:,}') + 2) + 3}}\n" in out
+              and "Two sizes in a cell: the smallest tree, then the tree with outcome tables at every level" in out,
+              "and `estimate` prints both in the cell, smallest first (#521)")
 
         def budget_solve(name, mb, free=None, checked=None, flops=flop_file, opts=turn):
             """solve under --memory of `mb` megabytes (None: without --memory), the solver told that `free`

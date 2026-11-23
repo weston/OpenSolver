@@ -348,6 +348,109 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
 
   Jobs run in their own solver processes, so browsing stays responsive. `viewer/server.py --jobs DIR` picks the queue directory.
 
+## Preflop solves
+
+`tools/preflop.py` solves the heads-up game from the blinds on: it takes the stack and the sizes in big
+blinds, writes the script the solver needs (*Preflop trees* below has the commands), says how much memory
+that tree takes before anything is built, solves it and prints the preflop strategy as 13x13 charts.
+
+```
+python3 tools/preflop.py solve hu100.json                 # 100 bb, the default sizes
+python3 tools/preflop.py solve hu40.json --stack 40 --open 2,2.5 --3bet 3.5x --no-limp
+python3 tools/preflop.py estimate --stack 40              # memory per number of flops and depth
+python3 tools/preflop.py tree                             # the preflop lines and their node ids
+python3 tools/preflop.py chart hu100.json r:0:b250 --ev   # one decision again, with the EVs
+python3 tools/preflop.py script > hu100.upi               # the commands only; ./solver < hu100.upi
+```
+
+**The game.** The small blind is the button: it acts first before the flop and last after it (so it is
+`IP` and the big blind `OOP` in the solver's terms). `--stack` is the effective stack in big blinds,
+`--ante` dead money in the pot, `--range-sb` / `--range-bb` ranges other than every hand. A big blind is
+100 chips (`--chips-per-bb`; the solver's amounts stop at 65,535 chips, so a stack over 655 big blinds
+needs fewer).
+
+**Preflop sizes.** `2.5` is a raise to 2.5 big blinds, `4x` a raise to four times the bet faced, `allin`
+the stack; several sizes separated by commas are several branches. `--open` (default `2.5`), `--iso`, the
+big blind's raise over a limp (`3.5`), `--3bet` (`4x`), `--limp-raise` (the 3-bet sizes), `--4bet`
+(`2.3x`), `--5bet` (`allin`; every raise after it is all-in too). `--no-limp` makes the small blind raise
+or fold. A raise to more than `--allin-threshold` percent of the stack (50) is made all-in, and a size
+under the minimum raise is refused with the option that asked for it. `tree` prints what that gives:
+
+```
+start                  r:0                                in: 0.5 / 1       SB to act
+  SB raise 2.5         r:0:b250                           in: 2.5 / 1       BB to act
+    BB raise 10        r:0:b250:b1000                     in: 2.5 / 10      SB to act
+      ...
+    BB call            r:0:b250:c                         in: 2.5 / 2.5     flop, 1 postflop line
+    BB fold            r:0:b250:f                         in: 2.5 / 1       hand over
+  SB limp              r:0:c                              in: 1 / 1         BB to act
+```
+
+**After the flop.** Every line that ends in a call before the stacks are in goes to a flop, and each of
+those exits gets a postflop tree in which the pot and the stacks are the ones the preflop action left.
+`--depth` is the last street with betting: `flop` (the default), `turn`, `river`, or `none`; the streets
+after it are checked down, each as one showdown node (`set_collapse_checkdowns`). The sizes are percent
+of the pot under the rules of the tree builder: `--flop-bet`, `--turn-bet`, `--river-bet` (50), `--raise`
+(60), `--raise-cap` bets and raises per street (2; the tree builder still offers an all-in after them
+when its all-in rule says so), `--donk` for a lead into the preflop raiser (none), or `--postflop FILE`
+with a whole `#Key#Value` configuration (*Tree builder* above). A solve whose postflop tree stops at the
+flop plays the turn and the river as if nobody could bet there, which is a different game from poker; how
+far its preflop strategy is from one with all three streets has not been measured yet (#483).
+
+**Flops and memory.** The tree holds a subset of flops, each with a weight and a copy of every exit's
+postflop tree, so memory goes with the number of flops and steeply with the depth. `estimate` asks the
+solver (`estimate_tree`) and prints megabytes for the subsets in `flops/`. The default tree at 100 big
+blinds:
+
+| `--depth` | 10 flops | 25 | 50 | 100 | 200 | all 1,755 |
+|---|---|---|---|---|---|---|
+| none | 154 | 383 | 757 | 1,463 | 2,737 | 12,279 |
+| flop | 159 | 396 | 782 | 1,513 | 2,837 | 13,156 |
+| turn | 802 | 2,039 | 4,049 | 7,948 | 15,573 | 121,802 |
+| river | 85,988 | 221,624 | 437,639 | 854,547 | 1,681,788 | |
+
+The solver process takes about 1.3 times the figure (3,686 MB at its peak in a 200-flop solve estimated
+at 2,837). The estimate is not free either: the solver builds the tree without the strategy storage to
+count it, and at `flop` depth, where the showdown boards are nearly all of the tree, that is most of the
+tree's memory for a moment (3.4 GB and 22 seconds for the 200 flops). `--flops` takes a number we ship a
+file for (10, 25, 50, 100, 200), a flop file (`flop:weight` lines, the format of `flops/`), or `all` for
+the 1,755 suit classes with the number of flops each stands for. Without it the tool takes the largest
+shipped subset whose estimate is under `--memory` gigabytes (default half of the machine's, which leaves
+room for the 1.3) and says which. *Flop subsets* below says how close the files are to all flops; in the
+one tree compared, 50 flops or more gave the 200-flop solve's overall frequencies to within a point.
+
+**The solve.** `solve OUT.json` runs until the tree is exploitable for less than `--accuracy` big blinds
+per 100 hands (default 0.5) or for `--time` seconds (default a day; Ctrl-C or a `kill` stops the solver
+with it and leaves no result), with progress on stderr, and writes the preflop
+strategies of every decision to `OUT.json`; `--save-tree FILE` also saves the solved tree (`dump_tree`
+without rivers) to open in the viewer. On an M4 (10 cores, 16 GB) the first command above took the 200
+flops and 13 minutes, 12 of them solving; `--flops 10` is under 1 bb/100 in 35 seconds, with the caveat
+of a small subset.
+
+**The charts.** One block per decision, in the order of `tree`, one chart per action:
+
+```
+r:0:b250   SB raise 2.5   ->  BB to act
+  45.9 % of deals get here; then raise 10 19.2 %, call 56.5 %, fold 24.2 %
+
+raise 10 (19.2 %)                          call (56.5 %)                              fold (24.2 %)
+   A  K  Q  J  T  9  8  7  6  5  4  3  2      A  K  Q  J  T  9  8  7  6  5  4  3  2      A  K  Q  J  T  9  8  7  6  5  4  3  2
+A ** ** ** ** ** 64  2 **  1 61 32 11  .   A  .  .  .  .  . 36 98  . 99 39 68 89 **   A  .  .  .  .  .  .  .  .  .  .  .  .  .
+K ** ** ** ** **  .  7 **  .  . 49  .  .   K  .  .  .  .  . ** 93  . ** ** 51 ** **   K  .  .  .  .  .  .  .  .  .  .  .  .  .
+```
+
+A cell is how often the hand takes the action once it is at this decision, in percent: `**` always (99.5
+or more), `.` never (under half a percent), blank when the hand never gets here. Suited hands are above
+the diagonal, offsuit below. The line under the heading is how often the deal gets to this decision at
+all, and the split of the actions there. Everything counts deals: a combo weighs by the opponent's hands
+that share no card with it and get there too, so a decision is reached as often as its parent, times the
+action's share there, and with a range of single combos a hand the opponent's cards rule out counts for
+nothing. `--ev` adds a chart of each hand's EV at the decision in big blinds won or
+lost from the start of the hand, blinds included (a hand that folds the big blind is at -1.00); the small
+blind's EVs at `r:0`, weighted by combos, are the value of the game to it, the first line of the output.
+`chart OUT.json [NODE ...]` prints the charts of a saved result again, all or the named decisions.
+`OUT.json` holds the same per hand class: `nodes[].hands["AKs"]` = `{reach, freq[], ev_bb}`.
+
 ## Viewer
 
 A PioViewer-style browser UI, driven by a small local server that talks to `./solver` over UPI
@@ -814,7 +917,8 @@ flops/             flop subsets for preflop trees and the job queue (wsolver_<N>
 packaging/macos/   what `make macos-pkg` builds WSolver.app and its installer from
 tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue;
                    fuzz.py: randomised invariant / concurrency / save / preflop / lock / truncated-save checks over UPI;
-                   flop_subsets.cpp/.hpp: chooses the flops and weights in flops/, `make flop-subsets`)
+                   flop_subsets.cpp/.hpp: chooses the flops and weights in flops/, `make flop-subsets`;
+                   preflop.py: heads-up preflop solves: script, memory estimate, 13x13 charts)
 ```
 
 ## Contributing

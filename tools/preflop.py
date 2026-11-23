@@ -610,6 +610,11 @@ def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
         if threads:
             u.cmd(f"set_threads {threads}")
         u.need("add_all_flops")
+        order = " ".join(u.cmd("show_hand_order")).split()
+        sb, bb = (_floats(u.cmd(f"show_range {who} r:0"), 1326, "show_range r:0")[0] for who in ("IP", "OOP"))
+        if len(order) != 1326 or not sum(x * y for x, y in zip(sb, _facing(order, bb))) > 0:
+            raise PreflopError("the two ranges leave no deal: every hand of one shares a card with every hand of "
+                               "the other")
         accuracy = accuracy_bb100 / 100 * s.chips
         u.cmd(f"set_accuracy {accuracy:.6g}")
         u.cmd("set_info_freq auto")
@@ -902,14 +907,14 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def _can_write(path: str, what: str) -> None:
+def _can_write(path: str, what: str, for_solver: bool = False) -> None:
     """Refuse a file that cannot be written before a solve is spent on it."""
-    if '"' in path or "\n" in path:
+    if for_solver and ('"' in path or "\n" in path):
         raise PreflopError(f"{what}: a file name with a quote in it cannot be given to the solver")
     where = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(where):
         raise PreflopError(f"{what}: there is no directory {where}")
-    if os.path.isdir(path) or not os.access(where, os.W_OK):
+    if os.path.isdir(path) or not os.access(path if os.path.exists(path) else where, os.W_OK):
         raise PreflopError(f"{what}: cannot write {path}")
 
 
@@ -941,10 +946,12 @@ def main(argv: list[str] | None = None) -> int:
             raise PreflopError("--time is a number of seconds, 1 or more")
         if a.threads is not None and a.threads < 1:
             raise PreflopError("--threads is 1 or more")
-        if a.memory is not None and not a.memory > 0:
-            raise PreflopError("--memory is a number of gigabytes over 0")
-        if not a.accuracy >= 0:
-            raise PreflopError("--accuracy cannot be negative")
+        for name in ("memory", "limit"):
+            value = getattr(a, name)
+            if value is not None and not (value > 0 and math.isfinite(value)):
+                raise PreflopError(f"--{name} is a number of gigabytes over 0")
+        if not (a.accuracy >= 0 and math.isfinite(a.accuracy)):
+            raise PreflopError("--accuracy is a number of big blinds per 100 hands, 0 or more")
         s = settings_from(a)
         root = build_tree(s)
         if a.command == "tree":
@@ -956,7 +963,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.command == "solve":
             _can_write(a.args[0], "the result")
             if a.save_tree:
-                _can_write(a.save_tree, "--save-tree")
+                _can_write(a.save_tree, "--save-tree", for_solver=True)
         name, flops, notes, estimated = pick_flops(a, s)
         for note in notes:
             print(note, file=sys.stderr)

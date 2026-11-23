@@ -219,6 +219,41 @@ def unit():
     facing = preflop._facing(hands, wb)
     check(max(abs(x - y) for x, y in zip(facing, brute)) < 1e-9 and sum(x * y for x, y in zip(wa, facing)) > 0,
           f"the opponent's hands that share no card with a hand: by card sums against hand by hand ({len(hands)} hands)")
+    # collect, on canned answers: the big blind holds AhAs only, so of the small blind's AKs two combos
+    # are live (they fold here) and two cannot be dealt (they would push, with no EV)
+    s = settings("--no-limp", "--open", "allin", "--stack", "10")
+    root = preflop.build_tree(s)
+    deck = [r + x for r in "23456789TJQKA" for x in "cdhs"]
+    order = [b + a for i, a in enumerate(deck) for b in deck[i + 1:]]
+    live = [not {"Ah", "As"} & {h[:2], h[2:]} for h in order]
+    push = [0.0 if h in ("AdKd", "KdAd", "AcKc", "KcAc") else 1.0 for h in order]
+    by_id = {n.id: n for n in preflop.walk(root)}
+    push_id = root.children[0][1].id
+
+    class Canned:
+        def cmd(self, line, on_report=None):
+            word, *rest = line.split()
+            text = lambda row: [" ".join(str(x) for x in row)]  # noqa: E731
+            if word == "show_hand_order":
+                return [" ".join(order)]
+            if word == "show_children":
+                return [child.id for _, child in by_id[rest[0]].children]
+            if word == "show_strategy":
+                return text(push) + text([1 - x for x in push]) if rest[0] == "r:0" else text([1.0] * 1326) + text([0.0] * 1326)
+            if word == "show_range":
+                if rest[0] == "OOP":
+                    return text([1.0 if {h[:2], h[2:]} == {"Ah", "As"} else 0.0 for h in order])
+                return text([1.0] * 1326 if rest[1] == "r:0" else push)
+            if word == "calc_ev":
+                return text([50.0 if ok else float("nan") for ok in live])
+            raise AssertionError(line)
+    got = {n["id"]: n for n in preflop.collect(Canned(), s, root)}
+    aks, top = got["r:0"]["hands"]["AKs"], got[push_id]
+    check(aks["freq"] == [0.0, 1.0] and aks["ev_bb"] == 0.5 and abs(top["reach"] - 1223 / 1225) < 1e-12
+          and abs(got["r:0"]["freq"][0] - 1223 / 1225) < 1e-12 and set(top["hands"]) == {"AA"}
+          and len(got["r:0"]["hands"]) == 169 and got["r:0"]["hands"]["AA"]["ev_bb"] == 0.5,
+          "a combo the opponent's cards rule out counts for nothing: AKs is its two live combos, the push is "
+          "1,223 of the 1,225 deals, the EVs skip the hands that cannot be dealt")
     node = {"id": "r:0", "actor": "SB", "line": [], "pot_bb": [0.5, 1], "actions": ["raise 2.5", "limp", "fold"],
             "reach": 1.0, "freq": [0.5, 0.25, 0.25],
             "hands": {"AA": {"reach": 1, "freq": [1.0, 0.0, 0.0], "ev_bb": 9.234},
@@ -396,13 +431,19 @@ def integration(exe):
                ("solve", out_file, "--threads", "0"), ("solve", out_file, "--memory", "0"), ("tree", "extra"),
                ("tree", "--stack", "nan"), ("tree", "--open", "inf"), ("tree", "--3bet", "nanx"), ("tree", "--ante", "inf"),
                ("tree", "--allin-threshold", "200"), ("tree", "--allin-threshold", "-1")]
-        got = [run(*argv, "--stack", "20", "--flops", flop_file, "--solver", exe) if argv[0] == "solve" and len(argv) > 1
-               and argv[-1] != "--stack 20 --flops 10" else run(*argv, "--solver", exe) for argv in bad]
+        bad += [("solve", out_file, "--memory", "inf"), ("solve", out_file, "--accuracy", "inf"),
+                ("solve", out_file, "--range-sb", "AhAs", "--range-bb", "AhAs", "--depth", "none"),
+                ("estimate", "--limit", "nan", "--flops", flop_file)]
+        # a short --time everywhere: a check that stopped refusing would otherwise start a real solve
+        got = [run(argv[0], "--stack", "20", "--flops", flop_file, "--time", "2", "--solver", exe, *argv[1:])
+               if argv[0] == "solve" and len(argv) > 1 and argv[-1] != "--stack 20 --flops 10"
+               else run(argv[0], "--time", "2", "--solver", exe, *argv[1:]) for argv in bad]
         wrong = [argv for argv, (status, _, err) in zip(bad, got)
-                 if status != 1 or not err.startswith("error: ") or err.count("\n") != 1 or "Traceback" in err]
-        check(not wrong and time.time() - t0 < 5 and json.load(open(out_file)) == saved,
+                 if status != 1 or not err.splitlines()[-1].startswith("error: ") or "Traceback" in err
+                 or sum(l.startswith("error: ") for l in err.splitlines()) != 1]
+        check(not wrong and time.time() - t0 < 10 and json.load(open(out_file)) == saved,
               f"{len(bad)} mistakes (no directory for the result or the tree, options glued into one word, no result "
-              f"file, nan and inf, limits) are one line each, before anything is solved" + (f": {wrong}" if wrong else ""))
+              f"file, nan and inf, limits, ranges that cannot be dealt together) are one line each, before anything is solved" + (f": {wrong}" if wrong else ""))
         junk = os.path.join(d, "junk.json")
         answers = []
         for text in ("{}", "[1]", '{"version": 1}', "not json"):
@@ -412,9 +453,11 @@ def integration(exe):
         check(all(status == 1 and err.startswith("error: ") and "Traceback" not in err for status, _, err in answers),
               "chart: a file that is not a result is said to be none")
         preflop.Solver.HELLO_SECONDS = 1
-        status, _, err = run("solve", os.path.join(d, "no.json"), "--flops", flop_file, "--solver", "/bin/cat")
-        status2, _, err2 = run("solve", os.path.join(d, "no.json"), "--flops", flop_file, "--solver", flop_file)
-        preflop.Solver.HELLO_SECONDS = 10
+        try:
+            status, _, err = run("solve", os.path.join(d, "no.json"), "--flops", flop_file, "--time", "2", "--solver", "/bin/cat")
+            status2, _, err2 = run("solve", os.path.join(d, "no.json"), "--flops", flop_file, "--time", "2", "--solver", flop_file)
+        finally:
+            preflop.Solver.HELLO_SECONDS = 10
         check(status == 1 and "does not answer like the solver" in err and status2 == 1 and "cannot run" in err2
               and not os.path.exists(os.path.join(d, "no.json")),
               "--solver with a program that is not the solver, or a file that is no program: an error, no hang")

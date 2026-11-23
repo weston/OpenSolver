@@ -510,6 +510,26 @@ def unit():
           "of rows that count the same at two decisions the first met going down the tree is named, all under a "
           "decision's first action before its next: the nearer the root of the two in one result, the further in the other")
 
+    # 150 bb: the big blind has three decisions on one line (after a limp, after its raise is raised,
+    # after its next raise meets an all-in). The first is left free (nothing for AA there); KK's row at
+    # the second adds up to 1 and goes on to the third a quarter of the time; its row there is a half
+    root150 = preflop.build_tree(settings("--stack", "150", "--depth", "none"))
+    nodes150 = decisions(root150)
+    limped = next(child for label, child in root150.children if label == "limp")
+    line = [n for n in nodes150 if n.actor == "BB" and (n is limped or preflop._under(limped, n))]
+    check(len(line) == 3 and preflop._under(line[1], line[2]) and len(line[1].children) == 3,
+          "the 150 bb tree: three decisions of the big blind on one line after a limp")
+    on = next(a for a, (_, child) in enumerate(line[1].children) if child is line[2] or preflop._under(child, line[2]))
+    onward = [0.75 if a == (on + 1) % 3 else 0.0 for a in range(3)]
+    onward[on] = 0.25
+    two_below = made(several(lambda h: h[line[0].id].pop("AA"), lambda h: h[line[1].id]["KK"].update(freq=onward),
+                             scaled(line[2].id, "KK", 0.5)), swing=300.0, root=root150, nodes=nodes150)
+    check(two_below["BB"]["free"] == [line[0].id] and line[1].id in two_below["BB"]["rows"] and line[2].id in two_below["BB"]["rows"]
+          and abs(two_below["BB"]["rescaled_bb100"] - (1 / 3) * 0.25 * 0.5 * 30000) < 1e-6
+          and two_below["BB"]["rescaled_most"] == ["KK", line[2].id, 0.5],
+          "two locked decisions below one left free: the locked row between narrows how often the class is at the "
+          "lower one as it does anywhere (a third of the deals, a quarter of the time, half open: 1,250 bb/100)")
+
     def no_limp(h):  # the small blind never limps, and the big blind has nothing for the decision after one
         for hand in h[root.id].values():
             hand["freq"] = [0.0 if a == limp else 1.0 / (len(root.children) - 1) for a in range(len(root.children))]

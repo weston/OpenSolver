@@ -847,7 +847,9 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
     names a row here, which no note mentions). Rows at a decision left free are not measured: nothing
     is locked there. Locked rows below one are, with the class as often there as the result's play
     brought it to the free decision: what it does at that one is the solve's to choose, so all of it
-    is counted as going on."""
+    is counted as going on. Locked rows between the free decision and the row narrow that as they do
+    anywhere else: the class is at the lower row as often as it came to the free decision times what
+    the locked rows on the way send on."""
     by_id = {n["id"]: n for n in result["nodes"]}
     read = {n.id: _class_rows(name, by_id[n.id], len(n.children)) for n in decisions}
     known = {node: rows for node, (rows, _, _) in read.items()}

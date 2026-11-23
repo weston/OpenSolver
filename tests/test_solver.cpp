@@ -497,13 +497,20 @@ static bool allin_tables_match() {
 static bool preflop_runout_tables() {
   struct Spot {
     const char* name;
-    const char* range;  // empty: every hand
+    const char* range;   // empty: every hand
+    const char* range2;  // the second player's, null: the same (then a table's two sides list the same hands)
     std::vector<std::vector<int>> flop_lines;  // bets from an exit with 250 in from each player
     int want_tables;                           // bit 0: flop sets, bit 1: turn sets
   } spots[] = {
-      {"flop bets, all hands", "", {{250, 500, 1100}, {500, 1100}}, 1},
-      {"turn bets, all hands", "", {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 0},
-      {"turn bets, narrow", "TT+,AJs+,KQs,AQo+,76s,65s", {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 3},
+      {"flop bets, all hands", "", nullptr, {{250, 500, 1100}, {500, 1100}}, 1},
+      {"turn bets, all hands", "", nullptr, {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 0},
+      {"turn bets, narrow", "TT+,AJs+,KQs,AQo+,76s,65s", nullptr,
+       {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 3},
+      // unequal ranges: the second player holds hands the first does not (and the other way round in
+      // the last), so its side of a table is ranked for itself and not copied from the first's
+      {"flop bets, narrow v all", "TT+,AJs+,KQs,AQo+,76s,65s", "", {{250, 500, 1100}, {500, 1100}}, 1},
+      {"turn bets, two ranges", "22+,A2s+,KTs+,AKo", "TT+,AJs+,KQs,AQo+,76s,65s",
+       {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 3},
   };
   const int flops[3][3] = {{parse_card("Qs"), parse_card("4h"), parse_card("2s")},
                            {parse_card("Js"), parse_card("8h"), parse_card("4d")},
@@ -519,14 +526,16 @@ static bool preflop_runout_tables() {
     cfg.preflop = true;
     cfg.collapse_checkdowns = true;
     std::string err;
-    RangeWeights w;
-    if (*sp.range) {
-      if (!parse_range(sp.range, w, err)) return false;
-    } else {
-      w.fill(1.0f);
-    }
-    for (int p = 0; p < 2; ++p)
+    for (int p = 0; p < 2; ++p) {
+      const char* text = p && sp.range2 ? sp.range2 : sp.range;
+      RangeWeights w;
+      if (*text) {
+        if (!parse_range(text, w, err)) return false;
+      } else {
+        w.fill(1.0f);
+      }
       for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[p][i] = w[i];
+    }
     cfg.pot[0] = 100, cfg.pot[1] = 50;
     cfg.eff_stack = 10000;
     cfg.lines.add = {{250, 250}, {10000, 10000}};
@@ -660,7 +669,7 @@ static bool preflop_runout_tables() {
     }
     const bool good = plan && counted && foreseen && dry_tables == table_bytes && same_counts == sets_tabled && bad == 0 &&
                       !vals.empty() && icm_boards && icm_bad == 0 && icm_n > 0;
-    std::printf("[preflop runouts] %-22s %d+%d sets, %d+%d with tables (%.1f MB), %zu boards kept: plan %s, memory count %s, boards to come %.1f MB counted / %.1f MB added %s, "
+    std::printf("[preflop runouts] %-24s %d+%d sets, %d+%d with tables (%.1f MB), %zu boards kept: plan %s, memory count %s, boards to come %.1f MB counted / %.1f MB added %s, "
                 "%ld/%ld tables equal the boards' counts, %zu values worst relative difference %.2e (%ld bad), ICM %ld/%ld equal\n",
                 sp.name, sets[0], sets[1], tabled[0], tabled[1], static_cast<double>(table_bytes) / 1e6, kept,
                 plan ? "ok" : "WRONG", counted && dry_tables == table_bytes ? "ok" : "WRONG", static_cast<double>(missing) / 1e6,

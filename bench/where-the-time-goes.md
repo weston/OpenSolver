@@ -1417,8 +1417,12 @@ and 492 values off a spot, and one spot of five none, in one run of three.
 - The flop sets' 16-bit rows, which are the time at flop depth (the 200-flop row above).
 - The solver's comparison of the two ways is to 2e-6 of the values (the two differ by 3.2e-7 at the
   most in the test, and on ordinary reaches a float sum is within 2e-6 of the same sum in doubles): an
-  error in the solver's use of the kernel smaller than that passes, as the last row of the table does,
-  inside the header's stated bound. The kernel's own sums are checked exactly.
+  error in the solver's use of the kernel smaller than that passes. The kernel's own sums are checked
+  exactly, at the row lengths the header's test has: 1 to 300, thirteen between, and 1,295 to 1,326.
+  At the other lengths up to 1,127 (the longest row a solve or the solver's test has) only the 2e-6
+  comparison looks, and a lowest digit lost at some of them passes it (found in the third non-author
+  run: rows 301 to 410, or length 412 alone); from 1,129 to 1,294 nothing looks, and no solve has a
+  row that long.
 - Nothing pins how much of the work takes the new path: whole numbers for one player only, or for half
   of the rows, pass every test. That is speed and not values; the timings above are the check.
 - One tree, one machine. To an accuracy with the tool was not timed; by the steps above it is the

@@ -269,7 +269,10 @@ def build(vsrv, solver, b):
         vsrv._refiner.invalidate()
     vsrv._preview = None
     with solver.cmd_lock:
-        solver.cmds(["stop", "wait_for_solver"])
+        try:
+            solver.cmds(["stop", "wait_for_solver"])
+        finally:
+            solver.drop_holds()   # the solver let go of any hold with the stop (as the server does on /api/build)
         # the old tree's state first: if the build below fails there is no tree, and nothing of the old one
         solver.preflop_touched = True
         solver.tree_present = False

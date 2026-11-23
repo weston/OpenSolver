@@ -127,6 +127,7 @@ function renderMem() {
 /** An estimate the server gave for this form ({mb, memory_mb, flops}: Build asks for one too). */
 export function noteEstimate(form, e) {
   const sig = memSig(form);
+  if (!defaults || sig !== memSig(readPreflopForm())) return;   // the form changed while the server worked
   if (!mem || mem.sig !== sig) { mem = { sig, machine: 0, cells: {}, running: false, error: null }; memRun++; }
   mem.machine = e.memory_mb || 0;
   mem.cells[form.flops] = { mb: e.mb, flops: e.flops };
@@ -137,6 +138,7 @@ export function noteEstimate(form, e) {
 /** Ask the solver what the tree takes: for the chosen number of flops first, then for the other
  *  numbers, so that the row under the button shows what fewer or more flops would cost. */
 async function estimate() {
+  if (!defaults) return;   // the form is not filled in yet
   const form = readPreflopForm(), sig = memSig(form);
   if (!mem || mem.sig !== sig) mem = { sig, machine: 0, cells: {}, running: false, error: null };
   const run = ++memRun, mine = mem;

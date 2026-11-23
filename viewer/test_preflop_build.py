@@ -347,6 +347,25 @@ class PreflopBuildTest(unittest.TestCase):
         finally:
             vsrv._preview = None
         self.assertTrue(solver.tree_present)
+        # ... and a solve of it running, also one parked for a moment (a click in Study, a street being
+        # refined): the hold is still known, so it is let go and the solve goes on
+        st, d = v.req("/api/solve", "POST", {"accuracy": 1e-9})
+        self.assertEqual(st, 200, d)
+        try:
+            solver.hold("test")
+            st, d = v.req("/api/preflop/build", "POST", dict(FORM, open="abc"))
+            self.assertEqual(st, 400, d)
+            self.assertEqual(solver.holds, {"test"})
+            solver.unhold("test")
+            self.assertTrue(solver.state()["solving"])
+            solver.hold("test")
+            st, d = v.req("/api/preflop/build", "POST", FORM)   # accepted: its stop ends the hold too
+            self.assertEqual(st, 200, d)
+            self.assertEqual(solver.holds, set())
+        finally:
+            solver.unhold("test")
+            v.req("/api/stop", "POST", {})
+            v.wait_solved()
 
         # the estimate a build waits for is not the form's: a later click on Estimate does not end it,
         # and it does not end the form's

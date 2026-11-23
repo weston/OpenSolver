@@ -595,8 +595,10 @@ def _api(solver, lib, method, path, query, body):
         data["preview"] = vrefine.preview_status(solver, target)
         return status, data
     if method == "POST" and path in ("/api/stop", "/api/solve", "/api/solve_node", "/api/build", "/api/load",
-                                    "/api/lock/revert", "/api/preflop/build"):
+                                    "/api/lock/revert"):
         # these stop or restart the solve, and the solver drops any hold with it
+        # (a preflop build can be refused long before its stop, the solve running on under a hold
+        # that must still be let go: preflop_api.build drops the holds once its stop is sent)
         try:
             return _api_main(solver, lib, method, path, query, body)
         finally:

@@ -529,11 +529,13 @@ as all of the class at the most; times the class's share of the deals and two st
 is the figure, said when it is not 0.00 bb/100. It is a bound, not a loss: no strategy that respects
 the rows as written is further from the checked one, and most are much nearer. The report has it as
 `rescaled_bb100` with the row as `rescaled_most` (class, decision, what the row adds up to; of rows
-that count the same, the first in the tree and then in the range; a row one rounding step off 1 is
+that count the same, the first met going down the tree, all under a decision's first action before
+its next, and at one decision the first in the range; a row one rounding step off 1 is
 named there too, with a figure far under what a note takes), and
 `unsaid_bb100` for the hands a locked decision has nothing for. Results written before this change
 have rows as the solver's seven digits left them, which shows from deep stacks on (a note at
-1500 bb and none at 1000, in a game on three flops with no bets after the flop).
+1200 bb and at every deeper stack measured, none at 1100 and under, in a game on three flops with no
+bets after the flop).
 Ranges that hold a hand class in part (single combos, combos at different weights) are checked
 with a note: the combos of a class need not play alike there, a result has one strategy for a class, and
 the loss includes what playing them alike costs. On all flops the two values of a solve add up to zero

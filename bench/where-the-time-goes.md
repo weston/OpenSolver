@@ -1234,9 +1234,26 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   figure is not 0.00 bb/100, with the row that counts the most in it (the row furthest from 1 can be
   one the class never comes to); nothing is refused for it, because the measure grows with the stack and
   a refusal would in the end meet a file nobody touched, as the note does: a result of the tool before
-  this change gets it at 1500 bb (0.0053 and 0.0065 bb/100; the second non-author run's figures, which
-  also has 2000 and 3000 with it and 100 and 500 without) and not at 1000 (0.0024 and 0.0025), on
-  three flops with no bets after the flop.
+  this change gets it at 1200 bb and at every deeper stack measured, and not at 1100 and under, on
+  three flops with no bets after the flop (the third non-author run's figures, small blind and big
+  blind in bb/100; a player is named in the note from 0.005):
+
+  | Stack, bb | Small blind | Big blind | Note |
+  |---|---|---|---|
+  | 100 | 0.0001 | 0.0002 | none |
+  | 500 | 0.0017 | 0.0028 | none |
+  | 1,000 | 0.0024 | 0.0025 | none |
+  | 1,100 | 0.0027 | 0.0029 | none |
+  | 1,200 | 0.0061 | 0.0084 | both |
+  | 1,300 | 0.0045 | 0.0053 | big blind |
+  | 1,400 | 0.0039 | 0.0052 | big blind |
+  | 1,500 | 0.0052 | 0.0065 | both |
+  | 2,000 | 0.0073 | 0.0074 | both |
+  | 3,000 | 0.0128 | 0.0153 | both |
+  | 6,000 | 0.0185 | 0.0250 | both |
+
+  The figure does not only grow with the stack (1,300 and 1,400 measure less than 1,200): it follows
+  which rows a solve's rounding left furthest off.
   The ten results of this section (100 bb, rows as the
   solver's seven digits left them, 1.2e-7 off at the most) measure 0.0002 to 0.0008 bb/100 a player,
   6 to 25 times under the line, and their plans are the same rows as before, entry for entry

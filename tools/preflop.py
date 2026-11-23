@@ -839,11 +839,15 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
     all of the class at the most), times the class's share of the player's deals, times the swing. It
     is a bound on what a strategy that respects the rows as written can differ from the locked one by,
     not a loss. `rescaled_most`: the locked row that counts the most in it, as [class, decision, what
-    the row adds up to] (of rows that count the same, the first met: the earlier decision of the tree,
+    the row adds up to] (of rows that count the same, the first met going down the tree, all that is
+    under a decision's first action before its next: that can be the decision further from the root;
     and at one decision the class that comes first in the range); empty when no locked row leaves
-    anything open (a row one rounding step off 1 does: a solve's own result names a row here, which no
-    note mentions). Rows at a decision left free are not measured: nothing is locked there. Locked rows
-    below one are, as if the class always came there."""
+    anything open: rows that add up to 1, rows of one action written as more than always, rows the
+    class never comes to (a row one rounding step off 1 leaves something open: a solve's own result
+    names a row here, which no note mentions). Rows at a decision left free are not measured: nothing
+    is locked there. Locked rows below one are, with the class as often there as the result's play
+    brought it to the free decision: what it does at that one is the solve's to choose, so all of it
+    is counted as going on."""
     by_id = {n["id"]: n for n in result["nodes"]}
     read = {n.id: _class_rows(name, by_id[n.id], len(n.children)) for n in decisions}
     known = {node: rows for node, (rows, _, _) in read.items()}

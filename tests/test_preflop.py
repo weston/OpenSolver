@@ -374,7 +374,7 @@ def unit():
     classes, dealt = ["AA", "KK", "AKs", "AA"], {"SB": [1, 1, 1, 1], "BB": [1, 1, 1, 0]}
     whole = {"SB": [1, 1, 1, 1], "BB": [1, 1, 1, 1]}
 
-    def made(change=None, dealt=dealt, swing=24.0):
+    def made(change=None, dealt=dealt, swing=24.0, root=root, nodes=nodes):
         result = {"nodes": [{"id": n.id, "actions": [label for label, _ in n.children],
                              "hands": {c: {"freq": [1.0 / len(n.children)] * len(n.children)} for c in set(classes)}}
                             for n in nodes]}
@@ -460,12 +460,55 @@ def unit():
     check(inner and under_free["BB"]["free"] == [first_bb[0].id] and inner[0].id in under_free["BB"]["rows"]
           and abs(under_free["BB"]["rescaled_bb100"] - (1 / 3) * 0.5 * 2400) < 1e-6
           and under_free["BB"]["rescaled_most"][:2] == ["KK", inner[0].id],
-          "a locked row below a decision left free is measured, as if the class always came there")
+          "a locked row below a decision left free is measured: free at the player's first decision, all of the class")
     # AA is half of the small blind's deals with a quarter of its row open, KK a quarter with half open
     tie = made(several(lambda h: h[root.id]["AA"].update(freq=[0.75] + [0.0] * (k - 1)),
                        lambda h: h[root.id]["KK"].update(freq=[0.5] + [0.0] * (k - 1))))
     check(abs(tie["SB"]["rescaled_bb100"] - 0.25 * 2400) < 1e-6 and tie["SB"]["rescaled_most"] == ["AA", root.id, 0.75],
           "of two rows that count the same the first met is named: the class that comes first in the range")
+    # the range's order, not the names' and not the larger share: AA a quarter of the deals, KK a half, AKs a quarter
+    order = {"SB": [1, 2, 1, 0], "BB": dealt["BB"]}
+
+    def only(cls, total):
+        return lambda h: h[root.id][cls].update(freq=[total] + [0.0] * (k - 1))
+    smaller, later = made(several(only("AA", 0.5), only("KK", 0.75)), order), made(several(only("KK", 0.75), only("AKs", 0.5)), order)
+    check(abs(smaller["SB"]["rescaled_bb100"] - 0.25 * 2400) < 1e-6 and smaller["SB"]["rescaled_most"] == ["AA", root.id, 0.5]
+          and abs(later["SB"]["rescaled_bb100"] - 0.25 * 2400) < 1e-6 and later["SB"]["rescaled_most"] == ["KK", root.id, 0.75],
+          "the first in the range, whether or not it is the larger share of the deals or the first by name")
+
+    # 40 bb: each player has a decision under each of its decisions, three deep (12 bb has two)
+    root40 = preflop.build_tree(settings("--stack", "40", "--depth", "none"))
+    nodes40 = decisions(root40)
+
+    def made40(*changes):
+        return made(several(*changes), swing=80.0, root=root40, nodes=nodes40)
+
+    def chain(who, top):   # the player's decisions under the root's child `top`, nearest the root first
+        return [n for n in nodes40 if n.actor == who and (n is top or preflop._under(top, n))]
+    tops = [child for _, child in root40.children if child.kind == "decision"]
+    sb_limped, bb_raised, bb_limped = chain("SB", tops[1]), chain("BB", tops[0]), chain("BB", tops[1])
+    limp40 = next(a for a, (_, child) in enumerate(root40.children) if child is tops[1])
+    k40 = len(root40.children)
+    check([len(c) for c in (sb_limped, bb_raised, bb_limped)] == [2, 2, 2] and nodes40.index(bb_raised[1]) < nodes40.index(bb_limped[0]),
+          "the 40 bb tree: two decisions of each player after a limp, two of the big blind after a raise, the raise first")
+    # the small blind's decision after a limp and a raise is left free (nothing for AA there); KK's row
+    # at its next one is a half: KK is a quarter of the deals and limps a third of the time
+    under_later = made40(lambda h: h[sb_limped[0].id].pop("AA"), scaled(sb_limped[1].id, "KK", 0.5))
+    check(under_later["SB"]["free"] == [sb_limped[0].id] and sb_limped[1].id in under_later["SB"]["rows"]
+          and abs(under_later["SB"]["rescaled_bb100"] - 0.25 * (1 / k40) * 0.5 * 8000) < 1e-6
+          and under_later["SB"]["rescaled_most"][:2] == ["KK", sb_limped[1].id],
+          "below a decision left free the class is as often there as the result's play brought it to the free one, "
+          "not always: free at a later decision, by how often the class came to that")
+
+    def plays(node, cls, freq):
+        return lambda h: h[node.id][cls].update(freq=freq + [0.0] * (len(node.children) - len(freq)))
+    # the same class, a quarter of it open at each of two rows of the big blind (binary fractions: equal as floats)
+    near_first = made40(plays(bb_raised[0], "KK", [0.75]), plays(bb_limped[0], "KK", [0.5, 0.5]), plays(bb_limped[1], "KK", [0.5]))
+    deep_first = made40(plays(bb_raised[0], "KK", [0.5, 0.5]), plays(bb_raised[1], "KK", [0.5]), plays(bb_limped[0], "KK", [0.75]))
+    check(abs(near_first["BB"]["rescaled_bb100"] - (1 / 3) * 0.5 * 8000) < 1e-6 and near_first["BB"]["rescaled_most"] == ["KK", bb_raised[0].id, 0.75]
+          and abs(deep_first["BB"]["rescaled_bb100"] - (1 / 3) * 0.5 * 8000) < 1e-6 and deep_first["BB"]["rescaled_most"] == ["KK", bb_raised[1].id, 0.5],
+          "of rows that count the same at two decisions the first met going down the tree is named, all under a "
+          "decision's first action before its next: the nearer the root of the two in one result, the further in the other")
 
     def no_limp(h):  # the small blind never limps, and the big blind has nothing for the decision after one
         for hand in h[root.id].values():

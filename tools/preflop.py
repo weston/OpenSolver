@@ -922,8 +922,7 @@ def _value(r: dict[str, float], who: str, chips: int) -> list[float]:
     value is no more than the player's best response makes against the opponent as solved, and no less
     than what the opponent's best response leaves; the two meet as the solve gets exact. (What the
     opponent's best response leaves is the two EVs' sum less the opponent's best: exact where the game is
-    zero-sum, which it is on all flops without an ante; on a subset, and a little with an ante (#505), the
-    sum moves with the strategies.)"""
+    zero-sum but for an ante, which it is on all flops; on a subset the sum moves with the strategies.)"""
     try:
         total = r["EV OOP"] + r["EV IP"]
         mine, theirs, ev = (("IP's MES", "OOP's MES", "EV IP") if who == SB else ("OOP's MES", "IP's MES", "EV OOP"))
@@ -941,8 +940,7 @@ def _lost(base: list[float], locked: list[float]) -> list[float]:
 
 def _sum(r: dict[str, float], s: Settings) -> float:
     """The two players' values added up, less the ante they play for, bb/100: zero in a game whose flops
-    are dealt evenly to the two (on all flops; with an ante the solver's values are about 0.03 % of it
-    short there, #505)."""
+    are dealt evenly to the two (on all flops)."""
     return (r.get("EV OOP", 0.0) + r.get("EV IP", 0.0) - _chips(s.ante, s.chips)) / s.chips * 100
 
 
@@ -1073,7 +1071,6 @@ def check_text(report: dict) -> list[str]:
     if any(_shows(x) for x in sums):
         ante = Decimal(str(report["settings"].get("ante_bb") or 0)) > 0   # `describe` wrote it
         why = ("a flop subset is not dealt quite evenly to the two" if report["flops"] != ALL_FLOPS
-               else "with an ante the solver's two values come out a little short of it, on all flops too" if ante
                else "the solver's own figures are that far from exact")
         notes += [f"The two players' values{', less the ante,' if ante else ''} added up to {_f2(min(sums))} to "
                 f"{_f2(max(sums))} bb/100 in these solves, "

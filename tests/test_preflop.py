@@ -590,8 +590,8 @@ def unit():
             for r in (report, every, dict(every, settings={"depth": "file", "ante_bb": "2"}))]
     check("a flop subset is not dealt quite evenly" in told[0]
           and all("flop subset" not in t and "added up to 0.82 to 0.86" in t for t in told[1:])
-          and "the solver's own figures" in told[1] and "less the ante" not in told[1]
-          and "less the ante" in told[2] and "a little short of it, on all flops too" in told[2],
+          and all("the solver's own figures" in t for t in told[1:])
+          and "less the ante" not in told[1] and "less the ante" in told[2],
           "a sum that is not zero is put down to the flop subset only where the flops are one")
 
 
@@ -981,7 +981,8 @@ def integration(exe):
         check(status == 0 and "added up to" in out and "not to zero" in out and "flop subset" in out,
               "on a flop subset the check says what the two values add up to")
         # with an ante, on all flops: the stake is two stacks and the ante, and the sums are taken less the
-        # ante (left in, each would be the ante, 100 bb/100)
+        # ante (left in, each would be the ante, 100 bb/100) and are zero then, with nothing to note (#505:
+        # the solver's two values were 0.03 bb/100 short of the ante here)
         game = ("--stack", "8", "--ante", "1", "--depth", "none", "--range-sb", "AA,KQs,72o", "--range-bb", "QQ,T9s,32o",
                 "--flops", "all", "--accuracy", "0.05", "--solver", exe)
         anted, report = os.path.join(d, "anted.json"), os.path.join(d, "anted_report.json")
@@ -1003,9 +1004,9 @@ def integration(exe):
         except (OSError, ValueError, KeyError):
             sums = []
         check(solved == 0 and status == 0 and stakes == [17.0] and len(sums) == 3
-              and all(abs(x) < abs(x - 100) for x in sums) and "flop subset" not in out,
-              f"check with an ante of 1 bb on all flops: a stake of 17 bb, and sums that are nearer zero than the "
-              f"ante ({', '.join(f'{x:+.3f}' for x in sums)}; {err.strip()[-80:] if status else 'ok'})")
+              and not any(preflop._shows(x) for x in sums) and "added up" not in out,
+              f"check with an ante of 1 bb on all flops: a stake of 17 bb, and the values less the ante add up "
+              f"to zero ({', '.join(f'{x:+.3f}' for x in sums)}; {err.strip()[-80:] if status else 'ok'})")
 
 
 def main():

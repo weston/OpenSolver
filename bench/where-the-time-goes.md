@@ -1211,13 +1211,16 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   ante the two values add up to zero (0.000 chips). Not corrected for: no rule for it that is not a guess.
   With an ante the two values add up to the ante and not to zero, and the sums are taken less it (the
   note used to count an ante of 2 as 200 bb/100 of uneven dealing, on all flops too; the fourth
-  review's). Not quite to the ante: on all flops the solver's two values come out 0.01 to 0.03 % of it
-  short (99.988 of 100 chips at uniform play, 99.970 solved; 999.883 and 999.689 of 1,000: `--stack 8
-  --depth none --range-sb AA,KQs,72o --range-bb QQ,T9s,32o --flops all`; the fifth review saw it first),
-  which is the solver's and not the check's (#505: the weights of the 1,755 flops in their 24 suit
-  variants are summed as floats and come out 3.5e-4 over, so every value that goes through a flop is
-  that much too small, with or without an ante; found while this was written, fixed there and not
-  here); on all flops the note now says that and no longer blames a subset.
+  review's). Not quite to the ante when the fifth review ran: on all flops the solver's two values came
+  out 0.01 to 0.03 % of it short (99.988 of 100 chips at uniform play, 99.970 solved; 999.883 and
+  999.689 of 1,000: `--stack 8 --depth none --range-sb AA,KQs,72o --range-bb QQ,T9s,32o --flops all`),
+  which was the solver's and not the check's (#505: the weights of the 1,755 flops in their 24 suit
+  variants were summed as floats and came out 3.5e-4 over, so every value that went through a flop was
+  that much too small, with or without an ante; fixed in #506, and the same game now adds up to the
+  ante to 0.001 chips). The figures of this section are from before that fix and were not run again:
+  it changes what is won and lost after a flop by 0.035 % in an all-flops game, the references here,
+  and by 0.001 % or less on the shipped subsets. On all flops the note no longer blames a subset for
+  a sum that is not zero.
 - **What the fifth review's mutations got past the tests** (seven of its thirteen): no test ran `check`
   with an ante, so the ante could go back into either sum, or out of the stake, unseen; versions 0 and
   -1 were read as results by a `_fits` that refused only "over 1", and `chart` could take any whole
@@ -1245,7 +1248,7 @@ at once; not changed.
 
 For the spans this matters as follows. The low end of a value is the solve's sum less the opponent's
 best response, which is what the opponent's best reply would leave the player only if the sum did not
-move with the strategies. On all flops it does not (0.000; no ante in any solve of this section, with one see #505), and with 200 it is 0.001, so the two tables
+move with the strategies. On all flops it does not (0.000; no ante in any solve of this section), and with 200 it is 0.001, so the two tables
 above stand as bounds; the depth table below is on 10 flops (0.03 in the reference, against spans 0.8
 wide). On a small, uneven subset the span is not a bound: with three flops and 12 bb the sum was 0.82 in
 one locked solve and 0.86 in the other, and a loss came out as -0.029 with the span -0.030 to -0.023,

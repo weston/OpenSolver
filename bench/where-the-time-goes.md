@@ -1225,11 +1225,18 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   was checked as thirds, a single 1.5 or 2**70 as 1. It still makes them add up to 1, and now measures
   what that leaves open the way it measures the hands a locked decision is silent on: the class's share
   of the player's deals, times how often the result's own play brings it there, times the part of the
-  row that is not as written (what is missing under 1; what is over, and all of it at the most, over
-  1: two strategies that play no action more than the row says differ by no more than that), times
-  the swing, summed over the locked rows. The note comes when the sum is not 0.00 bb/100, with the row
-  furthest off; nothing is refused for it, because the measure grows with the stack and a refusal
-  would in the end meet a file nobody touched: the ten results of this section (100 bb, rows as the
+  row that is not as written (what is missing under 1; over 1, what the entries have over 1 with none
+  counted as more than 1: two strategies that play no action more than the row says, and none more
+  than always, differ by no more than that, so `[1.5, 0, 0]` leaves nothing open and `[1.2, 0.3]`
+  leaves 0.3), times the swing. A class's rows at one decision after another add up, to all of the
+  class at the most: without that, rows of nonsense at every decision came to 4,604 bb/100 for a
+  player whose whole result spans 2,400 (found in the PR's verification). The note comes when the
+  figure is not 0.00 bb/100, with the row that counts the most in it (the row furthest from 1 can be
+  one the class never comes to); nothing is refused for it, because the measure grows with the stack and
+  a refusal would in the end meet a file nobody touched, as the note does: a result of the tool before
+  this change gets it at 3000 bb (0.013 and 0.015 bb/100, rows 4e-8 off) and not at 1000 (0.0024 and
+  0.0025), on three flops with no bets after the flop.
+  The ten results of this section (100 bb, rows as the
   solver's seven digits left them, 1.2e-7 off at the most) measure 0.0002 to 0.0008 bb/100 a player,
   6 to 25 times under the line, and their plans are the same rows as before, entry for entry
   (compared with `_plan` of the commit before). `solve` now divides a class's row by its own sum, so a

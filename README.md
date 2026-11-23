@@ -521,11 +521,17 @@ frequencies come too rarely to show in the second decimal.) A result that is not
 refused: one with nothing for hands at a decision that its own two strategies bring them to, as a file
 cut short or changed by hand can be (looked for when both ranges hold whole hand classes at one weight).
 Frequencies that do not add up to 1 at a hand class and decision are checked made to add up to 1. A
-solve writes rows that do; for a file whose rows leave something open the check names the row furthest
-off and what that can move: the class's share of the deals, times how often the result's own play
-brings it there, times the part of the row that is missing or over, times two stacks and the ante,
-added up over the locked rows and said when it is not 0.00 bb/100 (the report has it as
-`rescaled_bb100`, and `unsaid_bb100` for the hands a locked decision has nothing for).
+solve writes rows that do; for a file whose rows leave something open the check says what that can
+move, and names the row that counts the most in it. A row leaves open what is missing under 1, and
+over 1 what its entries (none counted as more than 1) have over 1; that part, times how often the
+result's own play brings the class to the row, is added up over the class's locked rows and counted
+as all of the class at the most; times the class's share of the deals and two stacks and the ante it
+is the figure, said when it is not 0.00 bb/100. It is a bound, not a loss: no strategy that respects
+the rows as written is further from the checked one, and most are much nearer. The report has it as
+`rescaled_bb100` with the row as `rescaled_most` (class, decision, what the row adds up to), and
+`unsaid_bb100` for the hands a locked decision has nothing for. Results written before this change
+have rows as the solver's seven digits left them, which shows from very deep stacks on (a note at
+3000 bb and none at 1000, in a game on three flops with no bets after the flop).
 Ranges that hold a hand class in part (single combos, combos at different weights) are checked
 with a note: the combos of a class need not play alike there, a result has one strategy for a class, and
 the loss includes what playing them alike costs. On all flops the two values of a solve add up to zero

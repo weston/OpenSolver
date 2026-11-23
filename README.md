@@ -404,18 +404,23 @@ blinds:
 
 | `--depth` | 10 flops | 25 | 50 | 100 | 200 | all 1,755 |
 |---|---|---|---|---|---|---|
-| none | 33 | 83 | 167 | 335 | 670 | 5,886 |
-| flop | 38 | 96 | 192 | 385 | 770 | 6,763 |
+| none | 13 | 33 | 66 | 132 | 264 | 2,317 |
+| flop | 18 | 45 | 91 | 182 | 364 | 3,194 |
 | turn | 802 | 2,039 | 4,049 | 7,948 | 15,573 | 121,802 |
 | river | 85,988 | 221,624 | 437,639 | 854,547 | 1,681,788 | |
 
-Down to `flop` nearly all of that is one table per flop, 3.5 MB with every hand in both ranges: who wins
-how many of the flop's 1,176 turn-and-river runouts, hand against hand, which is what every all-in and
-every checked-down line of that flop is valued on (#494; before it these trees kept the runouts' showdown
-boards and were about four times the size). From `turn` on the tree keeps the boards instead, the
-smaller of the two there. The solver process takes about 1.1 times the figure: 842 MB at its peak for
-the 200 flops estimated at 770, 7,111 for all 1,755 estimated at 6,763, 889 for 10 flops down to `turn`
-estimated at 802. The estimate is not free at `turn` and `river`: the solver builds the tree without the
+Down to `flop` nearly all of that is one table per flop, 1.4 MB with every hand in both ranges: how the
+flop's 1,176 turn-and-river runouts come out, hand against hand, which is what every all-in and every
+checked-down line of that flop is valued on (#494; before it these trees kept the runouts'
+showdown boards and were about four times the size. #496 halved them again: when both players hold the
+same hands a table keeps each pair of hands once, and only the hands the flop leaves). From `turn` on
+the smallest tree keeps the boards instead, and the table above is that tree. Tables are the faster way
+to value an all-in on the turn as well, so the solver builds them there too when the tree with them fits
+in memory (`set_outcome_tables`, `auto` by default; `small` for the tree of the table): 888 MB for the
+802 of 10 flops, 2,270 for 2,039, 4,509 for 4,049, and iterations about twice as fast. The solver process
+takes more than the figure: 462 MB at its peak for the 200 flops estimated at 364, 3,455 for all 1,755 estimated at 3,194, 892 for 10 flops down to
+`turn` estimated at 802 (1,004 with the turn tables, estimated at 888). The estimate is not free at
+`turn` and `river`: the solver builds the tree without the
 strategy storage to count it, boards included (down to `flop` there are none to build, and all flops
 take half a second). `--flops` takes a number we ship a
 file for (10, 25, 50, 100, 200), a flop file (`flop:weight` lines, the format of `flops/`), or `all` for
@@ -773,7 +778,7 @@ show_hand_order, show_preflop_order, go, stop, wait_for_solver, take_a_break, so
 set_threads, set_info_freq, set_accuracy, set_recalc_accuracy, set_always_recalc (stored),
 set_isomorphism, set_union_hands, set_collapse_checkdowns, change_step / show_step (stored), show_iters, set_first_iteration_player,
 set_range, set_eff_stack, set_board, set_pot, add_line, remove_line, force_line, clear_lines,
-build_tree, list_algorithms, set_algorithm, ignore_mem_check, small_strats,
+build_tree, list_algorithms, set_algorithm, ignore_mem_check, small_strats, set_outcome_tables,
 estimate_schematic_tree, show_memory, is_tree_present, show_node, show_children,
 show_effective_stack, show_range, show_strategy, show_strategy_pp, calc_ev, calc_ev_pp, calc_eq,
 calc_eq_pp, calc_eq_node, calc_eq_preflop (exact), calc_results, calc_matchups_line,
@@ -839,7 +844,9 @@ With full ranges, six exits and five flops (16-bit rows): bets on the flop only 
 and turn 8,976 -> 443 MB; three streets of betting have no check-downs and stay as they are. The same
 equilibrium either way (#484). A collapsed tree whose last bets are on the flop has since become about
 four times smaller again: its flops are valued on one outcome table each instead of their showdown
-boards (#494; the table of sizes under *Preflop solves*).
+boards (#494), and half of that with the same hands on both sides (#496; the table of sizes under
+*Preflop solves*). `set_outcome_tables auto|small|fast` says whether a tree with turn bets gets tables
+for its turn all-ins too: faster, and about a ninth more memory (`auto`: when it fits).
 
 **Flop subsets.** `flops/wsolver_10.txt`, `_25`, `_50`, `_100` and `_200` are flops with weights to put
 in a preflop tree (`add_to_subset <weight> <c> <c> <c>` per line of the file). They are our own, made by

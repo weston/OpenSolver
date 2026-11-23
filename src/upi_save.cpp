@@ -858,8 +858,11 @@ std::string Upi::cmd_load_tree(const Args& a) {
   auto t = std::make_unique<GameTree>();
   t->set_payoff(lc.pm);
   std::string err;
-  if (!t->build(lc.cfg, err, false)) throw CmdError{"cannot rebuild tree: " + err};
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
+  // (the storage as chosen below, short of the case that float32 turns out not to fit)
+  plan_outcome_tables(*t, avail, small_strats_ == "auto" ? (lc.h.mode & kModeQ16) && !(lc.h.mode & kModeQuant)
+                                                         : small_strats_ != "off");
+  if (!t->build(lc.cfg, err, false)) throw CmdError{"cannot rebuild tree: " + err};
   if (small_strats_ == "on" || small_strats_ == "compact") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
   // auto: keep the file's storage mode so a save/load round trip is exact. Requantizing a float32 save

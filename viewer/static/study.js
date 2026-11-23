@@ -341,6 +341,8 @@ async function openBoardPicker(i) {
       deck.append(pick.filter, pick.list);
       $("cd-cancel").onclick = () => dlg.close();
       if (!dlg.open) dlg.showModal();
+      const cur = pick.list.querySelector(".picked");   // the flop shown, in view in a long list
+      if (cur) pick.list.scrollTop = cur.offsetTop - pick.list.offsetTop - pick.list.clientHeight / 2;
       return;
     }
     pickable = new Map(kids.map((c) => [lastTok(c.id), c.id]));
@@ -419,6 +421,7 @@ function flopPicker(kids, current, onPick) {
   filter.onkeydown = (ev) => {
     ev.stopPropagation();   // typing here is not page navigation
     if (ev.key !== "Enter") return;
+    if (!filter.value.trim()) return;   // nothing asked for: Enter is not "the first flop of the tree"
     const left = toks.filter((t) => flopMatches(t, filter.value));
     if (left.length) onPick(ids.get(left[0]));
   };
@@ -609,8 +612,8 @@ function renderStrip() {
       b.style.setProperty("--f", (o.freqs[j] * 100).toFixed(1) + "%");
       const lbl = el("div", "lbl", a.label);
       if (a.sub) lbl.appendChild(el("small", null, a.short || a.sub));
-      b.title = [a.label, a.sub, a.more].filter(Boolean).join(" ");   // in full: the card cuts a long one short
-      b.append(lbl, el("div", "pct num", fmt(o.freqs[j] * 100) + "%"), el("div", "cmb num", fmt(o.combos[j]) + " c"));
+      b.title = [a.label, a.sub].filter(Boolean).join(" ") + (a.more ? ` · ${a.more}` : "");   // in full: the card cuts a long one short
+      b.append(lbl, el("div", "pct num", fmt(o.freqs[j] * 100) + "%"), el("div", "cmb num", fmt(o.combos[j], o.combos[j] >= 999.95 ? 0 : 1) + " c"));   // four digits: no decimal, the width the label leaves
       b.onclick = () => gotoNode(a.id);
       row.appendChild(b);
     });

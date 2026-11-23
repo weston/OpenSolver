@@ -65,6 +65,16 @@ documentation; contains no PioSOLVER code.
   to the largest subset of ours that fits; `solve` runs to an accuracy in bb/100 and prints 13x13 charts
   of every preflop decision (frequencies, optionally EVs in big blinds), also saved as JSON; `chart`
   prints them again. `--flops all` deals all 1,755 flop classes (#488).
+- **Viewer: Study on preflop trees** (a tree saved by `tools/preflop.py solve --save-tree`). Raises
+  before the flop get their real amounts (`Raise 75% to 250`, with `2.5x` in the tooltip: the open to
+  2.5 big blinds read `to 200 · 4.0x`, the blind taken off it), the text beside "to act" says small
+  blind or big blind and what the call costs, the deal after a preflop call lists the tree's flops with
+  a filter by rank or card (it was a dead end, "Choose the river" over a card picker with nothing to
+  click), and a board card of a flop opens the same list to change to another flop on the same line.
+  Sizes is off before the flop, where a re-solve is refused. EVs stay a percentage of the node's pot,
+  counted from the start of the hand, and the tooltip says so. In every tree, a raise's card says
+  `Raise 40% to 60` with the multiple (`3.0x`) in its tooltip, and a label that still does not fit is
+  cut short with the whole of it there: `to 60 · 3.0x` ran under the combo count (#490).
 
 ### Build
 

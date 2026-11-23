@@ -45,6 +45,14 @@ def run(*argv):
     return status, out.getvalue(), err.getvalue()
 
 
+def quiet(*argv):
+    """`run`, with anything the command line lets through as a status of its own."""
+    try:
+        return run(*argv)
+    except BaseException as e:  # noqa: B902 (a traceback is the failure looked for)
+        return -1, "", f"Traceback: {type(e).__name__}: {e}"
+
+
 def decisions(root):
     return [n for n in preflop.walk(root) if n.kind == "decision"]
 
@@ -281,6 +289,24 @@ def unit():
         check(False, "an unknown node is refused")
     except preflop.PreflopError as e:
         check("r:0" in str(e), "chart: a node the result lacks is refused, with the ones it has")
+    with tempfile.TemporaryDirectory() as d:
+        answers = []
+        for name, text in (("reach.json", json.dumps(dict(result, version=1, nodes=[dict(node, reach=10 ** 400)]))),
+                           ("freq.json", json.dumps(dict(result, version=1, nodes=[dict(node, hands={
+                               "AA": {"reach": 1, "freq": [1e308, 1e308, 0.0], "ev_bb": 1.0}})]))),
+                           ("true.json", json.dumps(dict(result, version=True))),
+                           ("deep.json", "[" * 100000)):
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+            answers += [quiet("chart", os.path.join(d, name)), quiet("check", os.path.join(d, name))]
+        with open(os.path.join(d, "ok.json"), "w") as f:
+            json.dump(dict(result, version=1), f)
+        check(all(status == 1 and err.startswith("error: ") and "Traceback" not in err for status, _, err in answers)
+              and all("cannot read the result" in err for _, _, err in answers[6:])
+              and all("is not a result of `preflop.py solve`" in err for _, _, err in answers[:6])
+              and quiet("chart", os.path.join(d, "ok.json"))[0] == 0,
+              "chart and check say in words that a file is no result: a number no float holds, a version that is "
+              f"`true`, brackets nested past reading ({[a[0] for a in answers]})")
     tree = "\n".join(preflop.tree_text(settings(), preflop.build_tree(settings())))
     check("r:0:b250:c" in tree and "flop" in tree and "all-in" in tree, "tree: the lines in words with their node ids")
 
@@ -318,13 +344,13 @@ def unit():
     classes, dealt = ["AA", "KK", "AKs", "AA"], {"SB": [1, 1, 1, 1], "BB": [1, 1, 1, 0]}
     whole = {"SB": [1, 1, 1, 1], "BB": [1, 1, 1, 1]}
 
-    def made(change=None, dealt=dealt):
+    def made(change=None, dealt=dealt, swing=24.0):
         result = {"nodes": [{"id": n.id, "actions": [label for label, _ in n.children],
                              "hands": {c: {"freq": [1.0 / len(n.children)] * len(n.children)} for c in set(classes)}}
                             for n in nodes]}
         if change:
             change({n["id"]: n["hands"] for n in result["nodes"]})
-        return preflop._plan("x.json", result, root, nodes, classes, dealt, dealt, 24.0)
+        return preflop._plan("x.json", result, root, nodes, classes, dealt, dealt, swing)
 
     def silent(hands):
         for h in hands.values():
@@ -416,6 +442,86 @@ def unit():
           and "ranges of that solve" in refusal(lambda h: h[root.id].pop("AKs")),
           "a result with other hands than the check deals is refused: a whole hand class missing at a first decision "
           "the opponent comes to, a hand too many, no first decision")
+    # what the fourth review found. A decision emptied in a file is not one the player never passes: the
+    # small blind's decision under an emptied one of the big blind is not said to be never come to
+    parent = root.children[under][1]
+    on = [a for a, (_, child) in enumerate(parent.children) if child in sb_inner or any(preflop._under(child, n) for n in sb_inner)]
+
+    def emptied(h):
+        silent(h[parent.id])
+        for n in sb_inner:
+            silent(h[n.id])
+
+    def stays(h):  # the big blind's own frequencies say it never goes on
+        for hand in h[parent.id].values():
+            hand["freq"] = [0.0 if a in on else 1.0 / (len(parent.children) - len(on)) for a in range(len(parent.children))]
+        for n in sb_inner:
+            silent(h[n.id])
+    plan, never_there = made(emptied), made(stays)
+    check(parent.actor == "BB" and on and plan["SB"]["free"] == plan["SB"]["part"] == [n.id for n in sb_inner]
+          and parent.id in plan["BB"]["part"]
+          and never_there["SB"]["free"] == [n.id for n in sb_inner] and never_there["SB"]["part"] == []
+          and never_there["BB"]["free"] == [],
+          "nothing at a decision under one of the opponent's that the file has nothing for either: not said to be never "
+          "come to; under one whose frequencies say the opponent does not go on, it is")
+    # what shows is a share of the deals times the stake, 0.005 bb/100 or more, summed over the hands
+    between = [n for n in nodes if n.actor == "SB" and n is not root and preflop._under(n, inner[0])]
+    passed = 1.0
+    for n in between:
+        passed /= len(n.children)
+
+    def limps(often, gone):  # the small blind comes to inner[0] `often`; the big blind half the time, without `gone`
+        def change(h):
+            for hand in h[root.id].values():
+                hand["freq"] = [often / passed if a == limp else (1 - often / passed) / (len(root.children) - 1)
+                                for a in range(len(root.children))]
+            for cls in gone:
+                h[first_bb[0].id][cls]["freq"] = [0.5 if a == step else 0.5 / (len(first_bb[0].children) - 1)
+                                                 for a in range(len(first_bb[0].children))]
+                h[inner[0].id].pop(cls)
+        return change
+    # whole ranges: AA is half the big blind's deals, KK and AKs a quarter each; 0.25 * 0.5 * 1e-5 * 2400 = 0.003
+    one, two = refusal(limps(1e-5, ["KK"]), whole), refusal(limps(1e-5, ["KK", "AKs"]), whole)
+    plan = None if one else made(limps(1e-5, ["KK"]), whole)
+    check(between and plan and plan["BB"]["free"] == plan["BB"]["part"] == [inner[0].id]
+          and f"has no strategy at {inner[0].id} for hands" in two and "KK" in two and "AKs" in two
+          and not refusal(limps(1e-5, ["KK", "AKs"]), dealt),
+          "hands a result's own strategies bring to a decision it has nothing for: refused where they add up to "
+          "0.005 bb/100 of the stake (two classes at 0.003 each), not where one alone does not; never with a class held in part")
+    plan, small = made(rarely(3e-5)), made(rarely(3e-5), swing=1.0)
+    check(plan["BB"]["free"] == [inner[0].id] and small["BB"]["free"] == [] and 0 < small["BB"]["unsaid_bb100"] < 0.005
+          and preflop._swing_bb(settings("--stack", "12")) == 24.0
+          and preflop._swing_bb(settings("--stack", "12", "--ante", "2")) == 26.0,
+          "what shows is measured against the stake, two stacks and the ante: a hand at 1 deal in 100,000 shows "
+          "with 24 big blinds to move and not with one")
+
+    def seldom_limped(often):  # a limp that rare, and a big blind with nothing after it
+        def change(h):
+            limps(often * passed, [])(h)
+            silent(h[first_bb[0].id])
+        return change
+    plan, rarer = made(seldom_limped(1e-5)), made(seldom_limped(1e-7))
+    check(plan["BB"]["free"][0] == first_bb[0].id and first_bb[0].id in plan["BB"]["part"]
+          and rarer["BB"]["free"][0] == first_bb[0].id and rarer["BB"]["part"] == [],
+          "an opponent is said never to come to a decision where it comes too rarely to show against the stake: "
+          "at 1 deal in 10,000,000, not at 1 in 100,000")
+    fits = settings("--stack", "12", "--depth", "none", "--ante", "2")
+    its = {"version": 1, "settings": preflop.describe(fits), "chips_per_bb": fits.chips,
+           "nodes": [{"id": n.id, "actions": [label for label, _ in n.children], "hands": {}}
+                     for n in decisions(preflop.build_tree(fits))]}
+
+    def unfit(**change):
+        try:
+            return preflop._fits("x.json", dict(its, **change), fits, decisions(preflop.build_tree(fits))) and ""
+        except preflop.PreflopError as e:
+            return str(e)
+    check(unfit() == [] and all("x.json is not a result of `preflop.py solve`" in unfit(version=v) for v in (True, 1.0, "1", None))
+          and "x.json is a version 2 result: this `preflop.py` reads version 1" in unfit(version=2)
+          and "another preflop game" in unfit(chips_per_bb=20),
+          "a result's version is the whole number 1: `true` and 1.0 are no result, 2 is one this tool does not read")
+    check(abs(preflop._sum({"EV OOP": -3.0, "EV IP": 204.0}, fits) - 1.0) < 1e-9
+          and abs(preflop._sum({"EV OOP": -3.0, "EV IP": 4.0}, s) - 1.0) < 1e-9,
+          "the two values' sum is taken less the ante: 2 big blinds of dead money are 200 bb/100 that are not a misdeal")
     check(preflop._uneven(classes, dealt) and not preflop._uneven(classes, {"SB": [1, 0.5, 0, 1], "BB": [0, 0, 0, 0]})
           and preflop._uneven(["AA", "AA"], {"SB": [1, 0.5]}), "a range holds a class in part: a combo missing, or weights that differ")
     check(preflop._same("2.50bb 4x", "2.5bb 4.0x") and preflop._same("sNaNbb", "sNaNbb") and not preflop._same("sNaNbb", "1bb")
@@ -441,7 +547,10 @@ def unit():
           and "a.json has a strategy for only some of the hands that can come to 1 of the big blind's decisions (r:0:b250)" in text
           and "added up to 0.82 to 0.86 bb/100" in text and "(0.04 here)" in text
           and text.count("0.10  (0.00 to 0.20)") == 3 and text.count("(none of it to check)") == 1
-          and "added up" not in "\n".join(preflop.check_text(exact)),
+          and "added up" not in "\n".join(preflop.check_text(exact))
+          and "values, less the ante, added up to 0.82 to 0.86" in " ".join("\n".join(preflop.check_text(
+              dict(report, settings={"depth": "file", "ante_bb": "2"}))).split())
+          and "less the ante" not in "\n".join(preflop.check_text(dict(report, settings={"depth": "file", "ante_bb": "0.0"}))),
           "the check's text: the trees by their options, the decisions left free, a player with nothing locked, "
           "and the sum where it is not zero")
 
@@ -756,6 +865,11 @@ def integration(exe):
         with open(report) as f:
             rows = json.load(f)["checked"]
         was, now = ([r[who]["lost_bb100"][0] for who in ("SB", "BB")] for r in rows)
+        has = {who: sum(n["actor"] == who for n in whole["nodes"]) for who in ("SB", "BB")}
+        check(min(has.values()) >= 2 and [rows[0][who]["locked"] for who in ("SB", "BB")] == [has["SB"], has["BB"]]
+              and rows[1]["BB"]["locked"] == has["BB"] - len(rows[1]["BB"]["free"]) < has["BB"],
+              f"the report counts the decisions it locked: all of a whole result's ({has['SB']} and {has['BB']}), "
+              f"and those not left free of the other's ({rows[1]['BB']['locked']})")
         free = [r[who]["free"] for r in rows for who in ("SB", "BB")]
         check(status == 0 and free[:3] == [[], [], []] and free[3][0] == "r:0:c" and all(n.startswith("r:0:c") for n in free[3])
               and rows[1]["BB"]["free_part"] == free[3][1:]

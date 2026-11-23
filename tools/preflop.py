@@ -721,7 +721,12 @@ def _fits(name: str, result: dict, s: Settings, decisions: list[Node]) -> list[s
 
         def said(d: dict, k: str):  # no limp-raise sizes: the 3-bet's
             return d["3bet"] if k == "limp_raise" and d[k] is None else d[k]
-        ok = (type(result.get("version")) is int and result["version"] == 1 and all(_same(said(its, k), said(mine, k)) for k in PREFLOP_SETTINGS)
+        version = result.get("version")
+        if type(version) is not int:  # not true, not 1.0
+            raise TypeError
+        if version != 1:
+            raise PreflopError(f"{name} is a version {version} result: this `preflop.py` reads version 1")
+        ok = (all(_same(said(its, k), said(mine, k)) for k in PREFLOP_SETTINGS)
               and result["chips_per_bb"] == s.chips
               and [(n["id"], n["actions"]) for n in result["nodes"]]
               == [(n.id, [label for label, _ in n.children]) for n in decisions])
@@ -793,7 +798,10 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
       counts a class's combos as playing alike and as meeting any hand of the opponent, which ranges
       that name suits or weights undo: a combo the opponent's cards rule out need not be there.
     What is left free after that is named: `part` unless the result's own opponent comes to the
-    decision too rarely to show, which is then the reason it has nothing there."""
+    decision too rarely to show, which is then the reason it has nothing there. How often the opponent
+    comes is taken from the opponent's frequencies in the result, and a decision on the way that has none
+    for a hand counts as passed by it, so nothing is said to be never come to because a file is silent
+    higher up."""
     by_id = {n["id"]: n for n in result["nodes"]}
     known = {n.id: _class_rows(name, by_id[n.id], len(n.children)) for n in decisions}
     even = not _uneven(classes, ranges)
@@ -806,8 +814,10 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
                 share[who][cls] = share[who].get(cls, 0.0) + x / total
 
     def reaches(who: str) -> dict[str, dict[str, float]]:
-        """Per decision, how often the result's play brings each hand class of the player there: the
-        product of its frequencies on the way (none: the class goes no further)."""
+        """Per decision, how often the result's play brings each hand class of the player there at the
+        most: the product of its frequencies on the way. Where the result has none for the class it goes
+        on as it came: the result does not say that it stops, and a decision emptied in a file must not
+        read as one the player never passes."""
         at: dict[str, dict[str, float]] = {}
 
         def go(n: Node, reach: dict[str, float]) -> None:
@@ -816,7 +826,7 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
             at[n.id] = reach
             for a, (_, child) in enumerate(n.children):
                 go(child, reach if n.actor != who else
-                   {cls: p * known[n.id][cls][a] for cls, p in reach.items() if cls in known[n.id]})
+                   {cls: p * (known[n.id][cls][a] if cls in known[n.id] else 1.0) for cls, p in reach.items()})
         go(root, {cls: 1.0 for cls in share[who]})
         return at
     own = {who: reaches(who) for who in (SB, BB)}
@@ -880,6 +890,11 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
     return out
 
 
+def _swing_bb(s: Settings) -> float:
+    """The most one hand can move a player's result, in big blinds: two stacks and the ante."""
+    return float(2 * s.stack + s.ante)
+
+
 def _uneven(classes: list[str], ranges: dict[str, list[float]]) -> bool:
     """A range holds a hand class in part: some of its combos, or its combos at different weights."""
     for weights in ranges.values():
@@ -917,8 +932,10 @@ def _lost(base: list[float], locked: list[float]) -> list[float]:
     return [base[0] - locked[0], base[1] - locked[2], base[2] - locked[1]]
 
 
-def _sum(r: dict[str, float], chips: int) -> float:
-    return (r.get("EV OOP", 0.0) + r.get("EV IP", 0.0)) / chips * 100
+def _sum(r: dict[str, float], s: Settings) -> float:
+    """The two players' values added up, less the ante they play for, bb/100: zero in a game whose flops
+    are dealt evenly to the two."""
+    return (r.get("EV OOP", 0.0) + r.get("EV IP", 0.0) - _chips(s.ante, s.chips)) / s.chips * 100
 
 
 def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]], results: list[tuple[str, dict]],
@@ -955,7 +972,7 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
         classes = [hand_class(h) for h in order]
         dealt = {SB: [x * y for x, y in zip(sb, _facing(order, bb))], BB: [x * y for x, y in zip(bb, _facing(order, sb))]}
         ranges = {SB: sb, BB: bb}
-        plans = [_plan(name, r, root, decisions, classes, dealt, ranges, float(2 * s.stack + s.ante))
+        plans = [_plan(name, r, root, decisions, classes, dealt, ranges, _swing_bb(s))
                  for name, r in results]  # all read before any solve
         say("the game as it is:")
         free = solve_on(u, s, accuracy_bb100, seconds, log)
@@ -974,7 +991,7 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
                 v = _value(got, who, s.chips)
                 row[who] = {"value_bb100": v, "lost_bb100": _lost(base[who], v),
                             "exploitable_bb100": got.get("Exploitable for", 0.0) / s.chips * 100,
-                            "sum_bb100": _sum(got, s.chips), "locked": len(plan[who]["rows"]),
+                            "sum_bb100": _sum(got, s), "locked": len(plan[who]["rows"]),
                             "free": plan[who]["free"], "free_part": plan[who]["part"],
                             "unsaid_bb100": plan[who]["unsaid_bb100"]}
             checked.append(row)
@@ -984,7 +1001,7 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
         "flops": flop_name, "flop_count": len(flops),
         "target_bb100": accuracy_bb100,
         "exploitable_bb100": free.get("Exploitable for", 0.0) / s.chips * 100,
-        "value_bb100": base, "sum_bb100": _sum(free, s.chips),
+        "value_bb100": base, "sum_bb100": _sum(free, s),
         "uneven_ranges": _uneven(classes, ranges),
         "seconds": round(time.time() - started, 1),
         "estimated_mb": estimated_mb,
@@ -1037,15 +1054,21 @@ def check_text(report: dict) -> list[str]:
                 notes += [f"{file} has a strategy for only some of the hands that can come to {ids(part)} (for "
                         "none of them at some). A decision is locked whole or not at all, so the check plays these "
                         "as well as they can be played, and the loss is that of what the result says at the others. "
-                        f"(A solve leaves out the hands that met no hand of the {their} blind at a decision; under a "
-                        "decision left to the solve, more hands come than the result has.)"]
+                        "(A result leaves out the hands its solve did not bring to a decision: by their own play, or "
+                        f"because no hand of the {their} blind met them there. Under a decision left to the solve, "
+                        "more hands come than the result has.)"]
     if report.get("uneven_ranges"):
         notes += ["The ranges of this check hold hand classes in part (some of a class's combos, or combos at "
                 "different weights). The combos of a class need not play alike then, and a result has one strategy "
                 "for a class: the loss includes what playing them alike costs, which can be much."]
     sums = [report["sum_bb100"]] + [r[who]["sum_bb100"] for r in report["checked"] for who in (SB, BB)]
     if any(_shows(x) for x in sums):
-        notes += [f"The two players' values added up to {_f2(min(sums))} to {_f2(max(sums))} bb/100 in these solves, "
+        try:
+            ante = Decimal(str(report["settings"].get("ante_bb") or 0)) > 0
+        except ArithmeticError:
+            ante = False
+        notes += [f"The two players' values{', less the ante,' if ante else ''} added up to {_f2(min(sums))} to "
+                f"{_f2(max(sums))} bb/100 in these solves, "
                 "not to zero: a flop subset is not dealt quite evenly to the two. Where that sum moves with the "
                 f"strategies ({max(sums) - min(sums):.2f} here) the losses and the ends of their spans are that "
                 "uncertain, and a loss can come out under zero."]
@@ -1341,10 +1364,10 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError, RecursionError) as e:
                 raise PreflopError(f"cannot read the result: {e}")
             try:
-                if not isinstance(result, dict) or result.get("version") != 1:
+                if not isinstance(result, dict) or type(result.get("version")) is not int or result["version"] != 1:
                     raise KeyError("version")
                 text = charts(result, a.args[1:], a.width, a.ev)
-            except (KeyError, TypeError, IndexError, AttributeError, ValueError):
+            except (KeyError, TypeError, IndexError, AttributeError, ValueError, ArithmeticError):  # a number no float holds
                 raise PreflopError(f"{a.args[0]} is not a result of `preflop.py solve`")
             print("\n".join(text))
             return 0

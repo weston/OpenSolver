@@ -1067,8 +1067,18 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   The notes say what was looked at and no more. "Its small blind never goes there" is printed for a
   decision without frequencies when the result's own rows bring the opponent there too rarely to show;
   any other decision left free is listed as one the result has only some hands at, without a reason (the
-  second rule's note gave reasons it had not checked). A player none of whose decisions is locked gets no
-  figure. An integer no float holds (`10**400` as a frequency) is refused like any other frequency that
+  second rule's note gave reasons it had not checked). How often the opponent comes is read from the
+  opponent's rows on the way, and the third rule read a decision without rows as one the hand stops at:
+  with the big blind's rows against the raise emptied in a file as well as the small blind's against the
+  shove, in ranges that name suits (where nothing is refused for being silent), it printed "its big blind
+  never goes there" over a big blind that shoves 8.85 % of the time (the fourth review's run). A hand
+  without rows on the way now passes as it came, so the note is printed only where rows that are there
+  say the opponent does not come, and that file gets the list without a reason. The plans do not change
+  by this, only which of the two notes a decision left free gets: of 70 results of `solve` in small games
+  (the reviews' files) 2 changed note, of 300 more solved for this (random narrow ranges, one to three
+  flops, stacks of 3 to 300 bb) 3 did and none was refused, and none of the nine files of this section
+  changed. A player none of
+  whose decisions is locked gets no figure. An integer no float holds (`10**400` as a frequency) is refused like any other frequency that
   is no strategy; it was a traceback. None of the result files of this section is touched by any of
   this: all ten decisions are locked, with the same rows as before. They do have hand classes without
   frequencies, 66 to 794 class-and-decision entries a file (32o against the 3-bet of an open it never
@@ -1077,13 +1087,22 @@ own flops and locked per hand class (every combo of a class plays the class's fr
 - **Where the two values' sum moves, the loss is that uncertain, not only its span.** A small blind with
   `AA,KK:0.001,72o` against `KK,QQ` (12 bb, three flops, reference to 0.006 bb/100) printed 0.32 (0.31
   to 0.39) for a big blind whose locked rows were the equilibrium's (every KK combo calls 0.883 in
-  the solver's own strategy, as the review read it): a true loss of about nothing, in a game worth 0.46. The two values added up to -0.42 to -0.02 over the
+  the solver's own strategy, as the review read it): a true loss of about nothing, in a game worth 0.46.
+  That was at the default `--accuracy 0.05`; the same check at 0.02 and at 0.005 printed 0.02 (0.01 to
+  0.03) and 0.02 (0.02 to 0.03), so in a game this small the figure moves with the accuracy of the check
+  by more than its span, and a span is no bound there. A worse one (the fourth review's): `AA,72o`
+  against `AKs`, 12 bb, three flops, one result solved to 0.004 and checked three times: the big blind's
+  loss 1.31 (1.30 to 1.41) at 0.05, -0.54 (-0.55 to -0.53) at 0.005, -0.20 (-0.21 to -0.20) at 0.001, the
+  small blind's -0.15, -0.16 and 2.03 (2.03 to 2.03), with the sums moving by 1.55, 0.54 and 2.53.
+  In the first example the two values added up to -0.42 to -0.02 over the
   three solves; the free opponent of the locked solve does not hold the checked player's value down, it
   pushes its own up, and off all flops those are not the same thing. The check prints the range of the
   sums and now says the losses are that uncertain. With full ranges on three flops the sums moved by
   0.18 (100 bb: small blind -0.21, span -0.24 to -0.07, the review's run); in the one check of this
   section that recorded them, 50 shipped flops with turn bets, by 0.004, and on all flops the game is
-  zero-sum. Not corrected for: no rule for it that is not a guess.
+  zero-sum. Not corrected for: no rule for it that is not a guess. With an ante the two values add up to
+  the ante and not to zero, and the sums are taken less it (the note used to count an ante of 2 as 200
+  bb/100 of uneven dealing, on all flops too; the fourth review's).
 - **A fresh start is the faster one.** The locked solve from `set_equal_strats` took 5 to 6 s where the
   same solve continued from the reference's solved state took 20 to 25 s (50-flop reference; the fresh
   ones to 0.1 bb/100, the continued ones only to 0.5);
@@ -1120,7 +1139,7 @@ strategies under test were solved on the same 10 flops, so the subset costs them
 | `--depth flop` | 1.9 | 1.36 [1.01, 1.79] | 1.91 [1.58, 2.36] |
 | `--depth none` | -7.1 | 7.96 [7.62, 8.40] | 7.51 [7.20, 7.98] |
 
-The same on the 25 flops of `wsolver_25.txt` (2,039 MB; 10 threads next to the tests of a review, 48
+The same on the 25 flops of `wsolver_25.txt` (2,039 MB by the tool's estimate; next to the tests of a review, 48
 minutes for the three solves to 0.2: 1,417 s for the reference, 689 and 767 s locked). The turn-depth
 game is worth 6.68 to the button (6.53 to 6.90); the `--depth flop` strategy of the same 25 flops (1.55
 in its own game, solved to 0.05) gives up **1.65 [1.32, 2.09]** (small blind) and **2.16 [1.82, 2.58]**
@@ -1129,11 +1148,11 @@ the same or a little more. The reference's two values added up to 0.045 here and
 against spans 0.8 wide; the sums of the locked solves of these two tables were not recorded (`check` did
 not print them yet), so how far they moved is not known.
 
-And on the 50 flops of `wsolver_50.txt` (4,049 MB; 10 threads next to a review's tests and other
+And on the 50 flops of `wsolver_50.txt` (4,049 MB by the tool's estimate; next to a review's tests and other
 measurements, 93 minutes: 2,290 s for the reference, 1,470 and 1,685 s locked, all to 0.2). The game is
 worth 6.56 to the button (6.39 to 6.79); the `--depth flop` strategy of the same 50 flops (solved to
 0.03) gives up **1.59 [1.25, 2.05]** (small blind) and **1.75 [1.41, 2.19]** (big blind). The three
-solves' values added up to 0.001, 0.003 and 0.005: the sum moved by 0.004, a hundredth of the spans.
+solves' values added up to 0.001, 0.003 and 0.005: the sum moved by 0.004, a two-hundredth of the spans.
 Three subsets, three overlapping spans: what stopping the bets at the flop costs does not go away with
 more flops, and at 1.4 to 2.2 bb/100 it is some ten times what the 50 flops themselves cost at flop
 depth (0.19 / 0.17 above). The next step down, the turn-depth strategy in the river-depth game, does

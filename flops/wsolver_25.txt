@@ -1,6 +1,3 @@
-# 25 flops for preflop trees, made by tools/flop_subsets.cpp (make 25).
-# flop:weight, weights in percent. Each flop stands for its suit class.
-# RMS error of a hand's value against a range, by who is ahead on the flop 0.00866 turn 0.00672 river 0.00653
 AsKs9s:3.9635
 AsJh5s:7.3336
 AsTh6s:3.2328

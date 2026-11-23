@@ -659,3 +659,52 @@ results and root strategy as before the change, character for character, after 2
   else on that flop needs them. Expected to be the larger part of what is left of the 15 s above.
 - A forced node with real decisions beneath it (OOP's check in a tree without donk bets) still stores
   its rows. Dropping those changes 16-bit results and the save layout; not done.
+
+## Flop subsets for preflop trees (#486)
+
+A preflop tree deals a subset of flops. `flops/wsolver_<N>.txt` are ours, made by
+`tools/flop_subsets.cpp` (`make flop-subsets`); what is chosen and how close the files are to the full
+deck is in `flops/README.md`. This section is what was measured on the way, including what did not work.
+
+**What a subset is fitted to.** Per flop class (1,755) and street, a 169 x 169 table of who is ahead:
+on the flop, over the 45 turns, over the 990 runouts. The error of a set of weights is the squared error
+of a hand's value against a range, taken over every range (each hand class in or out with probability
+1/2), which is `(sum over opponents of the error)^2 + sum of the squared errors` per hand: the first
+term is the hand against all hands at once, the second matchup by matchup. Three streets, equal weight,
+nothing tuned. The weights of a chosen set are solved exactly (a quadratic on the simplex).
+
+**Two objectives that were tried first and dropped** (negative results):
+
+- *River equity only* (the 990-runout table alone). Small subsets came out about 46 % monotone, with
+  trips flops at 6.6 % of the weight: a monotone flop is a cheap stand-in for "a flush is possible by
+  the river", and nothing in the objective says the flop itself has to look like the flops that are dealt. All-in equities
+  through such a subset are close, but the hands are played on boards that come up 5 % of the time.
+  Hence the flop and turn tables.
+- *Matchup by matchup only* (no "against all hands" term). 25 flops came out 12.5 % monotone against
+  5.2 % in the deck. Errors that are small pair by pair but all of one sign add up over a range; the
+  term for a hand against all hands is what a range sees, and with it the textures settle (table in
+  `flops/README.md`: 7.0 % monotone at 25 flops, 5.3 % at 100).
+
+**Against random flops** (all three streets together, RMS, 1.0 = the pot; median of 200 random draws):
+
+| Flops | generated | random, weights solved | random, weights = how often dealt |
+|---|---|---|---|
+| 10 | 0.0309 | 0.0667 | 0.0867 |
+| 25 | 0.0128 | 0.0304 | 0.0571 |
+| 50 | 0.0049 | 0.0159 | 0.0397 |
+| 100 | 0.0018 | 0.0077 | 0.0273 |
+
+Both parts count, and more as the subset grows: solved weights alone take a random subset down by a
+factor of 1.3 (10 flops) to 3.5 (100), and choosing the flops takes it down by another 2.2 to 4.3.
+`make flop-subsets` (10 to 200 flops) took 5 min 37 s on the M4 with a solve running beside it;
+5 to 100 flops alone took 62 s on the idle machine. The search is deterministic.
+
+**The engine values a preflop exit the way the generator assumes.** `tests/test_upi.py` builds a limp
+check-down tree over `wsolver_10.txt` and compares `calc_ev` at the exit with `flop_subsets equity`
+(a different program path: class tables against the engine's per-combo boards). Largest difference seen
+2.1e-6 of the pot, single precision; `calc_eq_node` at a preflop node is the exact equity, not the one
+through the subset, and is checked to stay so.
+
+### What the subset does to a solved preflop strategy
+
+@@STUDY@@

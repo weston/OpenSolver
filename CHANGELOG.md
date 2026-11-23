@@ -50,6 +50,12 @@ documentation; contains no PioSOLVER code.
   per-combo Full CSVs (#347); Study's **Report…** runs one at the current node (#332).
 - `bench/run.py` time-to-exploitability harness over a suite of clean-room trees, plus
   `bench/where-the-time-goes.md`, the measured cost map to read before doing performance work.
+- **Flop subsets of our own** (`flops/wsolver_10.txt` to `_200.txt`) for preflop trees and the job
+  queue, and the tool that makes them (`tools/flop_subsets.cpp`, `make flop-subsets`). Flops and weights
+  are chosen so that who is ahead on the flop, the turn and the river, hand class against hand class,
+  matches all flops together; random flops of the same number are 2 to 4 times further off. The viewer's
+  Jobs tab offers them when no other flop directory is set, and the macOS app carries them (#486).
+- `tools/jobs.py`: a `#` comment in a flop file may contain commas and semicolons.
 
 ### Build
 

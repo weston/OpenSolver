@@ -261,11 +261,9 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "%d flops: RMS error %s (greedy total %.5f, then %d swaps: %.5f)\n   %s\n   %s\n",
                    static_cast<int>(s.flops.size()), streets(s.flops, s.weight).c_str(), std::sqrt(greedy), swaps,
                    std::sqrt(s.err2), hands(s.flops, s.weight).c_str(), texture_str(texture(fc, s.flops, s.weight)).c_str());
-      std::ostringstream head;
-      head << "# " << s.flops.size() << " flops for preflop trees, made by tools/flop_subsets.cpp (make " << size << ").\n"
-           << "# flop:weight, weights in percent. Each flop stands for its suit class.\n"
-           << "# RMS error of a hand's value against a range, by who is ahead on the " << streets(s.flops, s.weight) << "\n";
-      const std::string text = head.str() + file_text(fc, s);
+      // Lines of flop:weight and nothing else, the format other tools read too; what the file is, is in
+      // flops/README.md.
+      const std::string text = file_text(fc, s);
       if (dir.empty()) std::fputs(text.c_str(), stdout);
       else std::ofstream(dir + "/wsolver_" + std::to_string(size) + ".txt") << text;
     }

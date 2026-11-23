@@ -52,6 +52,8 @@ def unit():
     fl = jobs.parse_flops("Ks5h2s:15.76\r\nTs7h2s:13.3\n\n# comment\nqs jh 4D\n")
     check(fl == [("Ks5h2s", 15.76), ("Ts7h2s", 13.3), ("QsJh4d", 1.0)], f"flop file lines {fl}")
     check(jobs.parse_flops("Kh9h4h, As7d2c:2") == [("Kh9h4h", 1.0), ("As7d2c", 2.0)], "comma list")
+    check(jobs.parse_flops("# two flops, both rainbow; mine\nKh9s4d:60 # dry, high\nAs7d2c:40\n") == [("Kh9s4d", 60.0), ("As7d2c", 40.0)],
+          "a comment with commas or semicolons in it is still a comment")
     check(raises(jobs.parse_flops, "Kh9h4h,Kh9h4h"), "a board listed twice")
     check(raises(jobs.parse_flops, "KhKh4h"), "a repeated card")
     check(raises(jobs.parse_flops, "Kh9h"), "too few cards")

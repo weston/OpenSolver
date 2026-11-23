@@ -32,9 +32,9 @@ BUNDLE_ID=com.wsolver.WSolver
 # has no git, and no stray files either.
 files() {
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git ls-files viewer tools/tree_builder.py tools/jobs.py
+    git ls-files viewer tools/tree_builder.py tools/jobs.py flops
   else
-    find viewer tools/tree_builder.py tools/jobs.py -type f -not -name '*.pyc' -not -name .DS_Store
+    find viewer tools/tree_builder.py tools/jobs.py flops -type f -not -name '*.pyc' -not -name .DS_Store
   fi | grep -v -e '^viewer/test_' -e '^viewer/jsc_prelude\.js$' -e '^viewer/static/package\.json$' | LC_ALL=C sort
 }
 

@@ -35,11 +35,12 @@ MAX_FLOP_FILE = 1 << 20
 
 
 def default_flops_dir():
-    """Where a PioSOLVER install keeps its flop subsets (the user's own copy; none ship here)."""
+    """$WSOLVER_FLOPS_DIR; or where a PioSOLVER install keeps its flop subsets (the user's own copy); or
+    the flop files that ship here, flops/wsolver_<N>.txt (#486)."""
     env = os.environ.get("WSOLVER_FLOPS_DIR")
     if env:
         return env
-    for p in (r"C:\PioSOLVER\preflop_subsets", "/mnt/c/PioSOLVER/preflop_subsets"):
+    for p in (r"C:\PioSOLVER\preflop_subsets", "/mnt/c/PioSOLVER/preflop_subsets", os.path.join(os.path.dirname(HERE), "flops")):
         if os.path.isdir(p):
             return p
     return ""

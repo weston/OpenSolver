@@ -995,6 +995,59 @@ def check_schematic_after_build(u):
     u.cmd("free_tree")
 
 
+def check_flop_subset_equity(u, exe):
+    """#486: what a hand is worth at a preflop exit that deals a flop subset is what tools/flop_subsets.cpp says
+    the subset gives (sum of weight * ahead over sum of weight * pairs, each flop standing for its suit
+    class), which is the quantity the shipped files in flops/ are chosen by. Checked on a limped pot that
+    is checked down, where the value is the equity."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tool = os.path.join(root, "build", "flop_subsets" + (".exe" if exe.lower().endswith(".exe") else ""))
+    flops = os.path.join(root, "flops", "wsolver_10.txt")
+    print("[flop subsets: the engine's preflop exits against the generator's prediction]")
+    if not os.path.exists(tool):
+        print("  skipped: build/flop_subsets is not built (make build/flop_subsets)")
+        return
+    spots = [("AKs", "QQ,JTs,72o"), ("AA", "KK"), ("72o", "32s,AKo"), ("JTs", "22,A5s,KQo")]
+    out = subprocess.run([tool, "equity", flops] + [x for s in spots for x in s], capture_output=True, text=True)
+    rows = [l.split() for l in out.stdout.splitlines()]
+    check(out.returncode == 0 and len(rows) == len(spots), f"flop_subsets equity answers ({out.stderr.strip()[:80]})")
+    if out.returncode != 0 or len(rows) != len(spots):
+        return
+    subset = []
+    with open(flops) as f:
+        for line in f:
+            line = line.split("#")[0].strip()
+            if line:
+                cards, w = line.split(":")
+                subset.append(f"add_to_subset {w} {cards[0:2]} {cards[2:4]} {cards[4:6]}")
+    worst = {"off": 0.0, "on": 0.0}
+    worst_exact = away = 0.0
+    for (hero, villain), row in zip(spots, rows):
+        through, exact = float(row[2]), float(row[3])
+        away = max(away, abs(through - exact))
+        for collapse in ("off", "on"):
+            for c in ([f"set_collapse_checkdowns {collapse}", f"set_range OOP {villain}", f"set_range IP {hero}", "set_pot 10 5 0",
+                       "set_eff_stack 1000", "clear_preflop_lines", "add_preflop_line 10 10", "build_preflop_tree", "reset_subset"] +
+                      subset + ["set_board " + subset[0].split(None, 2)[2].replace(" ", ""), "set_pot 0 0 20", "set_eff_stack 990",
+                                "clear_lines", "add_schematic_tree r:0:c:c", "add_all_flops"]):
+                u.cmd(c)
+            ev, matchups = [[float(x) for x in l.split()] for l in u.cmd("calc_ev IP r:0:c:c").split("\n")[:2]]
+            got = [e / 20 for e, m in zip(ev, matchups) if m > 0]
+            worst[collapse] = max([worst[collapse]] + [abs(g - through) for g in got] + ([] if got else [1.0]))
+            if collapse == "off":
+                eq, m2 = [[float(x) for x in l.split()] for l in u.cmd("calc_eq_node IP r:0:c:c").split("\n")[:2]]
+                worst_exact = max([worst_exact] + [abs(e - exact) for e, m in zip(eq, m2) if m > 0])
+    # The engine sums in single precision over the opponent's hands and the flops (differences of 1e-6
+    # are seen); the bound only has to tell that from the exact equities, which are percents away.
+    check(worst["off"] < 2e-5, f"a hand's value at the exit is the subset's equity (worst difference {worst['off']:.1e})")
+    check(worst["on"] < 2e-5, f"and with set_collapse_checkdowns on ({worst['on']:.1e})")
+    check(worst_exact < 2e-5 and away > 0.01,
+          f"calc_eq_node there is the exact equity, which the generator knows too ({worst_exact:.1e}; the 10 flops are up to {away:.3f} away)")
+    u.cmd("set_collapse_checkdowns off")
+    u.cmd("reset_subset")
+    u.cmd("free_tree")
+
+
 def check_iso_symmetry(u):
     """#300: on a board with a suit symmetry (4c2d6c: hearts and spades are interchangeable), suit-swapped hands
     stay equal and EV OOP + EV IP stays the pot. With a flop all-in, rounding asymmetry used to grow into
@@ -2097,6 +2150,7 @@ def main(exe, big=False):
         check_union_hands(u)
         check_collapse_checkdowns(u)
         check_schematic_after_build(u)
+        check_flop_subset_equity(u, exe)
         check_iso_symmetry(u)
         check_threads_auto(u)
         check_output_format(u)

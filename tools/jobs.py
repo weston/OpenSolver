@@ -92,8 +92,10 @@ def normalize_board(text: str) -> str:
 def parse_flops(text: str) -> list[tuple[str, float]]:
     """Boards with optional weights: `Ks5h2s:15.76` per line, or a comma/space separated list."""
     out, seen = [], set()
-    for raw in text.replace(",", "\n").replace(";", "\n").splitlines():
-        line = raw.split("#", 1)[0].strip()
+    # a comment runs to the end of its line, commas and all
+    uncommented = "\n".join(l.split("#", 1)[0] for l in text.splitlines())
+    for raw in uncommented.replace(",", "\n").replace(";", "\n").splitlines():
+        line = raw.strip()
         if not line:
             continue
         # `Ks5h2s Td7h2c`: whole boards separated by spaces (BOARD_RE alone would read one 5-card board)

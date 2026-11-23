@@ -89,6 +89,25 @@ class JobsApiTest(unittest.TestCase):
         self.assertEqual(st, 200, d)
         self.assertEqual(d["files"], [{"name": "three_flops.txt", "boards": 3}], "unreadable files are skipped")
 
+    def test_01b_default_flops_dir(self):
+        """Without $WSOLVER_FLOPS_DIR or a PioSOLVER install, the Jobs tab offers the flop files that ship (#486)."""
+        repo = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "flops")
+        old = os.environ.pop("WSOLVER_FLOPS_DIR", None)
+        try:
+            d = jobs_api.default_flops_dir()
+            os.environ["WSOLVER_FLOPS_DIR"] = self.flops
+            self.assertEqual(jobs_api.default_flops_dir(), self.flops, "the variable comes first")
+        finally:
+            os.environ.pop("WSOLVER_FLOPS_DIR", None)
+            if old is not None:
+                os.environ["WSOLVER_FLOPS_DIR"] = old
+        if "PioSOLVER" in d:
+            self.skipTest("a PioSOLVER install's flop files come first here")
+        self.assertEqual(d, repo)
+        files = jobs_api.JobsService(os.path.join(self.tmp, "queue2"), SOLVER, d).flop_files()["files"]
+        self.assertEqual([(f["name"], f["boards"]) for f in files],
+                         [(f"wsolver_{n}.txt", n) for n in (10, 25, 50, 100, 200)], "each with its flops, fewest first")
+
     def test_02_add_validation(self):
         bad = [
             ({"name": "x", "tree": TREE, "flops_file": "../three_flops.txt"}, "pick a flop file"),

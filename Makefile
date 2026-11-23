@@ -281,4 +281,4 @@ endif
 clean:
 	rm -rf build solver solver-release dist
 
-.PHONY: all test test-big windows bench release install uninstall dist macos-pkg clean
+.PHONY: all test test-big flop-subsets windows bench release install uninstall dist macos-pkg clean

@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <map>
 #include <string>
 
 #include "../src/cards.hpp"
@@ -483,6 +484,87 @@ static bool allin_tables_match() {
   }
   std::printf("[allin tables] %ld terminal/player pairs, worst relative difference %.2e, %ld bad\n", terminals, worst, bad);
   return bad == 0 && terminals > 0;
+}
+
+// #505: the deal of the flops. On all 1,755 flops at their class sizes two hands that share no card are
+// dealt C(48,3) = 17,296 of the 22,100 flops, whoever holds them, and what the two players get adds up
+// to the dead money: nobody else is at the table. The weights of the flops' 42,120 suit variants were
+// summed as floats and came out 3.5e-4 over (as for 17,302 flops), which took that share of the dead
+// money out of every flop; the values of the variants were summed as floats too, which moved one flop
+// exit by another 9e-5 of it.
+static bool flop_deal_adds_up() {
+  // the flops by suit class: the smallest of a flop's 24 suit variants stands for all of them
+  std::map<std::array<int, 3>, int> classes;
+  for (int a = 0; a < NUM_CARDS; ++a)
+    for (int b = a + 1; b < NUM_CARDS; ++b)
+      for (int c = b + 1; c < NUM_CARDS; ++c) {
+        std::array<int, 3> least{NUM_CARDS, 0, 0};
+        for (int pm = 0; pm < NUM_SUIT_PERMS; ++pm) {
+          std::array<int, 3> v{PERM_CARD[pm][a], PERM_CARD[pm][b], PERM_CARD[pm][c]};
+          std::sort(v.begin(), v.end());
+          least = std::min(least, v);
+        }
+        ++classes[least];
+      }
+  const int dead = 1000, stack = 800;
+  const char* spots[2][2] = {{"QQ,T9s,32o", "AA,KQs,72o"}, {"KK", "AA"}};
+  bool all = classes.size() == 1755;
+  for (auto& ranges : spots) {
+    GameConfig cfg;
+    cfg.preflop = true;
+    cfg.collapse_checkdowns = true;
+    std::string err;
+    for (int p = 0; p < 2; ++p) {
+      RangeWeights w;
+      if (!parse_range(ranges[p], w, err)) return false;
+      for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[p][i] = w[i];
+    }
+    cfg.pot[0] = 100, cfg.pot[1] = 50, cfg.pot[2] = dead;
+    cfg.eff_stack = stack;
+    cfg.lines.add = {{250, 250}, {250, 800, 800}, {100, 350, 350}, {100, 350, 800, 800}, {100, 100}};
+    int exits = 0;
+    {  // every exit short of all-in goes to the flops, to be checked down there
+      GameTree pf;
+      if (!pf.build(cfg, err, false)) { std::printf("preflop build: %s\n", err.c_str()); return false; }
+      for (const ActionNode* an : pf.anodes) {
+        if (!an->preflop_exit || an->line.back() >= stack) continue;
+        Schematic sc;
+        sc.exit_line = an->line;
+        sc.pot[0] = sc.pot[1] = an->line.back();
+        sc.pot[2] = dead;
+        sc.eff_stack = stack - an->line.back();
+        cfg.schematics.push_back(sc);
+        ++exits;
+      }
+    }
+    for (auto& [cards, count] : classes) cfg.subset.push_back({static_cast<float>(count), {cards[0], cards[1], cards[2]}});
+    GameTree g;
+    if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+    // the tables of the deal: every pair of hands is dealt 17,296 flops of 22,100
+    const double want = 17296.0 / 22100.0;
+    double worst = 0;
+    for (int p = 0; p < 2; ++p)
+      for (int h = 0; h < g.num_hands(p); ++h)
+        for (int j = 0; j < g.num_hands(1 - p); ++j) {
+          if (combo_mask(g.hands[p][h]) & combo_mask(g.hands[1 - p][j])) continue;
+          const double n = static_cast<double>(g.flop_compat[p][h]) -
+                           g.flop_card[p][static_cast<size_t>(h) * NUM_CARDS + g.hcard[1 - p][0][j]] -
+                           g.flop_card[p][static_cast<size_t>(h) * NUM_CARDS + g.hcard[1 - p][1][j]] +
+                           g.flop_pair[p][static_cast<size_t>(h) * NUM_COMBOS + g.hands[1 - p][j]];
+          worst = std::max(worst, std::abs(n / want - 1));
+        }
+    // The values before any solving, every action as likely as the next. A float holds the four terms
+    // of a pair's count to 6e-8 each and a value of 1,000 to 6e-5; main was out by 3.5e-4 and by 0.1.
+    Solver s(g);
+    const RootStats st = s.root_stats();
+    const double off = st.ev[0] + st.ev[1] - dead;
+    const bool ok = exits == 3 && worst < 1e-6 && std::abs(off) < 2e-3;
+    std::printf("[flop deal] %s v %s, %zu flops, %d exits to them: a pair of hands is dealt 17,296 of 22,100 flops to "
+                "%.1e of that, and the two values (%.4f, %.4f) add up to the dead %d to %+.5f  %s\n",
+                ranges[0], ranges[1], classes.size(), exits, worst, st.ev[0], st.ev[1], dead, off, ok ? "OK" : "FAILED");
+    all = all && ok;
+  }
+  return all;
 }
 
 // #494: a preflop tree's exits to its flops. A level of runout sets (flop all-ins and check-downs, turn
@@ -993,6 +1075,7 @@ int main(int argc, char** argv) {
   fails += !decompress_midsolve();
   fails += !stochastic_sums();
   fails += !allin_tables_match();
+  fails += !flop_deal_adds_up();
   fails += !preflop_runout_tables();
   fails += !river_batch_matches();
   fails += !checkdowns_collapse();

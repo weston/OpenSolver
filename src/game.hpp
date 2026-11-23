@@ -126,7 +126,7 @@ struct ChanceInfo {
   // Flop deal at a preflop exit: one child per subset flop (cards/iso unused).
   bool flop_deal = false;
   std::vector<std::array<uint8_t, 3>> flops;
-  std::vector<float> fweight;  // weight / (total weight * C(48,3)/C(52,3)): per-pair deal probability
+  std::vector<float> fweight;  // weight / total weight; Solver::flop_deal divides by a pair's share of the flops
   int8_t slot[NUM_CARDS];    // child slot for each card (-1 = card unavailable)
   uint8_t perm[NUM_CARDS];   // suit permutation mapping the slot's canonical card to this card
   std::vector<uint8_t> cards;           // canonical card for each child slot

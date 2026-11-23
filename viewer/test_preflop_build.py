@@ -101,6 +101,15 @@ class Viewer:
             time.sleep(0.05)
         raise AssertionError("the solve did not start and stop")
 
+    def wait_solving(self, limit=30):
+        """After a 200 from /api/solve: the solver has said it started (the request answers before it)."""
+        end = time.time() + limit
+        while time.time() < end:
+            if self.solver.state()["solving"]:
+                return True
+            time.sleep(0.02)
+        return False
+
     def wait_solved(self, limit=120):
         end = time.time() + limit
         while time.time() < end:
@@ -328,7 +337,7 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = self.v.req("/api/solve", "POST", {"accuracy": 1e-9})
         self.assertEqual(st, 200, d)
         try:
-            self.assertTrue(self.v.solver.state()["solving"])
+            self.assertTrue(self.v.wait_solving())
             body = dict(POSTFLOP, id=node, accuracy_pct=0.3)
             st, d = self.v.req("/api/refine/view", "POST", body)
             self.assertEqual((st, d.get("state")), (200, "none"), (node, d))
@@ -369,6 +378,7 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = v.req("/api/solve", "POST", {"accuracy": 1e-9})
         self.assertEqual(st, 200, d)
         try:
+            self.assertTrue(v.wait_solving())
             solver.hold("test")
             st, d = v.req("/api/preflop/build", "POST", dict(FORM, open="abc"))
             self.assertEqual(st, 400, d)

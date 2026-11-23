@@ -1019,25 +1019,39 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   A chart of full ranges loses nothing measurable against the combo strategy it was read from, also with
   a shipped subset, whose flops do not treat the suits quite alike. A range that names suits is another
   matter: against a big blind holding one combo (`--range-bb AhAs`, 12 bb, three flops) the class rows
-  lost 0.29 bb/100 where the solver's own rows lost 0.00 (the review's run on PR #499). `check` locks
-  classes, which is what a chart is; for such ranges its figure includes that average.
+  lost 0.29 bb/100 where the solver's own rows lost 0.00 (the review's run on PR #499), and with single
+  combos on both sides the average is most of the figure: `--range-sb AhAs --range-bb KK` printed 10.89
+  for the big blind where the solver's own combo rows give -0.003, `--range-sb AhAd,KK --range-bb
+  AhAs,QQ` 7.79 and 32.34 where they give -7.16 and -1.36 (the second review's runs; 12 bb, three flops,
+  where the sums of the two values are far from zero as well). `check` locks classes, which is what a
+  chart is; when a range holds a class in part (some of its combos, or combos at different weights) it
+  now says that its figure includes that average.
 - **What a result does not say.** A decision the opponent never brings about (reach exactly zero) has no
   frequencies in a result. Locking even play there, as the first version of `check` did, hands the free
   opponent a line to walk into: 235 bb/100 "lost" by a big blind whose small blind, holding only aces,
-  never limped (12 bb, three flops; the review's run). Such a decision is now left to the solve, and
-  the output names it; a first decision with only some of the hands is treated the same. None of the
-  result files of this section has one (all ten decisions have frequencies, every hand at the first
-  ones), so the figures are as they were.
-  (A hand the player's own strategy never brings to a later decision still plays evenly there, and
-  never gets there.)
+  never limped (12 bb, three flops; the review's run). Leaving every such decision to the solve, as the
+  second version did, errs the other way: a file with one class's frequencies removed at a decision had
+  the whole decision played for it (a true loss of 10.07 shown as -0.03; the second review's run). The
+  rule now: a decision is locked whole or not at all. It is locked when the hands the result is silent on
+  cannot show in the printed loss: their share of the range, times the chance the result's own play
+  brings them there, times two stacks, added up along the way, is 0.00 bb/100 as printed (they play
+  evenly there, which nobody can see). Otherwise it is left to the solve and named, and so is everything
+  the hands below it might then do differently; that can only understate the loss. Where silence cannot
+  be honest the file is refused before anything is solved: no frequencies at the small blind's first
+  decision, a class of the range without them at a first decision that has them for others (no hand of
+  the opponent's shares a card with every combo of a class, so a whole class cannot be unmet), a class
+  with frequencies that the range does not hold. A class the range holds only in part can be unmet (the
+  big blind's AhAs when the small blind's only raising hand is AhAd), and is not refused. None of the
+  result files of this section is touched by any of this: all ten decisions are locked, with the same
+  rows as before, and no hand is without frequencies anywhere (nine files, read again with the new rule).
 - **A fresh start is the faster one.** The locked solve from `set_equal_strats` took 5 to 6 s where the
   same solve continued from the reference's solved state took 20 to 25 s (50-flop reference; the fresh
   ones to 0.1 bb/100, the continued ones only to 0.5);
   the values agreed within their spans. A strategy read back after `set_strategy` differs from the one
   sent by at most 3e-5 (the 16-bit rows).
 - **Time.** On all flops: 930 s for the reference to 0.02 (275 s to 0.5), 370 to 470 s for each locked
-  solve, 100 minutes for the whole table; to 0.05 about 285 s a solve, 52 minutes for the five results of
-  the bullet above. Against 200 flops: 95 s and 36 to 57 s.
+  solve, 100 minutes for the whole table; to 0.05, 668 s for the reference and 207 to 287 s for each locked solve, 52
+  minutes for the five results of the bullet above. Against 200 flops: 95 s and 36 to 57 s.
 
 **A subset's game is not exactly zero-sum.** `EV OOP + EV IP` is 0.000 on all flops, 0.001 with 200
 flops, -0.005 with 100, 0.004 with 50, 0.035 with 25 and -0.034 with 10 (chips; the solves' own figures). `Solver::flop_deal`
@@ -1056,8 +1070,8 @@ all of it under zero (the review's run). A game that is not zero-sum can also tr
 strategy. `check` prints the sums of its solves whenever they show at two decimals.
 
 **Depth: the flop-depth strategy in the turn-depth game.** The same check with `--depth turn` (bets on
-the turn too) on the 10 flops of `wsolver_10.txt`, the largest turn-depth tree that solves in reasonable
-time here (802 MB; 5 threads next to another job, 72 minutes for the five solves to 0.2 bb/100). The
+the turn too) on the 10 flops of `wsolver_10.txt`, the smallest shipped subset and the first tried
+(802 MB; 5 threads next to another job, 72 minutes for the five solves to 0.2 bb/100). The
 strategies under test were solved on the same 10 flops, so the subset costs them nothing here:
 
 | strategy solved with | SB's EV in its own game | small blind gives up | big blind gives up |
@@ -1071,7 +1085,9 @@ minutes for the three solves to 0.2: 1,417 s for the reference, 689 and 767 s lo
 game is worth 6.68 to the button (6.53 to 6.90); the `--depth flop` strategy of the same 25 flops (1.55
 in its own game, solved to 0.05) gives up **1.65 [1.32, 2.09]** (small blind) and **2.16 [1.82, 2.58]**
 (big blind). So the 10-flop figure was not an effect of the few flops: with 2.5 times as many the loss is
-the same or a little more.
+the same or a little more. The reference's two values added up to 0.045 here and 0.030 with 10 flops,
+against spans 0.8 wide; the sums of the locked solves of these two tables were not recorded (`check` did
+not print them yet), so how far they moved is not known.
 
 - **Each street of betting is worth about 5 to 9 bb/100 to the button** (-7.1, 1.9, 6.9 for none, flop,
   turn), so the games differ far more than their preflop strategies' losses: a strategy solved with no

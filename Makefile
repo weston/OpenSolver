@@ -31,15 +31,25 @@ solver: $(OBJ) build/main.o
 LIBOBJ := $(filter-out build/upi.o build/upi_nodes.o build/upi_save.o,$(OBJ))
 
 build/test_%: tests/test_%.cpp $(LIBOBJ)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(filter %.cpp %.o,$^) -o $@ $(LDLIBS)
 
-test: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel
+# Flop subsets for preflop trees (#486): the generator of flops/wsolver_<N>.txt. `make flop-subsets`
+# rewrites those files (about a minute of every core the first time; see tools/flop_subsets.cpp).
+FLOP_SIZES ?= 10 25 50 100 200
+build/flop_subsets: tools/flop_subsets.cpp tools/flop_subsets.hpp $(LIBOBJ)
+	$(CXX) $(CXXFLAGS) $< $(LIBOBJ) -o $@ $(LDLIBS)
+build/test_flop_subsets: tools/flop_subsets.hpp
+flop-subsets: build/flop_subsets
+	./build/flop_subsets make $(FLOP_SIZES) --dir flops
+
+test: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel build/test_flop_subsets build/flop_subsets
 	./build/test_eval
 	./build/test_range
 	./build/test_categories
 	./build/test_solver
 	./build/test_pfh2h
 	./build/test_parallel
+	./build/test_flop_subsets
 	python3 tests/test_tree_builder.py
 	python3 tests/test_packaging.py
 	python3 tests/test_jobs.py ./solver
@@ -59,13 +69,14 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 
-test-big: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel
+test-big: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel build/test_flop_subsets build/flop_subsets
 	./build/test_eval
 	./build/test_range
 	./build/test_categories
 	./build/test_solver
 	./build/test_pfh2h
 	./build/test_parallel
+	./build/test_flop_subsets
 	python3 tests/test_tree_builder.py
 	python3 tests/test_packaging.py
 	python3 tests/test_jobs.py ./solver
@@ -270,4 +281,4 @@ endif
 clean:
 	rm -rf build solver solver-release dist
 
-.PHONY: all test test-big windows bench release install uninstall dist macos-pkg clean
+.PHONY: all test test-big flop-subsets windows bench release install uninstall dist macos-pkg clean

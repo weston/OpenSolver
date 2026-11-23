@@ -281,7 +281,7 @@ in a fresh solver process with all threads, saving each to its own file. The que
 run just one job, add or reorder jobs while a run is going, and continue after a crash.
 
 ```
-python3 tools/jobs.py add srp100 tree.txt --flops-file C:/PioSOLVER/preflop_subsets/PioSolver_2021_23_flops.txt
+python3 tools/jobs.py add srp100 tree.txt --flops-file flops/wsolver_25.txt
 python3 tools/jobs.py add test tree.txt --flops "Kh9h4h, As7d2c" --accuracy 0.3 --save full
 python3 tools/jobs.py list                  # id, status, board, weight, EVs, exploitability, time
 python3 tools/jobs.py run                   # everything queued, in order
@@ -298,9 +298,10 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
   commands in the file are ignored. The setup is copied into the batch when you add it. `add` checks the
   tree on the first board (`estimate_schematic_tree`, which builds nothing) and prints its size, so a
   bad line fails at once rather than once per flop.
-- **Flops:** a list or a file with one board per line, each optionally followed by `:weight`. That's the
-  format of the `preflop_subsets` flop files in a PioSOLVER install; pass your own copy's path (none ship
-  with this repo). Weights go into `list` and `export`.
+- **Flops:** a list or a file with one board per line, each optionally followed by `:weight`; `#` starts a
+  comment. `flops/wsolver_<N>.txt` are our own subsets of 10 to 200 flops (see "Flop subsets" below). It is
+  also the format of the `preflop_subsets` flop files in a PioSOLVER install; for those pass your own copy's
+  path (none ship with this repo). Weights go into `list` and `export`.
 - **Each job:** `set_board`, `build_tree`, `set_accuracy <pct> fraction` (default 0.5% of the starting pot;
   `--max-iters` or `--max-seconds` cap it), `go`, then `calc_results` into the job and `dump_tree` to
   `<queue>/saves/<batch>/<board>.cfr` (`--out DIR`). Saves are `no_rivers` by default (`--save no_turns|full`):
@@ -339,7 +340,8 @@ python3 tools/jobs.py report srp100 [--by suits] [--csv FILE]   # root strategy 
   build with `/mnt/c/...` paths).
 - **In the viewer:** the **Jobs** tab shows the same queue. It can:
   - queue the Build tab's tree on a flop list, or on a flop file from `--flops-dir`
-    (default: `C:\PioSOLVER\preflop_subsets` if it exists, or `$WSOLVER_FLOPS_DIR`);
+    (default: `$WSOLVER_FLOPS_DIR`, or `C:\PioSOLVER\preflop_subsets` if it exists, or the `flops/` that
+    ships here);
   - run everything, one batch or one job; stop after the current job or right away;
   - retry, reorder or remove jobs;
   - open a finished save in Study.
@@ -698,6 +700,18 @@ With full ranges, six exits and five flops (16-bit rows): bets on the flop only 
 and turn 8,976 -> 443 MB; three streets of betting have no check-downs and stay as they are. The same
 equilibrium either way (#484).
 
+**Flop subsets.** `flops/wsolver_10.txt`, `_25`, `_50`, `_100` and `_200` are flops with weights to put
+in a preflop tree (`add_to_subset <weight> <c> <c> <c>` per line of the file). They are our own, made by
+`tools/flop_subsets.cpp` (`make flop-subsets`) from the game alone: for every flop class it counts, per
+pair of preflop hand classes, who is ahead on the flop, on the turn and at the river, and it chooses the
+flops and weights whose tables are closest to those of all 1,755 classes together, measured as the error
+of a hand's value against a range (a run of hands in order of strength). Random flops of the same
+number are 2 to 4 times further off on that error even with their weights solved the same way. In the
+one tree solved with each file, 50 flops or more gave the 200-flop solve's overall action frequencies
+to within a point and 25 or fewer did not. `flops/README.md` has the numbers per file;
+`build/flop_subsets eval FILE` measures any flop file, and `build/flop_subsets equity FILE AKs QQ,JTs`
+prints what an all-in equity becomes through a file's flops next to the exact one (#486).
+
 ## Known differences from PioSOLVER
 
 Policy (owner decision, #10): match Pio wherever tools may depend on it (formats, codes, node ids,
@@ -709,7 +723,7 @@ error messages), but **don't copy Pio bugs** and don't impersonate it. Deliberat
   `set_dcfr 1.5 0 2` restores the published values if exact parity matters.
 - **Save files are not Pio `.cfr` files** (Pio's format is undocumented); ours are gzip files with one
   member per street segment plus an index (`src/upi_save.cpp`), and `show_save_version` reports our own
-  format (5; 6 for a tree built with `set_collapse_checkdowns on`).
+  format (5; 6 for a tree in which `set_collapse_checkdowns on` collapsed a check-down).
 - **One algorithm.** `set_algorithm` accepts every Pio code but all map to DCFR; `list_algorithms`
   keeps Pio's codes with honest descriptions.
 - **Fresh results.** Pio caches `calc_results` until `clear_cache`; we always report current values.
@@ -795,10 +809,12 @@ src/parallel.*     nested work-stealing thread pool, per-thread arenas
 src/equity.*       calc_eq family
 src/categories.*   range explorer
 src/upi*.cpp       command processor, node queries, save/load
-tests/             unit tests (eval, range, categories, solver, tree builder) + end-to-end UPI test
+tests/             unit tests (eval, range, categories, solver, flop subsets, tree builder) + end-to-end UPI test
+flops/             flop subsets for preflop trees and the job queue (wsolver_<N>.txt; README.md)
 packaging/macos/   what `make macos-pkg` builds WSolver.app and its installer from
 tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue;
-                   fuzz.py: randomised invariant / concurrency / save / preflop / lock / truncated-save checks over UPI)
+                   fuzz.py: randomised invariant / concurrency / save / preflop / lock / truncated-save checks over UPI;
+                   flop_subsets.cpp/.hpp: chooses the flops and weights in flops/, `make flop-subsets`)
 ```
 
 ## Contributing

@@ -203,6 +203,20 @@ int main(int argc, char** argv) {
   std::vector<double> cw;
   for (const auto& f : fc) cw.push_back(f.count);
   std::discrete_distribution<int> deal(cw.begin(), cw.end());
+  {  // a line is a flop, or a flop and a weight that is a number; anything else names the line
+    const auto reads = [&](const char* text) {
+      std::istringstream in(text);
+      std::vector<int> S;
+      std::vector<double> w;
+      std::string bad;
+      return parse_flop_file(in, fc, S, w, bad) ? static_cast<int>(S.size()) : -1;
+    };
+    CHECK(reads("Ks5h2s:1.5\n# note\nAh7d2c: 2 \nQsJs4d\n") == 3 && reads("Ks5h2s:0\nAh7d2c:1\n") == 1,
+          "a flop file: weights, comments, no weight, and a flop of weight 0 left out");
+    CHECK(reads("Ks5h2s:abc\n") == -1 && reads("Ks5h2s:\n") == -1 && reads("Ks5h2s:1x\n") == -1 &&
+              reads("Ks5h2s:-1\n") == -1 && reads("Ks5h:1\n") == -1,
+          "a weight that is not a number, a negative one and a short flop are refused");
+  }
   double previous = -1;
   for (int size : {10, 25, 50, 100, 200}) {
     const std::string path = dir + "/wsolver_" + std::to_string(size) + ".txt";

@@ -53,7 +53,9 @@ documentation; contains no PioSOLVER code.
 - **Flop subsets of our own** (`flops/wsolver_10.txt` to `_200.txt`) for preflop trees and the job
   queue, and the tool that makes them (`tools/flop_subsets.cpp`, `make flop-subsets`). Flops and weights
   are chosen so that who is ahead on the flop, the turn and the river, hand class against hand class,
-  matches all flops together; random flops of the same number are 2 to 4 times further off. The viewer's
+  matches all flops together; random flops of the same number are 2 to 4 times further off on that
+  error. In a solved tree 50 and 100 flops gave the 200-flop strategy to within 1 point of frequency;
+  25 and 10 had the big blind fold 4 points too often. The viewer's
   Jobs tab offers them when no other flop directory is set, and the macOS app carries them (#486).
 - `tools/jobs.py`: a `#` comment in a flop file may contain commas and semicolons.
 

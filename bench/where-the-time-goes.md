@@ -668,7 +668,7 @@ deck is in `flops/README.md`. This section is what was measured on the way, incl
 
 **What a subset is fitted to.** Per flop class (1,755) and street, a 169 x 169 table of who is ahead:
 on the flop, over the 45 turns, over the 990 runouts. The error of a set of weights is the squared error
-of a hand's value against a range, averaged over hands, streets (equal weight) and ranges, where a range
+of a hand's value against a range, added over the streets (equal weight) and averaged over hands and ranges, where a range
 is a run of hand classes in order of preflop strength, every run equally likely. With the classes in
 that order the mean over the 14,365 runs is `2/169 * sum of (P_k - mean P)^2` over the 170 partial sums
 `P_k` of a hand's errors, so a flop's row is 169 x 170 numbers and the error of weights is a quadratic
@@ -688,7 +688,7 @@ of a chosen set are solved exactly on the simplex. Nothing is tuned.
   hands at once). Textures settled, the error against random subsets looked as good as it does now, and
   the files were shipped to the strategy study below, where 10 and 25 flops did worse than random flops
   with solved weights on the frequencies: the big blind folded 12.7 % and 14.2 % to a raise against 21 %
-  with 100 or 200 flops, and the small blind's EV was 0.13 and 0.09 chips low. The cause was a tilt
+  with 100 or 200 flops, and the small blind's EV was 0.12 and 0.09 chips low. The cause was a tilt
   this model of a range cannot see. Equity of the best half of the hands against the worst half, through
   the subset minus through the deck (flop / turn / river; the deck's are 75.1 / 70.1 / 65.7 %):
 
@@ -706,7 +706,8 @@ of a chosen set are solved exactly on the simplex. Nothing is tuned.
   value across the subset's flops (suspected of handing weak hands option value) was within 0.5 % of the
   deck's for that objective's 25-flop file, so it was not that.
 
-**Against random flops** (all three streets together, RMS, 1.0 = the pot; median of 200 random draws):
+**Against random flops** (the fitted error: root of the three streets' mean squared errors added, 1.0 = the
+pot; median of 200 random draws; `std::discrete_distribution`, so the draws are libc++'s):
 
 | Flops | generated | random, weights solved | random, weights = how often dealt |
 |---|---|---|---|
@@ -722,8 +723,8 @@ then cached); the search is one thread and deterministic, 4 min 40 s for the fiv
 
 **The engine values a preflop exit the way the generator assumes.** `tests/test_upi.py` builds a limp
 check-down tree over `wsolver_10.txt` and compares `calc_ev` at the exit with `flop_subsets equity`
-(a different program path: class tables against the engine's per-combo boards). Largest difference seen
-2.1e-6 of the pot, single precision; `calc_eq_node` at a preflop node is the exact equity, not the one
+(a different program path: class tables against the engine's per-combo boards). Largest difference
+6.9e-7 of the pot with the shipped file (2.1e-6 with an earlier one), single precision; `calc_eq_node` at a preflop node is the exact equity, not the one
 through the subset, and is checked to stay so.
 
 ### What the subset does to a solved preflop strategy
@@ -738,7 +739,8 @@ nodes the RMS over the 1,326 hands of the distance between the two strategies of
 1.41 opposite pure actions; every hand counts the same, also one that rarely gets there).
 
 ```
-                                 flops   EV SB (diff)      largest freq. diff   per-hand RMS, three nodes   wall      peak RSS
+                                 flops   EV SB (difference from the reference; lower rows: the difference only)
+                                                           largest freq. diff   per-hand RMS, three nodes   wall      peak RSS
 200 flops (reference)            200     +0.113                                                             862 s     3,525 MB
 200 flops, third objective above 200     +0.120 (+0.007)    0.75 pp             0.093  0.078  0.075         978 s     3,545 MB
 100 flops                        100     +0.111 (-0.002)    0.91 pp             0.124  0.092  0.063         390 s     1,898 MB
@@ -762,13 +764,15 @@ How to read it:
   to 0.0125 differ by 0.005 chips, 0.7 pp and 0.09 to 0.11. So a per-hand RMS near 0.1 is two solves of
   the same game: many hands are indifferent between two preflop actions, and which mix a solve lands on
   is not determined to better than that. The frequencies and the EV are the firmer numbers.
-- **100 flops are at the floor, 50 nearly** (per-hand RMS about twice the floor, frequencies and EV at it).
+- **100 and 50 flops are near the floor on the frequencies and the EV** (0.9 and 0.7 pp, 0.002 and 0.004
+  chips); per hand 100 flops are about at it (0.06 to 0.12) and 50 flops about twice it. The
+  floor itself is two comparisons, so "near" is as much as can be said.
 - **25 and 10 flops** keep the small blind's opening strategy (limp, raise and fold each within 1.6 pp)
   and have the big blind fold 24.5 % and 24.8 % to the raise against 20.7 %; the small blind's EV is
-  0.03 and 0.06 chips high. Per hand they are clearly closer to the reference than random flops with
-  solved weights (0.33 against 0.49 to 0.56 at the first decision), and on the frequencies and the EV
-  they are inside the spread of the three random draws, not better than it. Three draws are few; the
-  claim that survives is the per-hand one.
+  0.03 and 0.06 chips high. Per hand the 25 flops are clearly closer to the reference than 25 random
+  flops with solved weights (0.33 against 0.49 to 0.56 at the first decision), and on the frequencies
+  and the EV they are inside the spread of the three random draws, not better than it. Three draws are
+  few; the claim that survives is the per-hand one, for 25 flops. No random 10-flop subsets were solved.
 - **Per flop** the tree costs about 17 MB and about 4 s at this accuracy, in step with the number of flops.
 
 **Not measured, and what it would take.** The reference is still a subset: the two 200-flop files

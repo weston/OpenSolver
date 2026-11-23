@@ -266,7 +266,14 @@ int main(int argc, char** argv) {
       // flops/README.md.
       const std::string text = file_text(fc, s);
       if (dir.empty()) std::fputs(text.c_str(), stdout);
-      else std::ofstream(dir + "/wsolver_" + std::to_string(size) + ".txt") << text;
+      else {
+        const std::string path = dir + "/wsolver_" + std::to_string(size) + ".txt";
+        std::ofstream out(path);
+        if (!(out << text) || !out.flush()) {
+          std::fprintf(stderr, "cannot write %s\n", path.c_str());
+          return 1;
+        }
+      }
     }
     return 0;
   }

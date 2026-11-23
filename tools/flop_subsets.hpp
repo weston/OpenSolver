@@ -27,6 +27,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -333,8 +334,16 @@ inline bool parse_flop_file(std::istream& in, const std::vector<FlopClass>& fc, 
     std::string b;
     if (!(ls >> b)) continue;
     const int k = class_index(fc, b);
-    const double weight = colon == std::string::npos ? 1.0 : std::atof(line.c_str() + colon + 1);
-    if (k < 0 || !(weight >= 0)) {
+    double weight = 1.0;
+    bool number = true;
+    if (colon != std::string::npos) {  // a weight has to be a number and nothing else ("abc" is not 0)
+      const char* text = line.c_str() + colon + 1;
+      char* end = nullptr;
+      weight = std::strtod(text, &end);
+      number = end != text;
+      while (number && *end) number = std::isspace(static_cast<unsigned char>(*end++)) != 0;
+    }
+    if (k < 0 || !number || !(weight >= 0)) {
       bad = line;
       return false;
     }

@@ -1020,7 +1020,7 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   a shipped subset, whose flops do not treat the suits quite alike. A range that names suits is another
   matter: against a big blind holding one combo (`--range-bb AhAs`, 12 bb, three flops) the class rows
   lost 0.29 bb/100 where the solver's own rows lost 0.00 (the review's run on PR #499), and with single
-  combos on both sides the average is most of the figure: `--range-sb AhAs --range-bb KK` printed 10.89
+  combos in a range the average can be most of the figure: `--range-sb AhAs --range-bb KK` printed 10.89
   for the big blind where the solver's own combo rows give -0.003, `--range-sb AhAd,KK --range-bb
   AhAs,QQ` 7.79 and 32.34 where they give -7.16 and -1.36 (the second review's runs; 12 bb, three flops,
   where the sums of the two values are far from zero as well). `check` locks classes, which is what a
@@ -1036,14 +1036,54 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   cannot show in the printed loss: their share of the range, times the chance the result's own play
   brings them there, times two stacks, added up along the way, is 0.00 bb/100 as printed (they play
   evenly there, which nobody can see). Otherwise it is left to the solve and named, and so is everything
-  the hands below it might then do differently; that can only understate the loss. Where silence cannot
-  be honest the file is refused before anything is solved: no frequencies at the small blind's first
-  decision, a class of the range without them at a first decision that has them for others (no hand of
-  the opponent's shares a card with every combo of a class, so a whole class cannot be unmet), a class
-  with frequencies that the range does not hold. A class the range holds only in part can be unmet (the
-  big blind's AhAs when the small blind's only raising hand is AhAd), and is not refused. None of the
-  result files of this section is touched by any of this: all ten decisions are locked, with the same
-  rows as before, and no hand is without frequencies anywhere (nine files, read again with the new rule).
+  the hands below it might then do differently; that can only understate the loss. (The stake is two
+  stacks and the ante, the most one hand can move a player's result.) Where silence cannot be honest the
+  file is refused before anything is solved:
+  - no frequencies at the small blind's first decision, or a class the check deals without them there:
+    every hand is at the first decision, a class the range holds in part too (the third review's: such a
+    file passed, under a note whose reasons cannot hold at the root);
+  - a class of the range without them at a first decision that has them for others (no hand of the
+    opponent's shares a card with every combo of a class, so a whole class cannot be unmet). A class the
+    range holds only in part can be unmet there (the big blind's AhAs when the small blind's only raising
+    hand is AhAd), and is not refused;
+  - a class with frequencies that the range does not hold;
+  - where both ranges hold whole classes at one weight: hands without frequencies at a decision that the
+    result's own strategies bring them to. The measure is the one above with the opponent's side in it:
+    the hands' share of the deals, times the chance the result's own play brings them there, times the
+    chance its opponent's play comes there, times the stake, 0.00 bb/100 as printed or not. The third
+    review's case: the big blind's whole decision after the limp emptied in a file whose small blind limps
+    78.5 % of the time. The second rule left it to the solve and printed -0.09 under a note that "its
+    small blind never goes there"; with that decision played one way instead the same file loses 77.59.
+    It also refuses a result changed so that hands go where it has nothing for them (every hand of the big
+    blind made to raise the limp, and nothing for most of them against the shove that can follow), which
+    the second rule left free and named. It counts a class's combos as playing alike and as meeting any
+    hand of the opponent, which is why it is not applied when a range names suits or weights: there a
+    combo can be ruled out by the opponent's cards. **How near a result of `solve` comes to it**: 0 in the
+    nine result files of this section, and at most 1.1e-6 bb/100 in the review's 22 small games with such
+    ranges (three flops; stacks of 5 to 200 bb, an ante, other sizes, no limp, ranges down to one class a
+    player), against the 0.005 that refuses; none of the 33 files, the 2 with suits or weights included,
+    is refused, and all have the plan they had under the second rule.
+
+  The notes say what was looked at and no more. "Its small blind never goes there" is printed for a
+  decision without frequencies when the result's own rows bring the opponent there too rarely to show;
+  any other decision left free is listed as one the result has only some hands at, without a reason (the
+  second rule's note gave reasons it had not checked). A player none of whose decisions is locked gets no
+  figure. An integer no float holds (`10**400` as a frequency) is refused like any other frequency that
+  is no strategy; it was a traceback. None of the result files of this section is touched by any of
+  this: all ten decisions are locked, with the same rows as before. They do have hand classes without
+  frequencies, 66 to 794 class-and-decision entries a file (32o against the 3-bet of an open it never
+  makes): every one a hand the result's own play does not bring to that decision (nine files, read
+  again with each rule).
+- **Where the two values' sum moves, the loss is that uncertain, not only its span.** A small blind with
+  `AA,KK:0.001,72o` against `KK,QQ` (12 bb, three flops, reference to 0.006 bb/100) printed 0.32 (0.31
+  to 0.39) for a big blind whose locked rows were the equilibrium's (every KK combo calls 0.883 in
+  the solver's own strategy, as the review read it): a true loss of about nothing, in a game worth 0.46. The two values added up to -0.42 to -0.02 over the
+  three solves; the free opponent of the locked solve does not hold the checked player's value down, it
+  pushes its own up, and off all flops those are not the same thing. The check prints the range of the
+  sums and now says the losses are that uncertain. With full ranges on three flops the sums moved by
+  0.18 (100 bb: small blind -0.21, span -0.24 to -0.07, the review's run); in the one check of this
+  section that recorded them, 50 shipped flops with turn bets, by 0.004, and on all flops the game is
+  zero-sum. Not corrected for: no rule for it that is not a guess.
 - **A fresh start is the faster one.** The locked solve from `set_equal_strats` took 5 to 6 s where the
   same solve continued from the reference's solved state took 20 to 25 s (50-flop reference; the fresh
   ones to 0.1 bb/100, the continued ones only to 0.5);
@@ -1088,6 +1128,16 @@ in its own game, solved to 0.05) gives up **1.65 [1.32, 2.09]** (small blind) an
 the same or a little more. The reference's two values added up to 0.045 here and 0.030 with 10 flops,
 against spans 0.8 wide; the sums of the locked solves of these two tables were not recorded (`check` did
 not print them yet), so how far they moved is not known.
+
+And on the 50 flops of `wsolver_50.txt` (4,049 MB; 10 threads next to a review's tests and other
+measurements, 93 minutes: 2,290 s for the reference, 1,470 and 1,685 s locked, all to 0.2). The game is
+worth 6.56 to the button (6.39 to 6.79); the `--depth flop` strategy of the same 50 flops (solved to
+0.03) gives up **1.59 [1.25, 2.05]** (small blind) and **1.75 [1.41, 2.19]** (big blind). The three
+solves' values added up to 0.001, 0.003 and 0.005: the sum moved by 0.004, a hundredth of the spans.
+Three subsets, three overlapping spans: what stopping the bets at the flop costs does not go away with
+more flops, and at 1.4 to 2.2 bb/100 it is some ten times what the 50 flops themselves cost at flop
+depth (0.19 / 0.17 above). The next step down, the turn-depth strategy in the river-depth game, does
+not fit this machine (#498).
 
 - **Each street of betting is worth about 5 to 9 bb/100 to the button** (-7.1, 1.9, 6.9 for none, flop,
   turn), so the games differ far more than their preflop strategies' losses: a strategy solved with no

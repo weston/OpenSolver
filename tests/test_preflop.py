@@ -303,33 +303,36 @@ def unit():
           "a class's frequencies are scaled to 1 and given to each of its combos; one the result did not bring plays evenly")
     bad = 0
     for hand in ({"freq": 5}, {"freq": True}, {"freq": [0.5, 0.5]}, {"freq": [0.5, "x", 0]}, {"freq": [1.5, -0.5, 0]},
-                 {"freq": [float("nan"), 0, 1]}, {"freq": [1e308, 1e308, 1e308]}, {"freq": None}, {}, [1, 0, 0]):
+                 {"freq": [float("nan"), 0, 1]}, {"freq": [1e308, 1e308, 1e308]}, {"freq": None}, {}, [1, 0, 0],
+                 {"freq": [10 ** 400, 0, 0]}, {"freq": [10 ** 308] * 3}):  # integers: past a float, and a sum past one
         try:
             preflop._class_rows("x.json", {"id": "r:0", "hands": {"AA": hand}}, 3)
         except preflop.PreflopError as e:
             bad += "x.json: the frequencies of AA at r:0 are not a strategy" in str(e)
-    check(bad == 10, f"frequencies that are no strategy are refused, by file, hand and node ({bad} of 10)")
+    check(bad == 12, f"frequencies that are no strategy are refused, by file, hand and node ({bad} of 12)")
 
     s = settings("--stack", "12", "--depth", "none")
     root = preflop.build_tree(s)
     nodes = decisions(root)
-    classes, dealt = ["AA", "KK", "AKs", "AA"], {"SB": [1, 1, 1, 0], "BB": [1, 1, 1, 1]}
+    # the big blind holds one of the two combos of AA; `whole`: both players hold every class whole
+    classes, dealt = ["AA", "KK", "AKs", "AA"], {"SB": [1, 1, 1, 1], "BB": [1, 1, 1, 0]}
+    whole = {"SB": [1, 1, 1, 1], "BB": [1, 1, 1, 1]}
 
-    def made(change=None):
+    def made(change=None, dealt=dealt):
         result = {"nodes": [{"id": n.id, "actions": [label for label, _ in n.children],
                              "hands": {c: {"freq": [1.0 / len(n.children)] * len(n.children)} for c in set(classes)}}
                             for n in nodes]}
         if change:
             change({n["id"]: n["hands"] for n in result["nodes"]})
-        return preflop._plan("x.json", result, root, nodes, classes, dealt, dealt, 12.0)
+        return preflop._plan("x.json", result, root, nodes, classes, dealt, dealt, 24.0)
 
     def silent(hands):
         for h in hands.values():
             h["freq"] = [0.0] * len(h["freq"])
 
-    def refusal(change):
+    def refusal(change, dealt=dealt):
         try:
-            made(change)
+            made(change, dealt)
         except preflop.PreflopError as e:
             return str(e)
         return ""
@@ -339,21 +342,38 @@ def unit():
     first_bb = [child for _, child in root.children if child.kind == "decision"]
     first_bb.sort(key=lambda top: -sum(preflop._under(top, n) for n in nodes))  # the limp: a decision of each under it
     inner = [n for n in nodes if n.actor == "BB" and n not in first_bb and preflop._under(first_bb[0], n)]
+    limp = next(a for a, (_, child) in enumerate(root.children) if child is first_bb[0])
+
+    def no_limp(h):  # the small blind never limps, and the big blind has nothing for the decision after one
+        for hand in h[root.id].values():
+            hand["freq"] = [0.0 if a == limp else 1.0 / (len(root.children) - 1) for a in range(len(root.children))]
+        silent(h[first_bb[0].id])
+    for ranges in (dealt, whole):
+        plan = made(no_limp, ranges)
+        check(len(first_bb) >= 2 and inner and plan["BB"]["free"][0] == first_bb[0].id and plan["BB"]["part"] == []
+              and first_bb[0].id not in plan["BB"]["rows"] and first_bb[1].id in plan["BB"]["rows"]
+              and all(preflop._under(first_bb[0], n) for n in nodes if n.id in plan["BB"]["free"][1:]),
+              "a decision the result's opponent never goes to is left free, not played at random; the rest is locked")
     plan = made(lambda h: silent(h[first_bb[0].id]))
-    check(len(first_bb) >= 2 and inner and plan["BB"]["free"] == [first_bb[0].id] and first_bb[0].id not in plan["BB"]["rows"]
-          and inner[0].id in plan["BB"]["rows"] and first_bb[1].id in plan["BB"]["rows"] and plan["SB"]["free"] == [],
-          "a decision the opponent never brought the player to is left free, not played at random; the rest is locked")
-    plan = made(lambda h: h[root.id].pop("AA"))  # the small blind has one of the two combos of AA here
-    check(plan["SB"]["free"] == plan["SB"]["part"] == [root.id] and root.id not in plan["SB"]["rows"]
-          and all(n.id in plan["SB"]["rows"] for n in nodes if n.actor == "SB" and n is not root),
-          "so is a first decision without a hand class the range holds in part: no opponent may have left it possible")
-    later = next(n for n in nodes if n.actor == "SB" and n is not root)
+    check(plan["BB"]["free"] == plan["BB"]["part"] == [first_bb[0].id],
+          "one without a hand that the result's opponent does go to is left free too, and not said to be that")
+    told = refusal(lambda h: silent(h[first_bb[0].id]), whole)
+    check(f"has no strategy at {first_bb[0].id} for hands of the big blind's range that its own strategies bring there" in told
+          and "not all of a strategy" in told,
+          "with whole classes in both ranges that is no result of a solve: every hand met one there, and it is refused")
+    plan = made(lambda h: h[first_bb[0].id].pop("AA"))
+    check(plan["BB"]["free"] == plan["BB"]["part"] == [first_bb[0].id] and first_bb[0].id not in plan["BB"]["rows"]
+          and all(n.id in plan["BB"]["rows"] for n in nodes if n.actor == "BB" and n is not first_bb[0]),
+          "a first decision without a hand class the range holds in part is left free: no opponent may have left it possible")
+    check("no strategy for 1 hand classes of the small blind's range at r:0 (AA)" in refusal(
+        lambda h: h[root.id].pop("AA"), {"SB": [1, 1, 1, 0], "BB": [1, 1, 1, 1]}),
+          "not so the small blind's first: every hand the check deals is there, a class held in part too")
 
     def both(h):
-        h[root.id].pop("AA")
-        silent(h[later.id])
+        h[first_bb[0].id].pop("AA")
+        silent(h[inner[0].id])
     plan = made(both)
-    check(plan["SB"]["free"] == plan["SB"]["part"] == [root.id, later.id],
+    check(plan["BB"]["free"] == plan["BB"]["part"] == [first_bb[0].id, inner[0].id],
           "a decision with nothing below one left free like that is not said to be one the opponent never goes to")
     step = next(a for a, (_, child) in enumerate(first_bb[0].children) if child is inner[0] or preflop._under(child, inner[0]))
 
@@ -369,6 +389,9 @@ def unit():
           and seldom["BB"]["free"] == [] and inner[0].id in seldom["BB"]["rows"] and 0 < seldom["BB"]["unsaid_bb100"] < 0.005,
           "a later decision without a hand the result's own play brings there is left free; locked where that hand "
           "comes too rarely to show in the loss")
+    check(f"has no strategy at {inner[0].id} for hands of the big blind's range that its own strategies bring there (KK)"
+          in refusal(rarely(0.5), whole) and made(rarely(1e-9), whole)["BB"]["free"] == [],
+          "with whole classes in both ranges the first of the two is refused: the hand comes there and met one")
     under = next(a for a, (_, child) in enumerate(root.children) if child in first_bb and any(
         n.actor == "SB" and preflop._under(child, n) for n in nodes))
     sb_inner = [n for n in nodes if n.actor == "SB" and preflop._under(root.children[under][1], n)]
@@ -397,12 +420,13 @@ def unit():
           and preflop._uneven(["AA", "AA"], {"SB": [1, 0.5]}), "a range holds a class in part: a combo missing, or weights that differ")
     check(preflop._same("2.50bb 4x", "2.5bb 4.0x") and preflop._same("sNaNbb", "sNaNbb") and not preflop._same("sNaNbb", "1bb")
           and preflop._same("NaN", "NaN") and not preflop._same("NaN", "1"), "a setting that is no number compares as text")
-    side = {"lost_bb100": [0.1, 0.0, 0.2], "sum_bb100": 0.86, "free": []}
+    side = {"lost_bb100": [0.1, 0.0, 0.2], "sum_bb100": 0.86, "free": [], "locked": 3}
     report = {"flop_count": 3, "flops": "x.txt", "exploitable_bb100": 0.01, "sum_bb100": 0.82, "settings": {"depth": "file"},
               "value_bb100": {"SB": [1.0, 0.9, 1.1], "BB": [-1.0, -1.1, -0.9]},
               "checked": [{"file": "a.json", "flop_count": 3, "depth": "file", "other_postflop": ["file"], "SB": side,
                            "BB": dict(side, free=["r:0:c", "r:0:b250"], free_part=["r:0:b250"])},
-                          {"file": "b.json", "flop_count": 3, "depth": "flop", "other_postflop": ["depth"], "SB": side, "BB": side}]}
+                          {"file": "b.json", "flop_count": 3, "depth": "flop", "other_postflop": ["depth"], "SB": side,
+                           "BB": dict(side, locked=0)}]}
     text = " ".join("\n".join(preflop.check_text(report)).split(" "))
     check(max(len(line) for line in text.splitlines()[1:]) <= 100, "its notes are wrapped")
     check("hand classes in part" not in text and "hand classes in part" in "\n".join(preflop.check_text(dict(report, uneven_ranges=True))),
@@ -416,8 +440,10 @@ def unit():
           and "a.json has no strategy at 1 of the big blind's decisions (r:0:c): its small blind never goes there" in text
           and "a.json has a strategy for only some of the hands that can come to 1 of the big blind's decisions (r:0:b250)" in text
           and "added up to 0.82 to 0.86 bb/100" in text and "(0.04 here)" in text
+          and text.count("0.10  (0.00 to 0.20)") == 3 and text.count("(none of it to check)") == 1
           and "added up" not in "\n".join(preflop.check_text(exact)),
-          "the check's text: the trees by their options, the decisions left free, and the sum where it is not zero")
+          "the check's text: the trees by their options, the decisions left free, a player with nothing locked, "
+          "and the sum where it is not zero")
 
 
 def integration(exe):
@@ -718,7 +744,14 @@ def integration(exe):
         def nothing(hands):
             for h in hands.values():
                 h["freq"] = [0.0] * len(h["freq"])
-        silent = edited("silent.json", lambda by: nothing(by["r:0:c"]))
+        limp = next(n["actions"] for n in whole["nodes"] if n["id"] == "r:0").index("limp")
+
+        def no_limp(by):  # a small blind that folds what it limped, and a big blind with nothing after a limp
+            for h in by["r:0"].values():
+                h["freq"] = [0.0 if a == limp else f + (h["freq"][limp] if a == len(h["freq"]) - 1 else 0.0)
+                             for a, f in enumerate(h["freq"])]
+            nothing(by["r:0:c"])
+        silent = edited("nolimp.json", no_limp)
         status, out, err = run("check", own, silent, "--flops", five, "--accuracy", "0.02", "--report", report, *opts)
         with open(report) as f:
             rows = json.load(f)["checked"]
@@ -726,17 +759,25 @@ def integration(exe):
         free = [r[who]["free"] for r in rows for who in ("SB", "BB")]
         check(status == 0 and free[:3] == [[], [], []] and free[3][0] == "r:0:c" and all(n.startswith("r:0:c") for n in free[3])
               and rows[1]["BB"]["free_part"] == free[3][1:]
-              and "silent.json has no strategy at 1 of the big blind's decisions (r:0:c)" in " ".join(out.split())
-              and now[1] < was[1] + 0.05 and abs(now[0] - was[0]) < 0.05,
-              f"a result with nothing at the big blind's decision after a limp: left free and said, and no loss made "
-              f"up there ({now[1]:+.3f} for {was[1]:+.3f} with it)")
+              and "nolimp.json has no strategy at 1 of the big blind's decisions (r:0:c): its small blind never goes there"
+              in " ".join(out.split()) and now[1] < was[1] + 0.05 and now[0] > was[0] + 1,
+              f"a result with nothing at the big blind's decision after a limp its small blind never makes: left free "
+              f"and said, and no loss made up there ({now[1]:+.3f} for {was[1]:+.3f} with it; the small blind's "
+              f"{now[0]:+.2f} for not limping)")
         for name, change, said in (
                 ("five.json", lambda by: by["r:0:b250:b1200"]["AA"].update(freq=5), "the frequencies of AA at r:0:b250:b1200"),
                 ("noaa.json", lambda by: by["r:0"]["AA"].update(freq=[0.0, 0.0, 0.0]),
                  "no strategy for 1 hand classes of the small blind's range at r:0 (AA)"),
                 ("no72.json", lambda by: by["r:0:c"]["72o"].update(freq=[0.0] * len(by["r:0:c"]["72o"]["freq"])),
                  "no strategy for 1 hand classes of the big blind's range at r:0:c (72o)"),
-                ("noroot.json", lambda by: nothing(by["r:0"]), "no strategy for the small blind's first decision")):
+                ("noroot.json", lambda by: nothing(by["r:0"]), "no strategy for the small blind's first decision"),
+                # the third review's: a whole decision emptied where the result's own small blind limps, and
+                # one where its own big blind shoves; an integer no float holds
+                ("silent.json", lambda by: nothing(by["r:0:c"]),
+                 "no strategy at r:0:c for hands of the big blind's range that its own strategies bring there"),
+                ("gone.json", lambda by: by["r:0:b250:b1200"].clear(),
+                 "no strategy at r:0:b250:b1200 for hands of the small blind's range that its own strategies bring there"),
+                ("huge.json", lambda by: by["r:0"]["AA"].update(freq=[10 ** 400, 0, 0]), "the frequencies of AA at r:0")):
             status, _, err = run("check", edited(name, change), "--flops", five, *opts)
             check(status == 1 and said in err and "the game as it is" not in err and "Traceback" not in err,
                   f"refused before anything is solved: {said}")
@@ -759,6 +800,14 @@ def integration(exe):
         check(status == 0 and "hand classes in part" in out and "Traceback" not in err,
               f"a result of ranges with single combos is checked with them, and the check says what a chart "
               f"cannot do there ({err.strip()[-80:] if status else 'ok'})")
+        with open(part) as f:
+            cut = json.load(f)
+        del next(n for n in cut["nodes"] if n["id"] == "r:0")["hands"]["AA"]
+        with open(os.path.join(d, "cut.json"), "w") as f:
+            json.dump(cut, f)
+        status, _, err = run("check", os.path.join(d, "cut.json"), "--accuracy", "0.05", *suits)
+        check(status == 1 and "no strategy for 1 hand classes of the small blind's range at r:0 (AA)" in err,
+              "at the small blind's first decision a class held in part is there too: without it, refused")
         # a postflop file: a result does not say which, so the check asks for it and says what it cannot know
         post, filed = os.path.join(d, "post.txt"), os.path.join(d, "filed.json")
         with open(post, "w") as f:

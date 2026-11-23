@@ -721,7 +721,7 @@ def _fits(name: str, result: dict, s: Settings, decisions: list[Node]) -> list[s
 
         def said(d: dict, k: str):  # no limp-raise sizes: the 3-bet's
             return d["3bet"] if k == "limp_raise" and d[k] is None else d[k]
-        ok = (result.get("version") == 1 and all(_same(said(its, k), said(mine, k)) for k in PREFLOP_SETTINGS)
+        ok = (type(result.get("version")) is int and result["version"] == 1 and all(_same(said(its, k), said(mine, k)) for k in PREFLOP_SETTINGS)
               and result["chips_per_bb"] == s.chips
               and [(n["id"], n["actions"]) for n in result["nodes"]]
               == [(n.id, [label for label, _ in n.children]) for n in decisions])
@@ -739,13 +739,17 @@ def _fits(name: str, result: dict, s: Settings, decisions: list[Node]) -> list[s
 def _class_rows(name: str, node: dict, actions: int) -> dict[str, list[float]]:
     """What a result says at one decision: the frequencies of every hand class it brought there, summing
     to 1. A class with no frequency was not brought there (by the player, or by the opponent)."""
+    def share(f) -> bool:
+        try:
+            return isinstance(f, (int, float)) and not isinstance(f, bool) and math.isfinite(f) and f >= 0
+        except OverflowError:  # an integer no float holds
+            return False
     out = {}
     for cls, h in node["hands"].items():
         freq = h.get("freq") if isinstance(h, dict) else None
-        if (not isinstance(freq, list) or len(freq) != actions
-                or not all(isinstance(f, (int, float)) and not isinstance(f, bool) and math.isfinite(f) and f >= 0
-                           for f in freq)):
+        if not isinstance(freq, list) or len(freq) != actions or not all(share(f) for f in freq):
             raise PreflopError(f"{name}: the frequencies of {cls} at {node['id']} are not a strategy")
+        freq = [float(f) for f in freq]
         total = sum(freq)
         if not math.isfinite(total):
             raise PreflopError(f"{name}: the frequencies of {cls} at {node['id']} are not a strategy")
@@ -762,40 +766,71 @@ def locked_rows(known: dict[str, list[float]], actions: int, classes: list[str])
 
 
 def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: list[str],
-          dealt: dict[str, list[float]], ranges: dict[str, list[float]], stack_bb: float) -> dict[str, dict]:
+          dealt: dict[str, list[float]], ranges: dict[str, list[float]], swing_bb: float) -> dict[str, dict]:
     """What the check locks of a result, per player: `rows` by node id, and `free`, the decisions it
-    leaves to the solve, which plays them as well as they can be played (`part`: those of them the
-    result has some hands at, and the ones below such a one, where nothing says why it has none). `dealt`: per combo, over 0 for one the check deals; `ranges`: the weights.
+    leaves to the solve, which plays them as well as they can be played (`part`: those of them that are
+    not simply decisions the result's opponent never goes to). `dealt`: per combo, over 0 for one the
+    check deals; `ranges`: the weights; `swing_bb`: the most one hand can move a player's result, two
+    stacks and the ante.
 
     The solver locks a decision whole. A result has no frequencies for a hand class at a decision the
     class did not come to in its solve: by the player's own play, or because the opponent never went
     there with a hand that leaves it possible. Locked, such a class plays evenly, and an opponent who
     is free in the check can make that cost what it likes. So a decision is locked only where the hands
     the result is silent on cannot show: their share of the player's deals, times how often the result's
-    own play before it brings them there, times two stacks, is 0.00 bb/100 (`unsaid_bb100`, summed over
+    own play before it brings them there, times the swing, is 0.00 bb/100 (`unsaid_bb100`, summed over
     the locked decisions). Below a decision left free every hand may come.
 
-    A result solved with other ranges is refused where the hand classes show it: a class with all its
-    combos in the player's range is at each first decision the opponent comes to, whatever the opponent
-    holds (no hand shares a card with every combo of a class)."""
+    A result that cannot be one of these ranges' solve is refused where its hand classes show it:
+    - a class with frequencies that the player's range does not hold;
+    - a class the check deals without them at the small blind's first decision, where every hand is;
+    - a class with all its combos in the player's range without them at a first decision that has them
+      for others (no hand shares a card with every combo of a class, so an opponent who comes there
+      meets it);
+    - where both ranges hold whole classes at one weight: hands without frequencies at a decision the
+      result's own strategies bring them to, the player's by the opponent's, often enough to show (a
+      result changed so that hands go where it has nothing for them is refused by this too). That
+      counts a class's combos as playing alike and as meeting any hand of the opponent, which ranges
+      that name suits or weights undo: a combo the opponent's cards rule out need not be there.
+    What is left free after that is named: `part` unless the result's own opponent comes to the
+    decision too rarely to show, which is then the reason it has nothing there."""
     by_id = {n["id"]: n for n in result["nodes"]}
     known = {n.id: _class_rows(name, by_id[n.id], len(n.children)) for n in decisions}
-    out = {}
+    even = not _uneven(classes, ranges)
+    share: dict[str, dict[str, float]] = {}
     for who in (SB, BB):
-        blind = f"the {'small' if who == SB else 'big'} blind's"
         total = sum(dealt[who])
-        share: dict[str, float] = {}
+        share[who] = {}
         for cls, x in zip(classes, dealt[who]):
             if x > 0:
-                share[cls] = share.get(cls, 0.0) + x / total
-        whole = set(share) - {cls for cls, w in zip(classes, ranges[who]) if w <= 0}
+                share[who][cls] = share[who].get(cls, 0.0) + x / total
 
-        def refuse(text: str, some: list[str]) -> None:
-            raise PreflopError(f"{name} {text} ({', '.join(some[:5])}{', ...' if len(some) > 5 else ''}): "
-                               "give `check` the ranges of that solve")
+    def reaches(who: str) -> dict[str, dict[str, float]]:
+        """Per decision, how often the result's play brings each hand class of the player there: the
+        product of its frequencies on the way (none: the class goes no further)."""
+        at: dict[str, dict[str, float]] = {}
+
+        def go(n: Node, reach: dict[str, float]) -> None:
+            if n.kind != "decision":
+                return
+            at[n.id] = reach
+            for a, (_, child) in enumerate(n.children):
+                go(child, reach if n.actor != who else
+                   {cls: p * known[n.id][cls][a] for cls, p in reach.items() if cls in known[n.id]})
+        go(root, {cls: 1.0 for cls in share[who]})
+        return at
+    own = {who: reaches(who) for who in (SB, BB)}
+    out = {}
+    for who, them in ((SB, BB), (BB, SB)):
+        blind = f"the {'small' if who == SB else 'big'} blind's"
+        mine = share[who]
+        whole = set(mine) - {cls for cls, w in zip(classes, ranges[who]) if w <= 0}
+
+        def refuse(text: str, some: list[str], why: str = "give `check` the ranges of that solve") -> None:
+            raise PreflopError(f"{name} {text} ({', '.join(some[:5])}{', ...' if len(some) > 5 else ''}): {why}")
         if who == SB and not known[root.id]:
             raise PreflopError(f"{name} has no strategy for the small blind's first decision")
-        extra = sorted({cls for n in decisions if n.actor == who for cls in known[n.id]} - set(share))
+        extra = sorted({cls for n in decisions if n.actor == who for cls in known[n.id]} - set(mine))
         if extra:
             refuse(f"has a strategy for {len(extra)} hand classes that are not in {blind} range", extra)
         rows: dict[str, list[list[float]]] = {}
@@ -812,7 +847,7 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
                     visit(child, comes, first, loose)
                 return
             here, k = known[n.id], len(n.children)
-            gap = sum(share[cls] * p for cls, p in comes.items() if cls not in here) * 2 * stack_bb * 100
+            gap = sum(mine[cls] * p for cls, p in comes.items() if cls not in here) * swing_bb * 100
             if not _shows(unsaid + gap):
                 if not here:   # nothing to lock, and nothing that comes here to speak of
                     for _, child in n.children:
@@ -824,16 +859,23 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
                     visit(child, {cls: p * (here[cls][a] if cls in here else 1.0 / k) for cls, p in comes.items()},
                           False, loose)
                 return
-            lacking = sorted(cls for cls in whole if cls not in here)
+            lacking = sorted(cls for cls in (mine if n is root else whole) if cls not in here)
             if first and here and lacking:
                 refuse(f"has no strategy for {len(lacking)} hand classes of {blind} range at {n.id}", lacking)
+            opponent = sum(share[them][cls] * p for cls, p in own[them][n.id].items())  # how often it comes here
+            if even:
+                told = {cls: mine[cls] * p * opponent for cls, p in own[who][n.id].items() if cls not in here and p > 0}
+                if _shows(sum(told.values()) * swing_bb * 100):
+                    refuse(f"has no strategy at {n.id} for hands of {blind} range that its own strategies bring there",
+                           sorted(told, key=lambda cls: -told[cls]),
+                           "it is not all of a strategy (a result of other ranges, or one changed since its solve)")
             free.append(n.id)
-            if here or loose:
+            if here or loose or _shows(opponent * swing_bb * 100):
                 part.append(n.id)
             for _, child in n.children:
                 visit(child, comes, False, loose or bool(here))
 
-        visit(root, {cls: 1.0 for cls in share}, True)
+        visit(root, {cls: 1.0 for cls in mine}, True)
         out[who] = {"rows": rows, "free": free, "part": part, "unsaid_bb100": unsaid}
     return out
 
@@ -913,7 +955,7 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
         classes = [hand_class(h) for h in order]
         dealt = {SB: [x * y for x, y in zip(sb, _facing(order, bb))], BB: [x * y for x, y in zip(bb, _facing(order, sb))]}
         ranges = {SB: sb, BB: bb}
-        plans = [_plan(name, r, root, decisions, classes, dealt, ranges, float(s.stack))
+        plans = [_plan(name, r, root, decisions, classes, dealt, ranges, float(2 * s.stack + s.ante))
                  for name, r in results]  # all read before any solve
         say("the game as it is:")
         free = solve_on(u, s, accuracy_bb100, seconds, log)
@@ -932,7 +974,8 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
                 v = _value(got, who, s.chips)
                 row[who] = {"value_bb100": v, "lost_bb100": _lost(base[who], v),
                             "exploitable_bb100": got.get("Exploitable for", 0.0) / s.chips * 100,
-                            "sum_bb100": _sum(got, s.chips), "free": plan[who]["free"], "free_part": plan[who]["part"],
+                            "sum_bb100": _sum(got, s.chips), "locked": len(plan[who]["rows"]),
+                            "free": plan[who]["free"], "free_part": plan[who]["part"],
                             "unsaid_bb100": plan[who]["unsaid_bb100"]}
             checked.append(row)
     return {
@@ -950,7 +993,10 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
 
 
 def check_text(report: dict) -> list[str]:
-    def cell(x: list[float]) -> str:
+    def cell(side: dict) -> str:
+        if side.get("locked") == 0:
+            return "     —  (none of it to check)"
+        x = side["lost_bb100"]
         return f"{_f2(x[0]):>6}  ({_f2(x[1])} to {_f2(x[2])})"
 
     def tree_of(depth: str) -> str:
@@ -967,7 +1013,7 @@ def check_text(report: dict) -> list[str]:
     width = max([len(n) for n in names] + [8])
     out.append(f"{'':{width}}     {'small blind':<26} big blind")
     for name, r in zip(names, report["checked"]):
-        out.append(f"{name:{width}}   {cell(r[SB]['lost_bb100']):<28} {cell(r[BB]['lost_bb100'])}")
+        out.append(f"{name:{width}}   {cell(r[SB]):<28} {cell(r[BB])}")
     notes: list[str] = []
     for r in report["checked"]:
         file = os.path.basename(str(r["file"]))
@@ -989,9 +1035,10 @@ def check_text(report: dict) -> list[str]:
                         "plays them as well as they can be played, so the loss is that of what the result does say."]
             if part:
                 notes += [f"{file} has a strategy for only some of the hands that can come to {ids(part)} (for "
-                        f"none, below such a decision): the others never met a hand of the {their} blind there, or a decision before it is left to "
-                        "the solve. A decision is locked whole or not at all, so the check plays these as well as "
-                        "they can be played too, and the loss is that of what the result says at the others."]
+                        "none of them at some). A decision is locked whole or not at all, so the check plays these "
+                        "as well as they can be played, and the loss is that of what the result says at the others. "
+                        f"(A solve leaves out the hands that met no hand of the {their} blind at a decision; under a "
+                        "decision left to the solve, more hands come than the result has.)"]
     if report.get("uneven_ranges"):
         notes += ["The ranges of this check hold hand classes in part (some of a class's combos, or combos at "
                 "different weights). The combos of a class need not play alike then, and a result has one strategy "
@@ -1000,8 +1047,8 @@ def check_text(report: dict) -> list[str]:
     if any(_shows(x) for x in sums):
         notes += [f"The two players' values added up to {_f2(min(sums))} to {_f2(max(sums))} bb/100 in these solves, "
                 "not to zero: a flop subset is not dealt quite evenly to the two. Where that sum moves with the "
-                f"strategies ({max(sums) - min(sums):.2f} here) the ends of the spans are that uncertain, and a loss "
-                "can come out under zero."]
+                f"strategies ({max(sums) - min(sums):.2f} here) the losses and the ends of their spans are that "
+                "uncertain, and a loss can come out under zero."]
     return out + [line for note in notes for line in [""] + textwrap.wrap(note, 100)]
 
 
@@ -1291,7 +1338,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 with open(a.args[0]) as f:
                     result = json.load(f)
-            except (OSError, ValueError) as e:
+            except (OSError, ValueError, RecursionError) as e:
                 raise PreflopError(f"cannot read the result: {e}")
             try:
                 if not isinstance(result, dict) or result.get("version") != 1:
@@ -1319,7 +1366,7 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     with open(path) as f:
                         results.append((path, json.load(f)))
-                except (OSError, ValueError) as e:
+                except (OSError, ValueError, RecursionError) as e:
                     raise PreflopError(f"cannot read the result {path}: {e}")
                 if not isinstance(results[-1][1], dict) or not isinstance(results[-1][1].get("settings"), dict):
                     raise PreflopError(f"{path} is not a result of `preflop.py solve`")

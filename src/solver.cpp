@@ -2097,7 +2097,7 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
   const auto& G = g_.perm_all;
   const float gn = 1.0f / static_cast<float>(G.size());
   // In double: on all flops this is a sum of 42,120 values, and a float sum of them moved a flop exit's
-  // value by up to 9e-5 of the dead money (#505).
+  // value by 9e-5 of the dead money at the most where it was measured, three exits of one spot (#505).
   std::vector<double> acc(static_cast<size_t>(Hp), 0.0);
   for (int k = 0; k < K; ++k) {
     const float* rk = res + static_cast<size_t>(k) * Hp;

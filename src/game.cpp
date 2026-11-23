@@ -147,9 +147,9 @@ void GameTree::compute_flop_compat() {
   const double gn = 1.0 / static_cast<double>(perm_all.size());
   for (int p = 0; p < 2; ++p) {
     const size_t H = hands[p].size();
-    // Summed in double: 1,755 flops in 24 suit variants are 42,120 terms of about 2e-5 each, and summed
-    // as floats they came out 3.5e-4 over (17,302 flops for a pair of hands where there are 17,296),
-    // which took that share of an ante out of every flop (#505).
+    // Summed in double: 1,755 flops in 24 suit variants are 42,120 terms of about 2e-5 each. Summed as
+    // floats a hand's own sum came out 2.8e-4 over and the count for a pair of hands 3.5e-4 over (17,302
+    // flops where there are 17,296), which took that share of an ante out of every flop (#505).
     std::vector<double> compat(H, 0.0), card(H * NUM_CARDS, 0.0), pair(H * NUM_COMBOS, 0.0);
     for (auto& f : cfg.subset) {
       const double w = f.weight / W * gn;

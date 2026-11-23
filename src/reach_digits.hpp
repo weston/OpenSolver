@@ -19,7 +19,7 @@
 
 #include "cards.hpp"
 
-// Where the three sums are one instruction each a sixteen bytes. Elsewhere (x86 before VNNI has no such
+// Where each of the three sums is one instruction for sixteen bytes. Elsewhere (x86 before VNNI has no such
 // instruction) the float sum stays; -DPIO_NO_ALLIN_DIGITS keeps it here too.
 #if defined(__aarch64__) && defined(__ARM_FEATURE_DOTPROD) && !defined(PIO_NO_ALLIN_DIGITS)
 #define PIO_ALLIN_DIGITS 1

@@ -1296,3 +1296,102 @@ not fit this machine (#498).
   flops), which is the same question one street on and may be as large; more flops at turn depth than
   25 (50 are 4 GB here; the PC holds 200); which decisions carry the loss; other stacks and sizes. One
   tree, two subsets, one accuracy (#498).
+
+## The turn sets' byte tables summed on whole numbers (#507)
+
+At turn depth, with tables at both levels (#496), the time is one loop: a row of a turn set's triangle
+of signed bytes against the opponent's reaches (`tri_dot` in `Solver::allin_tri_value`). Counted in a
+10-flop solve of the tool's tree, it is about 80 % of the threads' time, and 74 % of the opponent hands
+it meets have no reach. A float times a byte has to be widened and converted, sixteen bytes to four
+vectors, before it is a product.
+
+**What changed.** The reaches of one value are turned once into whole numbers: in units of the largest
+of them over `0x7f7f7f`, rounded, and each written as three signed digits of base 256
+(`src/reach_digits.hpp`). A row's sum is then three sums of byte times byte, sixteen products to an
+instruction (ARM `SDOT`), put together as `a + 256 b + 65536 c`: exact on the whole numbers, so all the
+error is the rounding of the reaches, half a unit each, 2^-24 of the largest. Reaches with none above
+zero, one below, or one that is not a number have no such form and are summed in float as before. The
+other half of a row (the row times its own hand's reach, added into the sums of the hands before it)
+is still float, and is skipped for a hand without reach as before. Flop sets (16-bit entries) and the
+full tables are untouched. On when the build has the instruction (AArch64 with `dotprod`: every Apple
+M-series), float elsewhere; `-DPIO_NO_ALLIN_DIGITS` builds the float sum here too, and
+`Solver::allin_digits` chooses in a test.
+
+M4, 10 threads, the machine quiet but for the runs themselves.
+
+**One evaluation** (a scratch program on `Solver::showdown_value`, one flop of the tool's tree at turn
+depth, random reaches, best of 15 rounds, microseconds a value):
+
+| opponent hands without reach | turn set: float | whole numbers | | flop set (unchanged), the two builds |
+|---|---|---|---|---|
+| 0 % | 81.6 | 57.9 | 1.41x | 87.1 / 87.2 |
+| 30 % | 70.3 | 49.5 | 1.42x | 75.9 / 75.7 |
+| 74 % | 55.2 | 35.4 | 1.56x | 59.0 / 59.0 |
+| 90 % | 49.5 | 29.4 | 1.68x | 52.1 / 52.0 |
+
+The two ways differ by 2.7e-7 to 3.8e-7 of the largest value. The gain grows with the hands without
+reach because the float half that is left shrinks with them.
+
+**Solves** (old = `3fea596`; whole command = build + `go N steps` + `calc_results`; taken in turn, old
+after new):
+
+| tree | old | new |
+|---|---|---|
+| 10 flops, turn depth, 100 steps | 93.5, 92.9 s (911, 910 s of processor); 992, 1,004 MiB | 68.6, 67.3 s (656, 658 s); 1,002 MiB |
+| 200 flops, flop depth, 60 steps | 14.9, 14.9 s | 14.9, 15.0 s |
+
+1.37 times as fast at turn depth (1.39 in processor time, which is what 80 % of the time at 1.56
+gives), and nothing at flop depth, where the sets are flop sets. After the 100 steps: EV OOP -6.897 old
+and -6.899 new, exploitable 0.624 and 0.626.
+
+**Does the rounding cost convergence?** The 10-flop tree, 300 steps, the exploitable figure of
+`calc_results` along the way. A solve is the same to the last digit from run to run, so the rows differ
+by what they sum and nothing else:
+
+| steps | 25 | 50 | 75 | 100 | 150 | 200 | 300 |
+|---|---|---|---|---|---|---|---|
+| float (`-DPIO_NO_ALLIN_DIGITS`; `3fea596` is the same at every report) | 19.995 | 3.649 | 1.291 | 0.624 | 0.248 | 0.128 | 0.054 |
+| whole numbers | 19.992 | 3.685 | 1.304 | 0.626 | 0.249 | 0.129 | 0.054 |
+| whole numbers, and the flop sets' float sum taken in 8 parts for 16 | 19.993 | 3.651 | 1.289 | 0.624 | 0.248 | 0.129 | 0.055 |
+| units of the largest over `0x7f7f7e` (one fewer) | 19.997 | 3.711 | 1.319 | 0.632 | 0.249 | 0.129 | 0.054 |
+| over `0x3f7f7f` (half as fine) | 19.995 | 3.670 | 1.293 | 0.624 | 0.249 | 0.128 | 0.054 |
+| over `0x7f7f` (256 times as coarse, two digits) | 20.003 | 3.721 | 1.325 | 0.633 | 0.250 | 0.130 | 0.055 |
+
+The third row is the measure of what an order of summing does: a float sum elsewhere in the same solve,
+taken in another order, moves the figure at 50 steps by as much (0.034) as the whole numbers moved it
+(0.036), and a grid one unit different moves it by 0.026 more. So nothing here tells the whole numbers
+from the floats, and a grid 256 times as coarse costs 0.001 at the end. EV OOP after 300 steps: -6.885
+float, -6.884 whole numbers.
+
+**Do the tests notice?** `tests/test_solver.cpp` checks the header alone (every sum of the instruction
+path and of the plain loop against the whole numbers summed in 64 bits, every reach within half a unit,
+row ends of every length, the forms refused) and the solver with the switch on and off (to 2e-5 of the
+values). 16 changes to the kernel and its use, one at a time, against `build/test_solver`:
+
+| change | noticed by |
+|---|---|
+| a reach cut to its whole number, not rounded | the header's checks |
+| the unit one part in 8 million small | the header's |
+| the unit one part in 10,000 large | both |
+| the end of a row (under 16 bytes) left out | both |
+| the middle digit counted 255, in the instruction path; in the plain loop | the header's (both) |
+| the second block of a round meets the first block's row | both |
+| the sixteen digits to spare not cleared | the header's |
+| a negative reach taken | both |
+| a reach that is not a number taken; reaches with none above zero taken | the header's (both) |
+| the solver ignores its switch; adds the float sums on top; never uses the whole numbers | the solver's (all three) |
+| the solver's sum one part in 10,000 large | the solver's |
+| the solver's sum one part in 100,000 large | **not noticed** |
+
+**Not done.**
+- x86. AVX2 has byte products only as unsigned times signed, pairs added with saturation; VNNI has the
+  instruction. Neither is written, and there is no x86 machine here to time one on, so x86 keeps the
+  float sum (#511).
+- The half of a row that is still float (taken for the hands with reach only). How the time that is
+  left splits between it and the three sums was not measured.
+- The flop sets' 16-bit rows, which are the time at flop depth (the 200-flop row above).
+- The solver's comparison of the two ways is to 2e-5 of the values, since a float sum is itself only
+  that good: an error in the solver's use of the kernel smaller than that passes (the last row). The
+  kernel's own sums are checked exactly.
+- One tree, one machine. To an accuracy with the tool was not timed; by the steps above it is the
+  same number of steps.

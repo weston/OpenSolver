@@ -354,8 +354,16 @@ class Solver:
         """The commands that put back what a preflop build switched on (16-bit storage, collapsed
         check-downs): sent before a postflop tree is set up or a file loaded, so that tree is the one a
         viewer that never built a preflop tree gets."""
-        touched, self.preflop_touched = self.preflop_touched, False
-        return ["small_strats auto", "set_collapse_checkdowns off"] if touched else []
+        return ["small_strats auto", "set_collapse_checkdowns off"] if self.preflop_touched else []
+
+    def cmds_own(self, before, after, timeout=600):
+        """`before`, the solver's own settings back if a preflop build changed them, `after`. The
+        settings count as put back only once the commands went through: a failed `stop` leaves them
+        to the next try."""
+        with self.cmd_lock:
+            out = self.cmds(before + self.own_settings() + after, timeout=timeout)
+            self.preflop_touched = False
+            return out
 
     def forget_locks(self):
         """A new tree (generate / build / load / restart): drop the lock list and the undo copy."""
@@ -555,7 +563,8 @@ def _api(solver, lib, method, path, query, body):
             served = _refiner.overlay(path, query)
             if served is not None:
                 return served
-        elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate", "/api/preflop/build"):
+        elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate"):
+            # (a preflop build does this itself, once its form is accepted: preflop_api.build)
             _refiner.invalidate()  # the main tree is new: old refines don't apply
             _preview = None
         elif path in LOCK_PATHS and not solver.state()["solving"]:
@@ -775,8 +784,7 @@ def _api_main(solver, lib, method, path, query, body):
     if path == "/api/load":
         b = need_body(body)
         path_arg = safe_path(b.get("path", ""))
-        solver.cmds(["stop", "wait_for_solver"] + solver.own_settings() + [f'load_tree "{path_arg}"'],
-                    timeout=7200)  # (#382)
+        solver.cmds_own(["stop", "wait_for_solver"], [f'load_tree "{path_arg}"'], timeout=7200)  # (#382)
         if _resolver is not None:
             _resolver.main_tree_changed()  # #357
         solver.forget_locks()
@@ -1510,7 +1518,7 @@ def op_pio_import(b):
 def op_generate(solver, b):
     """PioViewer-style bet sizes -> add_lines via tools/tree_builder.py, then configure the solver."""
     cmds, lines = setup_from_body(b)
-    solver.cmds(["stop", "wait_for_solver"] + solver.own_settings() + cmds)
+    solver.cmds_own(["stop", "wait_for_solver"], cmds)
     solver.preflop = None
     solver.forget_locks()
     solver.tree_present = False

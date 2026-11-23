@@ -128,6 +128,21 @@ export function flopsLabel(choice) {
   return choice === "all" ? "All 1,755 flops" : `${choice} flops`;
 }
 
+/** How many flops a choice deals. */
+export function flopsCount(choice) { return choice === "all" ? 1755 : Number(choice); }
+
+/** Which number of flops to ask the solver's memory estimate for next, or null when the row is done.
+ *  The chosen one first, then the others from few to many ("all" only when it is the chosen one: it
+ *  takes a minute to answer). cells: what is known, choice -> MB. More flops take more memory, so
+ *  nothing above a number that is already over the machine's memory is asked. */
+export function nextEstimate(choices, chosen, cells, machineMb) {
+  const over = choices.filter((c) => cells[c] != null && machineMb > 0 && cells[c] > machineMb).map(flopsCount);
+  const least = over.length ? Math.min(...over) : Infinity;
+  const order = [chosen, ...choices.filter((c) => c !== chosen && c !== "all")].filter((c) => choices.includes(c));
+  for (const c of order) if (cells[c] == null && flopsCount(c) < least) return c;
+  return null;
+}
+
 /** One line over the tree in words. */
 export function treeSummary(d) {
   const n = d.rows.length, x = d.exits;

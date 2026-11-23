@@ -1,7 +1,7 @@
 // Unit test for what Study knows about preflop trees (viewer/static/preflop.js, #490).
 // usage: node viewer/test_preflop_js.mjs
 import { dealName, seat, flopCards, sortFlops, parseFilter, flopMatches, preflopRaise, bigBlindOf, bb100ToChips, chipsToBb100,
-  fmtMemory, memoryNote, streetsBet, flopsLabel, treeSummary } from "./static/preflop.js";
+  fmtMemory, memoryNote, streetsBet, flopsLabel, flopsCount, nextEstimate, treeSummary } from "./static/preflop.js";
 
 let fails = 0;
 const check = (cond, msg) => { console.log((cond ? "  ok: " : "  FAIL: ") + msg); if (!cond) fails++; };
@@ -74,6 +74,22 @@ check(same(streetsBet("none"), { flop: false, turn: false, river: false }) && sa
   && same(streetsBet("turn"), { flop: true, turn: true, river: false }) && same(streetsBet("river"), { flop: true, turn: true, river: true })
   && same(streetsBet("x"), { flop: false, turn: false, river: false }), "streetsBet: the streets up to the depth");
 check(flopsLabel("25") === "25 flops" && flopsLabel("all") === "All 1,755 flops", "flopsLabel");
+{
+  const all = ["10", "25", "50", "100", "200", "all"];
+  const asked = (chosen, mb, machine) => {   // the choices in the order they are asked, mb: choice -> answer
+    const cells = {}, out = [];
+    for (let c; (c = nextEstimate(all, chosen, cells, machine)) != null;) { out.push(c); cells[c] = mb[c]; }
+    return out.join(" ");
+  };
+  const mb = { 10: 159, 25: 396, 50: 782, 100: 1513, 200: 2837, all: 13154 };
+  check(flopsCount("all") === 1755 && flopsCount("50") === 50, "flopsCount");
+  check(asked("25", mb, 16384) === "25 10 50 100 200", "nextEstimate: the chosen number first, then few to many, all flops not unless chosen");
+  check(asked("all", mb, 16384) === "all 10 25 50 100 200", "nextEstimate: all flops when chosen");
+  check(asked("25", mb, 1000) === "25 10 50 100" && asked("10", mb, 300) === "10 25" && asked("200", mb, 300) === "200 10 25"
+    && asked("all", mb, 100) === "all 10", "nextEstimate: nothing above a number that is over the machine's memory");
+  check(asked("25", mb, 0) === "25 10 50 100 200" && asked("7", mb, 16384) === "10 25 50 100 200"
+    && nextEstimate(all, "25", { 25: 1, 10: 1, 50: 1, 100: 1, 200: 1 }, 16384) === null, "nextEstimate: unknown machine, unknown choice, done");
+}
 check(treeSummary({ rows: new Array(19), exits: 4, flops: 10 }) === "19 nodes before the flop · 4 ways to a flop · 10 flops"
   && treeSummary({ rows: [1], exits: 0, flops: 1755 }) === "1 node before the flop · no way to a flop · 1,755 flops"
   && treeSummary({ rows: [1, 2], exits: 1, flops: 1 }) === "2 nodes before the flop · 1 way to a flop · 1 flop", "treeSummary");

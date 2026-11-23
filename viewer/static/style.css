@@ -455,6 +455,14 @@ input.flop-filter { width: 100%; margin-top: 5px; height: 22px; padding: 0 6px; 
 .field small { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .pf-mem { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .pf-mem .hint.warn, .pf-tree .err { color: var(--danger); }
+.pf-mem-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.pf-mem-row:empty { display: none; }
+.pf-mem-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: transparent; color: var(--text-3); font: inherit; font-size: 11.5px; cursor: pointer; }
+.pf-mem-cell b { font-weight: 600; font-size: 13px; color: var(--text); }
+.pf-mem-cell:hover { border-color: var(--text-3); }
+.pf-mem-cell.active { border-color: var(--accent); }
+.pf-mem-cell.warn b { color: var(--danger); }
 .pf-tree { border-top: 1px solid var(--border); padding-top: 12px; font-size: 12.5px; }
 .pf-tree .pf-sum { color: var(--text-3); margin-bottom: 8px; }
 .pf-tree.stale .pf-rows { opacity: .45; }

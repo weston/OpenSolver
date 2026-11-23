@@ -4,7 +4,7 @@
 
 import { get, post, prefs } from "./api.js";
 import { el } from "./cards.js";
-import { memoryNote, streetsBet, flopsLabel, treeSummary } from "./preflop.js";
+import { memoryNote, fmtMemory, streetsBet, flopsLabel, nextEstimate, treeSummary } from "./preflop.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -21,7 +21,10 @@ const editors = {};
 let defaults = null;       // GET /api/preflop/defaults: the tool's defaults, the flop subsets, the machine's memory
 let onChange = () => {};
 let seq = 0, timer = null;
-let rev = 0;               // counts the form's changes: an estimate of an older form is not shown
+// The memory estimates on show: { sig (the form without its number of flops), machine (MB), cells
+// (choice of flops -> { mb, flops }), running, error }. They stay while only the number of flops changes.
+let mem = null, memRun = 0;
+const memSig = (f) => JSON.stringify({ ...f, flops: null });
 
 /** True once the form holds its defaults (they come from the server: the tool's own). */
 export function preflopReady() { return defaults != null; }
@@ -64,10 +67,11 @@ function syncDepth() {
 
 function changed() {
   if (!defaults) return;
-  rev++;
-  prefs.set("preflop", readPreflopForm());
+  const f = readPreflopForm();
+  prefs.set("preflop", f);
   syncDepth();
-  showEstimate(null);
+  if (mem && mem.sig !== memSig(f)) { mem = null; memRun++; }   // another tree: its estimates are not these
+  renderMem();
   $("pf-tree").classList.add("stale");
   clearTimeout(timer);
   timer = setTimeout(describe, 300);
@@ -95,25 +99,64 @@ async function describe() {
   box.appendChild(rows);
 }
 
-/** Show a memory estimate ({mb, memory_mb, flops}) in the form, or clear it (null). */
-export function showEstimate(e, err = null) {
-  const out = $("pf-mem-text");
-  const note = e ? memoryNote(e.mb, e.memory_mb, e.flops) : null;
-  out.textContent = err || (note ? note.text : "");
-  out.classList.toggle("warn", !!err || !!(note && !note.fits));
+/** The memory line (the chosen number of flops against the machine's memory) and under it what is
+ *  known for the other numbers; a click on one chooses it. */
+function renderMem() {
+  const out = $("pf-mem-text"), row = $("pf-mem-row"), chosen = $("pf-flops").value;
+  const own = mem && mem.cells[chosen];
+  const note = own ? memoryNote(own.mb, mem.machine, own.flops) : null;
+  out.textContent = note ? note.text : mem && mem.error ? mem.error : mem && mem.running ? "Asking the solver…" : "";
+  out.classList.toggle("warn", note ? !note.fits : !!(mem && mem.error));
+  row.textContent = "";
+  $("pf-estimate").disabled = !!(mem && mem.running);
+  if (!mem) return;
+  for (const c of defaults.flops) {
+    const e = mem.cells[c];
+    if (!e) continue;
+    const over = mem.machine > 0 && e.mb > mem.machine;
+    const b = el("button", `pf-mem-cell${c === chosen ? " active" : ""}${over ? " warn" : ""}`);
+    b.type = "button";
+    b.title = over ? "More than this machine's memory" : c === chosen ? "The number of flops chosen" : "Take this number of flops";
+    b.append(el("span", null, flopsLabel(c)), el("b", "num", fmtMemory(e.mb)));
+    b.onclick = () => { $("pf-flops").value = c; changed(); };
+    row.appendChild(b);
+  }
+  if (mem.running) row.appendChild(el("span", "hint", "…"));
 }
 
+/** An estimate the server gave for this form ({mb, memory_mb, flops}: Build asks for one too). */
+export function noteEstimate(form, e) {
+  const sig = memSig(form);
+  if (!mem || mem.sig !== sig) { mem = { sig, machine: 0, cells: {}, running: false, error: null }; memRun++; }
+  mem.machine = e.memory_mb || 0;
+  mem.cells[form.flops] = { mb: e.mb, flops: e.flops };
+  mem.error = null;
+  renderMem();
+}
+
+/** Ask the solver what the tree takes: for the chosen number of flops first, then for the other
+ *  numbers, so that the row under the button shows what fewer or more flops would cost. */
 async function estimate() {
-  const btn = $("pf-estimate"), mine = rev;
-  btn.disabled = true;
-  showEstimate(null);
-  $("pf-mem-text").textContent = "Asking the solver…";
+  const form = readPreflopForm(), sig = memSig(form);
+  if (!mem || mem.sig !== sig) mem = { sig, machine: 0, cells: {}, running: false, error: null };
+  const run = ++memRun, mine = mem;
+  mine.running = true;
+  mine.error = null;
+  renderMem();
+  const known = () => Object.fromEntries(Object.entries(mine.cells).map(([c, e]) => [c, e.mb]));
   try {
-    const e = await post("/api/preflop/estimate", readPreflopForm());
-    if (mine === rev) showEstimate(e);
+    for (let c; (c = nextEstimate(defaults.flops, $("pf-flops").value, known(), mine.machine)) != null;) {
+      const e = await post("/api/preflop/estimate", { ...form, flops: c });
+      if (run !== memRun || mem !== mine) return;   // the form is another one now, or a newer run took over
+      mine.machine = e.memory_mb || 0;
+      mine.cells[c] = { mb: e.mb, flops: e.flops };
+      renderMem();
+    }
   } catch (e) {
-    if (mine === rev) showEstimate(null, String(e.message || e));
-  } finally { btn.disabled = false; }
+    if (run === memRun && mem === mine) mine.error = String(e.message || e);
+  } finally {
+    if (run === memRun && mem === mine) { mine.running = false; renderMem(); }
+  }
 }
 
 /** Set the form up. RangeEditor is the Build tab's (passed in: build.js imports this module). */

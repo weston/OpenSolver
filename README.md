@@ -506,7 +506,9 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     blind can limp, and for after the flop the number of flops (10 to 200 of `flops/`, or all 1,755),
     the last street with betting and its sizes. The tree these settings make is listed under the sizes
     as you type (each action, what both players have in, and where it leads), or the reason there is
-    none in the form's own words. **Estimate memory** asks the solver what the tree takes; **Build**
+    none in the form's own words. **Estimate memory** asks the solver what the tree takes, for the
+    chosen number of flops and then for the other numbers (a row under the button; a click on one takes
+    it, and all 1,755 flops are only asked for when chosen, that one takes a minute); **Build**
     does that first too, and refuses a tree larger than the machine's memory before it touches the
     one that is there. The target is in **bb/100**, and the chart, the top bar and the Exploitability
     tile count in bb/100 for a preflop tree; EVs stay a percentage of the pot (the 1.5 big blinds of

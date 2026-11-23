@@ -26,6 +26,7 @@ sys.path.insert(0, HERE)
 import server as vsrv  # noqa: E402
 import library as vlib  # noqa: E402
 import resolve as vresolve  # noqa: E402
+import refine as vrefine  # noqa: E402
 import preflop_api  # noqa: E402
 
 SOLVER = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") \
@@ -43,12 +44,13 @@ POSTFLOP = {"range_oop": "AA,KK,QQ,JJ,TT,AK,AQ,AJs,KQs", "range_ip": "AA,KK,QQ,J
 
 
 class Viewer:
-    """A viewer of its own: solver, resolver and HTTP server."""
+    """A viewer of its own: solver, resolver, the fast preview's refiner and HTTP server."""
 
     def __init__(self, directory):
         self.solver = vsrv.Solver(SOLVER)
         self.mgr = vresolve.ResolveManager(self.solver, vsrv.Solver, SOLVER)
-        vsrv.set_resolver(self.mgr)
+        self.refiner = vrefine.RefineManager(self.solver, vsrv.Solver, SOLVER)
+        self.use()
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), vsrv.Handler)
         self.http.solver = self.solver
         self.http.library = vlib.Library(directory)
@@ -56,11 +58,17 @@ class Viewer:
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.http.server_port}"
 
+    def use(self):
+        """The server module serves one viewer: this one from now on."""
+        vsrv.set_resolver(self.mgr)
+        vsrv.set_refiner(self.refiner)
+
     def close(self):
         self.http.shutdown()
         self.http.server_close()
         vsrv.set_resolver(None)
-        for sv in (self.solver, self.mgr.rsolver):
+        vsrv.set_refiner(None)
+        for sv in (self.solver, self.mgr.rsolver, self.refiner.rsolver):
             try:
                 sv.proc.kill()
             except Exception:
@@ -207,6 +215,9 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = self.v.req("/api/preflop/build", "POST", FORM)
         self.assertEqual(st, 200, d)
         self.assertEqual((d["chips"], d["flops"]), (100, 10))
+        # the size the form shows after a build is the build's own answer, the Estimate button's figure
+        st, e = self.v.req("/api/preflop/estimate", "POST", FORM)
+        self.assertEqual((d["mb"], d["memory_mb"]), (e["mb"], e["memory_mb"]))
         s = self.tool_settings()
         root = self.pf.build_tree(s)
         count, kids = self.tool_tree(self.pf.script(s, self.pf.choose_flops("10")[1], root))
@@ -255,7 +266,7 @@ class PreflopBuildTest(unittest.TestCase):
             self.assertEqual(d["node_count"], count)
         finally:
             fresh.close()
-            vsrv.set_resolver(self.v.mgr)
+            self.v.use()
 
     def test_09_load_and_restart_forget_the_preflop_tree(self):
         st, d = self.v.req("/api/preflop/build", "POST", FORM)
@@ -284,6 +295,119 @@ class PreflopBuildTest(unittest.TestCase):
         self.assertEqual(st, 200, d)
         self.assertIsNone(self.v.solver.preflop)
         self.assertFalse(self.v.solver.preflop_touched)
+
+    def test_10_no_street_of_a_preflop_tree_is_refined(self):
+        """Study asks for a refined street at every turn and river node, with the Build form's postflop
+        sizes (the fast preview, #445): a preflop tree's streets have their own sizes."""
+        st, d = self.v.req("/api/preflop/build", "POST", dict(FORM, depth="turn"))
+        self.assertEqual(st, 200, d)
+        node = "r:0"
+        while vrefine.street_root(node)[0] is None:   # calls and checks, down to the first turn card
+            st, d = self.v.req("/api/node?id=" + node)
+            self.assertEqual(st, 200, d)
+            kids = [k["id"] for k in d["children"]]
+            node = next((k for k in kids if k.endswith(":c")), kids[0])
+            self.assertLess(node.count(":"), 12, node)
+        st, d = self.v.req("/api/solve", "POST", {"accuracy": 1e-9})
+        self.assertEqual(st, 200, d)
+        try:
+            self.assertTrue(self.v.solver.state()["solving"])
+            body = dict(POSTFLOP, id=node, accuracy_pct=0.3)
+            st, d = self.v.req("/api/refine/view", "POST", body)
+            self.assertEqual((st, d.get("state")), (200, "none"), (node, d))
+            time.sleep(1.0)
+            status = self.v.req("/api/refine/status")[1]
+            self.assertEqual((status["busy"], status["root"], status["ready"]), (False, None, None), status)
+            self.assertTrue(self.v.solver.state()["solving"], "the main solve was paused")
+            self.assertFalse(self.v.solver.suspended)
+        finally:
+            self.v.req("/api/stop", "POST", {})
+            self.v.wait_solved()
+
+    def test_11_what_a_review_found(self):
+        v, solver = self.v, self.v.solver
+        # numbers and text JSON can carry and a form cannot: refused in words, not a server error
+        for cap in (float("inf"), float("nan"), 2.5, 0, True, "2"):
+            st, d = v.req("/api/preflop/describe", "POST", dict(FORM, raise_cap=cap))
+            self.assertEqual(st, 400, (cap, d))
+            self.assertTrue(d["error"].startswith("Cap:"), d)
+        for text in ("AA,KK\ud800", "AA\u0085KK", "AA\u2028KK", "AA\tKK"):
+            st, d = v.req("/api/preflop/estimate", "POST", dict(FORM, range_sb=text))
+            self.assertEqual(st, 400, (text, d))
+            self.assertIn("not usable", d["error"])
+
+        # a refused build leaves the tree that is there, and what was made for it
+        st, d = v.req("/api/preflop/build", "POST", FORM)
+        self.assertEqual(st, 200, d)
+        vsrv._preview = 1.5
+        try:
+            st, d = v.req("/api/preflop/build", "POST", dict(FORM, open="abc"))
+            self.assertEqual(st, 400, d)
+            self.assertEqual(vsrv._preview, 1.5)
+        finally:
+            vsrv._preview = None
+        self.assertTrue(solver.tree_present)
+
+        # the estimate a build waits for is not the form's: a later click on Estimate does not end it,
+        # and it does not end the form's
+        class Running:
+            killed = 0
+
+            def kill(self):
+                Running.killed += 1
+        est = preflop_api.ESTIMATES
+        est.running = Running()
+        try:
+            st, d = v.req("/api/preflop/build", "POST", dict(FORM, stack="21"))   # not in the cache
+            self.assertEqual(st, 200, d)
+            self.assertEqual(Running.killed, 0)
+            self.assertIsInstance(est.running, Running)
+            st, d = v.req("/api/preflop/estimate", "POST", dict(FORM, stack="22"))
+            self.assertEqual(st, 200, d)
+            self.assertEqual(Running.killed, 1, "the form's newer estimate ends the form's older one")
+        finally:
+            est.running = None
+
+        # a build that fails in the solver: no tree, and nothing of the old one's solve
+        st, d = v.req("/api/solve", "POST", {"accuracy": 50.0})
+        self.assertEqual(st, 200, d)
+        v.wait_solved()
+        self.assertTrue(solver.series)
+        cmds = solver.cmds
+
+        def failing(lines, **kw):
+            if lines[:1] != ["stop"]:
+                raise vsrv.SolverError("out of memory")
+            return cmds(lines, **kw)
+        solver.cmds = failing
+        try:
+            st, d = v.req("/api/preflop/build", "POST", FORM)
+        finally:
+            del solver.cmds
+        self.assertEqual((st, d.get("error")), (400, "out of memory"))
+        self.assertFalse(solver.tree_present)
+        self.assertEqual(solver.series, [])
+        self.assertIsNone(solver.preflop)
+        self.assertEqual(v.req("/api/status")[1]["tree"], False)
+
+        # the solver's own settings count as put back when they were sent, not when they were listed
+        self.assertTrue(solver.preflop_touched)
+
+        def timeout(lines, **kw):
+            raise vsrv.SolverError("timeout waiting for solver response")
+        solver.cmds = timeout
+        try:
+            st, d = v.req("/api/generate", "POST", POSTFLOP)
+        finally:
+            del solver.cmds
+        self.assertEqual(st, 400, d)
+        self.assertTrue(solver.preflop_touched)
+        st, d = v.req("/api/generate", "POST", POSTFLOP)
+        self.assertEqual(st, 200, d)
+        self.assertFalse(solver.preflop_touched)
+        st, d = v.req("/api/build", "POST", {})
+        self.assertEqual(st, 200, d)
+        self.assertIn("TOTAL: 13201", d["node_count"])
 
 
 if __name__ == "__main__":

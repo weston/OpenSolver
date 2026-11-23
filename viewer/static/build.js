@@ -11,8 +11,8 @@ import { get, post, toast, fail, prefs, fmt, fmtChips, fmtEvPct } from "./api.js
 import { drawChart } from "./chart.js";
 import { openLibrary } from "./library.js";
 import { STREETS, renderSizes, readSizes, validateSizes as validateSizeTable } from "./sizes.js";
-import { initPreflopForm, readPreflopForm, preflopReady, showEstimate } from "./preflop_build.js";
-import { bb100ToChips, chipsToBb100, memoryNote, fmtMemory } from "./preflop.js";
+import { initPreflopForm, readPreflopForm, preflopReady, noteEstimate } from "./preflop_build.js";
+import { bb100ToChips, chipsToBb100, fmtMemory } from "./preflop.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -491,12 +491,12 @@ async function build() {
 async function buildPreflop() {
   if (!preflopReady()) { info("The preflop form is not set up yet.", true); return false; }
   const f = readPreflopForm();
-  setBusy(true, "Checking the tree and its memory…");
+  // One request: the server checks the form and the tree's memory in a solver of its own, then
+  // builds. (An estimate asked for here first could be ended by the Estimate button's, #493.)
+  setBusy(true, "Checking the tree and its memory, then building…");
   try {
-    const e = await post("/api/preflop/estimate", f);
-    showEstimate(e);
-    info(`${memoryNote(e.mb, e.memory_mb, e.flops).text} — building…`);
     const b = await post("/api/preflop/build", f);
+    noteEstimate(f, b);
     builtSig = PREFLOP_SIG + sig(f);
     treeReady = true;
     treeBB = b.chips;     // the target of a Solve right after this build (before a poll sets it)

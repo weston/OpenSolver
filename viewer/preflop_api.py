@@ -17,6 +17,7 @@ shipped counts or `all`. A field left out has the tool's default.
 import collections
 import hashlib
 import importlib.util
+import math
 import os
 import re
 import sys
@@ -84,8 +85,10 @@ def _text(vsrv, b, key, label):
     if isinstance(v, bool) or not isinstance(v, (str, int, float)):
         raise vsrv.SolverError(f"{label}: text or a number is expected")
     v = str(v).strip()
-    if len(v) > MAX_TEXT or any(ord(c) < 32 or ord(c) == 127 for c in v):
-        raise vsrv.SolverError(f"{label}: not usable (a line break or control character, or too long)")
+    # plain ASCII without control characters: all a range or a size is written in, and what goes to the
+    # solver's command line as it is
+    if len(v) > MAX_TEXT or any(not 32 <= ord(c) < 127 for c in v):
+        raise vsrv.SolverError(f"{label}: not usable (a line break or another character that is not plain text, or too long)")
     return v
 
 
@@ -124,7 +127,8 @@ def setup(vsrv, b):
                                        + (", or a multiple of the bet for a raise (3x)" if mult else ""))
     if b.get("raise_cap") is not None:
         cap = b["raise_cap"]
-        if isinstance(cap, bool) or not isinstance(cap, (int, float)) or cap != int(cap) or not 1 <= cap <= 99:
+        if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) \
+                or cap != int(cap) or not 1 <= cap <= 99:
             raise vsrv.SolverError("Cap: a whole number of bets and raises a street, 1 or more")
         a.raise_cap = int(cap)
     if "limp" in b:
@@ -171,22 +175,25 @@ class Estimates:
     """Megabytes of a preflop tree, asked of a solver process of its own: with a preflop tree set up,
     `estimate_tree` builds the whole tree but its strategies to count it, and in the viewer's solver that
     would stand beside the tree being looked at. The same process says whether the two ranges can be dealt
-    against each other, so a build is refused before the viewer's solver is touched. One runs at a time: a
-    newer request ends the older one."""
+    against each other, so a build is refused before the viewer's solver is touched. Of the form's own
+    estimates one runs at a time, a newer request ends the older one; the estimate a build waits for is
+    not one of those, nothing ends it."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.running = None                      # the tool's Solver of the request being answered
         self.cache = collections.OrderedDict()   # script -> (MB, the ranges meet)
 
-    def get(self, vsrv, exe, s, flops, root):
+    def get(self, vsrv, exe, s, flops, root, replace=True):
+        """replace: this request takes the place of the form's estimate that is running (False: a
+        build's, which runs beside it and is not ended by a later one)."""
         pf = tool()
         lines = pf.script(s, flops, root)
         key = hashlib.sha256("\n".join(lines).encode()).hexdigest()
         with self.lock:
             got = self.cache.get(key)
         if got is None:
-            got = self._ask(vsrv, exe, lines)
+            got = self._ask(vsrv, exe, lines, replace)
             with self.lock:
                 self.cache[key] = got
                 while len(self.cache) > 64:
@@ -195,15 +202,16 @@ class Estimates:
             raise vsrv.SolverError(pf.NO_DEAL[:1].upper() + pf.NO_DEAL[1:])
         return got[0]
 
-    def _ask(self, vsrv, exe, lines):
+    def _ask(self, vsrv, exe, lines, replace):
         pf = tool()
         u = None
         try:
             u = pf.Solver(exe)
-            with self.lock:
-                if self.running is not None:
-                    self.running.kill()
-                self.running = u
+            if replace:
+                with self.lock:
+                    if self.running is not None:
+                        self.running.kill()
+                    self.running = u
             for line in lines:
                 u.need(line)
             out = u.cmd("estimate_tree")
@@ -216,7 +224,7 @@ class Estimates:
             meet = len(order) == vsrv.NUM_COMBOS and pf.ranges_meet(order, sb, bb)
         except pf.PreflopError as e:
             with self.lock:
-                replaced = u is not None and self.running is not u
+                replaced = replace and u is not None and self.running is not u
             if replaced:
                 raise vsrv.SolverError("a newer estimate replaced this one")
             raise _reword(vsrv, e)
@@ -244,7 +252,7 @@ def build(vsrv, solver, b):
     replaces the one in the viewer's solver."""
     pf = tool()
     s, root, _, name, flops = setup(vsrv, b)
-    mb = ESTIMATES.get(vsrv, solver.exe, s, flops, root)
+    mb = ESTIMATES.get(vsrv, solver.exe, s, flops, root, replace=False)
     memory = pf.physical_memory_mb()
     if memory and mb > memory:
         raise vsrv.SolverError(f"This tree is about {mb:,} MB and this machine has {memory:,} MB: "
@@ -252,23 +260,31 @@ def build(vsrv, solver, b):
     # The tool's script expects a solver as it starts. The Build form's postflop setup turns turn-card
     # isomorphism on (no effect on a tree that starts before the flop, but it is not the tool's state),
     # and op_generate undoes what this script switches on (16-bit storage, collapsed check-downs).
-    cmds = ["stop", "wait_for_solver", "set_isomorphism 1 0"] + pf.script(s, flops, root) + ["add_all_flops"]
+    cmds = ["set_isomorphism 1 0"] + pf.script(s, flops, root) + ["add_all_flops"]
+    # The form is accepted: from here the tree that is there goes, and what was made for it with it
+    # (a re-solve, the fast preview's refined streets), as on /api/generate and /api/build.
     if vsrv._resolver is not None:
-        vsrv._resolver.main_tree_changed()  # #357, as /api/build
+        vsrv._resolver.main_tree_changed()  # #357
+    if vsrv._refiner is not None:
+        vsrv._refiner.invalidate()
+    vsrv._preview = None
     with solver.cmd_lock:
+        solver.cmds(["stop", "wait_for_solver"])
+        # the old tree's state first: if the build below fails there is no tree, and nothing of the old one
         solver.preflop_touched = True
         solver.tree_present = False
         solver.preflop = None
-        solver.cmds(cmds, timeout=7200)
         solver.forget_locks()
-        solver.tree_present = True
         solver.loaded_file = False
         solver.built_sizes = None
-        solver.preflop = {"chips": s.chips, "flops": len(flops)}
         solver.reset_series()
         solver.clear_partial()
+        solver.cmds(cmds, timeout=7200)
+        solver.tree_present = True
+        solver.preflop = {"chips": s.chips, "flops": len(flops)}
         count = solver.cmd("node_count")
-    return {"node_count": count, "mb": mb, "chips": s.chips, "flops": len(flops), "flops_name": name}
+    return {"node_count": count, "mb": mb, "memory_mb": memory, "chips": s.chips, "flops": len(flops),
+            "flops_name": name}
 
 
 def api(vsrv, solver, method, path, body):

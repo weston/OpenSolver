@@ -183,6 +183,10 @@ class RefineManager(vresolve.ResolveManager):
         the Build form's sizes, as a loaded tree has no built ones)."""
         if getattr(self.main, "loaded_file", False):
             return True
+        # A preflop tree built here (#492) has many flops and its own postflop sizes: a street of it
+        # re-solved with the Build form's postflop sizes would be another game, shown in its place.
+        if getattr(self.main, "preflop", None):
+            return True
         with self.main.state_lock:
             return not self.main.solving and not self.main.suspended and \
                 "required accuracy" in self.main.solver_status

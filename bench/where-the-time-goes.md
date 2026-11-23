@@ -1329,7 +1329,10 @@ depth, random reaches, best of 15 rounds, microseconds a value):
 | 74 % | 55.2 | 35.4 | 1.56x | 59.0 / 59.0 |
 | 90 % | 49.5 | 29.4 | 1.68x | 52.1 / 52.0 |
 
-The two ways differ by 2.7e-7 to 3.8e-7 of the largest value. The gain grows with the hands without
+The two ways differ by 2.7e-7 to 3.8e-7 of the largest value here; the non-author run of PR #512
+measured 4.1e-7 with 90 % of the hands without reach and 3.0e-6 with one reach far above all the
+others. Those are measurements and no bound: the bound is half a unit a term, relative to the largest
+reach, so a reach under 2^-24 of the largest counts as none in the sums. The gain grows with the hands without
 reach because the float half that is left shrinks with them.
 
 **Solves** (old = `3fea596`; whole command = build + `go N steps` + `calc_results`; taken in turn, old
@@ -1365,8 +1368,11 @@ float, -6.884 whole numbers.
 
 **Do the tests notice?** `tests/test_solver.cpp` checks the header alone (every sum of the instruction
 path and of the plain loop against the whole numbers summed in 64 bits, every reach within half a unit,
-row ends of every length, the forms refused) and the solver with the switch on and off (to 2e-5 of the
-values). 16 changes to the kernel and its use, one at a time, against `build/test_solver`:
+rows of every length from 1 to 130 and twenty longer ones, the forms refused) and the solver with the
+switch on and off (to 2e-6 of the values, and every value again while all the threads take theirs at
+once). 22 changes to the kernel and its use, one at a time, against `build/test_solver`; the last six
+are the review's, which the tests as first written (four dozen row lengths, 2e-5, one thread) did not
+notice or noticed only in the solver's comparison:
 
 | change | noticed by |
 |---|---|
@@ -1381,7 +1387,11 @@ values). 16 changes to the kernel and its use, one at a time, against `build/tes
 | a reach that is not a number taken; reaches with none above zero taken | the header's (both) |
 | the solver ignores its switch; adds the float sums on top; never uses the whole numbers | the solver's (all three) |
 | the solver's sum one part in 10,000 large | the solver's |
-| the solver's sum one part in 100,000 large | **not noticed** |
+| the solver's sum one part in 100,000 large | the solver's (not noticed at 2e-5) |
+| one set of whole numbers shared by all threads | the solver's |
+| the last byte of a row's end dropped when the end is 5, 6 or 9 to 12 bytes | both |
+| no lowest digit for rows 101 to 1,126 long; in the last block of those rows only | both; the header's |
+| the float half of a row skipped for a hand whose reach is under half a unit | **not noticed** |
 
 **Not done.**
 - x86. AVX2 has byte products only as unsigned times signed, pairs added with saturation; VNNI has the
@@ -1390,8 +1400,11 @@ values). 16 changes to the kernel and its use, one at a time, against `build/tes
 - The half of a row that is still float (taken for the hands with reach only). How the time that is
   left splits between it and the three sums was not measured.
 - The flop sets' 16-bit rows, which are the time at flop depth (the 200-flop row above).
-- The solver's comparison of the two ways is to 2e-5 of the values, since a float sum is itself only
-  that good: an error in the solver's use of the kernel smaller than that passes (the last row). The
-  kernel's own sums are checked exactly.
+- The solver's comparison of the two ways is to 2e-6 of the values (the two differ by 3.2e-7 at the
+  most in the test, and on ordinary reaches a float sum is within 2e-6 of the same sum in doubles): an
+  error in the solver's use of the kernel smaller than that passes, as the last row of the table does,
+  inside the header's stated bound. The kernel's own sums are checked exactly.
+- Nothing pins how much of the work takes the new path: whole numbers for one player only, or for half
+  of the rows, pass every test. That is speed and not values; the timings above are the check.
 - One tree, one machine. To an accuracy with the tool was not timed; by the steps above it is the
   same number of steps.

@@ -872,9 +872,9 @@ static bool preflop_runout_tables() {
 // #507: the sums of a byte table on reaches as whole numbers (reach_digits.hpp). What the header says of
 // itself is checked to the letter: a reach is its whole number to half a unit, the largest is all the
 // units, the sum of a row is the sum of the whole numbers exactly (the dot-product instruction and the
-// plain loop alike, at every length from 1 to 130, which is every way a row can end on the blocks of 16
-// and 32 four times over, and at lengths through the middle up to all the hands), so it is off the real sum by no
-// more than half a unit a term; and reaches that have no such form are refused.
+// plain loop alike, at every length from 1 to 300 and the 32 longest there are, which is every way a row
+// can end on the blocks of 16 and 32 at both ends of the lengths, and at lengths through the middle), so
+// it is off the real sum by no more than half a unit a term; and reaches that have no such form are refused.
 static bool reach_digits_sums() {
   uint64_t rng = 0x243f6a8885a308d3ull;
   auto next = [&] {
@@ -889,9 +889,9 @@ static bool reach_digits_sums() {
   } kinds[] = {{"one size", 1.0f, 0},        {"six decades", 1.0f, 1},   {"one large", 1.0f, 2},      {"mostly none", 1.0f, 3},
                {"all the same", 0.37f, 4},   {"very small", 1e-30f, 0},  {"very large", 1e30f, 1},    {"denormal", 1e-41f, 0}};
   std::vector<int> lengths;
-  for (int len = 1; len <= 130; ++len) lengths.push_back(len);
-  for (int len : {200, 255, 256, 257, 300, 411, 500, 513, 640, 777, 900, 1000, 1023, 1024, 1025, 1100, 1127, 1128, NUM_COMBOS - 1, NUM_COMBOS})
-    lengths.push_back(len);
+  for (int len = 1; len <= 300; ++len) lengths.push_back(len);
+  for (int len : {411, 500, 513, 640, 777, 900, 1000, 1023, 1024, 1025, 1100, 1127, 1128}) lengths.push_back(len);
+  for (int len = NUM_COMBOS - 31; len <= NUM_COMBOS; ++len) lengths.push_back(len);
   static ReachDigits q;
   std::vector<float> r(NUM_COMBOS);
   std::vector<int8_t> row(NUM_COMBOS);

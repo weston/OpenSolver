@@ -36,7 +36,8 @@ struct ReachDigits {
   alignas(64) int8_t d[3][NUM_COMBOS + 16];  // 16 to spare: the last block of a row is read whole
   double unit = 0.0;                         // one unit of q, as a reach
   // The digits of r[0..n), n <= NUM_COMBOS. False when the reaches have no such form: none of them is
-  // positive, or one is negative or not a number. The caller then sums in float.
+  // positive, one is negative or not a number, or their float sum has no end. The caller then sums in
+  // float.
   bool set(const float* r, int n) {
     float mx = 0.0f, mn = 0.0f, all = 0.0f;
     for (int i = 0; i < n; ++i) mx = std::max(mx, r[i]), mn = std::min(mn, r[i]), all += r[i];

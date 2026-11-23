@@ -1310,7 +1310,8 @@ of them over `0x7f7f7f`, rounded, and each written as three signed digits of bas
 (`src/reach_digits.hpp`). A row's sum is then three sums of byte times byte, sixteen products to an
 instruction (ARM `SDOT`), put together as `a + 256 b + 65536 c`: exact on the whole numbers, so all the
 error is the rounding of the reaches, half a unit each, 2^-24 of the largest. Reaches with none above
-zero, one below, or one that is not a number have no such form and are summed in float as before. The
+zero, one below, one that is not a number, or a float sum without end have no such form and are summed
+in float as before. The
 other half of a row (the row times its own hand's reach, added into the sums of the hands before it)
 is still float, and is skipped for a hand without reach as before. Flop sets (16-bit entries) and the
 full tables are untouched. On when the build has the instruction (AArch64 with `dotprod`: every Apple
@@ -1368,11 +1369,13 @@ float, -6.884 whole numbers.
 
 **Do the tests notice?** `tests/test_solver.cpp` checks the header alone (every sum of the instruction
 path and of the plain loop against the whole numbers summed in 64 bits, every reach within half a unit,
-rows of every length from 1 to 130 and twenty longer ones, the forms refused) and the solver with the
-switch on and off (to 2e-6 of the values, and every value again while all the threads take theirs at
-once). 22 changes to the kernel and its use, one at a time, against `build/test_solver`; the last six
-are the review's, which the tests as first written (four dozen row lengths, 2e-5, one thread) did not
-notice or noticed only in the solver's comparison:
+rows of every length from 1 to 300, the 32 longest and thirteen between, the forms refused) and the
+solver with the switch on and off (to 2e-6 of the values, and every value again while many threads
+take theirs at once). 23 changes to the kernel and its use, one at a time, against
+`build/test_solver`; the last seven are the two reviews'. The first review's five, and the one part in
+100,000 before them, the tests as first written (twenty row lengths, 2e-5, one thread) did not notice
+or noticed only in the solver's comparison; the second review's two were found with every length to
+130 and twenty longer ones:
 
 | change | noticed by |
 |---|---|
@@ -1391,7 +1394,19 @@ notice or noticed only in the solver's comparison:
 | one set of whole numbers shared by all threads | the solver's |
 | the last byte of a row's end dropped when the end is 5, 6 or 9 to 12 bytes | both |
 | no lowest digit for rows 101 to 1,126 long; in the last block of those rows only | both; the header's |
-| the float half of a row skipped for a hand whose reach is under half a unit | **not noticed** |
+| the float half of a row skipped for a hand whose reach is under half a unit | **not noticed**: the tests' reaches have no such hand (counted: none), so it does nothing there |
+| no lowest digit for rows 131 to 199 long | the header's (nothing, with no length between 131 and 199) |
+| the last byte of an end of 5 bytes dropped, in rows over 130 only | both (the solver's only, before) |
+
+What the comparison in the solver does not see, by the second review's measurements: its sum one part
+in a million large (1.2e-6 of a value; one in 500,000 is seen), the lowest 12 bits of its sum dropped
+(1.0e-6; 16 bits are seen), and the float half skipped for reaches under 3e-5 of the largest (1.0e-6;
+1e-4 is seen). The 2e-6 is 4.7 times the largest difference the review produced with a correct kernel
+(4.25e-7 with `-ffp-contract=off`; 3.2e-7 as built, 20 other seeds 3.0e-7 to 3.5e-7), and it belongs
+to the test's reaches: one reach far above the others gave 3.0e-6 in the first review, so another
+shape of reaches needs its own figure. The check of many threads at once says nothing on a pool of one
+thread, and a race with a narrow window can pass a run: a scratch array made static gave between 0
+and 492 values off a spot, and one spot of five none, in one run of three.
 
 **Not done.**
 - x86. AVX2 has byte products only as unsigned times signed, pairs added with saturation; VNNI has the

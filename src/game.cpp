@@ -256,12 +256,50 @@ struct Filler {
     return id;
   }
 
+  // The showdown that `an` leads to when nobody has a choice left on the way: decisions with one action
+  // and the deals between them. nullptr if any decision below has more, or if the path crosses a flop
+  // deal (which is over the subset's flops, not every runout).
+  std::vector<int8_t> forced_known;        // per action node: 0 not looked at, 1 a forced path, 2 not
+  std::vector<const ActionNode*> forced_end;
+  const ActionNode* forced_showdown(const ActionNode* an) {
+    const size_t id = static_cast<size_t>(an->id);
+    if (forced_known.size() <= id) {
+      forced_known.resize(g.anodes.size(), 0);
+      forced_end.resize(g.anodes.size(), nullptr);
+    }
+    if (!forced_known[id]) {
+      const ActionNode* end = nullptr;
+      if (an->kind == ANodeKind::Showdown) end = an;
+      else if (an->children.size() == 1 &&
+               (an->kind == ANodeKind::Decision || (an->kind == ANodeKind::Chance && !an->preflop_exit)))
+        end = forced_showdown(an->children[0].get());
+      forced_end[id] = end;
+      forced_known[id] = end ? 1 : 2;
+    }
+    return forced_end[id];
+  }
+
   void fill(uint32_t idx, const ActionNode* an, std::vector<int>& board) {
     GNode n{};
     n.kind = an->kind;
     n.player = an->player;
     n.board_len = static_cast<uint8_t>(board.size());
     n.anode = static_cast<uint32_t>(an->id);
+    // A check-down (#484): from here to the showdown nobody decides anything, so the node is that
+    // showdown on every runout of this board, which is what an all-in here is. One node instead of a
+    // subtree of one-action decisions, each of which stores a regret and a strategy row per hand.
+    if (g.cfg.collapse_checkdowns && board.size() >= 3 &&
+        (an->kind == ANodeKind::Decision || an->kind == ANodeKind::Chance)) {
+      if (const ActionNode* end = forced_showdown(an)) {
+        ++g.checkdowns;
+        n.kind = ANodeKind::Showdown;
+        n.player = end->player;
+        n.anode = static_cast<uint32_t>(end->id);
+        n.aux = static_cast<uint32_t>(board.size() == 5 ? g.showdown_board_id(board) : g.allin_runouts_id(board));
+        g.nodes[idx] = n;
+        return;
+      }
+    }
     switch (an->kind) {
       case ANodeKind::Decision: {
         n.aux = static_cast<uint32_t>(g.num_decisions++);
@@ -410,6 +448,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   incentives.clear();
   storage_floats = 0;
   num_decisions = 0;
+  checkdowns = 0;
   keep_sets.clear();
   keep_cand.clear();
   qoff.clear();
@@ -540,7 +579,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   nodes.reserve(1024);
   nodes.resize(1);
   std::vector<int> board = cfg.board;
-  Filler f{*this, iso, {}};
+  Filler f{*this, iso, {}, {}, {}};
   f.fill(0, aroot.get(), board);
   select_rows(false);
   if (allocate) allocate_storage();

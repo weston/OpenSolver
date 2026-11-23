@@ -11,6 +11,9 @@
 // Mode bits: 0 exact 16-bit records (else exact float32), 1 compressed file, 2 quantised records (v5).
 // Quantised records (the default since v5, `set_compression_precision` bits, 11 by default) store only the
 // displayed strategy, as per-hand frequencies; `lossless` writes the exact records of v4 (regrets too).
+// v6 is v5 for a tree built with collapse_checkdowns (#484): the same layout, a different tree from the
+// same config, so the version says which one to build (and a binary that doesn't know refuses the file).
+// A tree without a collapsed subtree is written as v5.
 // gzip's CRC32 plus the trailer marker let check_tree_health detect corruption and truncation.
 #include <stdexcept>
 #include <zlib.h>
@@ -32,7 +35,10 @@ namespace {
 
 constexpr char kMagic[8] = {'O', 'U', 'P', 'I', 'S', 'A', 'V', '2'};
 constexpr char kTrailer[8] = {'O', 'U', 'P', 'I', 'E', 'N', 'D', '!'};
-constexpr uint32_t kVersion = 5;  // 5: quantised records; 4: segmented (lazy); 3: preflop trees; 2+ readable
+// 6: version 5 with check-downs built as one showdown node (set_collapse_checkdowns on, #484). The tree
+// has fewer nodes then, so a reader has to know; only a tree that has such nodes is written as 6, every
+// other save is written as before, as a 5. 5: quantised records; 4: segmented (lazy); 3: preflop trees; 2+ readable
+constexpr uint32_t kVersion = 6, kVersionPlain = 5;
 
 struct Writer {
   std::string buf;
@@ -759,7 +765,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   const auto& g = *tree_;
   GzOut out(a[0], compress ? std::clamp(compression_level_ * 9 / 21, 1, 9) : 0);
   out.write(kMagic, 8);
-  out.put(kVersion);
+  out.put(g.checkdowns ? kVersion : kVersionPlain);
   out.put(truncate);
   const uint8_t mode = static_cast<uint8_t>((compress ? kModeCompressed : 0) |
                                             (lossless ? (g.compressed ? kModeQ16 : 0) : kModeQuant));
@@ -848,6 +854,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   }
   GzIn& in = *inp;
   LoadedConfig lc = read_config_section(in);
+  lc.cfg.collapse_checkdowns = lc.h.version >= 6;
   auto t = std::make_unique<GameTree>();
   t->set_payoff(lc.pm);
   std::string err;

@@ -25,6 +25,10 @@ documentation; contains no PioSOLVER code.
   dump flag when exact records are wanted. `small_strats compact` (and `auto`, when full 16-bit rows don't
   fit) also leaves out the river rows' board-blocked hands: about 7% less memory, about 14% more time per
   iteration, identical results (AVX-512 VBMI2 builds, #418).
+- `set_collapse_checkdowns on` (off by default): a subtree in which nobody has a choice left, the checks
+  down to a showdown, is built as one showdown node on the runouts, like an all-in. Same values, none of
+  the nodes and rows: a preflop tree whose schematics bet on the flop only goes from 2.7 GB to 78 MB and
+  solves 2.7x faster. Such a tree saves as version 6 (#484).
 - Multi-threaded over turn and river cards with a nested work-stealing pool and per-thread arena
   allocators.
 - Node **locking**: whole-node and per-combo (`lock_node`, `combo_lock_node`, `set_strategy`,

@@ -743,7 +743,9 @@ static bool preflop_runout_tables() {
             if (combo_mask(g.hands[p][h]) & bm) continue;
             const double d = std::fabs(static_cast<double>(on[h]) - off[h]) / (1.0 + mag);
             digit_worst = std::max(digit_worst, d);
-            digit_bad += d > 2e-5;
+            // the float sums are within 2e-6 of sums in doubles on these shapes, and the whole-number sums
+            // as near (the review's measure; the largest difference between the two here is 3e-7)
+            digit_bad += d > 2e-6;
             same = same && on[h] == off[h];
           }
           ++digit_vals;
@@ -759,6 +761,18 @@ static bool preflop_runout_tables() {
       }
     }
     // the same on the boards
+    // #507: the whole numbers of a set of reaches are the calling thread's own. Every value again, many
+    // at once on the pool's threads: each as it was alone, to the bit.
+    long at_once_bad = 0;
+    for (int round = 0; round < 5; ++round) {
+      std::vector<std::vector<float>> at_once(vals.size());
+      std::function<void(int)> again = [&](int i) {
+        at_once[i].resize(vals[i].v.size());
+        s.showdown_value(g.nodes[vals[i].node], vals[i].p, vals[i].ro.data(), at_once[i].data());
+      };
+      pool().parallel_for(static_cast<int>(vals.size()), again);
+      for (size_t i = 0; i < vals.size(); ++i) at_once_bad += !same_bytes(at_once[i], vals[i].v);
+    }
     struct Tables {
       std::vector<uint16_t> e2, live;
       std::vector<uint8_t> e2b;
@@ -838,17 +852,18 @@ static bool preflop_runout_tables() {
     }
     // (values on whole numbers are not the floats' to the bit: were they all, the switch would do nothing)
     const bool compact8 = (sp.want_tables & 2) && !sp.range2;
-    const bool digits_ok = digit_bad == 0 && digit_fallback_bad == 0 && (compact8 ? digit_vals > 0 && digit_same < digit_vals : digit_vals == 0);
+    const bool digits_ok = digit_bad == 0 && digit_fallback_bad == 0 && at_once_bad == 0 && (compact8 ? digit_vals > 0 && digit_same < digit_vals : digit_vals == 0);
     const bool good = plan && counted && foreseen && dry_tables == table_bytes && same_counts == sets_tabled && bad == 0 &&
                       !vals.empty() && icm_boards && icm_bad == 0 && icm_n > 0 && digits_ok;
     std::printf("[preflop runouts] %-24s %d+%d sets, %d+%d with tables (%.1f MB), %zu boards kept: plan %s, memory count %s, boards to come %.1f MB counted / %.1f MB added %s, "
                 "%ld/%ld tables equal the boards' counts, %zu values worst relative difference %.2e (%ld bad), ICM %ld/%ld equal, "
-                "%ld values of byte tables on whole-number reaches against floats: worst %.2e (%ld bad, %ld without a form not the floats') %s\n",
+                "%ld values of byte tables on whole-number reaches against floats: worst %.2e (%ld bad, %ld without a form not the floats'), "
+                "%ld of the values not the same when many threads take theirs at once %s\n",
                 sp.name, sets[0], sets[1], tabled[0], tabled[1], static_cast<double>(table_bytes) / 1e6, kept,
                 plan ? "ok" : "WRONG", counted && dry_tables == table_bytes ? "ok" : "WRONG", static_cast<double>(missing) / 1e6,
                 static_cast<double>(added) / 1e6, foreseen ? "ok" : "WRONG", same_counts, sets_tabled,
                 vals.size(), worst, bad, icm_n - icm_bad, icm_n, digit_vals, digit_worst, digit_bad, digit_fallback_bad,
-                digits_ok ? "ok" : "WRONG");
+                at_once_bad, digits_ok ? "ok" : "WRONG");
     ok = ok && good;
   }
   return ok;
@@ -857,7 +872,8 @@ static bool preflop_runout_tables() {
 // #507: the sums of a byte table on reaches as whole numbers (reach_digits.hpp). What the header says of
 // itself is checked to the letter: a reach is its whole number to half a unit, the largest is all the
 // units, the sum of a row is the sum of the whole numbers exactly (the dot-product instruction and the
-// plain loop alike, at every length around the blocks of 16 and 32), so it is off the real sum by no
+// plain loop alike, at every length from 1 to 130, which is every way a row can end on the blocks of 16
+// and 32 four times over, and at lengths through the middle up to all the hands), so it is off the real sum by no
 // more than half a unit a term; and reaches that have no such form are refused.
 static bool reach_digits_sums() {
   uint64_t rng = 0x243f6a8885a308d3ull;
@@ -872,7 +888,10 @@ static bool reach_digits_sums() {
     int shape;  // 0: one size, 1: six decades, 2: one large and the rest tiny, 3: most without reach, 4: all the same
   } kinds[] = {{"one size", 1.0f, 0},        {"six decades", 1.0f, 1},   {"one large", 1.0f, 2},      {"mostly none", 1.0f, 3},
                {"all the same", 0.37f, 4},   {"very small", 1e-30f, 0},  {"very large", 1e30f, 1},    {"denormal", 1e-41f, 0}};
-  const int lengths[] = {1, 2, 3, 15, 16, 17, 31, 32, 33, 47, 48, 49, 63, 64, 65, 100, 1127, 1128, NUM_COMBOS - 1, NUM_COMBOS};
+  std::vector<int> lengths;
+  for (int len = 1; len <= 130; ++len) lengths.push_back(len);
+  for (int len : {200, 255, 256, 257, 300, 411, 500, 513, 640, 777, 900, 1000, 1023, 1024, 1025, 1100, 1127, 1128, NUM_COMBOS - 1, NUM_COMBOS})
+    lengths.push_back(len);
   static ReachDigits q;
   std::vector<float> r(NUM_COMBOS);
   std::vector<int8_t> row(NUM_COMBOS);

@@ -46,11 +46,12 @@ equity.
 
 Single hands and single matchups are further off than the averages: through the 10 flops the worst hand
 class is 4.3 points of equity from the truth (J7o against all hands) and JTs against 22 is 8.8 points
-off; through 25 flops the worst class is 2.4 points off, through 50 flops 1.1.
+off; through 25 flops the worst class is 2.3 points off, through 50 flops 1.1.
 
 Ten flops cannot look like the deck (one monotone flop is already too many, and none is too few for the
 suited hands). From 50 on the suits and the pairs are close to the deck's; flops of three of a kind
-keep 2 to 4 times their share of the weight in every file that has one.
+keep more than their share of the weight in every file that has one (5.5 times it with 25 flops, 2.4
+times with 200).
 
 Random flops of the same number are 2 to 4 times further off on the fitted error, also with their
 weights solved the same way (median of 200 draws; the three streets' squared errors added, so these are
@@ -69,7 +70,7 @@ the exact figure. What they do to a solved preflop strategy is measured in
 
 Memory and time grow in step with the number of flops (each is a copy of every exit's postflop tree), so
 take the largest the machine and the patience allow. Measured on one heads-up tree (100 big blinds, flop
-betting): with 100 and with 50 flops every action's frequency was within 1 point of the 200-flop solve
+betting): with 100 and with 50 flops every action's overall frequency was within 1 point of the 200-flop solve
 and the EV within 0.004 chips of a 10-chip big blind, which is about what two solves of the same tree
 differ by; hand by hand, 100 flops were near that too and 50 flops about twice as far. 25 and 10 flops
 kept the opening ranges but had the big blind fold 4 points too often to a raise. Ten flops are for

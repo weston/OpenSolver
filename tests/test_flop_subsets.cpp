@@ -211,11 +211,13 @@ int main(int argc, char** argv) {
       std::string bad;
       return parse_flop_file(in, fc, S, w, bad) ? static_cast<int>(S.size()) : -1;
     };
-    CHECK(reads("Ks5h2s:1.5\n# note\nAh7d2c: 2 \nQsJs4d\n") == 3 && reads("Ks5h2s:0\nAh7d2c:1\n") == 1,
-          "a flop file: weights, comments, no weight, and a flop of weight 0 left out");
+    CHECK(reads("Ks5h2s:1.5\n# note\nAh7d2c: 2 \nQsJs4d\n") == 3 && reads("Ks5h2s:0\nAh7d2c:1\n") == 1 &&
+              reads("Ks5h2s:1.5\r\nAh7d2c\r\nQsJs4d:1e-3 # small\r\n") == 3,
+          "a flop file: weights, comments, no weight, Windows line ends, and a flop of weight 0 left out");
     CHECK(reads("Ks5h2s:abc\n") == -1 && reads("Ks5h2s:\n") == -1 && reads("Ks5h2s:1x\n") == -1 &&
-              reads("Ks5h2s:-1\n") == -1 && reads("Ks5h:1\n") == -1,
-          "a weight that is not a number, a negative one and a short flop are refused");
+              reads("Ks5h2s:-1\n") == -1 && reads("Ks5h:1\n") == -1 && reads("Ks5h2s:inf\n") == -1 &&
+              reads("Ks5h2s:1e999\n") == -1 && reads("Ks5h2s:nan\n") == -1,
+          "a weight that is not a finite number, a negative one and a short flop are refused");
   }
   double previous = -1;
   for (int size : {10, 25, 50, 100, 200}) {

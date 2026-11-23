@@ -12,8 +12,8 @@
 // Equity says who wins by the river, not how a hand plays, so the same table is taken on each street:
 // who is ahead on the flop itself, on the turn, and at the river (equity).
 //
-// The error that is minimised is the one a solve sees: the squared error of a hand's value against an
-// opponent range, averaged over the streets, the hands and the ranges. A range is a run of hand classes
+// The error that is minimised is the squared error of a hand's value against an opponent range, added
+// over the streets and averaged over the hands and the ranges. A range is a run of hand classes
 // in order of strength (their exact preflop equity against all hands), every run equally likely: one
 // class, the best x %, the worst x %, a band in the middle, or all hands. With d[a][b] the error of the
 // weighted table at (a, b), b in that order, and P_k = d[a][1] + ... + d[a][k] (P_0 = 0), a run from
@@ -343,7 +343,7 @@ inline bool parse_flop_file(std::istream& in, const std::vector<FlopClass>& fc, 
       number = end != text;
       while (number && *end) number = std::isspace(static_cast<unsigned char>(*end++)) != 0;
     }
-    if (k < 0 || !number || !(weight >= 0)) {
+    if (k < 0 || !number || !(weight >= 0) || !std::isfinite(weight)) {
       bad = line;
       return false;
     }

@@ -707,10 +707,10 @@ pair of preflop hand classes, who is ahead on the flop, on the turn and at the r
 flops and weights whose tables are closest to those of all 1,755 classes together, measured as the error
 of a hand's value against a range (a run of hands in order of strength). Random flops of the same
 number are 2 to 4 times further off on that error even with their weights solved the same way. In the
-one tree solved with each file, 50 flops or more gave the 200-flop strategy to within a point of
-frequency and 25 or fewer did not. `flops/README.md` has the numbers per file; `build/flop_subsets eval
-FILE` measures any flop file, and `build/flop_subsets equity FILE AKs QQ,JTs` prints what an all-in
-equity becomes through a file's flops next to the exact one (#486).
+one tree solved with each file, 50 flops or more gave the 200-flop solve's overall action frequencies
+to within a point and 25 or fewer did not. `flops/README.md` has the numbers per file;
+`build/flop_subsets eval FILE` measures any flop file, and `build/flop_subsets equity FILE AKs QQ,JTs`
+prints what an all-in equity becomes through a file's flops next to the exact one (#486).
 
 ## Known differences from PioSOLVER
 

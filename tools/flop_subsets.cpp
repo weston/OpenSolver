@@ -259,7 +259,7 @@ int main(int argc, char** argv) {
         if (k < 0) ++swaps;
         else greedy = e;
       });
-      std::fprintf(stderr, "%d flops: RMS error %s (greedy total %.5f, then %d swaps: %.5f)\n   %s\n   %s\n",
+      std::fprintf(stderr, "%d flops: fitted error %s (greedy total %.5f, then %d swaps: %.5f)\n   %s\n   %s\n",
                    static_cast<int>(s.flops.size()), streets(s.flops, s.weight).c_str(), std::sqrt(greedy), swaps,
                    std::sqrt(s.err2), hands(s.flops, s.weight).c_str(), texture_str(texture(fc, s.flops, s.weight)).c_str());
       // Lines of flop:weight and nothing else, the format other tools read too; what the file is, is in
@@ -284,7 +284,7 @@ int main(int argc, char** argv) {
       read_file(argv[i], fc, S, w);
       const double own = error_of(G, n, S, w);
       const Subset best = fit(G, n, S);
-      std::printf("%s: %zu flops, RMS error %.5f with its weights (%s), %.5f with weights re-solved\n   %s\n   %s\n", argv[i],
+      std::printf("%s: %zu flops, fitted error %.5f with its weights (RMS per street: %s), %.5f with weights re-solved\n   %s\n   %s\n", argv[i],
                   S.size(), std::sqrt(own), streets(S, w).c_str(), std::sqrt(best.err2), hands(S, w).c_str(),
                   texture_str(texture(fc, S, w)).c_str());
     }

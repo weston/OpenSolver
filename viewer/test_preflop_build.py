@@ -84,6 +84,23 @@ class Viewer:
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"{}")
 
+    def solve(self, body, limit=120):
+        """POST /api/solve and wait for the solve: (status, answer, the state after it). The request
+        answers before the solver says it started, and until then the state is "not solving" with no
+        new point: that is not "solved". Seen solving, or a new point, is."""
+        before, seen = len(self.solver.series), False
+        st, d = self.req("/api/solve", "POST", body)
+        if st != 200:
+            return st, d, None
+        end = time.time() + limit
+        while time.time() < end:
+            state = self.req("/api/status")[1]
+            seen = seen or state["solving"]
+            if not state["solving"] and (seen or len(self.solver.series) > before or state.get("dead")):
+                return st, d, state
+            time.sleep(0.05)
+        raise AssertionError("the solve did not start and stop")
+
     def wait_solved(self, limit=120):
         end = time.time() + limit
         while time.time() < end:
@@ -229,10 +246,9 @@ class PreflopBuildTest(unittest.TestCase):
 
     def test_07_solve_to_bb_per_100(self):
         # 2 bb/100 of a 100-chip big blind: 2 chips
-        st, d = self.v.req("/api/solve", "POST", {"accuracy": 2.0, "preview": True})
+        st, d, status = self.v.solve({"accuracy": 2.0, "preview": True})
         self.assertEqual(st, 200, d)
         self.assertIsNone(vsrv._preview, "no board to preview a preflop solve on")
-        status = self.v.wait_solved()
         self.assertFalse(status.get("dead"))
         explo = float(self.v.solver.cmd("calc_results").split("Exploitable for:")[1].split()[0])
         self.assertLessEqual(explo, 2.0)
@@ -389,12 +405,8 @@ class PreflopBuildTest(unittest.TestCase):
             est.running = None
 
         # a build that fails in the solver: no tree, and nothing of the old one's solve
-        st, d = v.req("/api/solve", "POST", {"accuracy": 50.0})
+        st, d, _ = v.solve({"accuracy": 50.0})
         self.assertEqual(st, 200, d)
-        v.wait_solved()
-        end = time.time() + 30   # /api/solve answers before the solver says it started: a status asked
-        while not solver.series and time.time() < end:   # in between is "not solving" with no point yet
-            time.sleep(0.05)
         self.assertTrue(solver.series)
         cmds = solver.cmds
 

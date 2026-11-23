@@ -398,7 +398,8 @@ with a whole `#Key#Value` configuration (*Tree builder* above). A solve whose po
 flop plays the turn and the river as if nobody could bet there, which is a different game from poker, and
 the larger error of the two a preflop solve makes (the other is the flop subset, below). Measured one
 street on, with 10 flops (`check`, below): the default `--depth flop` strategy gives up 1.4 (small blind)
-and 1.9 bb/100 (big blind) in the game with turn bets, a `--depth none` strategy 8.0 and 7.5. What the
+and 1.9 bb/100 (big blind) in the game with turn bets (1.7 and 2.2 with 25 flops), a `--depth none`
+strategy 8.0 and 7.5. What the
 river's bets add to that has not been measured (86 GB for 10 flops).
 
 **Flops and memory.** The tree holds a subset of flops, each with a weight and a copy of every exit's
@@ -496,16 +497,19 @@ huall.json (1755 flops)        0.17  (0.09 to 0.26)         0.18  (0.11 to 0.27)
 flops and `--accuracy 0.02`. A solve to the default 0.5 bb/100 gives up 0.17 a player by itself, the last
 row; the 200 flops add nothing to that, and tightening the accuracy takes it away.)
 
-```
-```
-
 The first number is the difference of the two solves' EVs; the span is what the two solves leave open,
-each being exploitable for up to `--accuracy` (default 0.05 bb/100, so the span is about 0.2 wide whatever
+each being exploitable for up to `--accuracy` (default 0.05 bb/100, so the span is about 0.16 wide whatever
 is checked; a loss inside it is not told from none). It is what the preflop strategy can no longer
 secure against an opponent who knows it and plays the best reply, however well its player plays after the
 flop; against an opponent who does not adapt it costs less, or nothing. The preflop options have to be
 those of the checked solve (stack, ante, sizes, ranges); the postflop options and the flops are the
-check's own, and it says when a result was solved with another postflop tree. Time: a solve of the
+check's own, and it says when a result was solved with another postflop tree. A result solved with other
+ranges is refused where its hand classes show it (ranges that differ only in weights or suits are not
+seen: a result does not record its ranges). A decision the result's opponent never brings about has no
+frequencies in the result; the check leaves it to the solve and names it, so the loss is that of what
+the result does say. On all flops the spans are bounds; a flop subset is not dealt quite evenly to the
+two players, the two values of a solve then do not add up to zero, and the check prints what they added
+up to when it shows: the ends of the spans are that uncertain (`bench/where-the-time-goes.md`). Time: a solve of the
 larger game for the reference and one for each player of each result, each from the start: on all flops
 of the default tree about 5 minutes a solve on the M4, 52 minutes for the five results above; `--time`
 is the limit of each.

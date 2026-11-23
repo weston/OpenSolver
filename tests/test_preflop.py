@@ -361,8 +361,8 @@ def unit():
           and near(preflop._value(solved, "BB", 100), [-3.0, -3.5, -2.0]) and near(preflop._value(solved, "BB", 50), [-6, -7, -4]),
           "a value's span: the player's best response above, the sum less the opponent's below; a loss's: the "
           "least and the most the two values' spans allow")
-    known = preflop._class_rows("x.json", {"id": "r:0", "hands": {"AA": {"freq": [2, 2, 0]}, "KK": {"freq": [0.0, 0, 0]}}}, 3)
-    check(known == {"AA": [0.5, 0.5, 0.0]}
+    known, totals, left = preflop._class_rows("x.json", {"id": "r:0", "hands": {"AA": {"freq": [2, 2, 0]}, "KK": {"freq": [0.0, 0, 0]}}}, 3)
+    check(known == {"AA": [0.5, 0.5, 0.0]} and totals == {"AA": 4.0} and left == {"AA": 1.0}
           and preflop.locked_rows(known, 3, ["AA", "KK", "AA"]) == [[0.5, 1 / 3, 0.5], [0.5, 1 / 3, 0.5], [0.0, 1 / 3, 0.0]],
           "a class's frequencies are scaled to 1 and given to each of its combos; one the result did not bring plays evenly")
     bad = 0
@@ -374,6 +374,14 @@ def unit():
         except preflop.PreflopError as e:
             bad += "x.json: the frequencies of AA at r:0 are not a strategy" in str(e)
     check(bad == 12, f"frequencies that are no strategy are refused, by file, hand and node ({bad} of 12)")
+    check([preflop._not_as_written(row) for row in ([0.5, 0.5, 0], [0.5, 0.25, 0], [0.125, 0.125, 0.125], [0.75, 0.5, 0], [2, 2, 0],
+                                                    [2.0 ** 70] * 3, [1e-30, 0, 0])] == [0.0, 0.25, 0.625, 0.25, 1.0, 1.0, 1.0],
+          "what a row that does not add up to 1 leaves open: the part that is missing, or over; all of it at the most")
+    check(preflop._not_as_written([1.5, 0, 0]) == 0 and preflop._not_as_written([2.0 ** 70, 0, 0]) == 0
+          and abs(preflop._not_as_written([1.2, 0.3, 0]) - 0.3) < 1e-12 and abs(preflop._not_as_written([1.5, 0.75, 0]) - 0.75) < 1e-12,
+          "over 1 an entry counts as 1 at the most: one action written as more than always leaves nothing open")
+    check([preflop._total_text(t) for t in (0.6, 1.0, 1.000004, 0.9999999, 2.0 ** 70)]
+          == ["0.6", "1", "1 + 4e-06", "1 - 1e-07", "1.18059e+21"], "a row's sum is not printed as the 1 it is not")
 
     s = settings("--stack", "12", "--depth", "none")
     root = preflop.build_tree(s)
@@ -382,7 +390,7 @@ def unit():
     classes, dealt = ["AA", "KK", "AKs", "AA"], {"SB": [1, 1, 1, 1], "BB": [1, 1, 1, 0]}
     whole = {"SB": [1, 1, 1, 1], "BB": [1, 1, 1, 1]}
 
-    def made(change=None, dealt=dealt, swing=24.0):
+    def made(change=None, dealt=dealt, swing=24.0, root=root, nodes=nodes):
         result = {"nodes": [{"id": n.id, "actions": [label for label, _ in n.children],
                              "hands": {c: {"freq": [1.0 / len(n.children)] * len(n.children)} for c in set(classes)}}
                             for n in nodes]}
@@ -403,10 +411,120 @@ def unit():
     plan = made()
     check(all(sorted(plan[who]["rows"]) == sorted(n.id for n in nodes if n.actor == who) and plan[who]["free"] == []
               for who in ("SB", "BB")), "a result with every hand at every decision: all of a player's decisions are locked")
+    check(all(plan[who]["rescaled_bb100"] == 0 and plan[who]["rescaled_most"] == [] for who in ("SB", "BB")),
+          "rows that add up to 1 are not rescaled, and none is named")
+
+    def scaled(node_id, cls, by):
+        def change(h):
+            h[node_id][cls]["freq"] = [f * by for f in h[node_id][cls]["freq"]]
+        return change
+    k = len(root.children)
+    short, over, far = made(scaled(root.id, "KK", 0.6)), made(scaled(root.id, "KK", 1.5)), made(scaled(root.id, "KK", 2.0 ** 70))
+    # KK is a quarter of the small blind's deals, every hand is at the first decision, a hand moves 24 bb
+    check(short["SB"]["rows"] == plan["SB"]["rows"] and over["SB"]["rows"] == far["SB"]["rows"] == plan["SB"]["rows"]
+          and abs(short["SB"]["rescaled_bb100"] - 0.25 * 0.4 * 2400) < 1e-6 and short["SB"]["rescaled_most"][:2] == ["KK", root.id]
+          and abs(short["SB"]["rescaled_most"][2] - 0.6) < 1e-12
+          and abs(over["SB"]["rescaled_bb100"] - 0.25 * 0.5 * 2400) < 1e-6 and abs(far["SB"]["rescaled_bb100"] - 0.25 * 2400) < 1e-6
+          and far["SB"]["rescaled_most"][2] == 2.0 ** 70 and short["BB"]["rescaled_bb100"] == 0,
+          "a row that does not add up to 1 is locked rescaled, and measured: the class's share of the deals, times the "
+          "part of the row that is open, times what a hand can move")
+    deep = next(n for n in nodes if n.actor == "SB" and n is not root)
+    way = [a for a, (_, child) in enumerate(root.children) if child is deep or preflop._under(child, deep)]
+    below = made(scaled(deep.id, "KK", 0.6))
+    check(len(way) == 1 and abs(below["SB"]["rescaled_bb100"] - 0.25 * (1 / k) * 0.4 * 2400) < 1e-6
+          and below["SB"]["rescaled_most"][:2] == ["KK", deep.id],
+          "at a later decision by how often the result's own play brings the class there")
+    always = made(lambda h: h[root.id]["KK"].update(freq=[1.5] + [0.0] * (k - 1)))
+    check(always["SB"]["rescaled_bb100"] == 0 and always["SB"]["rescaled_most"] == []
+          and all(row[1] == (1.0 if a == 0 else 0.0) for a, row in enumerate(always["SB"]["rows"][root.id])),
+          "an action written as more than always is that action always: nothing is open, and no row is named")
+
+    def several(*changes):
+        def change(h):
+            for one in changes:
+                one(h)
+        return change
+    own_sb = [n for n in nodes if n.actor == "SB"]
+    every = made(several(*[scaled(n.id, "KK", 2.0 ** 70) for n in own_sb]))
+    check(len(own_sb) >= 3 and abs(every["SB"]["rescaled_bb100"] - 0.25 * 2400) < 1e-6 and every["SB"]["rescaled_most"][:2] == ["KK", root.id],
+          "a class's rows at one decision after another count as all of the class at the most: what one hand can move")
+    two = made(several(scaled(root.id, "AA", 0.8), scaled(deep.id, "KK", 0.3)))
+    check(abs(two["SB"]["rescaled_bb100"] - (0.5 * 0.2 + 0.25 * (1 / k) * 0.7) * 2400) < 1e-6
+          and two["SB"]["rescaled_most"][:2] == ["AA", root.id] and abs(two["SB"]["rescaled_most"][2] - 0.8) < 1e-12,
+          "of several rows the one named is the one that counts the most, not the one furthest from 1")
+    rounding = made(lambda h: [hand.update(freq=[f * (1 + 1e-7) for f in hand["freq"]]) for hands in h.values() for hand in hands.values()])
+    check(0 < rounding["SB"]["rescaled_bb100"] < 0.005 and rounding["SB"]["rows"].keys() == plan["SB"]["rows"].keys(),
+          "what the rounding of a solve leaves (1e-7 a row, the solver's single precision) does not show at 12 bb")
     first_bb = [child for _, child in root.children if child.kind == "decision"]
     first_bb.sort(key=lambda top: -sum(preflop._under(top, n) for n in nodes))  # the limp: a decision of each under it
     inner = [n for n in nodes if n.actor == "BB" and n not in first_bb and preflop._under(first_bb[0], n)]
     limp = next(a for a, (_, child) in enumerate(root.children) if child is first_bb[0])
+
+    theirs = made(scaled(first_bb[1].id, "AKs", 0.3))   # the big blind's deals: AA once, KK, AKs
+    check(abs(theirs["BB"]["rescaled_bb100"] - (1 / 3) * 0.7 * 2400) < 1e-6 and theirs["SB"]["rescaled_bb100"] == 0
+          and theirs["BB"]["rescaled_most"][:2] == ["AKs", first_bb[1].id] and theirs["SB"]["rescaled_most"] == [],
+          "the big blind's rows are measured for the big blind: a third of its deals, at a first decision, seven tenths open")
+    twice = made(several(scaled(first_bb[0].id, "AKs", 0.3), scaled(first_bb[1].id, "AKs", 0.3), scaled(root.id, "KK", 0.6)))
+    check(abs(twice["BB"]["rescaled_bb100"] - (1 / 3) * 2400) < 1e-6 and abs(twice["SB"]["rescaled_bb100"] - 0.25 * 0.4 * 2400) < 1e-6
+          and twice["BB"]["rescaled_most"][0] == "AKs" and twice["SB"]["rescaled_most"][:2] == ["KK", root.id],
+          "its first decisions after a limp and after a raise add up to all of the class at the most; each player's own "
+          "figure and row when both have rows that are off")
+    left_free = made(several(lambda h: h[first_bb[0].id].pop("AA"), scaled(first_bb[0].id, "KK", 0.3)))
+    check(left_free["BB"]["free"] == [first_bb[0].id] and left_free["BB"]["rescaled_bb100"] == 0 and left_free["BB"]["rescaled_most"] == [],
+          "rows at a decision left free are not measured: nothing is locked there")
+    under_free = made(several(lambda h: h[first_bb[0].id].pop("AA"), scaled(inner[0].id, "KK", 0.5)))
+    check(inner and under_free["BB"]["free"] == [first_bb[0].id] and inner[0].id in under_free["BB"]["rows"]
+          and abs(under_free["BB"]["rescaled_bb100"] - (1 / 3) * 0.5 * 2400) < 1e-6
+          and under_free["BB"]["rescaled_most"][:2] == ["KK", inner[0].id],
+          "a locked row below a decision left free is measured: free at the player's first decision, all of the class")
+    # AA is half of the small blind's deals with a quarter of its row open, KK a quarter with half open
+    tie = made(several(lambda h: h[root.id]["AA"].update(freq=[0.75] + [0.0] * (k - 1)),
+                       lambda h: h[root.id]["KK"].update(freq=[0.5] + [0.0] * (k - 1))))
+    check(abs(tie["SB"]["rescaled_bb100"] - 0.25 * 2400) < 1e-6 and tie["SB"]["rescaled_most"] == ["AA", root.id, 0.75],
+          "of two rows that count the same the first met is named: the class that comes first in the range")
+    # the range's order, not the names' and not the larger share: AA a quarter of the deals, KK a half, AKs a quarter
+    order = {"SB": [1, 2, 1, 0], "BB": dealt["BB"]}
+
+    def only(cls, total):
+        return lambda h: h[root.id][cls].update(freq=[total] + [0.0] * (k - 1))
+    smaller, later = made(several(only("AA", 0.5), only("KK", 0.75)), order), made(several(only("KK", 0.75), only("AKs", 0.5)), order)
+    check(abs(smaller["SB"]["rescaled_bb100"] - 0.25 * 2400) < 1e-6 and smaller["SB"]["rescaled_most"] == ["AA", root.id, 0.5]
+          and abs(later["SB"]["rescaled_bb100"] - 0.25 * 2400) < 1e-6 and later["SB"]["rescaled_most"] == ["KK", root.id, 0.75],
+          "the first in the range, whether or not it is the larger share of the deals or the first by name")
+
+    # 40 bb: each player has a decision under each of its decisions, three deep (12 bb has two)
+    root40 = preflop.build_tree(settings("--stack", "40", "--depth", "none"))
+    nodes40 = decisions(root40)
+
+    def made40(*changes):
+        return made(several(*changes), swing=80.0, root=root40, nodes=nodes40)
+
+    def chain(who, top):   # the player's decisions under the root's child `top`, nearest the root first
+        return [n for n in nodes40 if n.actor == who and (n is top or preflop._under(top, n))]
+    tops = [child for _, child in root40.children if child.kind == "decision"]
+    sb_limped, bb_raised, bb_limped = chain("SB", tops[1]), chain("BB", tops[0]), chain("BB", tops[1])
+    limp40 = next(a for a, (_, child) in enumerate(root40.children) if child is tops[1])
+    k40 = len(root40.children)
+    check([len(c) for c in (sb_limped, bb_raised, bb_limped)] == [2, 2, 2] and nodes40.index(bb_raised[1]) < nodes40.index(bb_limped[0]),
+          "the 40 bb tree: two decisions of each player after a limp, two of the big blind after a raise, the raise first")
+    # the small blind's decision after a limp and a raise is left free (nothing for AA there); KK's row
+    # at its next one is a half: KK is a quarter of the deals and limps a third of the time
+    under_later = made40(lambda h: h[sb_limped[0].id].pop("AA"), scaled(sb_limped[1].id, "KK", 0.5))
+    check(under_later["SB"]["free"] == [sb_limped[0].id] and sb_limped[1].id in under_later["SB"]["rows"]
+          and abs(under_later["SB"]["rescaled_bb100"] - 0.25 * (1 / k40) * 0.5 * 8000) < 1e-6
+          and under_later["SB"]["rescaled_most"][:2] == ["KK", sb_limped[1].id],
+          "below a decision left free the class is as often there as the result's play brought it to the free one, "
+          "not always: free at a later decision, by how often the class came to that")
+
+    def plays(node, cls, freq):
+        return lambda h: h[node.id][cls].update(freq=freq + [0.0] * (len(node.children) - len(freq)))
+    # the same class, a quarter of it open at each of two rows of the big blind (binary fractions: equal as floats)
+    near_first = made40(plays(bb_raised[0], "KK", [0.75]), plays(bb_limped[0], "KK", [0.5, 0.5]), plays(bb_limped[1], "KK", [0.5]))
+    deep_first = made40(plays(bb_raised[0], "KK", [0.5, 0.5]), plays(bb_raised[1], "KK", [0.5]), plays(bb_limped[0], "KK", [0.75]))
+    check(abs(near_first["BB"]["rescaled_bb100"] - (1 / 3) * 0.5 * 8000) < 1e-6 and near_first["BB"]["rescaled_most"] == ["KK", bb_raised[0].id, 0.75]
+          and abs(deep_first["BB"]["rescaled_bb100"] - (1 / 3) * 0.5 * 8000) < 1e-6 and deep_first["BB"]["rescaled_most"] == ["KK", bb_raised[1].id, 0.5],
+          "of rows that count the same at two decisions the first met going down the tree is named, all under a "
+          "decision's first action before its next: the nearer the root of the two in one result, the further in the other")
 
     def no_limp(h):  # the small blind never limps, and the big blind has nothing for the decision after one
         for hand in h[root.id].values():
@@ -583,6 +701,18 @@ def unit():
                            "BB": dict(side, locked=0)}]}
     text = " ".join("\n".join(preflop.check_text(report)).split(" "))
     check(max(len(line) for line in text.splitlines()[1:]) <= 100, "its notes are wrapped")
+    def off_text(bb_moves):
+        off = dict(report, checked=[dict(report["checked"][0], BB=dict(side, rescaled_bb100=bb_moves, rescaled_most=["AA", "r:0:c", 1.0000001]),
+                                         SB=dict(side, rescaled_bb100=1.234, rescaled_most=["KK", "r:0", 0.6]))])
+        return " ".join("\n".join(preflop.check_text(off)).split())
+    said, more = off_text(0.0049), off_text(0.005)
+    check("a.json has frequencies of the small blind that do not add up to 1 (the row that counts the most: KK at r:0, which adds up to 0.6)" in said
+          and "as much as 1.23 bb/100 more than the figure, or less" in said and "of the big blind that do not add up" not in said
+          and "do not add up to 1" not in text,
+          "rows that do not add up to 1 are named with what they can move, when that shows; a report without the figure reads as before")
+    check("of the big blind that do not add up to 1 (the row that counts the most: AA at r:0:c, which adds up to 1 + 1e-07)" in more
+          and "as much as 0.01 bb/100 more" in more and "of the small blind that do not add up to 1" in more,
+          "the note comes from 0.005 bb/100 on, the first figure that is not printed as 0.00, and for each player that has one")
     check("hand classes in part" not in text and "hand classes in part" in "\n".join(preflop.check_text(dict(report, uneven_ranges=True))),
           "a check with ranges that hold a class in part says what a chart cannot do there")
     text = text.replace("\n", " ")
@@ -1046,10 +1176,34 @@ def integration(exe):
                              for a, f in enumerate(h["freq"])]
             nothing(by["r:0:c"])
         silent = edited("nolimp.json", no_limp)
-        status, out, err = run("check", own, silent, "--flops", five, "--accuracy", "0.02", "--report", report, *opts)
+
+        def fifths(by):  # the small blind's first decision with every row at three fifths of itself, the
+            for h in by["r:0"].values():   # big blind's after a limp at a half
+                h["freq"] = [0.6 * f for f in h["freq"]]
+            for h in by["r:0:c"].values():
+                h["freq"] = [0.5 * f for f in h["freq"]]
+        status, out, err = run("check", own, silent, edited("fifths.json", fifths), "--flops", five, "--accuracy", "0.02",
+                               "--report", report, *opts)
         with open(report) as f:
             rows = json.load(f)["checked"]
-        was, now = ([r[who]["lost_bb100"][0] for who in ("SB", "BB")] for r in rows)
+        was, now = ([r[who]["lost_bb100"][0] for who in ("SB", "BB")] for r in rows[:2])
+        sums = [sum(h["freq"]) for n in whole["nodes"] for h in n["hands"].values()]
+        check(max(abs(x - 1) for x in sums if x > 0) < 1e-12 and all(rows[0][who]["rescaled_bb100"] < 1e-9 for who in ("SB", "BB"))
+              and "do not add up" not in out.split("fifths.json has")[0],
+              "the rows a solve writes add up to 1 (the solver's own are 1e-7 off), and the check has nothing to say of them")
+        cut = rows[2] if len(rows) > 2 else None
+        text = " ".join(out.split())
+        check(cut is not None and abs(cut["SB"]["rescaled_bb100"] - 0.4 * 2400) < 1e-6 and abs(cut["BB"]["rescaled_bb100"] - 0.5 * 2400) < 1e-6
+              and abs(cut["SB"]["rescaled_most"][2] - 0.6) < 1e-9 and cut["SB"]["rescaled_most"][1] == "r:0"
+              and abs(cut["BB"]["rescaled_most"][2] - 0.5) < 1e-9 and cut["BB"]["rescaled_most"][1] == "r:0:c"
+              and "fifths.json has frequencies of the small blind that do not add up to 1 (the row that counts the most: " in text
+              and "at r:0, which adds up to 0.6)" in text and "as much as 960.00 bb/100 more than the figure, or less" in text
+              and "fifths.json has frequencies of the big blind that do not add up to 1" in text
+              and "at r:0:c, which adds up to 0.5)" in text and "as much as 1200.00 bb/100 more" in text
+              and all(abs(cut[who]["lost_bb100"][0] - rows[0][who]["lost_bb100"][0]) < 0.05 for who in ("SB", "BB")),
+              "rows at three fifths of themselves (the big blind's after a limp: at a half) are checked as the rows they "
+              "are a part of, and named with what they leave open, each player's own: all of the small blind's hands, "
+              "two fifths, 24 bb a hand")
         has = {who: sum(n["actor"] == who for n in whole["nodes"]) for who in ("SB", "BB")}
         check(min(has.values()) >= 2 and [rows[0][who]["locked"] for who in ("SB", "BB")] == [has["SB"], has["BB"]]
               and rows[1]["BB"]["locked"] == has["BB"] - len(rows[1]["BB"]["free"]) < has["BB"],

@@ -456,6 +456,16 @@ def unit():
     left_free = made(several(lambda h: h[first_bb[0].id].pop("AA"), scaled(first_bb[0].id, "KK", 0.3)))
     check(left_free["BB"]["free"] == [first_bb[0].id] and left_free["BB"]["rescaled_bb100"] == 0 and left_free["BB"]["rescaled_most"] == [],
           "rows at a decision left free are not measured: nothing is locked there")
+    under_free = made(several(lambda h: h[first_bb[0].id].pop("AA"), scaled(inner[0].id, "KK", 0.5)))
+    check(inner and under_free["BB"]["free"] == [first_bb[0].id] and inner[0].id in under_free["BB"]["rows"]
+          and abs(under_free["BB"]["rescaled_bb100"] - (1 / 3) * 0.5 * 2400) < 1e-6
+          and under_free["BB"]["rescaled_most"][:2] == ["KK", inner[0].id],
+          "a locked row below a decision left free is measured, as if the class always came there")
+    # AA is half of the small blind's deals with a quarter of its row open, KK a quarter with half open
+    tie = made(several(lambda h: h[root.id]["AA"].update(freq=[0.75] + [0.0] * (k - 1)),
+                       lambda h: h[root.id]["KK"].update(freq=[0.5] + [0.0] * (k - 1))))
+    check(abs(tie["SB"]["rescaled_bb100"] - 0.25 * 2400) < 1e-6 and tie["SB"]["rescaled_most"] == ["AA", root.id, 0.75],
+          "of two rows that count the same the first met is named: the class that comes first in the range")
 
     def no_limp(h):  # the small blind never limps, and the big blind has nothing for the decision after one
         for hand in h[root.id].values():

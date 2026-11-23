@@ -1234,8 +1234,9 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   figure is not 0.00 bb/100, with the row that counts the most in it (the row furthest from 1 can be
   one the class never comes to); nothing is refused for it, because the measure grows with the stack and
   a refusal would in the end meet a file nobody touched, as the note does: a result of the tool before
-  this change gets it at 3000 bb (0.013 and 0.015 bb/100, rows 4e-8 off) and not at 1000 (0.0024 and
-  0.0025), on three flops with no bets after the flop.
+  this change gets it at 1500 bb (0.0053 and 0.0065 bb/100; the second non-author run's figures, which
+  also has 2000 and 3000 with it and 100 and 500 without) and not at 1000 (0.0024 and 0.0025), on
+  three flops with no bets after the flop.
   The ten results of this section (100 bb, rows as the
   solver's seven digits left them, 1.2e-7 off at the most) measure 0.0002 to 0.0008 bb/100 a player,
   6 to 25 times under the line, and their plans are the same rows as before, entry for entry

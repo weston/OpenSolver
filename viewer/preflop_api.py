@@ -174,7 +174,9 @@ def describe(vsrv, b):
 class Estimates:
     """Megabytes of a preflop tree, asked of a solver process of its own: with a preflop tree set up,
     `estimate_tree` builds the whole tree but its strategies to count it, and in the viewer's solver that
-    would stand beside the tree being looked at. The same process says whether the two ranges can be dealt
+    would stand beside the tree being looked at. Two figures (#504): the smallest tree, and the tree with
+    outcome tables at every level, which is the one the solver builds when there is memory free for it
+    (`set_outcome_tables auto`, the state a build here runs in). The same process says whether the two ranges can be dealt
     against each other, so a build is refused before the viewer's solver is touched. Of the form's own
     estimates one runs at a time, a newer request ends the older one; the estimate a build waits for is
     not one of those, nothing ends it."""
@@ -182,7 +184,7 @@ class Estimates:
     def __init__(self):
         self.lock = threading.Lock()
         self.running = None                      # the tool's Solver of the request being answered
-        self.cache = collections.OrderedDict()   # script -> (MB, the ranges meet)
+        self.cache = collections.OrderedDict()   # script -> (MB, MB with the tables, the ranges meet)
 
     def get(self, vsrv, exe, s, flops, root, replace=True):
         """replace: this request takes the place of the form's estimate that is running (False: a
@@ -198,9 +200,9 @@ class Estimates:
                 self.cache[key] = got
                 while len(self.cache) > 64:
                     self.cache.popitem(last=False)
-        if not got[1]:
+        if not got[2]:
             raise vsrv.SolverError(pf.NO_DEAL[:1].upper() + pf.NO_DEAL[1:])
-        return got[0]
+        return got[0], got[1]
 
     def _ask(self, vsrv, exe, lines, replace):
         pf = tool()
@@ -214,10 +216,9 @@ class Estimates:
                     self.running = u
             for line in lines:
                 u.need(line)
-            out = u.cmd("estimate_tree")
-            mb = next((int(l.split()[3]) for l in out if l.startswith("estimated tree size:")), None)
-            if mb is None:
-                raise pf.PreflopError(f"estimate_tree answered {' '.join(out)[:200]}")
+            mb = pf._estimate(u)
+            u.need("set_outcome_tables fast")   # the second count is of what the first one built: no time to speak of
+            with_tables = pf._estimate(u)
             order = " ".join(u.cmd("show_hand_order")).split()
             sb, bb = (pf._floats(u.cmd(f"show_range {who} r:0"), vsrv.NUM_COMBOS, "show_range r:0")[0]
                       for who in ("IP", "OOP"))
@@ -234,7 +235,7 @@ class Estimates:
                     self.running = None
             if u is not None:
                 u.kill()
-        return mb, meet
+        return mb, with_tables, meet
 
 
 ESTIMATES = Estimates()
@@ -243,7 +244,8 @@ ESTIMATES = Estimates()
 def estimate(vsrv, solver, b):
     pf = tool()
     s, root, _, name, flops = setup(vsrv, b)
-    return {"mb": ESTIMATES.get(vsrv, solver.exe, s, flops, root), "memory_mb": pf.physical_memory_mb(),
+    mb, with_tables = ESTIMATES.get(vsrv, solver.exe, s, flops, root)
+    return {"mb": mb, "mb_tables": with_tables, "memory_mb": pf.physical_memory_mb(),
             "flops": len(flops), "flops_name": name, "depth": s.depth}
 
 
@@ -252,7 +254,7 @@ def build(vsrv, solver, b):
     replaces the one in the viewer's solver."""
     pf = tool()
     s, root, _, name, flops = setup(vsrv, b)
-    mb = ESTIMATES.get(vsrv, solver.exe, s, flops, root, replace=False)
+    mb, with_tables = ESTIMATES.get(vsrv, solver.exe, s, flops, root, replace=False)
     memory = pf.physical_memory_mb()
     if memory and mb > memory:
         raise vsrv.SolverError(f"This tree is about {mb:,} MB and this machine has {memory:,} MB: "
@@ -286,8 +288,13 @@ def build(vsrv, solver, b):
         solver.tree_present = True
         solver.preflop = {"chips": s.chips, "flops": len(flops)}
         count = solver.cmd("node_count")
-    return {"node_count": count, "mb": mb, "memory_mb": memory, "chips": s.chips, "flops": len(flops),
-            "flops_name": name}
+        # what the solver counts for the tree it built: `mb`, or `mb_tables` when the tables were added
+        try:
+            built = re.search(r"Memory needed: (\d+) MB", str(solver.cmd("estimate_rebuild_tree")))
+        except vsrv.SolverError:
+            built = None   # the tree is built all the same
+    return {"node_count": count, "mb": mb, "mb_tables": with_tables, "built_mb": int(built.group(1)) if built else None,
+            "memory_mb": memory, "chips": s.chips, "flops": len(flops), "flops_name": name}
 
 
 def api(vsrv, solver, method, path, body):

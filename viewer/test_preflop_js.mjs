@@ -1,7 +1,7 @@
 // Unit test for what Study knows about preflop trees (viewer/static/preflop.js, #490).
 // usage: node viewer/test_preflop_js.mjs
 import { dealName, seat, flopCards, sortFlops, parseFilter, flopMatches, preflopRaise, bigBlindOf, bb100ToChips, chipsToBb100,
-  fmtMemory, memoryNote, streetsBet, flopsLabel, flopsCount, nextEstimate, treeSummary } from "./static/preflop.js";
+  fmtMemory, fmtMemoryRange, memoryNote, builtSize, streetsBet, flopsLabel, flopsCount, nextEstimate, treeSummary } from "./static/preflop.js";
 
 let fails = 0;
 const check = (cond, msg) => { console.log((cond ? "  ok: " : "  FAIL: ") + msg); if (!cond) fails++; };
@@ -70,6 +70,21 @@ check(fit.fits && fit.text === "25 flops · about 396 MB · this machine has 16.
 check(!over.fits && over.text === "10 flops · about 84.0 GB · more than this machine's 16.0 GB", `memoryNote: ${over.text}`);
 check(unknown.fits && unknown.text === "1,755 flops · about 396 MB" && memoryNote(16384, 16384, 1).fits && memoryNote(5, 9, 1).text.startsWith("1 flop ·"),
   "memoryNote: a machine of unknown size refuses nothing; a tree of exactly the machine's size is not refused here");
+// two trees where the turn has bets (#504): the smallest, and the one with the tables the solver adds when memory is free
+const two = memoryNote(802, 16384, 10, 888), one = memoryNote(396, 16384, 25, 396), tight = memoryNote(802, 850, 10, 888);
+check(two.fits && two.text === "10 flops · about 802 MB, or 888 MB with the tables that make a solve faster (built when that much memory is free) · this machine has 16.0 GB"
+  && one.text === fit.text && memoryNote(396, 16384, 25, undefined).text === fit.text && memoryNote(396, 16384, 25, null).text === fit.text
+  && memoryNote(396, 16384, 25, 300).text === fit.text, `memoryNote: both sizes where they differ, one where they do not (${two.text})`);
+check(tight.fits && !memoryNote(802, 801, 10, 888).fits, "memoryNote: only a smallest tree over the machine's memory is refused");
+check(fmtMemoryRange(802, 888) === "802–888 MB" && fmtMemoryRange(2039, 2270) === "2.0–2.2 GB" && fmtMemoryRange(980, 1100) === "980 MB – 1.1 GB"
+  && fmtMemoryRange(364, 364) === "364 MB" && fmtMemoryRange(85988, 86184) === "84.0–84.2 GB" && fmtMemoryRange(3194, 3195) === "3.1 GB"
+  && fmtMemoryRange(18, undefined) === "18 MB" && fmtMemoryRange(18, null) === "18 MB" && fmtMemoryRange(NaN, 5) === "—",
+  `fmtMemoryRange: the smallest tree to the one with the tables, one figure where they print the same (${fmtMemoryRange(802, 888)})`);
+check(builtSize({ mb: 802, mb_tables: 888, built_mb: 888 }) === "about 888 MB, with the tables that make a solve faster"
+  && builtSize({ mb: 802, mb_tables: 888, built_mb: 802 }) === "about 802 MB, without the tables that make a solve faster (not that much memory free)"
+  && builtSize({ mb: 18, mb_tables: 18, built_mb: 18 }) === "about 18 MB" && builtSize({ mb: 802, mb_tables: 888, built_mb: null }) === "about 802 MB"
+  && builtSize({ mb: 18 }) === "about 18 MB" && builtSize({ mb: 18, built_mb: 19 }) === "about 19 MB",
+  "builtSize: what the solver counted for the built tree, and which of the two trees it is");
 check(same(streetsBet("none"), { flop: false, turn: false, river: false }) && same(streetsBet("flop"), { flop: true, turn: false, river: false })
   && same(streetsBet("turn"), { flop: true, turn: true, river: false }) && same(streetsBet("river"), { flop: true, turn: true, river: true })
   && same(streetsBet("x"), { flop: false, turn: false, river: false }), "streetsBet: the streets up to the depth");

@@ -12,7 +12,7 @@ import { drawChart } from "./chart.js";
 import { openLibrary } from "./library.js";
 import { STREETS, renderSizes, readSizes, validateSizes as validateSizeTable } from "./sizes.js";
 import { initPreflopForm, readPreflopForm, preflopReady, noteEstimate } from "./preflop_build.js";
-import { bb100ToChips, chipsToBb100, fmtMemory } from "./preflop.js";
+import { bb100ToChips, chipsToBb100, builtSize } from "./preflop.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -502,7 +502,7 @@ async function buildPreflop() {
     treeBB = b.chips;     // the target of a Solve right after this build (before a poll sets it)
     rootPotNow = 0;
     const total = /TOTAL\D*(\d+)/.exec(b.node_count);
-    info(`Built: ${total ? Number(total[1]).toLocaleString() + " nodes" : "ok"} · ${Number(b.flops).toLocaleString()} flops · about ${fmtMemory(b.mb)}`);
+    info(`Built: ${total ? Number(total[1]).toLocaleString() + " nodes" : "ok"} · ${Number(b.flops).toLocaleString()} flops · ${builtSize(b)}`);
     markDirty();
     onBuilt({ bb: b.chips });
     return true;

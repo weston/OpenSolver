@@ -1052,10 +1052,12 @@ choices (nine tenths of what is free); otherwise the smallest tree, as before. N
 first version here fell back to "flop tables only, then turn tables only", which the table above gives
 no reason for, and it went. This is not the price #494 asked for (memory against time); it only spends
 memory that is there. `small` is the smallest tree whatever the memory, and what `estimate_tree` counts
-under `auto` too, so a tree can come out over its estimate when it has the room: by what the turn
-tables add, 86 MB for 10 flops at `--depth turn` whatever the sizes. That is 11 % with the tool's
+under `auto` too, so a tree can come out over its estimate when it has the room: by what tables at
+both levels take less the boards they make needless, 86 MB net for 10 flops at `--depth turn` whatever
+the sizes (the turn tables alone add 227 MB, by the non-author run of PR #500). That is 11 % with the tool's
 default sizes (888 for 802), 19 % with `--stack 20` (540 for 454), 23 % with `--no-limp` (463 for
-377), 46 % on the two flops of the test (51 for 35 MB), and nothing at `--depth flop`, the tool's
+377), 46 % on the two flops of the test (51 for 35 MB), 0.2 % at `--depth river` (86,184 for 85,988),
+and nothing at `--depth flop`, the tool's
 default, where the smallest tree has the tables already. `fast` is tables whatever the memory. ICM keeps the boards as before.
 
 **Not done.**
@@ -1064,8 +1066,11 @@ default, where the smallest tree has the tables already. `fast` is tables whatev
   nothing here can make a test machine short of it, so the limit itself is tested on `GameTree` alone
   (to the byte).
 - The tool and the viewer choose a number of flops by `estimate_tree`, which under `auto` is the smallest
-  tree: with room on the machine a `--depth turn` tree is built over a `--memory` the user typed, by
-  the turn tables (11 % with the default sizes, more on a smaller tree, see above).
+  tree: with room on the machine a `--depth turn` tree can be built over a `--memory` the user typed
+  (when the smallest tree is within the budget and the tree with the tables is not: 11 % apart with the
+  default sizes, more on a smaller tree, see above). #504 closed this: the tool asks for both figures
+  and sends `set_outcome_tables small` when the tables would pass the budget, and the viewer's memory
+  row shows both.
 - A compact table is filled as a full one and then folded, so the fill is no faster and holds the full
   table of one set per thread while it runs. Still about a minute for all flops.
 - Trees with two different ranges keep the full tables. One table for turn cards that are the same up

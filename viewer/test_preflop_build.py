@@ -124,6 +124,9 @@ class PreflopBuildTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.dir = tempfile.TemporaryDirectory(prefix="wsolver-test-preflop-build-")
+        # the solver's choices that go by free memory, as on a machine with 8 GB free whatever this one has (#508)
+        cls.free_before = os.environ.get("WSOLVER_FREE_MB")
+        os.environ["WSOLVER_FREE_MB"] = "8192"
         cls.v = Viewer(os.path.join(cls.dir.name, "library"))
         cls.pf = preflop_api.tool()
 
@@ -131,6 +134,10 @@ class PreflopBuildTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.v.close()
         cls.dir.cleanup()
+        if cls.free_before is None:
+            os.environ.pop("WSOLVER_FREE_MB", None)
+        else:
+            os.environ["WSOLVER_FREE_MB"] = cls.free_before
 
     def tool_settings(self, args=ARGS):
         return self.pf.settings_from(self.pf.parser().parse_args(["tree"] + args))
@@ -217,6 +224,7 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = self.v.req("/api/preflop/estimate", "POST", FORM)
         self.assertEqual(st, 200, d)
         self.assertEqual((d["mb"], d["flops"]), (want, 10))
+        self.assertEqual(d["mb_tables"], want, "no bets on the turn: the smallest tree has the tables")
         self.assertEqual(d["memory_mb"], self.pf.physical_memory_mb())
         key_count = len(preflop_api.ESTIMATES.cache)
         t = time.time()
@@ -228,6 +236,13 @@ class PreflopBuildTest(unittest.TestCase):
         st, more = self.v.req("/api/preflop/estimate", "POST", dict(FORM, flops="25"))
         self.assertEqual(st, 200, more)
         self.assertGreater(more["mb"], d["mb"])
+        # bets on the turn: two trees, the smallest and the one with outcome tables at every level (#504)
+        turn = dict(FORM, stack="5", limp=False, depth="turn")
+        st, two = self.v.req("/api/preflop/estimate", "POST", turn)
+        self.assertEqual(st, 200, two)
+        s = self.tool_settings(["--stack", "5", "--no-limp", "--depth", "turn"])
+        self.assertEqual((two["mb"], two["mb_tables"]), self.pf.estimates_mb(SOLVER, s, flops))
+        self.assertLess(two["mb"], two["mb_tables"])
 
     def test_05_ranges_that_cannot_be_dealt(self):
         # every hand of each holds the ace of spades and the ace of hearts
@@ -244,7 +259,8 @@ class PreflopBuildTest(unittest.TestCase):
         self.assertEqual((d["chips"], d["flops"]), (100, 10))
         # the size the form shows after a build is the build's own answer, the Estimate button's figure
         st, e = self.v.req("/api/preflop/estimate", "POST", FORM)
-        self.assertEqual((d["mb"], d["memory_mb"]), (e["mb"], e["memory_mb"]))
+        self.assertEqual((d["mb"], d["mb_tables"], d["memory_mb"]), (e["mb"], e["mb_tables"], e["memory_mb"]))
+        self.assertEqual(d["built_mb"], d["mb"], "what the solver counts for the tree it built")
         s = self.tool_settings()
         root = self.pf.build_tree(s)
         count, kids = self.tool_tree(self.pf.script(s, self.pf.choose_flops("10")[1], root))
@@ -453,6 +469,19 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = v.req("/api/build", "POST", {})
         self.assertEqual(st, 200, d)
         self.assertIn("TOTAL: 13201", d["node_count"])
+
+    def test_12_a_tree_with_turn_bets_says_which_tree_was_built(self):
+        # two trees (#504): the build's answer has both estimates and what the solver counts for the one
+        # it built. A build here leaves the choice to the solver, which has the memory for the tables
+        form = dict(FORM, stack="5", limp=False, depth="turn")
+        st, e = self.v.req("/api/preflop/estimate", "POST", form)
+        self.assertEqual(st, 200, e)
+        st, d = self.v.req("/api/preflop/build", "POST", form)
+        self.assertEqual(st, 200, d)
+        self.assertEqual((d["mb"], d["mb_tables"]), (e["mb"], e["mb_tables"]))
+        self.assertLess(d["mb"], d["mb_tables"])
+        self.assertEqual(d["built_mb"], d["mb_tables"])
+        self.assertIn(f"Memory needed: {d['built_mb']} MB; available: 8192 MB", self.v.solver.cmd("estimate_rebuild_tree"))
 
 
 if __name__ == "__main__":

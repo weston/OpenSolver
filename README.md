@@ -431,7 +431,11 @@ take half a second). `--flops` takes a number we ship a
 file for (10, 25, 50, 100, 200), a flop file (`flop:weight` lines, the format of `flops/`), or `all` for
 the 1,755 suit classes with the number of flops each stands for. Without it the tool takes the largest
 shipped subset whose estimate is under `--memory` gigabytes (default half of the machine's, which leaves
-room for that) and says which. What a subset costs, for the default tree: the preflop strategy solved on it, played in the
+room for that) and says which. `--memory` holds the tree that is built: where the smallest tree is
+under it and the tree with the tables is not, the tool builds the smallest (`set_outcome_tables small`,
+in the script it prints too), and `--flops` with a `--memory` its smallest tree is over is refused. The
+result records both figures, `estimated_mb` (the smallest tree) and `built_mb` (the solver's count of
+the one it built). What a subset costs, for the default tree: the preflop strategy solved on it, played in the
 game with all 1,755 flops against an opponent who knows it, gives up this many bb/100 (`check`, below;
 both solves to 0.02, each figure good to 0.04):
 
@@ -591,9 +595,13 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     as you type (each action, what both players have in, and where it leads), or the reason there is
     none in the form's own words. **Estimate memory** asks the solver what the tree takes, for the
     chosen number of flops and then for the other numbers (a row under the button; a click on one takes
-    it, and all 1,755 flops are only asked for when chosen, that one takes a minute); **Build**
-    does that first too, and refuses a tree larger than the machine's memory before it touches the
-    one that is there. The target is in **bb/100**, and the chart, the top bar and the Exploitability
+    it, and all 1,755 flops are only asked for when chosen, that one takes a minute). With bets on
+    the turn there are two sizes, and the row shows both ("802–888 MB"): the smallest tree, and the
+    tree with the tables that make a solve faster, which the solver builds when that much memory is
+    free as it builds. **Build**
+    does that first too, and refuses a tree whose smallest size is larger than the machine's memory
+    before it touches the one that is there; its line then says the size of the tree that was built
+    and which of the two it is. The target is in **bb/100**, and the chart, the top bar and the Exploitability
     tile count in bb/100 for a preflop tree; EVs stay a percentage of the pot (the 1.5 big blinds of
     the blinds at the root). No fast preview, spots or job queue for preflop trees. Study then shows
     the tree as described under *Preflop solves*. API: `GET /api/preflop/defaults`, and `POST

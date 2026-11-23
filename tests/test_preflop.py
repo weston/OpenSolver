@@ -214,6 +214,15 @@ def unit():
               "a weight that is not a number, a flop that is not one, and a file without flops are refused")
         check(reads("") is None and run("script", "--flops", os.path.join(d, "missing.txt"))[0] == 1
               and run("script", "--flops", "7")[0] == 1, "a missing flop file or a size we do not ship is an error")
+    within = preflop.tables_within
+    check([within(143, 176, mb) for mb in (142, 143, 175, 176, 9999)] == [None, "small", "small", "auto", "auto"]
+          and within(18, 18, 18) == "auto" and within(18, 18, 17) is None,
+          "the outcome tables under a budget: the solver's choice when the tree with them is within it, "
+          "`small` when only the smallest tree is, nothing when neither")
+    note = preflop._tables_note
+    check(note(18, 18, 100) == "" and "set_outcome_tables small" in note(143, 176, 175) and "over the 175" in note(143, 176, 175)
+          and "176 MB" in note(143, 176, 176) and "small" not in note(143, 176, 176),
+          "and what the tool says of it: nothing where the two trees are one")
 
     print("results and charts")
     check([preflop.hand_class(h) for h in ("AhKh", "KdAs", "7c7d", "2s3s")] == ["AKs", "AKo", "77", "32s"]
@@ -797,6 +806,77 @@ def integration(exe):
               f"without --flops the largest shipped subset under the budget is taken ({err.strip()[:60]})")
         status, out, err = run("script", "--stack", "20", "--memory", "0.01", "--solver", exe)
         check(status == 1 and "--depth" in err, "and when not even 10 flops fit, that is said")
+
+        # the budget holds the tree that is built (#504). With turn bets there are two trees: the smallest,
+        # and the one with outcome tables at every level, which the solver builds when memory is free
+        turn = ("--stack", "20", "--depth", "turn", "--solver", exe)
+        st = settings(*turn[:4])
+        small, with_tables = preflop.estimates_mb(exe, st, flops)
+        built = {}
+        for mode in ("small", "fast"):
+            with preflop.Solver(exe) as u:
+                for line in preflop.setup_lines(st, flops, None, mode):
+                    u.need(line)
+                u.need("add_all_flops")
+                built[mode] = preflop.built_mb(u)
+        check(0 < small < with_tables and built == {"small": small, "fast": with_tables}
+              and preflop.estimate_mb(exe, st, flops) == small and len(set(preflop.estimates_mb(exe, s, flops))) == 1,
+              f"estimates: the two trees of a tree with turn bets as they are built ({small} and {with_tables} MB), "
+              "one figure where the turn has no bets")
+
+        def budget_solve(name, mb, free=None):
+            """solve under --memory of `mb` megabytes, the solver told that `free` MB are free -> (status,
+            stderr, the result)"""
+            path = os.path.join(d, name)
+            old = os.environ.get("WSOLVER_FREE_MB")
+            if free is not None:
+                os.environ["WSOLVER_FREE_MB"] = str(free)
+            try:
+                status, _, err = run("solve", path, "--flops", flop_file, "--memory", repr(mb / 1024), "--accuracy", "50",
+                                     "--time", "1", *turn)
+            finally:
+                if old is None:
+                    os.environ.pop("WSOLVER_FREE_MB", None)
+                else:
+                    os.environ["WSOLVER_FREE_MB"] = old
+            return status, err, json.load(open(path)) if os.path.exists(path) else {}
+
+        between = (small + with_tables) // 2
+        status, err, r = budget_solve("between.json", between, 4096)
+        check(status == 0 and (r.get("estimated_mb"), r.get("built_mb"), r.get("outcome_tables")) == (small, small, "small")
+              and "set_outcome_tables small" in err and "the tree built" not in err,
+              f"solve --depth turn --memory: a budget of {between} MB between the two builds the smallest tree, "
+              f"{r.get('built_mb')} MB by the solver's count, whatever memory is free")
+        status, err, r = budget_solve("room.json", with_tables, 4096)
+        check(status == 0 and (r.get("estimated_mb"), r.get("built_mb"), r.get("outcome_tables")) == (small, with_tables, "auto")
+              and f"the tree built: {with_tables} MB" in err,
+              f"a budget of {with_tables} MB leaves the choice to the solver, which builds the tables with memory free")
+        status, err, r = budget_solve("short.json", with_tables, with_tables)   # nine tenths of it is not enough
+        check(status == 0 and (r.get("built_mb"), r.get("outcome_tables")) == (small, "auto") and "the tree built" not in err,
+              "and the smallest tree with too little free for them")
+        status, err, r = budget_solve("over.json", small - 1, 4096)
+        check(status == 1 and f"estimated at {small} MB" in err and "--memory" in err and not r,
+              "--flops over --memory is refused, with no result")
+        status, out, err = run("script", "--flops", flop_file, "--memory", repr(between / 1024), *turn)
+        lines = out.splitlines()
+        status2, out2, err2 = run("script", "--flops", flop_file, "--memory", repr(with_tables / 1024), *turn)
+        status3, out3, err3 = run("script", "--flops", flop_file, "--memory", "1", "--stack", "20", "--solver", exe)
+        check(status == 0 and lines[-2:] == ["set_outcome_tables small", "add_all_flops"]
+              and status2 == 0 and out2.splitlines() == lines[:-2] + lines[-1:] and "when they fit in free memory" in err2
+              and status3 == 0 and "set_outcome_tables" not in out3 and "outcome tables" not in err3 and "under --memory" in err3,
+              "script: the line that keeps the tree within the budget, only where it is needed")
+        # the tool's own choice of a subset: by the smallest tree, the tables by the same budget
+        small10, with10 = preflop.estimates_mb(exe, settings("--stack", "5", "--no-limp", "--depth", "turn"),
+                                               preflop.choose_flops("10")[1])
+        picks = [run("script", "--stack", "5", "--no-limp", "--depth", "turn", "--memory", repr(mb / 1024), "--solver", exe)
+                 for mb in (with10 - 1, with10)]
+        check(small10 < with10 and all(p[0] == 0 and f"10 flops: the largest shipped subset under {mb} MB" in p[2]
+                                       and f"estimated {small10} MB; {with10} MB with outcome tables" in p[2]
+                                       for p, mb in zip(picks, (with10 - 1, with10)))
+              and [("set_outcome_tables small" in p[1].splitlines(), "set_outcome_tables" in p[1]) for p in picks]
+              == [(True, True), (False, False)],
+              f"without --flops: 10 flops by the smallest tree ({small10} MB), built without the tables one MB under "
+              f"the {with10} they take and left to the solver at it")
 
         # check: what a result's preflop strategy loses on other flops. Three results for five flops: one
         # solved on the five, one on three of them, and the first with the small blind folding every hand

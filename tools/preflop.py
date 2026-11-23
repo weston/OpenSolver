@@ -488,10 +488,12 @@ def estimates_mb(exe: str, s: Settings, flops: list[tuple[str, float]]) -> tuple
     builds on its own when that fits in nine tenths of the memory that is free (`auto`, #496). One
     figure twice where the smallest tree has the tables already (no bets on the turn). The two are
     counts of their own in one process, with nothing shared: at turn depth the smallest tree's takes a
-    second or two and the other hundredths of one, at river depth each takes seconds."""
+    second or two and the other hundredths of one, at river depth each takes seconds. The first is asked
+    for under `small` by name: under `auto` the solver answers the same today, and need not for ever."""
     with Solver(exe) as u:
         for line in script(s, flops):
             u.need(line)
+        u.need("set_outcome_tables small")
         small = _estimate(u)
         u.need("set_outcome_tables fast")
         return small, _estimate(u)

@@ -1014,15 +1014,17 @@ def integration(exe):
         check(status == 1 and f"estimated at {small} MB" in err and not r, "and flops over the budget are refused, with no report")
         # without a budget the choice is the solver's, and the tool says what it was
         left_out = f"the tree built: {small} MB without outcome tables at every level (the {with_tables} MB"
-        both = f"flops: estimated {small} MB; {with_tables} MB with outcome tables at every level"
+        both = (f"flops: estimated {small} MB; {with_tables} MB with outcome tables at every level, which the solver "
+                "builds when they fit in nine tenths of the memory that is free\n")
         runs = [budget_solve("free_short.json", None, with_tables), budget_solve("free_room.json", None, 4096),
                 budget_solve("free_short.report.json", None, with_tables, checked="between.json")]
-        check(all(status == 0 and both in err and r.get("estimated_mb") == small and r.get("outcome_tables") == "auto"
-                  for status, err, r in runs)
+        check(all(status == 0 and both in err and "set_outcome_tables small" not in err and "built without them" not in err
+                  and r.get("estimated_mb") == small and r.get("outcome_tables") == "auto" for status, err, r in runs)
               and [r.get("built_mb") for _, _, r in runs] == [small, with_tables, small]
               and [left_out in err for _, err, _ in runs] == [True, False, True]
               and f"the tree built: {with_tables} MB with outcome tables at every level" in runs[1][1],
-              "--flops without --memory: both sizes are estimated, and solve and check say which tree the solver built")
+              "--flops without --memory: both sizes are estimated, with no word of a budget, and solve and check say which "
+              "tree the solver built")
         status, out, err = run("script", "--flops", flop_file, "--memory", repr(between / 1024), *turn)
         lines = out.splitlines()
         status2, out2, err2 = run("script", "--flops", flop_file, "--memory", repr(with_tables / 1024), *turn)

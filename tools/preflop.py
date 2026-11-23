@@ -593,8 +593,9 @@ def collect(u: Solver, s: Settings, root: Node) -> list[dict]:
             if c["dealt"] <= 0:
                 continue  # not in the player's range, or never dealt against the opponent's
             got = c["here"] > 1e-9 * c["dealt"]
+            played = sum(c["freq"])  # the class's deals here, less what the solver's rounding of a strategy leaves (1e-7)
             hands[cls] = {"reach": c["here"] / c["dealt"],
-                          "freq": [f / c["here"] if got else 0.0 for f in c["freq"]],
+                          "freq": [f / played if got and played > 0 else 0.0 for f in c["freq"]],
                           "ev_bb": c["ev"] / c["ev_of"] / s.chips if got and c["ev_of"] > 0 else None}
         out.append({
             "id": node.id, "actor": node.actor, "line": list(node.said),
@@ -747,15 +748,17 @@ def _fits(name: str, result: dict, s: Settings, decisions: list[Node]) -> list[s
     return ["file"] if mine["depth"] == its["depth"] == "file" else other
 
 
-def _class_rows(name: str, node: dict, actions: int) -> dict[str, list[float]]:
-    """What a result says at one decision: the frequencies of every hand class it brought there, summing
-    to 1. A class with no frequency was not brought there (by the player, or by the opponent)."""
+def _class_rows(name: str, node: dict, actions: int) -> tuple[dict[str, list[float]], dict[str, float], dict[str, float]]:
+    """What a result says at one decision: the frequencies of every hand class it brought there, made to
+    add up to 1; what each row added up to as written; and the part of the class's play there that the
+    row as written leaves open (`_not_as_written`). A class with no frequency was not brought there (by
+    the player, or by the opponent)."""
     def share(f) -> bool:
         try:
             return isinstance(f, (int, float)) and not isinstance(f, bool) and math.isfinite(f) and f >= 0
         except OverflowError:  # an integer no float holds
             return False
-    out = {}
+    out, totals, open_part = {}, {}, {}
     for cls, h in node["hands"].items():
         freq = h.get("freq") if isinstance(h, dict) else None
         if not isinstance(freq, list) or len(freq) != actions or not all(share(f) for f in freq):
@@ -765,8 +768,29 @@ def _class_rows(name: str, node: dict, actions: int) -> dict[str, list[float]]:
         if not math.isfinite(total):
             raise PreflopError(f"{name}: the frequencies of {cls} at {node['id']} are not a strategy")
         if total > 0:
-            out[cls] = [f / total for f in freq]
-    return out
+            out[cls], totals[cls], open_part[cls] = [f / total for f in freq], total, _not_as_written(freq)
+    return out, totals, open_part
+
+
+def _not_as_written(freq: list[float]) -> float:
+    """The part of a hand class's play at a decision that a row which does not add up to 1 leaves open,
+    0 to 1: how far two strategies that respect the row can be from each other. Under 1 they play at
+    least what is written and differ in where the rest goes: by 1 less the sum. Over 1 they play no
+    action more than written (and none more than always): each leaves unplayed what the capped row has
+    over 1, and that is the most the two differ by. So `[1.5, 0, 0]` leaves nothing open (one strategy
+    plays the first action always), `[1.2, 0.3]` leaves 0.3, and three entries of a million leave all of
+    it. The row made to add up to 1, which is what the check locks, is one of those strategies either
+    way."""
+    total = sum(freq)
+    if total <= 1:
+        return 1.0 - total
+    return min(1.0, sum(min(f, 1.0) for f in freq) - 1.0)
+
+
+def _total_text(total: float) -> str:
+    """What a row adds up to, for a note: never printed as the 1 it is not."""
+    text = f"{total:.6g}"
+    return text if text != "1" or total == 1 else f"1 {'+' if total > 1 else '-'} {abs(total - 1):.1g}"
 
 
 def locked_rows(known: dict[str, list[float]], actions: int, classes: list[str]) -> list[list[float]]:
@@ -807,9 +831,28 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
     decision too rarely to show, which is then the reason it has nothing there. How often the opponent
     comes is taken from the opponent's frequencies in the result, and a decision on the way that has none
     for a hand counts as passed by it, so nothing is said to be never come to because a file is silent
-    higher up."""
+    higher up.
+
+    Rows that do not add up to 1 are locked made to add up to 1, and measured (#502). `rescaled_bb100`:
+    by class, the part of its play that its locked rows leave open as written (`_not_as_written`, times
+    how often the result's own play brings the class to the row, added up over the rows and counted as
+    all of the class at the most), times the class's share of the player's deals, times the swing. It
+    is a bound on what a strategy that respects the rows as written can differ from the locked one by,
+    not a loss. `rescaled_most`: the locked row that counts the most in it, as [class, decision, what
+    the row adds up to] (of rows that count the same, the first met going down the tree, all that is
+    under a decision's first action before its next: that can be the decision further from the root;
+    and at one decision the class that comes first in the range); empty when no locked row leaves
+    anything open: rows that add up to 1, rows of one action written as more than always, rows the
+    class never comes to (a row one rounding step off 1 leaves something open: a solve's own result
+    names a row here, which no note mentions). Rows at a decision left free are not measured: nothing
+    is locked there. Locked rows below one are, with the class as often there as the result's play
+    brought it to the free decision: what it does at that one is the solve's to choose, so all of it
+    is counted as going on."""
     by_id = {n["id"]: n for n in result["nodes"]}
-    known = {n.id: _class_rows(name, by_id[n.id], len(n.children)) for n in decisions}
+    read = {n.id: _class_rows(name, by_id[n.id], len(n.children)) for n in decisions}
+    known = {node: rows for node, (rows, _, _) in read.items()}
+    written = {node: totals for node, (_, totals, _) in read.items()}
+    left_open = {node: part for node, (_, _, part) in read.items()}
     even = not _uneven(classes, ranges)
     share: dict[str, dict[str, float]] = {}
     for who in (SB, BB):
@@ -853,9 +896,11 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
         free: list[str] = []
         part: list[str] = []
         unsaid = 0.0
+        opened: dict[str, float] = {}   # by class: the part of its play that its locked rows leave open, as written
+        most: list = []   # the locked row that leaves the most open: [how much of the deals, class, decision, its sum]
 
         def visit(n: Node, comes: dict[str, float], first: bool, loose: bool = False) -> None:
-            nonlocal unsaid
+            nonlocal unsaid, most
             if n.kind != "decision":
                 return
             if n.actor != who:
@@ -871,6 +916,12 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
                     return
                 unsaid += gap
                 rows[n.id] = locked_rows(here, k, classes)
+                for cls, p in comes.items():
+                    if cls in here:
+                        off = p * left_open[n.id][cls]
+                        opened[cls] = opened.get(cls, 0.0) + off
+                        if off > 0 and (not most or mine[cls] * off > most[0]):
+                            most = [mine[cls] * off, cls, n.id, written[n.id][cls]]
                 for a, (_, child) in enumerate(n.children):
                     visit(child, {cls: p * (here[cls][a] if cls in here else 1.0 / k) for cls, p in comes.items()},
                           False, loose)
@@ -892,7 +943,11 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
                 visit(child, comes, False, loose or bool(here))
 
         visit(root, {cls: 1.0 for cls in mine}, True)
-        out[who] = {"rows": rows, "free": free, "part": part, "unsaid_bb100": unsaid}
+        # a class's rows at one decision after another add up, to all of the class at the most: a hand
+        # cannot move a result by more than it can move it
+        rescaled = sum(mine[cls] * min(1.0, part_open) for cls, part_open in opened.items()) * swing_bb * 100
+        out[who] = {"rows": rows, "free": free, "part": part, "unsaid_bb100": unsaid,
+                    "rescaled_bb100": rescaled, "rescaled_most": most[1:]}
     return out
 
 
@@ -999,7 +1054,9 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
                             "exploitable_bb100": got.get("Exploitable for", 0.0) / s.chips * 100,
                             "sum_bb100": _sum(got, s), "locked": len(plan[who]["rows"]),
                             "free": plan[who]["free"], "free_part": plan[who]["part"],
-                            "unsaid_bb100": plan[who]["unsaid_bb100"]}
+                            "unsaid_bb100": plan[who]["unsaid_bb100"],
+                            "rescaled_bb100": plan[who]["rescaled_bb100"],
+                            "rescaled_most": plan[who]["rescaled_most"]}
             checked.append(row)
     return {
         "version": 1, "kind": "check",
@@ -1063,6 +1120,13 @@ def check_text(report: dict) -> list[str]:
                         "(A result leaves out the hands its solve did not bring to a decision: by their own play, or "
                         f"because no hand of the {their} blind met them there. Under a decision left to the solve, "
                         "more hands come than the result has.)"]
+            moved = r[who].get("rescaled_bb100") or 0.0
+            if _shows(moved):
+                cls, node, total = r[who]["rescaled_most"]
+                notes += [f"{file} has frequencies of the {word} blind that do not add up to 1 (the row that counts "
+                        f"the most: {cls} at {node}, which adds up to {_total_text(total)}). The check made every row "
+                        "add up to 1, as it does what the rounding of a solve leaves; a strategy that plays what the "
+                        f"file says as written can give up as much as {moved:.2f} bb/100 more than the figure, or less."]
     if report.get("uneven_ranges"):
         notes += ["The ranges of this check hold hand classes in part (some of a class's combos, or combos at "
                 "different weights). The combos of a class need not play alike then, and a result has one strategy "

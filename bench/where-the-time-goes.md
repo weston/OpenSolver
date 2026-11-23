@@ -1221,6 +1221,54 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   it changes what is won and lost after a flop by 0.035 % in an all-flops game, the references here,
   and by 0.001 % or less on the shipped subsets. On all flops the note no longer blames a subset for
   a sum that is not zero.
+- **Rows that do not add up to 1** (#502). `check` used to rescale them without a word: `[0.2, 0.2, 0.2]`
+  was checked as thirds, a single 1.5 or 2**70 as 1. It still makes them add up to 1, and now measures
+  what that leaves open the way it measures the hands a locked decision is silent on: the class's share
+  of the player's deals, times how often the result's own play brings it there, times the part of the
+  row that is not as written (what is missing under 1; over 1, what the entries have over 1 with none
+  counted as more than 1: two strategies that play no action more than the row says, and none more
+  than always, differ by no more than that, so `[1.5, 0, 0]` leaves nothing open and `[1.2, 0.3]`
+  leaves 0.3), times the swing. A class's rows at one decision after another add up, to all of the
+  class at the most: without that, rows of nonsense at every decision came to 4,604 bb/100 for a
+  player whose whole result spans 2,400 (found in the PR's verification). The note comes when the
+  figure is not 0.00 bb/100, with the row that counts the most in it (the row furthest from 1 can be
+  one the class never comes to); nothing is refused for it, because the measure grows with the stack and
+  a refusal would in the end meet a file nobody touched, as the note does: a result of the tool before
+  this change gets it at 1200 bb and at every deeper stack measured, and not at 1100 and under, on
+  three flops with no bets after the flop (the third non-author run's figures, small blind and big
+  blind in bb/100; a player is named in the note from 0.005):
+
+  | Stack, bb | Small blind | Big blind | Note |
+  |---|---|---|---|
+  | 100 | 0.0001 | 0.0002 | none |
+  | 500 | 0.0017 | 0.0028 | none |
+  | 1,000 | 0.0024 | 0.0025 | none |
+  | 1,100 | 0.0027 | 0.0029 | none |
+  | 1,200 | 0.0061 | 0.0084 | both |
+  | 1,300 | 0.0045 | 0.0053 | big blind |
+  | 1,400 | 0.0039 | 0.0052 | big blind |
+  | 1,500 | 0.0052 | 0.0065 | both |
+  | 2,000 | 0.0073 | 0.0074 | both |
+  | 3,000 | 0.0128 | 0.0153 | both |
+  | 6,000 | 0.0185 | 0.0250 | both |
+
+  The figure does not only grow with the stack (1,300 and 1,400 measure less than 1,200): it follows
+  which rows a solve's rounding left furthest off.
+  The ten results of this section (100 bb, rows as the
+  solver's seven digits left them, 1.2e-7 off at the most) measure 0.0002 to 0.0008 bb/100 a player,
+  6 to 25 times under the line, and their plans are the same rows as before, entry for entry
+  (compared with `_plan` of the commit before). `solve` now divides a class's row by its own sum, so a
+  new result's rows add up to 1 as doubles (1e-16) at any stack. The class dealt too rarely to show
+  (weight 1e-6) that may be missing at a first decision gets no note, by the same rule: what it can
+  move is 0.00 bb/100 or the decision would not have been locked, and the figure is in the report
+  (`unsaid_bb100`).
+- **The figure of a game too small for it** (#502). Asked for: a loss that does not move with
+  `--accuracy` by more than its span in the two small cases above, or the decision that the note is
+  what there is. The note is what there is at the tool's level: a loss is the difference of two
+  values, the locked solve's and the reference's, and where the two players' values do not add up to
+  the same thing at every pair of strategies neither is the value of anything; a best reply computed
+  some other way is a reply in the same game. The cause is in the solver's deal, which gives one pair
+  of hands two weights, one for each player (`Solver::flop_deal`), and is taken up there (#513).
 - **What the fifth review's mutations got past the tests** (seven of its thirteen): no test ran `check`
   with an ante, so the ante could go back into either sum, or out of the stake, unseen; versions 0 and
   -1 were read as results by a `_fits` that refused only "over 1", and `chart` could take any whole

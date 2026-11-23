@@ -451,6 +451,19 @@ blind's EVs at `r:0`, weighted by combos, are the value of the game to it, the f
 `chart OUT.json [NODE ...]` prints the charts of a saved result again, all or the named decisions.
 `OUT.json` holds the same per hand class: `nodes[].hands["AKs"]` = `{reach, freq[], ev_bb}`.
 
+**In the viewer.** Open the tree saved with `--save-tree` (Open in the top bar, then the file's path):
+Study shows it like any other tree, starting at the small blind's first decision with no board. A raise is
+named by its size over the pot once the bet in front is called, with the amount it is to (`Raise 75% to
+250` is the open to 2.5 big blinds of 100 chips; its tooltip adds `2.5x`), and the line under the title
+says who is to act and what the call costs. After a preflop call the strip lists **the flops of the
+tree**, highest cards first; type ranks or cards in its filter (`K8`, `KK`, `Ah7`) and click one, or
+press Enter for the first. On a flop, click a board card to change to another flop of the tree on the
+same line. EVs are as everywhere in the viewer a percentage of the pot at the node, and count from the
+start of the hand: a hand that folds the big blind to a 2.5 open is at -100 chips, -29% of the 350 in
+the pot. Lock works at preflop nodes; Sizes (a re-solve with other sizes) starts on the flop, and
+Solve further is off as for any tree opened from a file. Setting a preflop solve up in the Build tab
+is not there yet (#483).
+
 ## Viewer
 
 A PioViewer-style browser UI, driven by a small local server that talks to `./solver` over UPI

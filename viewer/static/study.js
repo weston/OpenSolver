@@ -11,6 +11,7 @@ import { nodeShown, whenReleased } from "./preview.js";
 import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips, fmtEvPct, prefs } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
 import { syncFurther } from "./further.js";
+import { dealName, seat, flopCards, sortFlops, flopMatches, preflopRaise } from "./preflop.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -86,6 +87,7 @@ const lockOf = (n) => {
 /** Street-start investment at node index i of the path (both players matched there). */
 function streetBase(path, i) {
   const len = (n) => parseCards(n.board).length;
+  if (len(path[i]) === 0) return 0;   // before the flop (a preflop tree): amounts are whole investments
   let j = i;
   while (j > 0 && len(path[j - 1]) === len(path[i])) j--;
   return Math.min(path[j].pot[0] || 0, path[j].pot[1] || 0);
@@ -105,6 +107,16 @@ function describe(parent, tok, pi, path) {
     const amt = Number(tok.slice(1));
     const base = path ? streetBase(path, pi) : 0;
     const allin = S.eff > 0 && amt >= S.eff - 1e-9;
+    if (!parseCards(parent.board).length) {
+      // the preflop street: every bet is a raise (over the big blind at least), to a whole amount
+      const r = preflopRaise(pot, own, facing, amt);
+      return {
+        kind: allin ? "allin" : "raise", label: allin ? "All-in" : `Raise ${pctLabel(r.frac)}`,
+        // no multiple in the label (it is cut short in a card of three actions): it goes in the tooltip
+        sub: allin ? fmtChips(r.to) : `to ${fmtChips(r.to)}`, more: `${r.mult.toFixed(1)}x`,
+        color: allin ? COL.allin : betColor(r.frac), frac: 10 + r.frac,
+      };
+    }
     if (facing > own) {
       const potAfterCall = pot + (facing - own);
       const frac = (amt - facing) / potAfterCall;
@@ -261,7 +273,8 @@ function renderBoard() {
       ce.classList.add("pickable");
       const root = boardOf(S.path[0]).length;
       ce.title = i < root ? `Change the ${root === 3 ? "flop" : "board"}: rebuild and solve on other cards`
-                          : `Change the ${i === 3 ? "turn" : "river"} card`;
+        : i < 3 ? "Change the flop: another flop of this tree"
+          : `Change the ${i === 3 ? "turn" : "river"} card`;
       ce.onclick = () => openBoardPicker(i);
     }
     b.appendChild(ce);
@@ -311,10 +324,23 @@ async function openBoardPicker(i) {
     };
     sync();
   } else {
-    const chance = S.path.find((n) => n.type === "SPLIT_NODE" && boardOf(n).length === i);
+    // a flop card of a preflop tree: all three come from the one deal after the preflop call
+    const chance = S.path.find((n) => n.type === "SPLIT_NODE" && boardOf(n).length === (i < 3 ? 0 : i));
     if (!chance) return;
     let kids;
     try { kids = (await get(`${S.base}/strategy?id=` + q(chance.id))).children || []; } catch (e) { fail(e); return; }
+    if (i < 3) {
+      $("cd-title").textContent = "Change the flop";
+      $("cd-hint").textContent = "Same tree, another of its flops: the view stays on this line where the new flop has it.";
+      apply.classList.add("hidden");
+      const pick = flopPicker(kids, shown.slice(0, 3).join(""), (id) => { dlg.close(); switchDealt(chance, lastTok(id)); });
+      deck.textContent = "";
+      deck.className = "cd-flops";
+      deck.append(pick.filter, pick.list);
+      $("cd-cancel").onclick = () => dlg.close();
+      if (!dlg.open) dlg.showModal();
+      return;
+    }
     pickable = new Map(kids.map((c) => [lastTok(c.id), c.id]));
     picked = [shown[i]];
     $("cd-title").textContent = `Change the ${i === 3 ? "turn" : "river"}`;
@@ -324,6 +350,7 @@ async function openBoardPicker(i) {
   }
   function draw() {
     deck.textContent = "";
+    deck.className = "mini-deck cd-deck";
     for (const s of SUITS) for (const r of RANKS) {
       const card = r + s;
       const b = el("button");
@@ -351,6 +378,50 @@ async function switchDealt(chance, card) {
     try { await get(`${S.base}/node?id=` + q(toks.join(":"))); break; } catch (e) { toks.pop(); }
   }
   gotoNode(toks.join(":"));
+}
+
+/** The flops of a preflop tree to choose from: a filter box and a scrolling list of them, highest
+ *  cards first. `kids` are the deal node's children, `current` the flop shown now (or ""),
+ *  onPick(node id) is called for the one clicked. Typing ranks or cards ("K8", "AhK") narrows the
+ *  list; Enter takes the first one left. */
+function flopPicker(kids, current, onPick) {
+  const ids = new Map(kids.map((c) => [lastTok(c.id), c.id]));
+  const toks = sortFlops([...ids.keys()]);
+  const filter = el("input", "flop-filter");
+  filter.type = "text";
+  filter.placeholder = "filter: K8, AhK";
+  filter.spellcheck = false;
+  filter.title = "Ranks or cards a flop must hold, e.g. K8, KK, Ah7";
+  const list = el("div", "flop-list");
+  const note = el("span");   // how many flops, or how many of them the filter leaves
+  const draw = () => {
+    list.textContent = "";
+    const left = toks.filter((t) => flopMatches(t, filter.value));
+    note.textContent = left.length === toks.length ? `${toks.length} in this tree` : `${left.length} of ${toks.length}`;
+    for (const t of left) {
+      const b = el("button", "flop");
+      for (const c of flopCards(t)) {
+        const sp = el("span", null, c[0] + GLYPH[c[1]]);
+        sp.style.background = `var(--suit-${c[1]})`;
+        b.appendChild(sp);
+      }
+      b.title = flopCards(t).join(" ");
+      b.classList.toggle("picked", t === current);
+      b.onclick = () => onPick(ids.get(t));
+      list.appendChild(b);
+    }
+    if (!left.length) list.appendChild(el("span", "flop-none", toks.length ? "no such flop in this tree" : "no flops"));
+    return left;
+  };
+  filter.oninput = draw;
+  filter.onkeydown = (ev) => {
+    ev.stopPropagation();   // typing here is not page navigation
+    if (ev.key !== "Enter") return;
+    const left = toks.filter((t) => flopMatches(t, filter.value));
+    if (left.length) onPick(ids.get(left[0]));
+  };
+  draw();
+  return { filter, list, note };
 }
 
 const STREET = ["", "", "", "FLOP", "TURN", "RIVER"];
@@ -394,7 +465,7 @@ function renderPath() {
   mark(cur);
   const now = el("div", "step now");
   if (isDec(cur)) now.textContent = `${actorOf(cur)} to act`;
-  else if (cur.type === "SPLIT_NODE") now.textContent = `Deal ${boardOf(cur).length === 3 ? "turn" : "river"}`;
+  else if (cur.type === "SPLIT_NODE") now.textContent = `Deal ${dealName(boardOf(cur).length)}`;
   else if (cur.type === "END_NODE") now.textContent = endText(cur);
   else now.textContent = cur.type;
   box.appendChild(now);
@@ -422,7 +493,8 @@ function renderPotInfo() {
     k.append(el("span", `who ${pl.toLowerCase()}`, pl), document.createTextNode(" EV"));
     evs[pl] = el("span", "v num", "…");
     d.append(k, evs[pl]);
-    d.title = `${pl}'s range EV as % of the pot (matchup-weighted, like Pio's)`;
+    d.title = `${pl}'s range EV as % of the pot (matchup-weighted, like Pio's)` +
+      (boardOf(S.path[0]).length ? "" : `. In a preflop tree it is the result of the whole hand, the blind included: folding the ${seat(pl)} is minus the blind.`);
     box.appendChild(d);
   }
   fillRangeEvs(evs, pot);
@@ -468,9 +540,11 @@ function renderTitle() {
     const a = actorOf(n);
     t.append(el("span", `badge ${a.toLowerCase()}`, a), el("span", null, "to act"));
     const p = n.pot, own = p[a === "OOP" ? 0 : 1], facing = Math.max(p[0], p[1]);
-    t.appendChild(el("span", "sub", facing > own ? `facing ${fmtChips(facing - own)} into ${fmtChips(potOf(n) - (facing - own))}` : "first to act or checked to"));
+    const pre = !boardOf(n).length;   // the preflop street: say who is who; what is in front is a blind or a raise
+    t.appendChild(el("span", "sub", pre ? `${seat(a)}, ` + (facing > own ? `${fmtChips(facing - own)} to call` : "can check")
+      : facing > own ? `facing ${fmtChips(facing - own)} into ${fmtChips(potOf(n) - (facing - own))}` : "first to act or checked to"));
   } else if (n.type === "SPLIT_NODE") {
-    t.append(el("span", "badge neutral", "DEAL"), el("span", null, `Choose the ${boardOf(n).length === 3 ? "turn" : "river"}`));
+    t.append(el("span", "badge neutral", "DEAL"), el("span", null, `Choose the ${dealName(boardOf(n).length)}`));
   } else if (n.type === "END_NODE") {
     t.append(el("span", "badge neutral", "END"), el("span", null, endText(n)));
   } else {
@@ -480,7 +554,13 @@ function renderTitle() {
   // them again); not below it, where the strategies are the re-solve's
   const dec = isDec(n) && S.cur && S.cur.freq;
   const v = S.variant;
-  $("btn-resolve").classList.toggle("hidden", !(dec && (!v || v.root === S.id)));
+  const rs = $("btn-resolve");
+  rs.classList.toggle("hidden", !(dec && (!v || v.root === S.id)));
+  // shown but off on the preflop street, so the row is the same as after the flop: a re-solve is a
+  // postflop tree made from the node's board, pot and ranges
+  rs.disabled = !boardOf(n).length;
+  rs.title = rs.disabled ? "Not before the flop: other sizes there are another preflop tree (tools/preflop.py)"
+    : "Solve from here with other sizes, or find the best ones";
   syncFurther(dec && !v);
   $("btn-lock").classList.toggle("hidden", !(dec && !v));
   $("btn-report").classList.toggle("hidden", !(reportBatch && isDec(n) && !v));
@@ -527,11 +607,22 @@ function renderStrip() {
       b.style.setProperty("--f", (o.freqs[j] * 100).toFixed(1) + "%");
       const lbl = el("div", "lbl", a.label);
       if (a.sub) lbl.appendChild(el("small", null, a.sub));
+      b.title = [a.label, a.sub, a.more].filter(Boolean).join(" ");   // in full: the card cuts a long one short
       b.append(lbl, el("div", "pct num", fmt(o.freqs[j] * 100) + "%"), el("div", "cmb num", fmt(o.combos[j]) + " c"));
       b.onclick = () => gotoNode(a.id);
       row.appendChild(b);
     });
     box.appendChild(row);
+    return;
+  }
+  if (n.type === "SPLIT_NODE" && !boardOf(n).length) {
+    // after a preflop call: one of the flops the tree was built on
+    const pick = flopPicker(S.cur.children, "", (id) => gotoNode(id));
+    const wrap = el("div", "deal");
+    const lab = el("div", "deal-label");
+    lab.append(el("b", null, "Flop"), pick.note, pick.filter);
+    wrap.append(lab, pick.list);
+    box.appendChild(wrap);
     return;
   }
   if (n.type === "SPLIT_NODE") {
@@ -630,7 +721,7 @@ function renderMatrix() {
       x.val.textContent = "";
     }
     // only a deal continues below; a fold or showdown ends the hand
-    const more = n && n.type === "SPLIT_NODE" ? " — pick a card to continue" : "";
+    const more = n && n.type === "SPLIT_NODE" ? ` — pick a ${boardOf(n).length ? "card" : "flop"} to continue` : "";
     note.textContent = S.decId !== S.id ? `Last decision: ${d.actor} at ${S.decId}${more}` : "";
   } else {
     const pl = viewPlayer();

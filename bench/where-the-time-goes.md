@@ -1221,6 +1221,29 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   it changes what is won and lost after a flop by 0.035 % in an all-flops game, the references here,
   and by 0.001 % or less on the shipped subsets. On all flops the note no longer blames a subset for
   a sum that is not zero.
+- **Rows that do not add up to 1** (#502). `check` used to rescale them without a word: `[0.2, 0.2, 0.2]`
+  was checked as thirds, a single 1.5 or 2**70 as 1. It still makes them add up to 1, and now measures
+  what that leaves open the way it measures the hands a locked decision is silent on: the class's share
+  of the player's deals, times how often the result's own play brings it there, times the part of the
+  row that is not as written (what is missing under 1; what is over, and all of it at the most, over
+  1: two strategies that play no action more than the row says differ by no more than that), times
+  the swing, summed over the locked rows. The note comes when the sum is not 0.00 bb/100, with the row
+  furthest off; nothing is refused for it, because the measure grows with the stack and a refusal
+  would in the end meet a file nobody touched: the ten results of this section (100 bb, rows as the
+  solver's seven digits left them, 1.2e-7 off at the most) measure 0.0002 to 0.0008 bb/100 a player,
+  6 to 25 times under the line, and their plans are the same rows as before, entry for entry
+  (compared with `_plan` of the commit before). `solve` now divides a class's row by its own sum, so a
+  new result's rows add up to 1 as doubles (1e-16) at any stack. The class dealt too rarely to show
+  (weight 1e-6) that may be missing at a first decision gets no note, by the same rule: what it can
+  move is 0.00 bb/100 or the decision would not have been locked, and the figure is in the report
+  (`unsaid_bb100`).
+- **The figure of a game too small for it** (#502). Asked for: a loss that does not move with
+  `--accuracy` by more than its span in the two small cases above, or the decision that the note is
+  what there is. The note is what there is at the tool's level: a loss is the difference of two
+  values, the locked solve's and the reference's, and where the two players' values do not add up to
+  the same thing at every pair of strategies neither is the value of anything; a best reply computed
+  some other way is a reply in the same game. The cause is in the solver's deal, which gives one pair
+  of hands two weights, one for each player (`Solver::flop_deal`), and is taken up there (#513).
 - **What the fifth review's mutations got past the tests** (seven of its thirteen): no test ran `check`
   with an ante, so the ante could go back into either sum, or out of the stake, unseen; versions 0 and
   -1 were read as results by a `_fits` that refused only "over 1", and `chart` could take any whole

@@ -593,8 +593,9 @@ def collect(u: Solver, s: Settings, root: Node) -> list[dict]:
             if c["dealt"] <= 0:
                 continue  # not in the player's range, or never dealt against the opponent's
             got = c["here"] > 1e-9 * c["dealt"]
+            played = sum(c["freq"])  # the class's deals here, less what the solver's rounding of a strategy leaves (1e-7)
             hands[cls] = {"reach": c["here"] / c["dealt"],
-                          "freq": [f / c["here"] if got else 0.0 for f in c["freq"]],
+                          "freq": [f / played if got and played > 0 else 0.0 for f in c["freq"]],
                           "ev_bb": c["ev"] / c["ev_of"] / s.chips if got and c["ev_of"] > 0 else None}
         out.append({
             "id": node.id, "actor": node.actor, "line": list(node.said),
@@ -747,15 +748,16 @@ def _fits(name: str, result: dict, s: Settings, decisions: list[Node]) -> list[s
     return ["file"] if mine["depth"] == its["depth"] == "file" else other
 
 
-def _class_rows(name: str, node: dict, actions: int) -> dict[str, list[float]]:
-    """What a result says at one decision: the frequencies of every hand class it brought there, summing
-    to 1. A class with no frequency was not brought there (by the player, or by the opponent)."""
+def _class_rows(name: str, node: dict, actions: int) -> tuple[dict[str, list[float]], dict[str, float]]:
+    """What a result says at one decision: the frequencies of every hand class it brought there, made to
+    add up to 1, and what each row added up to as written. A class with no frequency was not brought
+    there (by the player, or by the opponent)."""
     def share(f) -> bool:
         try:
             return isinstance(f, (int, float)) and not isinstance(f, bool) and math.isfinite(f) and f >= 0
         except OverflowError:  # an integer no float holds
             return False
-    out = {}
+    out, totals = {}, {}
     for cls, h in node["hands"].items():
         freq = h.get("freq") if isinstance(h, dict) else None
         if not isinstance(freq, list) or len(freq) != actions or not all(share(f) for f in freq):
@@ -765,8 +767,17 @@ def _class_rows(name: str, node: dict, actions: int) -> dict[str, list[float]]:
         if not math.isfinite(total):
             raise PreflopError(f"{name}: the frequencies of {cls} at {node['id']} are not a strategy")
         if total > 0:
-            out[cls] = [f / total for f in freq]
-    return out
+            out[cls], totals[cls] = [f / total for f in freq], total
+    return out, totals
+
+
+def _not_as_written(total: float) -> float:
+    """The part of a hand class's play at a decision that a row adding up to `total` leaves open, 0 to
+    1. Under 1, the strategies that play what is written differ in where the rest goes: by 1 - total.
+    Over 1, those that play no action more than written differ by total - 1 at the most (two of them
+    share at least 2 - total), and by no more than all of it. The row made to add up to 1 is one of them
+    either way."""
+    return min(1.0, abs(total - 1.0))
 
 
 def locked_rows(known: dict[str, list[float]], actions: int, classes: list[str]) -> list[list[float]]:
@@ -809,7 +820,9 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
     for a hand counts as passed by it, so nothing is said to be never come to because a file is silent
     higher up."""
     by_id = {n["id"]: n for n in result["nodes"]}
-    known = {n.id: _class_rows(name, by_id[n.id], len(n.children)) for n in decisions}
+    read = {n.id: _class_rows(name, by_id[n.id], len(n.children)) for n in decisions}
+    known = {node: rows for node, (rows, _) in read.items()}
+    written = {node: totals for node, (_, totals) in read.items()}
     even = not _uneven(classes, ranges)
     share: dict[str, dict[str, float]] = {}
     for who in (SB, BB):
@@ -853,9 +866,11 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
         free: list[str] = []
         part: list[str] = []
         unsaid = 0.0
+        rescaled = 0.0
+        furthest: list = []   # the locked row furthest from adding up to 1: [how far, class, decision, its sum]
 
         def visit(n: Node, comes: dict[str, float], first: bool, loose: bool = False) -> None:
-            nonlocal unsaid
+            nonlocal unsaid, rescaled, furthest
             if n.kind != "decision":
                 return
             if n.actor != who:
@@ -871,6 +886,12 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
                     return
                 unsaid += gap
                 rows[n.id] = locked_rows(here, k, classes)
+                for cls, p in comes.items():
+                    if cls in here:
+                        off = _not_as_written(written[n.id][cls])
+                        rescaled += mine[cls] * p * off * swing_bb * 100
+                        if not furthest or off > furthest[0]:
+                            furthest = [off, cls, n.id, written[n.id][cls]]
                 for a, (_, child) in enumerate(n.children):
                     visit(child, {cls: p * (here[cls][a] if cls in here else 1.0 / k) for cls, p in comes.items()},
                           False, loose)
@@ -892,7 +913,8 @@ def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: l
                 visit(child, comes, False, loose or bool(here))
 
         visit(root, {cls: 1.0 for cls in mine}, True)
-        out[who] = {"rows": rows, "free": free, "part": part, "unsaid_bb100": unsaid}
+        out[who] = {"rows": rows, "free": free, "part": part, "unsaid_bb100": unsaid,
+                    "rescaled_bb100": rescaled, "rescaled_most": furthest[1:]}
     return out
 
 
@@ -999,7 +1021,9 @@ def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
                             "exploitable_bb100": got.get("Exploitable for", 0.0) / s.chips * 100,
                             "sum_bb100": _sum(got, s), "locked": len(plan[who]["rows"]),
                             "free": plan[who]["free"], "free_part": plan[who]["part"],
-                            "unsaid_bb100": plan[who]["unsaid_bb100"]}
+                            "unsaid_bb100": plan[who]["unsaid_bb100"],
+                            "rescaled_bb100": plan[who]["rescaled_bb100"],
+                            "rescaled_most": plan[who]["rescaled_most"]}
             checked.append(row)
     return {
         "version": 1, "kind": "check",
@@ -1063,6 +1087,13 @@ def check_text(report: dict) -> list[str]:
                         "(A result leaves out the hands its solve did not bring to a decision: by their own play, or "
                         f"because no hand of the {their} blind met them there. Under a decision left to the solve, "
                         "more hands come than the result has.)"]
+            moved = r[who].get("rescaled_bb100") or 0.0
+            if _shows(moved):
+                cls, node, total = r[who]["rescaled_most"]
+                notes += [f"{file} has frequencies of the {word} blind that do not add up to 1 (the furthest: {cls} "
+                        f"at {node}, {total:.6g}). The check made every row add up to 1, as it does what the rounding "
+                        "of a solve leaves; a strategy that plays what the file says as written can give up as much as "
+                        f"{moved:.2f} bb/100 more than the figure, or less."]
     if report.get("uneven_ranges"):
         notes += ["The ranges of this check hold hand classes in part (some of a class's combos, or combos at "
                 "different weights). The combos of a class need not play alike then, and a result has one strategy "

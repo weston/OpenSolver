@@ -520,6 +520,12 @@ at the others, and can only be understated by it. (It is locked all the same whe
 frequencies come too rarely to show in the second decimal.) A result that is not all of a strategy is
 refused: one with nothing for hands at a decision that its own two strategies bring them to, as a file
 cut short or changed by hand can be (looked for when both ranges hold whole hand classes at one weight).
+Frequencies that do not add up to 1 at a hand class and decision are checked made to add up to 1. A
+solve writes rows that do; for a file whose rows leave something open the check names the row furthest
+off and what that can move: the class's share of the deals, times how often the result's own play
+brings it there, times the part of the row that is missing or over, times two stacks and the ante,
+added up over the locked rows and said when it is not 0.00 bb/100 (the report has it as
+`rescaled_bb100`, and `unsaid_bb100` for the hands a locked decision has nothing for).
 Ranges that hold a hand class in part (single combos, combos at different weights) are checked
 with a note: the combos of a class need not play alike there, a result has one strategy for a class, and
 the loss includes what playing them alike costs. On all flops the two values of a solve add up to zero

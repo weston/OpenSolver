@@ -124,6 +124,9 @@ class PreflopBuildTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.dir = tempfile.TemporaryDirectory(prefix="wsolver-test-preflop-build-")
+        # the solver's choices that go by free memory, as on a machine with 8 GB free whatever this one has (#508)
+        cls.free_before = os.environ.get("WSOLVER_FREE_MB")
+        os.environ["WSOLVER_FREE_MB"] = "8192"
         cls.v = Viewer(os.path.join(cls.dir.name, "library"))
         cls.pf = preflop_api.tool()
 
@@ -131,6 +134,10 @@ class PreflopBuildTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.v.close()
         cls.dir.cleanup()
+        if cls.free_before is None:
+            os.environ.pop("WSOLVER_FREE_MB", None)
+        else:
+            os.environ["WSOLVER_FREE_MB"] = cls.free_before
 
     def tool_settings(self, args=ARGS):
         return self.pf.settings_from(self.pf.parser().parse_args(["tree"] + args))
@@ -217,6 +224,7 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = self.v.req("/api/preflop/estimate", "POST", FORM)
         self.assertEqual(st, 200, d)
         self.assertEqual((d["mb"], d["flops"]), (want, 10))
+        self.assertEqual(d["mb_tables"], want, "no bets on the turn: the smallest tree has the tables")
         self.assertEqual(d["memory_mb"], self.pf.physical_memory_mb())
         key_count = len(preflop_api.ESTIMATES.cache)
         t = time.time()
@@ -228,6 +236,19 @@ class PreflopBuildTest(unittest.TestCase):
         st, more = self.v.req("/api/preflop/estimate", "POST", dict(FORM, flops="25"))
         self.assertEqual(st, 200, more)
         self.assertGreater(more["mb"], d["mb"])
+        # bets on the turn: two trees, the smallest and the one with outcome tables at every level (#504)
+        turn = dict(FORM, stack="5", limp=False, depth="turn")
+        st, two = self.v.req("/api/preflop/estimate", "POST", turn)
+        self.assertEqual(st, 200, two)
+        s = self.tool_settings(["--stack", "5", "--no-limp", "--depth", "turn"])
+        self.assertEqual((two["mb"], two["mb_tables"]), self.pf.estimates_mb(SOLVER, s, flops))
+        self.assertLess(two["mb"], two["mb_tables"])
+        # and with bets on the river
+        st, river = self.v.req("/api/preflop/estimate", "POST", dict(turn, depth="river"))
+        self.assertEqual(st, 200, river)
+        s = self.tool_settings(["--stack", "5", "--no-limp", "--depth", "river"])
+        self.assertEqual((river["mb"], river["mb_tables"]), self.pf.estimates_mb(SOLVER, s, flops))
+        self.assertLess(river["mb"], river["mb_tables"])
 
     def test_05_ranges_that_cannot_be_dealt(self):
         # every hand of each holds the ace of spades and the ace of hearts
@@ -244,7 +265,8 @@ class PreflopBuildTest(unittest.TestCase):
         self.assertEqual((d["chips"], d["flops"]), (100, 10))
         # the size the form shows after a build is the build's own answer, the Estimate button's figure
         st, e = self.v.req("/api/preflop/estimate", "POST", FORM)
-        self.assertEqual((d["mb"], d["memory_mb"]), (e["mb"], e["memory_mb"]))
+        self.assertEqual((d["mb"], d["mb_tables"], d["memory_mb"]), (e["mb"], e["mb_tables"], e["memory_mb"]))
+        self.assertEqual(d["built_mb"], d["mb"], "what the solver counts for the tree it built")
         s = self.tool_settings()
         root = self.pf.build_tree(s)
         count, kids = self.tool_tree(self.pf.script(s, self.pf.choose_flops("10")[1], root))
@@ -453,6 +475,61 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = v.req("/api/build", "POST", {})
         self.assertEqual(st, 200, d)
         self.assertIn("TOTAL: 13201", d["node_count"])
+
+    def test_12_a_tree_with_turn_bets_says_which_tree_was_built(self):
+        # two trees (#504): the build's answer has both estimates and what the solver counts for the one
+        # it built. A build here leaves the choice to the solver, which has the memory for the tables
+        form = dict(FORM, stack="5", limp=False, depth="turn")
+        st, e = self.v.req("/api/preflop/estimate", "POST", form)
+        self.assertEqual(st, 200, e)
+        # a build is refused by the smallest tree, the one that can always be built: a machine of exactly
+        # its size, which does not hold the tree with the tables, builds; one MB under it does not
+        machine = self.pf.physical_memory_mb
+        try:
+            self.pf.physical_memory_mb = lambda: e["mb"] - 1
+            st, d = self.v.req("/api/preflop/build", "POST", form)
+            self.assertEqual(st, 400, d)
+            self.assertIn(f"This tree is about {e['mb']:,} MB and this machine has {e['mb'] - 1:,} MB", d["error"])
+            self.pf.physical_memory_mb = lambda: e["mb"]
+            st, d = self.v.req("/api/preflop/build", "POST", form)
+        finally:
+            self.pf.physical_memory_mb = machine
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["memory_mb"], e["mb"])
+        self.assertEqual((d["mb"], d["mb_tables"]), (e["mb"], e["mb_tables"]))
+        self.assertLess(d["mb"], d["mb_tables"])
+        self.assertEqual(d["built_mb"], d["mb_tables"])
+        self.assertIn(f"Memory needed: {d['built_mb']} MB; available: 8192 MB", self.v.solver.cmd("estimate_rebuild_tree"))
+
+    def test_13_the_page_reads_the_sizes_through_the_tested_functions(self):
+        # The page's code that touches the document runs in no test. What it does with the two sizes is in
+        # functions of preflop.js that viewer/test_preflop_js.mjs runs, and this holds the page to them:
+        # every name a module takes from preflop.js is one it gives, the line after Build is builtLine's,
+        # and an estimate is kept by estimateCell and read as the note and the row read it.
+        import re
+        static = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+        src = {n: open(os.path.join(static, n)).read() for n in os.listdir(static) if n.endswith(".js")}
+        given = {name: set(re.findall(r"^export (?:async )?(?:function\*?|const|let|class) (\w+)", text, re.M))
+                 | {n.split(" as ")[-1].strip() for names in re.findall(r"^export \{([^}]*)\}", text, re.M) for n in names.split(",") if n.strip()}
+                 for name, text in src.items()}
+        users, others = 0, 0
+        for name, text in src.items():   # a name no module gives stops the whole page: its modules do not link
+            for names, source in re.findall(r'import \{([^}]*)\} from "\./(\w+\.js)"', text):
+                users += source == "preflop.js"
+                others += source != "preflop.js"
+                for taken in (n.split(" as ")[0].strip() for n in names.split(",") if n.strip()):
+                    self.assertIn(taken, given[source], f"{name} imports {taken} from {source}")
+        self.assertGreaterEqual(users, 4)
+        self.assertGreaterEqual(others, 20)
+        build, form = src["build.js"], src["preflop_build.js"]
+        self.assertIn("info(builtLine(b));", build)
+        for other in ("builtSize", "mb_tables", "built_mb", "fmtMemory"):
+            self.assertNotIn(other, build, "the line after Build is made in one place")
+        code = "\n".join(line for line in form.splitlines() if not line.lstrip().startswith(("/**", "*", "//")))
+        self.assertEqual(code.count("= estimateCell(e);"), 2)
+        self.assertNotIn("mb_tables", code)
+        self.assertIn("memoryNote(own.mb, mem.machine, own.flops, own.mbTables)", code)
+        self.assertIn("fmtMemoryRange(e.mb, e.mbTables)", code)
 
 
 if __name__ == "__main__":

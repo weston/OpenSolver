@@ -712,6 +712,14 @@ def check_output_format(u):
     rng = u.cmd("show_range OOP")
     check("0.300000012 " in rng and rng.endswith(" ") and len(rng.split()) == 1326,
           "floats print as %.9g of the float32, like Pio (0.3 -> 0.300000012)")
+    # A pair of digits alone is a hand, not one of 1326 weights (#501).
+    said = u.cmd("set_range OOP 22")
+    rng = u.cmd("show_range OOP").split()
+    check(said == "set_range ok!" and len(rng) == 1326 and rng.count("1") == 6 and rng.count("0") == 1320,
+          "set_range 22: the six combos of deuces, not one weight")
+    check(u.cmd("set_range OOP 0.5") == "ERROR: set_range expected 1326 weights, got 1",
+          "set_range with one number that is no hand: still the weights error")
+    u.cmd("set_range OOP AA:0.3")
     for c in ("show_strategy_pp r:0", "calc_ev_pp OOP r:0", "calc_eq_pp OOP"):
         out = u.cmd(c)
         check(out.endswith("\n") and not out.endswith("\n\n"), f"{c.split()[0]} ends with one blank line, like Pio")

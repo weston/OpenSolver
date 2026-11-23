@@ -461,7 +461,7 @@ static bool allin_tables_match() {
     Solver s(g);
     for (const GNode& n : g.nodes) {
       if (n.kind != ANodeKind::Showdown || n.board_len == 5) continue;
-      if (g.allins[n.aux].e2.empty() && g.allins[n.aux].e2b.empty()) { ++bad; continue; }
+      if (!g.allins[n.aux].built()) { ++bad; continue; }
       for (int p = 0; p < 2; ++p) {
         const int Hp = g.num_hands(p), Ho = g.num_hands(1 - p);
         std::vector<float> ro(Ho), a(Hp), b(Hp);
@@ -501,11 +501,28 @@ static bool preflop_runout_tables() {
     const char* range2;  // the second player's, null: the same (then a table's two sides list the same hands)
     std::vector<std::vector<int>> flop_lines;  // bets from an exit with 250 in from each player
     int want_tables;                           // bit 0: flop sets, bit 1: turn sets
+    int ask = -1;                              // GameTree::allin_plan: the tables asked for, not chosen
+    int room = -1;                             // GameTree::table_limit: what the tree with these tables takes,
+    int64_t slack = 0;                         // and this many bytes more
   } spots[] = {
       {"flop bets, all hands", "", nullptr, {{250, 500, 1100}, {500, 1100}}, 1},
       {"turn bets, all hands", "", nullptr, {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 0},
       {"turn bets, narrow", "TT+,AJs+,KQs,AQo+,76s,65s", nullptr,
        {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 3},
+      // #496: the same hands on both sides make the tables compact ones (a triangle over the hands the
+      // board leaves), which the three spots above have where they have tables; here they are asked for
+      // at both levels with every hand, and at the turn level only
+      {"turn bets, all, asked", "", nullptr, {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 3, 3},
+      {"turn bets, all, turn only", "", nullptr, {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 2, 2},
+      // with a memory limit: tables at both levels when the tree with them is within it, to the byte;
+      // one byte short or with no room, the smallest tree
+      {"turn bets, all, room", "", nullptr, {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 3, -1, 3, 0},
+      {"turn bets, all, 1 short", "", nullptr, {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 0, -1, 3, -1},
+      {"turn bets, all, no room", "", nullptr, {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 0, -1, 3,
+       INT64_MIN / 2},
+      // a limit takes no table from a tree that is smallest with them
+      {"turn bets, narrow, no room", "TT+,AJs+,KQs,AQo+,76s,65s", nullptr,
+       {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 3, -1, 3, INT64_MIN / 2},
       // unequal ranges: the second player holds hands the first does not (and the other way round in
       // the last), so its side of a table is ranked for itself and not copied from the first's
       {"flop bets, narrow v all", "TT+,AJs+,KQs,AQo+,76s,65s", "", {{250, 500, 1100}, {500, 1100}}, 1},
@@ -554,10 +571,19 @@ static bool preflop_runout_tables() {
     }
     if (cfg.schematics.size() != 1) { std::printf("no exit found\n"); return false; }
     for (auto& f : flops) cfg.subset.push_back({1.0f, {f[0], f[1], f[2]}});
+    uint64_t limit = 0;
+    if (sp.room >= 0) {
+      GameTree m;
+      m.allin_plan = sp.room;
+      if (!m.build(cfg, err, false)) return false;
+      limit = static_cast<uint64_t>(std::max<int64_t>(1, static_cast<int64_t>(m.memory_bytes_for(true)) + sp.slack));
+    }
     GameTree g;
+    g.allin_plan = sp.ask;
+    g.table_limit = limit;
     if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
     // what was planned, and that nothing is kept that nobody reads
-    int sets[2] = {0, 0}, tabled[2] = {0, 0}, boards[2] = {0, 0}, unbuilt = 0;
+    int sets[2] = {0, 0}, tabled[2] = {0, 0}, boards[2] = {0, 0}, unbuilt = 0, compact = 0;
     uint64_t table_bytes = 0;
     for (const AllinRunouts& ar : g.allins) {
       if (ar.exact) continue;
@@ -565,19 +591,27 @@ static bool preflop_runout_tables() {
       ++sets[lvl];
       tabled[lvl] += ar.table;
       boards[lvl] += !ar.boards.empty();
-      unbuilt += ar.table && ar.e2.empty() && ar.e2b.empty();
-      table_bytes += ar.e2.size() * 2 + ar.e2b.size();
+      unbuilt += ar.table && !ar.built();
+      compact += !ar.live.empty();
+      // a compact table: the pairs of the hands its cards leave, each pair once
+      const size_t n = ar.live.size(), pairs = n * (n - (n > 0)) / 2;
+      unbuilt += !ar.live.empty() && (ar.tri8.size() + ar.tri16.size() != pairs || !ar.e2.empty() || !ar.e2b.empty());
+      table_bytes += ar.e2.size() * 2 + ar.e2b.size() + ar.tri16.size() * 2 + ar.tri8.size() + ar.live.size() * 2;
     }
     bool plan = unbuilt == 0;
     for (int lvl = 0; lvl < 2; ++lvl) {
       const bool t = (sp.want_tables >> lvl) & 1;
       plan = plan && tabled[lvl] == (t ? sets[lvl] : 0) && boards[lvl] == (t ? 0 : sets[lvl]);
     }
-    plan = plan && sets[0] == 3 && (sp.want_tables == 1 ? sets[1] == 0 : sets[1] > 3 * 20);
+    plan = plan && sets[0] == 3 && (sp.flop_lines.size() == 2 ? sets[1] == 0 : sets[1] > 3 * 20);  // flop bets: two lines
+    // compact where the two players hold the same hands, and only there
+    plan = plan && compact == (sp.range2 ? 0 : tabled[0] + tabled[1]) && g.compact_tables() == !sp.range2;
     const size_t kept = g.showdowns.size();
     if (sp.want_tables & 1 && (sets[1] == 0 || sp.want_tables & 2)) plan = plan && kept == 0;
     // the memory count: the tables built are the tables counted, before the storage as after it
     GameTree dry;
+    dry.allin_plan = sp.ask;
+    dry.table_limit = limit;
     if (!dry.build(cfg, err, false)) return false;
     const bool counted = dry.memory_bytes_for(true) == g.memory_bytes_for(true) && dry.showdowns.size() == kept;
     uint64_t dry_tables = 0;
@@ -607,26 +641,38 @@ static bool preflop_runout_tables() {
       }
     }
     // the same on the boards
-    std::vector<std::vector<uint16_t>> t16;
-    std::vector<std::vector<uint8_t>> t8;
-    for (AllinRunouts& ar : g.allins) {
-      t16.push_back(std::move(ar.e2));
-      t8.push_back(std::move(ar.e2b));
-      ar.e2.clear(), ar.e2b.clear();
-    }
+    struct Tables {
+      std::vector<uint16_t> e2, live;
+      std::vector<uint8_t> e2b;
+      std::vector<int16_t> tri16;
+      std::vector<int8_t> tri8;
+      bool operator==(const Tables&) const = default;
+    };
+    auto take = [](AllinRunouts& ar) {
+      Tables t{std::move(ar.e2), std::move(ar.live), std::move(ar.e2b), std::move(ar.tri16), std::move(ar.tri8)};
+      ar.e2.clear(), ar.live.clear(), ar.e2b.clear(), ar.tri16.clear(), ar.tri8.clear();
+      return t;
+    };
+    std::vector<Tables> first;
+    for (AllinRunouts& ar : g.allins) first.push_back(take(ar));
     // what the boards will add is known before they are built (the memory check of set_icm): never
     // more than they do add, and most of it (the strength groups are what the count leaves out)
     const uint64_t missing = g.allin_boards_missing_bytes(), before_boards = g.memory_bytes_for(true);
     g.restore_allin_boards();
     const uint64_t added = g.memory_bytes_for(true) - before_boards;
+    // (turn tables alone leave no board out: the flop sets of these flops read every one of them)
     const bool foreseen = g.allin_boards_missing_bytes() == 0 && missing <= added && added <= missing + missing / 2 &&
-                          (missing > 0) == (tabled[0] + tabled[1] > 0);
+                          (missing > 0) == (tabled[0] > 0);
     g.build_allin_tables();  // from the boards now
     long same_counts = 0, sets_tabled = 0;
     for (size_t i = 0; i < g.allins.size(); ++i) {
       if (!g.allins[i].table) continue;
       ++sets_tabled;
-      same_counts += g.allins[i].e2 == t16[i] && g.allins[i].e2b == t8[i] && !(t16[i].empty() && t8[i].empty());
+      const bool built = g.allins[i].built();
+      Tables again = take(g.allins[i]);
+      same_counts += built && again == first[i];
+      g.allins[i].e2 = std::move(again.e2), g.allins[i].live = std::move(again.live), g.allins[i].e2b = std::move(again.e2b);
+      g.allins[i].tri16 = std::move(again.tri16), g.allins[i].tri8 = std::move(again.tri8);
     }
     s.allin_tables = false;
     long bad = 0;

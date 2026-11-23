@@ -159,7 +159,16 @@ struct AllinRunouts {
   // stored in e2b (uint8, half the bytes to stream), flop all-ins (<= 2352) in e2. Both empty: not built.
   std::vector<uint16_t> e2;
   std::vector<uint8_t> e2b;
+  // The compact form (GameTree::compact_tables: a preflop tree whose players hold the same hands).
+  // Only the hands the set's cards leave (`live`, local indices ascending), and of the centered counts
+  // c = e2 - valid, which are antisymmetric there (what h wins of o, o loses to h), the triangle under
+  // the diagonal: tri[i * (i - 1) / 2 + j] = c[live[i]][live[j]] for j < i, 0 for a pair sharing a card.
+  // |c| <= valid: tri8 for a turn set (44), tri16 for a flop set (990).
+  std::vector<int8_t> tri8;
+  std::vector<int16_t> tri16;
+  std::vector<uint16_t> live;
   int valid = 0;
+  bool built() const { return !(e2.empty() && e2b.empty() && tri8.empty() && tri16.empty()); }
 };
 
 struct ShowdownBoard {
@@ -433,9 +442,33 @@ class GameTree {
   // the memory check of whoever switches ICM on. 0 for a tree that has all its boards.
   uint64_t allin_boards_missing_bytes() const;
   // Bytes of a set's table: one count per hand pair, a byte each for a turn all-in, two for a flop's.
+  // Compact: per pair of live hands, each pair once, and the list of the live hands.
   uint64_t allin_table_bytes(const AllinRunouts& ar) const {
-    return static_cast<uint64_t>(num_hands(0)) * num_hands(1) * (ar.runouts <= 127 ? 1 : 2);
+    const uint64_t width = ar.runouts <= 127 ? 1 : 2;
+    if (!compact_tables()) return static_cast<uint64_t>(num_hands(0)) * num_hands(1) * width;
+    const uint64_t n = allin_live_hands(ar);
+    return n * (n - (n > 0)) / 2 * width + n * sizeof(uint16_t);
   }
+  // The tables of this tree are compact ones (AllinRunouts::tri8): both players hold the same hands in
+  // the same order, so one triangle serves both. Preflop trees only: a postflop tree's values stay the
+  // sums they were, to the last bit.
+  bool compact_tables() const { return cfg.preflop && same_hands; }
+  bool same_hands = false;
+  // Player 0's hands without a card of the set's board.
+  int allin_live_hands(const AllinRunouts& ar) const;
+  // What plan_allins chooses for the runout sets of a preflop tree (bit 0: tables for the flop sets,
+  // bit 1: for the turn sets). Set before build.
+  //   table_limit 0: the smallest tree, what an estimate is to say and what a tree short of memory gets.
+  //   table_limit > 0: a table is the faster way to value a set (bench/where-the-time-goes.md, #496), so
+  //     with memory to spare the tree gets them: at both levels if it then stays within table_limit bytes
+  //     (counted for the storage limit_compress and limit_preds name, as memory_bytes_for counts), else
+  //     the smallest tree. Nothing in between: the turn sets' tables are the time (2x on a tree with turn
+  //     bets, measured), and with them a flop's own table is less than the boards it then makes needless;
+  //     tables for the flop sets alone bought nothing measurable.
+  //   allin_plan >= 0: these levels, whatever the memory (set_outcome_tables fast, measurements, tests).
+  uint64_t table_limit = 0;
+  bool limit_compress = true, limit_preds = false;
+  int allin_plan = -1;
 
  private:
   void store_allin_boards(AllinRunouts& ar);

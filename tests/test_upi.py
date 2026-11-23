@@ -954,6 +954,50 @@ def check_collapse_checkdowns(u):
     u.cmd("free_tree")
 
 
+def check_outcome_tables(u):
+    """set_outcome_tables (#496): the tables of a preflop tree's runout sets cost memory with wide ranges and
+    none with narrow ones, and a solve has the same values with them and without."""
+    print("[set_outcome_tables: outcome tables of a preflop tree's runouts]")
+    mb = lambda out: int(re.search(r"(\d+) MB", out).group(1))
+    results = lambda: [float(l.split(": ")[1]) for l in u.cmd("calc_results").split("\n")[:5]]
+    near = lambda a, b: len(a) == len(b) and all(abs(x - y) <= 0.0015 + 1e-5 * abs(x) for x, y in zip(a, b))
+    every = "22+,A2s+,K2s+,Q2s+,J2s+,T2s+,92s+,82s+,72s+,62s+,52s+,42s+,32s,A2o+,K2o+,Q2o+,J2o+,T2o+,92o+,82o+,72o+,62o+,52o+,42o+,32o"
+
+    def tree(mode, hands, steps=0):
+        u.cmd("free_tree")
+        check(u.cmd("set_outcome_tables " + mode) == "set_outcome_tables ok!", f"set_outcome_tables {mode} accepted")
+        for c in ("set_range OOP " + hands, "set_range IP " + hands, "set_pot 10 5 0", "set_eff_stack 1000",
+                  "set_collapse_checkdowns on", "clear_preflop_lines", "add_preflop_line 25 25", "add_preflop_line 1000 1000",
+                  "build_preflop_tree", "reset_subset", "add_to_subset 1 Qs 4h 2s", "add_to_subset 1 7s 7h 3d",
+                  "set_board Qs4h2s", "set_pot 25 25 0", "set_eff_stack 1000", "clear_lines",
+                  # bets on the flop and the turn: all-ins and check-downs from both streets
+                  "add_line 25 50 50 100", "add_line 25 25 50 1000", "add_line 25 1000", "add_schematic_tree r:0:b25:c"):
+            u.cmd(c)
+        r = {"mb": mb(u.cmd("estimate_tree"))}
+        if steps:
+            u.cmd("add_all_flops")
+            u.cmd("set_accuracy 0")
+            u.cmd(f"go {steps} steps"); u.cmd("wait_for_solver")
+            r["after"] = results()
+        return r
+
+    wide = {m: tree(m, every, 3) for m in ("small", "fast", "auto")}
+    check(wide["fast"]["mb"] > wide["small"]["mb"] == wide["auto"]["mb"],
+          f"every hand: the tables are more memory than the boards ({wide['small']['mb']} -> {wide['fast']['mb']} MB), "
+          f"and the estimate under auto is the smallest tree's")
+    check(near(wide["small"]["after"], wide["fast"]["after"]) and near(wide["small"]["after"], wide["auto"]["after"]) and
+          all(x == x for x in wide["fast"]["after"]) and wide["fast"]["after"][2:] != [0.0, 0.0, 0.0],
+          f"three iterations end at the same values with them, without and under auto ({wide['fast']['after']})")
+    narrow = {m: tree(m, "22+,A2s+,K9s+,QTs+,JTs,ATo+,KJo+") for m in ("small", "fast")}
+    check(narrow["fast"]["mb"] == narrow["small"]["mb"] > 0, f"narrow ranges: the smallest tree has them already ({narrow['small']['mb']} MB)")
+    check(u.cmd("set_outcome_tables on").startswith("ERROR") and u.cmd("set_outcome_tables").startswith("ERROR"),
+          "set_outcome_tables rejects a bad or missing argument")
+    u.cmd("set_outcome_tables auto")
+    u.cmd("set_collapse_checkdowns off")
+    u.cmd("reset_subset")
+    u.cmd("free_tree")
+
+
 def check_schematic_after_build(u):
     """#306: Pio's preflop workflow builds each schematic before attaching it (set_board, set_pot, set_eff_stack,
     lines, build_tree, add_schematic_tree), so the tree in memory is the postflop one by then. The exit is
@@ -2149,6 +2193,7 @@ def main(exe, big=False):
         check_calc_ev_zero_reach(u)
         check_union_hands(u)
         check_collapse_checkdowns(u)
+        check_outcome_tables(u)
         check_schematic_after_build(u)
         check_flop_subset_equity(u, exe)
         check_iso_symmetry(u)

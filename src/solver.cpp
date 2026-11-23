@@ -919,6 +919,54 @@ void Solver::allin_table_value(const AllinRunouts& ar, const E* e2, float W, flo
   }
 }
 
+// The same value from a compact table (AllinRunouts::tri8): with c = e2 - V antisymmetric,
+// sum_o ro[o] * e2[h][o] = S[h] + V * compat(h), S[h] = sum_o ro[o] * c[h][o], and the IP player's count
+// against OOP's hand h, 2V - e2[h][x] = V + c[x][h], gives the same expression: one function for both.
+// A row of the triangle serves twice, as the part of S[i] under the diagonal and, negated, as column i
+// of the rows above it.
+namespace {
+// In functions of their own: inside the loop over the rows the compiler left the sixteen sums scalar.
+template <class E>
+[[gnu::noinline]] float tri_dot(const float* r, const E* row, int n) {
+  float part[16] = {};
+  int j = 0;
+  for (; j + 16 <= n; j += 16)
+    for (int l = 0; l < 16; ++l) part[l] += r[j + l] * static_cast<float>(row[j + l]);
+  float d = 0.0f;
+  for (; j < n; ++j) d += r[j] * static_cast<float>(row[j]);
+  for (int l = 0; l < 16; ++l) d += part[l];
+  return d;
+}
+template <class E>
+[[gnu::noinline]] void tri_axpy(float* s, float a, const E* row, int n) {
+  for (int j = 0; j < n; ++j) s[j] += a * static_cast<float>(row[j]);
+}
+}  // namespace
+
+template <class E>
+void Solver::allin_tri_value(const AllinRunouts& ar, const E* tri, float W, float L, int p, const float* ro,
+                             float* out) const {
+  const int n = static_cast<int>(ar.live.size());
+  const uint16_t* live = ar.live.data();
+  const float half = 0.5f * (W - L) * ar.scale;
+  const float V = static_cast<float>(ar.valid);
+  ArenaScope sc;
+  float* cm = sc.a.alloc(g_.num_hands(p));
+  compat_mass(p, ro, cm);
+  float* r = sc.a.alloc(n);
+  float* s = sc.a.alloc_zero(n);
+  for (int i = 0; i < n; ++i) r[i] = ro[live[i]];
+  const E* row = tri;
+  for (int i = 1; i < n; row += i, ++i) {
+    s[i] += tri_dot(r, row, i);
+    if (r[i] != 0.0f) tri_axpy(s, -r[i], row, i);  // most opponent hands have no reach at an all-in
+  }
+  for (int i = 0; i < n; ++i) {
+    const int h = live[i];
+    out[h] = half * (s[i] + V * cm[h]) + L * cm[h];
+  }
+}
+
 void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) const {
   const GameTree::TermPay& tp = g_.term_pay(n);
   const float W = tp.w[p], L = tp.l[p], T = tp.t[p];
@@ -966,12 +1014,14 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
     return;
   }
   // (`allin_tables` off is for tests, which compare the two ways; a set without boards has only its table.)
-  if ((allin_tables || ar.boards.empty()) && !(ar.e2.empty() && ar.e2b.empty()) && !g_.payoff().icm.enabled) {
+  if ((allin_tables || ar.boards.empty()) && ar.built() && !g_.payoff().icm.enabled) {
     // value(h) = scale * sum_o ro[o] * (W*wins + T*ties + L*losses) over the runouts. Without ICM a
     // tie pays the midpoint, so with e2 = 2*wins + ties and V = runouts per disjoint pair,
     // value(h) = (W - L) / (2V) * sum_o ro[o] * e2[h][o] + L * compat(h). For IP the table is read
     // transposed: 2*wins_IP + ties = 2V - e2 on compatible pairs.
-    if (!ar.e2b.empty()) allin_table_value(ar, ar.e2b.data(), W, L, p, ro, out);
+    if (!ar.tri8.empty()) allin_tri_value(ar, ar.tri8.data(), W, L, p, ro, out);
+    else if (!ar.tri16.empty()) allin_tri_value(ar, ar.tri16.data(), W, L, p, ro, out);
+    else if (!ar.e2b.empty()) allin_table_value(ar, ar.e2b.data(), W, L, p, ro, out);
     else allin_table_value(ar, ar.e2.data(), W, L, p, ro, out);
     return;
   }

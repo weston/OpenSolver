@@ -680,13 +680,16 @@ static bool flop_subset_one_weight() {
       }
       // Under ICM each half of the undealt dead money is worth what winning that many chips is worth to the
       // player. Where a chip is worth a chip that is the game above, and where it is worth two the two
-      // values add up to twice the dead money: not so with the halves left out, or counted in chips.
-      double icm_off[2] = {0, 0};
-      for (int worth = 1; worth <= 2; ++worth) {
+      // values add up to twice the dead money: not so with the halves left out, or counted in chips. And
+      // where it is worth one to the one player and three to the other, each value in the player's own
+      // chips: not so with a half valued as the other player's.
+      const double worths[3][2] = {{1, 1}, {2, 2}, {1, 3}};
+      double icm_off[3] = {0, 0, 0};
+      for (int k = 0; k < 3; ++k) {
         PayoffModel pm;
         pm.icm.enabled = true;
         pm.icm.stacks[0] = pm.icm.stacks[1] = 10000;
-        for (int p = 0; p < 2; ++p) pm.icm.points[p] = {{0.0, 0.0}, {20000.0, 20000.0 * worth}};
+        for (int p = 0; p < 2; ++p) pm.icm.points[p] = {{0.0, 0.0}, {20000.0, 20000.0 * worths[k][p]}};
         GameTree gi;
         gi.set_payoff(pm);
         if (!gi.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
@@ -695,18 +698,50 @@ static bool flop_subset_one_weight() {
         for (int upto : {0, 1, 4, 30}) {
           for (; ti < upto;) si.iterate(++ti);
           const RootStats st = si.root_stats();
-          icm_off[worth - 1] = std::max(icm_off[worth - 1], std::abs(st.ev[0] + st.ev[1] - worth * dead));
+          icm_off[k] = std::max(icm_off[k], std::abs(st.ev[0] / worths[k][0] + st.ev[1] / worths[k][1] - dead));
         }
       }
+      // Which chips: the ones on top of the stack the player starts with. A chip won is worth two here and
+      // a chip lost one, and the second table differs from the first only where no stack of this game ends
+      // (under 1,000, and between the 9,200 of a lost all-in and the 9,650 of the largest fold), so the two
+      // have to give the same values: not so with a half valued from an empty stack, or as chips lost.
+      double icm_moved = 0;
+      {
+        double ev[2][4][2];
+        for (int k = 0; k < 2; ++k) {
+          PayoffModel pm;
+          pm.icm.enabled = true;
+          pm.icm.stacks[0] = pm.icm.stacks[1] = 10000;
+          for (int p = 0; p < 2; ++p) {
+            if (k == 0) pm.icm.points[p] = {{0.0, 0.0}, {10000.0, 10000.0}, {20000.0, 30000.0}};
+            else pm.icm.points[p] = {{0.0, 500.0},      {1000.0, 1000.0},   {9200.0, 9200.0},  {9500.0, 9300.0},
+                                     {9650.0, 9650.0}, {10000.0, 10000.0}, {20000.0, 30000.0}};
+          }
+          GameTree gi;
+          gi.set_payoff(pm);
+          if (!gi.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+          Solver si(gi);
+          int ti = 0, at = 0;
+          for (int upto : {0, 1, 4, 30}) {
+            for (; ti < upto;) si.iterate(++ti);
+            const RootStats st = si.root_stats();
+            ev[k][at][0] = st.ev[0], ev[k][at++][1] = st.ev[1];
+          }
+        }
+        for (int at = 0; at < 4; ++at)
+          for (int p = 0; p < 2; ++p) icm_moved = std::max(icm_moved, std::abs(ev[0][at][p] - ev[1][at][p]));
+      }
       const bool ok = g.perm_all.size() > 1 && same && unscaled && most - least > 0.01 && share < 1e-5 && off < 2e-3 &&
-                      exploitable >= -2e-3 && icm_off[0] < 2e-3 && icm_off[1] < 4e-3;
+                      exploitable >= -2e-3 && icm_off[0] < 2e-3 && icm_off[1] < 2e-3 && icm_off[2] < 2e-3 && icm_moved < 2e-3;
       std::printf("[flop subset] %s v %s, 3 flops, dead %d, set_zero_sum_subset on: a pair's weight %.3f to %.3f, one for both "
                   "players; a hand's weights add up to its share of the range to %.1e, %s factor for hands that are one hand; the "
                   "two values add up to the dead money to %.5f at four points of a solve (exploitable for %.3f at the last; "
-                  "with the switch off, %s factors, to %.3f); under ICM with a chip worth a chip they add up to it to "
-                  "%.5f, and to twice it with a chip worth two to %.5f  %s\n",
+                  "with the switch off, %s factors, to %.3f); under ICM, each value in the player's own chips, they add "
+                  "up to it to %.5f with a chip worth a chip, %.5f with a chip worth two, %.5f with one worth one to "
+                  "the big blind and three to the small blind; with a chip won worth two and one lost worth one, the values "
+                  "move by %.5f with the table where no stack ends  %s\n",
                   ranges[0], ranges[1], dead, least, most, share, same ? "one" : "NOT ONE", off, exploitable,
-                  unscaled ? "no" : "SOME", apart, icm_off[0], icm_off[1], ok ? "OK" : "FAILED");
+                  unscaled ? "no" : "SOME", apart, icm_off[0], icm_off[1], icm_off[2], icm_moved, ok ? "OK" : "FAILED");
       all = all && ok;
     }
   return all;

@@ -249,6 +249,34 @@ class PreflopBuildTest(unittest.TestCase):
         s = self.tool_settings(["--stack", "5", "--no-limp", "--depth", "river"])
         self.assertEqual((river["mb"], river["mb_tables"]), self.pf.estimates_mb(SOLVER, s, flops))
         self.assertLess(river["mb"], river["mb_tables"])
+        # the two counts are the tool's own, the first asked for under `small` by name (#522): one call
+        # of the tool's function for an estimate that is not remembered, none for one that is
+        counts, sent, where = self.pf._estimates, [], []
+
+        def counted(u):
+            where.append(u.p)
+            cmd = u.cmd
+            u.cmd = lambda line: (sent.append(line), cmd(line))[1]   # every line sent: `need` sends with it
+            try:
+                return counts(u)
+            finally:
+                u.cmd = cmd
+        try:
+            self.pf._estimates = counted
+            st, again = self.v.req("/api/preflop/estimate", "POST", dict(turn, depth="river"))
+            self.assertEqual((st, again, sent), (200, river, []))
+            st, other = self.v.req("/api/preflop/estimate", "POST", dict(turn, stack="6"))
+        finally:
+            self.pf._estimates = counts
+        self.assertEqual(st, 200, other)
+        self.assertEqual(sent, ["set_outcome_tables small", "estimate_tree", "set_outcome_tables fast", "estimate_tree"])
+        # in a process of the estimate's own, gone by now: the settings above are not the viewer's solver's,
+        # where a build runs under the solver's own choice
+        self.assertEqual(len(where), 1)
+        self.assertNotEqual(where[0].pid, self.v.solver.proc.pid)
+        self.assertIsNotNone(where[0].wait(timeout=10))
+        s = self.tool_settings(["--stack", "6", "--no-limp", "--depth", "turn"])
+        self.assertEqual((other["mb"], other["mb_tables"]), self.pf.estimates_mb(SOLVER, s, flops))
 
     def test_05_ranges_that_cannot_be_dealt(self):
         # every hand of each holds the ace of spades and the ace of hearts

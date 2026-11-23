@@ -488,15 +488,22 @@ def estimates_mb(exe: str, s: Settings, flops: list[tuple[str, float]]) -> tuple
     builds on its own when that fits in nine tenths of the memory that is free (`auto`, #496). One
     figure twice where the smallest tree has the tables already (no bets on the turn). The two are
     counts of their own in one process, with nothing shared: at turn depth the smallest tree's takes a
-    second or two and the other hundredths of one, at river depth each takes seconds. The first is asked
-    for under `small` by name: under `auto` the solver answers the same today, and need not for ever."""
+    second or two and the other hundredths of one, at river depth each takes seconds."""
     with Solver(exe) as u:
         for line in script(s, flops):
             u.need(line)
-        u.need("set_outcome_tables small")
-        small = _estimate(u)
-        u.need("set_outcome_tables fast")
-        return small, _estimate(u)
+        return _estimates(u)
+
+
+def _estimates(u: Solver) -> tuple[int, int]:
+    """The two counts of `estimates_mb` in a solver that has the script: the viewer's estimate makes them
+    with this too (#522). The first is asked for under `small` by name: under `auto` the solver answers
+    the same today, and need not for ever. It leaves the process at `set_outcome_tables fast`: one to
+    estimate in, not to build in."""
+    u.need("set_outcome_tables small")
+    small = _estimate(u)
+    u.need("set_outcome_tables fast")
+    return small, _estimate(u)
 
 
 def estimate_mb(exe: str, s: Settings, flops: list[tuple[str, float]]) -> int:

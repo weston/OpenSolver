@@ -86,11 +86,14 @@ python3 tests/test_upi.py ./solver
 `tests/test_categories.cpp` compares the range explorer byte-for-byte against recorded Pio output in
 `tests/data/pio_categories/`.
 
-**Memory-dependent choices.** `WSOLVER_FREE_MB=<whole number>` in the solver's environment stands in for
-the memory that is free (`available_memory_bytes()`), so a test can reach both sides of what is decided
-from it on any machine: `WSOLVER_FREE_MB=40 ./solver`. It is for tests (`check_free_memory` in
-`tests/test_upi.py`), not a user setting, and is in no user document. `load_tree` does not refuse a
-tree that does not fit (#509).
+**Memory-dependent choices.** `WSOLVER_FREE_MB=<whole number of MB>` in the solver's environment stands
+in for the memory that is free (`available_memory_bytes()`), so a test can reach both sides of what is
+decided from it on any machine: `WSOLVER_FREE_MB=40 ./solver`. Anything but digits, and a figure over
+2^40, is ignored without a word: `show_memory` prints the figure in use. It is for tests
+(`check_free_memory` in `tests/test_upi.py`, which sets it for its own solvers; the other checks pass
+on what the shell has, so do not export it), not a user setting, and is in no user document. The
+figure is in whole MB, so the choices of a tree under 1 MB have two sides only, nothing free and
+something. `load_tree` does not refuse a tree that does not fit (#509).
 
 **Sanitizers.** After touching threading, the UPI layer or memory handling, run a sanitizer build in a
 scratch worktree, since it overwrites `build/` and `./solver`. `tools/fuzz.py` treats a sanitizer abort

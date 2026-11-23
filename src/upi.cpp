@@ -116,14 +116,16 @@ uint64_t total_memory_bytes() {
 // what is decided from it (a build refused, 16-bit storage, a preflop tree's outcome tables, the switch
 // to 32-bit storage, ICM on a tree without boards) can be reached on any machine and comes out the same
 // on each. Not a setting for users: a figure over the real one only moves the failure from an error
-// message to the allocation. Anything but digits is ignored.
+// message to the allocation. Anything but digits is ignored, and so is a figure over 2^40 MB: the margins
+// taken from the free memory (nine tenths of it, in bytes) stay inside 64 bits up to there.
 static bool free_memory_for_tests(uint64_t& bytes) {
   const char* v = std::getenv("WSOLVER_FREE_MB");
   if (!v || !*v) return false;
   uint64_t mb = 0;
   for (const char* c = v; *c; ++c) {
-    if (*c < '0' || *c > '9' || mb > (uint64_t(1) << 40)) return false;
+    if (*c < '0' || *c > '9') return false;
     mb = mb * 10 + static_cast<uint64_t>(*c - '0');
+    if (mb > (uint64_t(1) << 40)) return false;
   }
   bytes = mb << 20;
   return true;

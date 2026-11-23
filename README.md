@@ -461,8 +461,10 @@ press Enter for the first. On a flop, click a board card to change to another fl
 same line. EVs are as everywhere in the viewer a percentage of the pot at the node, and count from the
 start of the hand: a hand that folds the big blind to a 2.5 open is at -100 chips, -29% of the 350 in
 the pot. Lock works at preflop nodes; Sizes (a re-solve with other sizes) starts on the flop, and
-Solve further is off as for any tree opened from a file. Setting a preflop solve up in the Build tab
-is not there yet (#483).
+Solve further is off as for any tree opened from a file.
+
+The same tree can be set up and solved in the viewer without the command line: **Build → Preflop**
+(under *Viewer* below) is a form over this tool, with the same defaults and the same checks.
 
 ## Viewer
 
@@ -497,6 +499,22 @@ Two views, light and dark themes (follows the system; toggle in the top bar):
     folders, with search, preview, rename and delete.
   - **Build & solve** with a target in % of the pot, and a live convergence chart
     (exploitability in % of the pot against time, linear).
+  - **Postflop / Preflop** at the top chooses the tree. *Preflop* is the heads-up game from the blinds,
+    the tree of `tools/preflop.py` (*Preflop solves* above) as a form: the two blinds' ranges in the
+    same editors (big blind left, small blind right; all hands to start with), stack and ante in big
+    blinds, the sizes of the open, the raise over a limp, the 3-bet, 4-bet and 5-bet, whether the small
+    blind can limp, and for after the flop the number of flops (10 to 200 of `flops/`, or all 1,755),
+    the last street with betting and its sizes. The tree these settings make is listed under the sizes
+    as you type (each action, what both players have in, and where it leads), or the reason there is
+    none in the form's own words. **Estimate memory** asks the solver what the tree takes, for the
+    chosen number of flops and then for the other numbers (a row under the button; a click on one takes
+    it, and all 1,755 flops are only asked for when chosen, that one takes a minute); **Build**
+    does that first too, and refuses a tree larger than the machine's memory before it touches the
+    one that is there. The target is in **bb/100**, and the chart, the top bar and the Exploitability
+    tile count in bb/100 for a preflop tree; EVs stay a percentage of the pot (the 1.5 big blinds of
+    the blinds at the root). No fast preview, spots or job queue for preflop trees. Study then shows
+    the tree as described under *Preflop solves*. API: `GET /api/preflop/defaults`, and `POST
+    /api/preflop/describe`, `/estimate` and `/build` with the form as JSON.
 - **Study:** a fixed layout, so nothing moves while you click through a line:
   - the board as card graphics and the line so far as colored action chips grouped by street
     (click one to return to that decision);

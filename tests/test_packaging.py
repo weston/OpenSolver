@@ -160,12 +160,13 @@ def test_macos_app():
     want = [f"viewer/{f}" for f in os.listdir(viewer) if f.endswith(".py") and not f.startswith("test_")]
     want += [f"viewer/static/{f}" for f in os.listdir(os.path.join(viewer, "static"))
              if f not in ("package.json", ".DS_Store")]
-    want += ["tools/tree_builder.py", "tools/jobs.py"]   # loaded by path: server.py, jobs_api.py
+    # loaded by path: server.py, jobs_api.py, preflop_api.py (the Build tab's Preflop form, #492)
+    want += ["tools/tree_builder.py", "tools/jobs.py", "tools/preflop.py"]
     flop_files = [f"flops/{f}" for f in os.listdir(os.path.join(ROOT, "flops")) if f.endswith(".txt")]
     want += flop_files                                    # the Jobs tab's flop files (jobs_api.default_flops_dir)
     missing = sorted(set(want) - set(staged))
     check(not missing and len(flop_files) >= 5,
-          f"every viewer module, every file of its page, the two tools and the flop files are in it {missing[:4]}")
+          f"every viewer module, every file of its page, the three tools and the flop files are in it {missing[:4]}")
     check(not [f for f in staged if "/test_" in f], "and no tests")
 
     # Imports of the staged Python: a module of this repo must be staged too, and one of the

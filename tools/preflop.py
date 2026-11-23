@@ -528,6 +528,14 @@ def _facing(order: list[str], theirs: list[float]) -> list[float]:
     return [max(0.0, total - by_card[h[0:2]] - by_card[h[2:4]] + y) for h, y in zip(order, theirs)]
 
 
+NO_DEAL = "the two ranges leave no deal: every hand of one shares a card with every hand of the other"
+
+
+def ranges_meet(order: list[str], one: list[float], other: list[float]) -> bool:
+    """Whether some hand of one range can be dealt against some hand of the other (weights in `order`)."""
+    return sum(x * y for x, y in zip(one, _facing(order, other))) > 0
+
+
 def collect(u: Solver, s: Settings, root: Node) -> list[dict]:
     """Every preflop decision as hand classes: how often each class gets there, what it does, its EV.
     A combo counts by the deals it is in: its own reach times the opponent's reach in the hands that
@@ -612,9 +620,8 @@ def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
         u.need("add_all_flops")
         order = " ".join(u.cmd("show_hand_order")).split()
         sb, bb = (_floats(u.cmd(f"show_range {who} r:0"), 1326, "show_range r:0")[0] for who in ("IP", "OOP"))
-        if len(order) != 1326 or not sum(x * y for x, y in zip(sb, _facing(order, bb))) > 0:
-            raise PreflopError("the two ranges leave no deal: every hand of one shares a card with every hand of "
-                               "the other")
+        if len(order) != 1326 or not ranges_meet(order, sb, bb):
+            raise PreflopError(NO_DEAL)
         accuracy = accuracy_bb100 / 100 * s.chips
         u.cmd(f"set_accuracy {accuracy:.6g}")
         u.cmd("set_info_freq auto")
@@ -739,13 +746,12 @@ def charts(result: dict, only: list[str] | None = None, width: int | None = None
 
 # ---- command line ---------------------------------------------------------------------------------
 
-def tree_text(s: Settings, root: Node) -> list[str]:
+def tree_rows(s: Settings, root: Node) -> list[dict]:
+    """The preflop tree, a node a row: how deep it is, the action that leads to it, what each player has
+    in (big blinds, small blind first) and what happens there. `tree` prints these; the viewer lists them."""
     cfg = postflop_config(s)
     out = []
     for node in walk(root):
-        depth = node.id.count(":") - 1
-        pot = f"{_bb(node.inv[0], s.chips)} / {_bb(node.inv[1], s.chips)}"
-        what = node.said[-1] if node.said else "start"
         if node.kind == "decision":
             tail = f"{node.actor} to act"
         elif node.kind == "fold":
@@ -755,7 +761,17 @@ def tree_text(s: Settings, root: Node) -> list[str]:
         else:
             lines = exit_lines(s, cfg, node)
             tail = f"flop, {len(lines)} postflop line{'s' if len(lines) != 1 else ''}"
-        out.append(f"{'  ' * depth}{what:<{max(1, 22 - 2 * depth)}} {node.id:<34} in: {pot:<13} {tail}")
+        out.append({"depth": node.id.count(":") - 1, "what": node.said[-1] if node.said else "start",
+                    "id": node.id, "kind": node.kind,
+                    "in": [_bb(node.inv[0], s.chips), _bb(node.inv[1], s.chips)], "then": tail})
+    return out
+
+
+def tree_text(s: Settings, root: Node) -> list[str]:
+    out = []
+    for r in tree_rows(s, root):
+        depth, pot = r["depth"], " / ".join(r["in"])
+        out.append(f"{'  ' * depth}{r['what']:<{max(1, 22 - 2 * depth)}} {r['id']:<34} in: {pot:<13} {r['then']}")
     return out
 
 

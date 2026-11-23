@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from library import Library, LibraryError  # noqa: E402
 import hand_lines  # noqa: E402
+import preflop_api  # noqa: E402
 
 # Run as a script this module is __main__; resolve.py and jobs_api.py `import server`. Register it
 # under that name so they share these classes (a second copy would have its own SolverError, which
@@ -87,6 +88,10 @@ class Solver:
         # The Build form the current tree's lines came from (op_generate): street refines rebuild
         # their subgames with these sizes, not with whatever the form holds by the time you browse.
         self.built_sizes = None
+        self.preflop = None      # the tree is a preflop tree built here (preflop_api.build): {chips, flops}
+        # preflop_api.build left its settings in the solver (16-bit storage, collapsed check-downs):
+        # the next postflop setup puts the solver's own back (op_generate)
+        self.preflop_touched = False
         self.holds = set()       # who keeps the solve parked (UPI hold): "browse" lease, "refine" (refine.py)
         self._lease_until = 0.0
         self._lease_thread = None
@@ -340,8 +345,25 @@ class Solver:
                 self.partial = None
                 self.loaded_file = False
                 self.built_sizes = None
+                self.preflop = None
+                self.preflop_touched = False   # a new process: the solver's own settings
             self.holds.clear()
             self.forget_locks()
+
+    def own_settings(self):
+        """The commands that put back what a preflop build switched on (16-bit storage, collapsed
+        check-downs): sent before a postflop tree is set up or a file loaded, so that tree is the one a
+        viewer that never built a preflop tree gets."""
+        return ["small_strats auto", "set_collapse_checkdowns off"] if self.preflop_touched else []
+
+    def cmds_own(self, before, after, timeout=600):
+        """`before`, the solver's own settings back if a preflop build changed them, `after`. The
+        settings count as put back only once the commands went through: a failed `stop` leaves them
+        to the next try."""
+        with self.cmd_lock:
+            out = self.cmds(before + self.own_settings() + after, timeout=timeout)
+            self.preflop_touched = False
+            return out
 
     def forget_locks(self):
         """A new tree (generate / build / load / restart): drop the lock list and the undo copy."""
@@ -542,6 +564,7 @@ def _api(solver, lib, method, path, query, body):
             if served is not None:
                 return served
         elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate"):
+            # (a preflop build does this itself, once its form is accepted: preflop_api.build)
             _refiner.invalidate()  # the main tree is new: old refines don't apply
             _preview = None
         elif path in LOCK_PATHS and not solver.state()["solving"]:
@@ -553,7 +576,7 @@ def _api(solver, lib, method, path, query, body):
             # Only a fresh tree gets the progress line: Resume on a stopped solve just continues it.
             fresh = not solver.series and not solver.solving
             acc = b.get("accuracy", 0.05)
-            if b.get("preview") and fresh and solver.tree_present and not solver.loaded_file \
+            if b.get("preview") and fresh and solver.tree_present and not solver.loaded_file and not solver.preflop \
                     and isinstance(acc, (int, float)) and not isinstance(acc, bool) \
                     and math.isfinite(acc) and acc > 0:
                 _refiner.invalidate()
@@ -574,6 +597,8 @@ def _api(solver, lib, method, path, query, body):
     if method == "POST" and path in ("/api/stop", "/api/solve", "/api/solve_node", "/api/build", "/api/load",
                                     "/api/lock/revert"):
         # these stop or restart the solve, and the solver drops any hold with it
+        # (a preflop build can be refused long before its stop, the solve running on under a hold
+        # that must still be let go: preflop_api.build drops the holds once its stop is sent)
         try:
             return _api_main(solver, lib, method, path, query, body)
         finally:
@@ -690,6 +715,10 @@ def _api_main(solver, lib, method, path, query, body):
     if path == "/api/calc_results":
         return 200, {"text": solver.cmd("calc_results")}
 
+    if path.startswith("/api/preflop/"):
+        # a heads-up preflop tree from the Build tab (#492): defaults, the tree in words, memory, build
+        return preflop_api.api(sys.modules[__name__], solver, method, path, body)
+
     # ---- state-changing endpoints (POST only) ----
     require_post(method)
 
@@ -721,6 +750,7 @@ def _api_main(solver, lib, method, path, query, body):
         solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = False
+        solver.preflop = None
         solver.reset_series()
         solver.clear_partial()
         return 200, {"node_count": solver.cmd("node_count")}
@@ -756,7 +786,7 @@ def _api_main(solver, lib, method, path, query, body):
     if path == "/api/load":
         b = need_body(body)
         path_arg = safe_path(b.get("path", ""))
-        solver.cmds(["stop", "wait_for_solver", f'load_tree "{path_arg}"'], timeout=7200)  # (#382)
+        solver.cmds_own(["stop", "wait_for_solver"], [f'load_tree "{path_arg}"'], timeout=7200)  # (#382)
         if _resolver is not None:
             _resolver.main_tree_changed()  # #357
         solver.forget_locks()
@@ -764,6 +794,7 @@ def _api_main(solver, lib, method, path, query, body):
         solver.loaded_file = True
         solver.loaded_path = path_arg
         solver.built_sizes = None
+        solver.preflop = None
         solver.reset_series()
         solver.clear_partial()
         return 200, {"ok": True}
@@ -1489,7 +1520,8 @@ def op_pio_import(b):
 def op_generate(solver, b):
     """PioViewer-style bet sizes -> add_lines via tools/tree_builder.py, then configure the solver."""
     cmds, lines = setup_from_body(b)
-    solver.cmds(["stop", "wait_for_solver"] + cmds)
+    solver.cmds_own(["stop", "wait_for_solver"], cmds)
+    solver.preflop = None
     solver.forget_locks()
     solver.tree_present = False
     solver.loaded_file = False

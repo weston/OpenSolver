@@ -65,6 +65,15 @@ documentation; contains no PioSOLVER code.
   to the largest subset of ours that fits; `solve` runs to an accuracy in bb/100 and prints 13x13 charts
   of every preflop decision (frequencies, optionally EVs in big blinds), also saved as JSON; `chart`
   prints them again. `--flops all` deals all 1,755 flop classes (#488).
+- **Viewer: preflop solves from the Build tab.** A Postflop / Preflop switch at the top of Build; Preflop
+  is a form over `tools/preflop.py` (same defaults, same checks, its messages in the form's words): the
+  blinds' ranges, stack, ante, the preflop sizes, the limp, and the flops, last betting street and sizes
+  after the flop. The tree is listed in words while you type, **Estimate memory** asks the solver for the
+  chosen number of flops and then for the others, and Build refuses a tree larger than the machine's memory before touching the tree that is there. Solve to
+  a target in bb/100, shown as bb/100 in the chart, the top bar and the Exploitability tile; no street
+  of a preflop tree is re-solved by the fast preview. A postflop
+  tree built or opened afterwards gets the solver's own settings back (the preflop script turns on 16-bit
+  storage and collapsed check-downs). The macOS package ships `tools/preflop.py` (#492).
 - **Viewer: Study on preflop trees** (a tree saved by `tools/preflop.py solve --save-tree`). Raises
   before the flop get their real amounts (`Raise 75% to 250`, with `2.5x` in the tooltip: the open to
   2.5 big blinds read `to 200 · 4.0x`, the blind taken off it), the text beside "to act" says small

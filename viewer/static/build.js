@@ -1,5 +1,8 @@
 // Build view (#113): two 13x13 range editors (OOP left, IP right) painted with a weight slider,
 // a card-button board picker, the bet-size form, and the solve panel with the convergence chart.
+// A switch at the top (#492) chooses the tree: Postflop (one board, this file's form) or Preflop
+// (heads up from the blinds, preflop_build.js's form); the range editors' tools and the solve panel
+// are the same for both.
 
 import { H, RANKS, SUITS, GLYPH, el, cardEl } from "./cards.js";
 import { startPreview, previewOn } from "./preview.js";
@@ -8,6 +11,8 @@ import { get, post, toast, fail, prefs, fmt, fmtChips, fmtEvPct } from "./api.js
 import { drawChart } from "./chart.js";
 import { openLibrary } from "./library.js";
 import { STREETS, renderSizes, readSizes, validateSizes as validateSizeTable } from "./sizes.js";
+import { initPreflopForm, readPreflopForm, preflopReady, noteEstimate } from "./preflop_build.js";
+import { bb100ToChips, chipsToBb100, fmtMemory } from "./preflop.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -27,14 +32,15 @@ let spot = { name: null, sig: null };  // the library spot the form came from (#
 /* ------------------------------------------------------------------ range editor */
 
 class RangeEditor {
-  constructor(root, player, onChange) {
+  /** title: what the player is called here (the Preflop form's blinds); the position by default. */
+  constructor(root, player, onChange, title = null) {
     this.player = player;
     this.onChange = onChange;
     this.w = new Float32Array(1326);
     root.textContent = "";
 
     const head = el("div", "editor-head");
-    head.append(el("span", `badge ${player.toLowerCase()}`, player), el("h2", null, player === "OOP" ? "Out of position" : "In position"));
+    head.append(el("span", `badge ${player.toLowerCase()}`, player), el("h2", null, title || (player === "OOP" ? "Out of position" : "In position")));
     this.stats = el("div", "stats");
     head.appendChild(this.stats);
     const tools = el("div", "editor-tools");
@@ -45,7 +51,7 @@ class RangeEditor {
       navigator.clipboard && navigator.clipboard.writeText(this.text.value).then(() => toast("Range copied"), () => {});
     });
     tb("Load…", "Load a saved range", () => openLibrary({
-      kind: "range", mode: "load", onLoad: (text, name) => { this.setText(text.trim()); this.source = name; toast(`Loaded “${name}” into ${player}`); },
+      kind: "range", mode: "load", onLoad: (text, name) => { this.setText(text.trim()); this.source = name; toast(`Loaded “${name}” into ${title ? `the ${title.toLowerCase()}` : player}`); },
     }));
     tb("Save…", "Save this range to the library", () => openLibrary({
       kind: "range", mode: "save", content: this.value(), suggest: this.source || "",
@@ -297,6 +303,7 @@ const NUMBER_FIELDS = {
   "f-allin-threshold": ["All-in threshold (above 0)", (v) => v > 0],
   "f-allin-limit": ["Add all-in below (0 or more)", (v) => v >= 0],
   "f-accuracy": ["Target exploitability (above 0)", (v) => v > 0],
+  "pf-accuracy": ["Target exploitability (above 0 bb/100)", (v) => v > 0],
 };
 function checkNumber(id) {
   const raw = $(id).value.trim();
@@ -367,11 +374,43 @@ async function savedSpotLocks() {
     return Array.isArray(locks) && locks.length ? locks : null;
   } catch (e) { return null; }  // renamed or deleted since: build without
 }
+/* ------------------------------------------------------------------ postflop or preflop (#492) */
+
+let mode = "postflop";   // which form is shown; the tree in the solver can be of the other kind
+const PREFLOP_SIG = "preflop:";
+/** The shown form as a signature: what `builtSig` holds for the tree built from it. */
+function formSig() {
+  if (mode !== "preflop") return sig(readForm());
+  return preflopReady() ? PREFLOP_SIG + sig(readPreflopForm()) : "";
+}
+
+function setMode(m) {
+  mode = m === "preflop" ? "preflop" : "postflop";
+  document.querySelector(".build").dataset.mode = mode;
+  document.querySelectorAll("#build-mode button").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  prefs.set("build-mode", mode);
+  if (!busy) info("");   // what the line said was about the other form
+  markDirty();
+  syncResume();
+}
+
+/** "Solve" continues the tree in the solver to the target shown, so it needs a tree of the kind the
+ *  form is set to: a preflop tree's target is in bb/100, a postflop tree's in % of its pot. */
+function syncResume() {
+  const btn = $("btn-resume");
+  const other = treeReady && (treeBB > 0) !== (mode === "preflop");
+  btn.disabled = busy || !treeReady || other;
+  btn.title = other
+    ? `The tree in the solver is a ${treeBB > 0 ? "preflop" : "postflop"} tree: switch to ${treeBB > 0 ? "Preflop" : "Postflop"} to solve it further`
+    : "Solve the current tree, continuing from where it stopped";
+}
+
 function markDirty() {
   const tag = $("build-state");
   if (!builtSig) { tag.textContent = "not built"; tag.className = "tag"; return; }
-  const same = builtSig === sig(readForm());
-  tag.textContent = same ? "built" : "changed — rebuild";
+  const same = builtSig === formSig();
+  const other = builtSig.startsWith(PREFLOP_SIG) !== (mode === "preflop");
+  tag.textContent = same ? "built" : other ? `a ${mode === "preflop" ? "postflop" : "preflop"} tree is built` : "changed — rebuild";
   tag.className = same ? "tag ok" : "tag";
 }
 
@@ -379,11 +418,12 @@ function markDirty() {
 
 let busy = false;
 let treeReady = false, rootPotNow = 0;
+let treeBB = 0;   // chips in a big blind of the tree in the solver when it is a preflop tree, else 0
 function setBusy(b, label) {
   busy = b;
   $("btn-build").disabled = b;
   $("btn-solve").disabled = b;
-  $("btn-resume").disabled = b || !treeReady;
+  syncResume();
   if (label) info(label);
 }
 /** A status line: html for our own messages; an error is plain text (it can echo server or file input, #384). */
@@ -423,6 +463,7 @@ async function build() {
     const b = await post("/api/build");
     builtSig = sig(f);
     treeReady = true;
+    treeBB = 0;
     rootPotNow = f.pot;   // the target of a Resume right after this build (before a poll sets it)
     const total = /TOTAL\D*(\d+)/.exec(b.node_count);
     let locked = "";
@@ -445,16 +486,45 @@ async function build() {
   } finally { setBusy(false); }
 }
 
-/** Solve the tree that is in the solver now; a stopped solve continues where it left off. */
+/** Build the heads-up preflop tree of the Preflop form (#492). The server checks the form and the
+ *  tree's memory before it touches the solver, so a refused build leaves the tree that is there. */
+async function buildPreflop() {
+  if (!preflopReady()) { info("The preflop form is not set up yet.", true); return false; }
+  const f = readPreflopForm();
+  // One request: the server checks the form and the tree's memory in a solver of its own, then
+  // builds. (An estimate asked for here first could be ended by the Estimate button's, #493.)
+  setBusy(true, "Checking the tree and its memory, then building…");
+  try {
+    const b = await post("/api/preflop/build", f);
+    noteEstimate(f, b);
+    builtSig = PREFLOP_SIG + sig(f);
+    treeReady = true;
+    treeBB = b.chips;     // the target of a Solve right after this build (before a poll sets it)
+    rootPotNow = 0;
+    const total = /TOTAL\D*(\d+)/.exec(b.node_count);
+    info(`Built: ${total ? Number(total[1]).toLocaleString() + " nodes" : "ok"} · ${Number(b.flops).toLocaleString()} flops · about ${fmtMemory(b.mb)}`);
+    markDirty();
+    onBuilt({ bb: b.chips });
+    return true;
+  } catch (e) {
+    info(String(e.message || e), true);
+    return false;
+  } finally { setBusy(false); }
+}
+
+/** Solve the tree that is in the solver now; a stopped solve continues where it left off. A preflop
+ *  tree's target is in bb/100, a postflop tree's in % of its pot: both become chips for the solver. */
 async function solve() {
-  const bad = badNumbers(["f-accuracy"]);
+  const pre = treeBB > 0;
+  const bad = badNumbers([pre ? "pf-accuracy" : "f-accuracy"]);
   if (bad.length) { info(`Fix ${bad.join(", ")}.`, true); return; }
   const pot = rootPotNow || Number($("f-pot").value);
-  const pct = Number($("f-accuracy").value);
+  const accuracy = pre ? bb100ToChips(Number($("pf-accuracy").value), treeBB) : (Number($("f-accuracy").value) / 100) * pot;
   if (solveStarting) return;  // a double click sent two solves; the second failed with "solver is running" (#386)
   solveStarting = true;
   try {
-    const r = await post("/api/solve", { accuracy: (pct / 100) * pot, preview: previewOn() });
+    // no fast preview before the flop: it re-solves streets of one board, a preflop tree has many
+    const r = await post("/api/solve", { accuracy, preview: !pre && previewOn() });
     if (!r.preview) toast("Solving…");
     startPreview(!!r.preview);
   } catch (e) { fail(e); } finally { solveStarting = false; }
@@ -479,6 +549,11 @@ export async function rebuildWithBoard(cards) {
 
 /** Always rebuild from the form (a fresh tree), then solve it. */
 async function buildAndSolve() {
+  if (mode === "preflop") {
+    if (badNumbers(["pf-accuracy"]).length) { info(`Fix ${NUMBER_FIELDS["pf-accuracy"][0]}.`, true); return; }
+    if (await buildPreflop()) await solve();
+    return;
+  }
   if (!(await build())) return;
   rootPotNow = Number($("f-pot").value);
   await solve();
@@ -486,24 +561,29 @@ async function buildAndSolve() {
 
 /* ------------------------------------------------------------------ live progress */
 
-export function updateProgress(st, series, rootPot) {
+/** bb: chips in a big blind when the tree in the solver is a preflop tree (its exploitability is
+ *  then shown in bb/100), else 0. EVs are a share of the root's pot for both kinds (#459). */
+export function updateProgress(st, series, rootPot, bb = 0) {
   const solving = st && st.solving;
   treeReady = !!(st && st.tree);
   if (rootPot) rootPotNow = rootPot;
+  treeBB = treeReady ? bb : 0;
   $("btn-stop").classList.toggle("hidden", !solving);
   $("btn-solve").classList.toggle("hidden", !!solving);
   $("btn-resume").classList.toggle("hidden", !!solving);
-  $("btn-resume").disabled = busy || !treeReady;
+  syncResume();
+  const pre = treeBB > 0;
   const pot = rootPot || Number($("f-pot").value) || 1;
-  drawChart($("chart"), series, pot, Number($("f-accuracy").value));
+  if (pre) drawChart($("chart"), series, treeBB, Number($("pf-accuracy").value), "bb/100");
+  else drawChart($("chart"), series, pot, Number($("f-accuracy").value));
   const last = series && series.length ? series[series.length - 1] : null;
   const box = $("solve-stats");
   box.textContent = "";
   const kv = (k, v) => { const d = el("div", "kv"); d.append(el("div", "k", k), el("div", "v num", v)); box.appendChild(d); };
-  kv("Exploitability", last ? fmt((last.explo / pot) * 100, 3) + "%" : "—");
+  kv("Exploitability", !last ? "—" : pre ? fmt(chipsToBb100(last.explo, treeBB), 2) + " bb/100" : fmt((last.explo / pot) * 100, 3) + "%");
   kv("Time", last ? fmt(last.t, 1) + "s" : "—");
-  kv("EV OOP", last ? fmtEvPct(last.ev_oop, pot) : "—");
-  kv("EV IP", last ? fmtEvPct(last.ev_ip, pot) : "—");
+  kv(pre ? "EV BB (OOP)" : "EV OOP", last ? fmtEvPct(last.ev_oop, pot) : "—");
+  kv(pre ? "EV SB (IP)" : "EV IP", last ? fmtEvPct(last.ev_ip, pot) : "—");
   $("chart-legend").textContent = st && st.iters ? `${st.iters} iterations` : "";
 }
 
@@ -546,15 +626,20 @@ export function initBuild({ built }) {
   $("pio-import").onclick = () => $("pio-import-file").click();
   $("pio-import-file").onchange = (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) importPio(f); };
   $("pio-extra-clear").onclick = () => { pioExtra = []; renderPioExtra(); saveForm(); };
-  $("btn-build").onclick = () => { if (!busy) build(); };
+  $("btn-build").onclick = () => { if (!busy) (mode === "preflop" ? buildPreflop : build)(); };
   $("btn-solve").onclick = () => { if (!busy) buildAndSolve(); };
-  $("btn-resume").onclick = () => { if (!busy && treeReady) solve(); };
+  $("btn-resume").onclick = () => { if (!busy && treeReady && (treeBB > 0) === (mode === "preflop")) solve(); };
+  document.querySelectorAll("#build-mode button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
+  const pfAcc = prefs.get("preflop-accuracy", null);
+  if (pfAcc != null && Number.isFinite(Number(pfAcc)) && Number(pfAcc) > 0) $("pf-accuracy").value = pfAcc;
+  $("pf-accuracy").addEventListener("input", () => prefs.set("preflop-accuracy", $("pf-accuracy").value));
+  initPreflopForm(RangeEditor, markDirty);   // its defaults come from the server; the form is usable when they are in
   for (const id of Object.keys(NUMBER_FIELDS))   // a marked field clears once it is fixed
     $(id).addEventListener("input", () => { if ($(id).classList.contains("invalid")) checkNumber(id); });
   $("btn-stop").onclick = async () => { try { await post("/api/stop"); } catch (e) { fail(e); } };
   loadForm();
   validateSizes();
-  markDirty();
+  setMode(prefs.get("build-mode", "postflop"));
 }
 
 export function treeLoadedElsewhere() { builtSig = null; markDirty(); }

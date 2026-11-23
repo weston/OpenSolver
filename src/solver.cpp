@@ -2094,17 +2094,20 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
   } else {
     for (int k = 0; k < K; ++k) task(k);
   }
-  std::memset(out, 0, sizeof(float) * Hp);
   const auto& G = g_.perm_all;
   const float gn = 1.0f / static_cast<float>(G.size());
+  // In double: on all flops this is a sum of 42,120 values, and a float sum of them moved a flop exit's
+  // value by up to 9e-5 of the dead money (#505).
+  std::vector<double> acc(static_cast<size_t>(Hp), 0.0);
   for (int k = 0; k < K; ++k) {
     const float* rk = res + static_cast<size_t>(k) * Hp;
-    const float w = ci.fweight[k] * gn;
+    const double w = static_cast<double>(ci.fweight[k]) * gn;
     for (uint8_t pm : G) {
       const uint16_t* ph = g_.perm_hand[p][PERM_INV[pm]].data();
-      for (int h = 0; h < Hp; ++h) out[h] += w * rk[ph[h]];
+      for (int h = 0; h < Hp; ++h) acc[h] += w * rk[ph[h]];
     }
   }
+  for (int h = 0; h < Hp; ++h) out[h] = static_cast<float>(acc[h]);
   // Normalise: a pair (h, o) is dealt flop variant v with probability w_v / N(h,o). Divide our hand's
   // value by the opponent-reach-weighted mean of N(h,o); this keeps each hand's total deal probability
   // exact (and the value exact whenever N(h,o) does not vary across opponents).

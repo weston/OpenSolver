@@ -147,25 +147,29 @@ void GameTree::compute_flop_compat() {
   const double gn = 1.0 / static_cast<double>(perm_all.size());
   for (int p = 0; p < 2; ++p) {
     const size_t H = hands[p].size();
-    flop_compat[p].assign(H, 0.0f);
-    flop_card[p].assign(H * NUM_CARDS, 0.0f);
-    flop_pair[p].assign(H * NUM_COMBOS, 0.0f);
+    // Summed in double: 1,755 flops in 24 suit variants are 42,120 terms of about 2e-5 each, and summed
+    // as floats they came out 3.5e-4 over (17,302 flops for a pair of hands where there are 17,296),
+    // which took that share of an ante out of every flop (#505).
+    std::vector<double> compat(H, 0.0), card(H * NUM_CARDS, 0.0), pair(H * NUM_COMBOS, 0.0);
     for (auto& f : cfg.subset) {
-      const float w = static_cast<float>(f.weight / W * gn);
+      const double w = f.weight / W * gn;
       for (uint8_t pm : perm_all) {
         int c[3] = {PERM_CARD[pm][f.cards[0]], PERM_CARD[pm][f.cards[1]], PERM_CARD[pm][f.cards[2]]};
         uint64_t fm = card_bit(c[0]) | card_bit(c[1]) | card_bit(c[2]);
         int pr[3] = {combo_index(c[0], c[1]), combo_index(c[0], c[2]), combo_index(c[1], c[2])};
         for (size_t h = 0; h < H; ++h) {
           if (combo_mask(hands[p][h]) & fm) continue;
-          flop_compat[p][h] += w;
+          compat[h] += w;
           for (int k = 0; k < 3; ++k) {
-            flop_card[p][h * NUM_CARDS + c[k]] += w;
-            flop_pair[p][h * NUM_COMBOS + pr[k]] += w;
+            card[h * NUM_CARDS + c[k]] += w;
+            pair[h * NUM_COMBOS + pr[k]] += w;
           }
         }
       }
     }
+    flop_compat[p].assign(compat.begin(), compat.end());
+    flop_card[p].assign(card.begin(), card.end());
+    flop_pair[p].assign(pair.begin(), pair.end());
   }
 }
 

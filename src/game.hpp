@@ -145,7 +145,12 @@ struct SdEntry {
 // `exact` (preflop all-ins; board empty at the terminal): no boards; the solver instead uses the
 // exact hand-vs-hand table (pfh2h.*) for a matrix-vector product over opponent reach.
 struct AllinRunouts {
+  // The stored showdown board of each runout. Empty when the outcome table below stands in for them
+  // and nothing else needs them (a preflop tree's flop exits, GameTree::plan_allins).
   std::vector<uint32_t> boards;
+  std::vector<uint8_t> cards;  // the board at the terminal: 3 or 4 cards (none for `exact`)
+  uint16_t runouts = 0;        // how many runouts: 48 for a turn all-in, 1,176 for a flop all-in
+  bool table = false;          // gets an outcome table when the tree's storage is allocated
   float scale;
   bool exact = false;
   // Hand-vs-hand outcome counts over the runouts (GameTree::build_allin_tables): e2[h * H1 + o] =
@@ -386,6 +391,9 @@ class GameTree {
   void set_payoff(const PayoffModel& pm) {
     payoff_ = pm;
     fill_term_pay();
+    // An outcome table holds 2 * wins + ties, which is all a payoff needs while a tie pays the middle
+    // of a win and a loss. Under ICM it does not, so the runouts are valued board by board.
+    if (pm.icm.enabled) restore_allin_boards();
   }
   // terminal_payoff for every terminal action node, as the floats the solver uses: win / lose / tie
   // per player for a showdown, the fold payoff in `w` for a fold. Read per terminal visit instead of
@@ -410,15 +418,28 @@ class GameTree {
   // Index of the (5-card) showdown board, computing hand orderings on first use.
   int showdown_board_id(const std::vector<int>& board);
   int allin_runouts_id(const std::vector<int>& board);
-  // Fills AllinRunouts::e2 for the postflop all-in terminals (skipped for preflop trees and past a
-  // total of 512 MB), so Solver::showdown_value evaluates one matrix product instead of a showdown
-  // kernel call per runout (a turn all-in: ~48 calls; srp_big: 17% of all kernel calls).
+  // Fills AllinRunouts::e2 for the runout sets marked `table`, so Solver::showdown_value evaluates one
+  // matrix product instead of a showdown kernel call per runout (a turn all-in: ~48 calls; srp_big: 17%
+  // of all kernel calls). A postflop tree marks every set: at most one flop set and 49 turn sets, 71 MB
+  // with every hand in both ranges. A preflop tree marks them in plan_allins.
   void build_allin_tables();
-  // Bytes the tables take (and, with todo, which runout sets get one): shared by the build and
-  // memory_bytes_for, which counts them before allocate_storage builds them.
-  uint64_t allin_table_plan(std::vector<uint32_t>* todo) const;
+  // Preflop trees with flops: which runout sets get a table and which keep their boards, chosen as
+  // whatever makes the tree smallest. A board is kept only if a river showdown or a set without a
+  // table reads it; the others are never built. Called once the nodes exist.
+  void plan_allins();
+  // Stores the boards of every runout set that has none (ICM needs them; tests compare against them).
+  void restore_allin_boards();
+  // What that would add to the tree, at least (the boards' entries; see showdown_board_bytes): for
+  // the memory check of whoever switches ICM on. 0 for a tree that has all its boards.
+  uint64_t allin_boards_missing_bytes() const;
+  // Bytes of a set's table: one count per hand pair, a byte each for a turn all-in, two for a flop's.
+  uint64_t allin_table_bytes(const AllinRunouts& ar) const {
+    return static_cast<uint64_t>(num_hands(0)) * num_hands(1) * (ar.runouts <= 127 ? 1 : 2);
+  }
 
  private:
+  void store_allin_boards(AllinRunouts& ar);
+  uint64_t showdown_board_bytes(uint64_t board_mask) const;
   std::unordered_map<uint64_t, int> showdown_index_;
   std::unordered_map<uint64_t, int> allin_index_;
   PayoffModel payoff_;

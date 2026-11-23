@@ -1364,6 +1364,15 @@ void Upi::register_commands() {
     payoff_.icm.stacks[1] = static_cast<int32_t>(arg_int(a, 1, "ip stack"));
     // Pio: without ICM points it reports an error line, still answers ok, and leaves ICM off.
     if (!icm_tables_defined_) return std::string("ERROR: set_icm ICM points not defined.\nset_icm ok!");
+    // A preflop tree that values its flops on outcome tables has no showdown boards for them, and ICM
+    // needs the boards (a tie is not the middle of a win and a loss): they are built now, and for many
+    // flops they are several times the tree (GameTree::plan_allins).
+    if (const uint64_t need = tree_->allin_boards_missing_bytes(); need && !ignore_mem_check_) {
+      const uint64_t avail = available_memory_bytes();
+      if (need > avail)
+        throw CmdError{"not enough memory: ICM values this tree's all-ins on their showdown boards, which need " +
+                       std::to_string(need >> 20) + " MB more, available " + std::to_string(avail >> 20) + " MB"};
+    }
     payoff_.icm.enabled = true;
     payoff_.rake_frac = 0;  // the last of rake / ICM wins
     payoff_.rake_cap = 0;

@@ -485,6 +485,192 @@ static bool allin_tables_match() {
   return bad == 0 && terminals > 0;
 }
 
+// #494: a preflop tree's exits to its flops. A level of runout sets (flop all-ins and check-downs, turn
+// ones) gets the outcome tables when they are smaller than the boards the tree can then do without, and
+// those boards are never built. Three trees, one for each outcome: betting through the flop with every
+// hand (flop tables, no boards), through the turn with every hand (boards: 49 turn tables per flop would
+// be five times their size), through the turn with narrow ranges (tables at both levels). In each, every
+// pre-river showdown is valued as built and then on its boards, restored for the comparison; a table
+// filled without boards has to hold the very counts the boards give; the memory count has to be the
+// boards and tables there are; and under ICM, which the tables cannot serve, the tree has to answer as
+// one built under ICM does.
+static bool preflop_runout_tables() {
+  struct Spot {
+    const char* name;
+    const char* range;  // empty: every hand
+    std::vector<std::vector<int>> flop_lines;  // bets from an exit with 250 in from each player
+    int want_tables;                           // bit 0: flop sets, bit 1: turn sets
+  } spots[] = {
+      {"flop bets, all hands", "", {{250, 500, 1100}, {500, 1100}}, 1},
+      {"turn bets, all hands", "", {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 0},
+      {"turn bets, narrow", "TT+,AJs+,KQs,AQo+,76s,65s", {{250, 500, 500, 1000}, {250, 250, 500, 10000}, {250, 10000}}, 3},
+  };
+  const int flops[3][3] = {{parse_card("Qs"), parse_card("4h"), parse_card("2s")},
+                           {parse_card("Js"), parse_card("8h"), parse_card("4d")},
+                           {parse_card("7s"), parse_card("7h"), parse_card("3d")}};
+  uint64_t rng = 0x9e3779b97f4a7c15ull;
+  auto unit = [&] {
+    rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+    return static_cast<float>(rng >> 40) / static_cast<float>(1 << 24);
+  };
+  bool ok = true;
+  for (const Spot& sp : spots) {
+    GameConfig cfg;
+    cfg.preflop = true;
+    cfg.collapse_checkdowns = true;
+    std::string err;
+    RangeWeights w;
+    if (*sp.range) {
+      if (!parse_range(sp.range, w, err)) return false;
+    } else {
+      w.fill(1.0f);
+    }
+    for (int p = 0; p < 2; ++p)
+      for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[p][i] = w[i];
+    cfg.pot[0] = 100, cfg.pot[1] = 50;
+    cfg.eff_stack = 10000;
+    cfg.lines.add = {{250, 250}, {10000, 10000}};
+    {  // the exit after the call of 250 gets the flop tree
+      GameTree pf;
+      if (!pf.build(cfg, err, false)) { std::printf("preflop build: %s\n", err.c_str()); return false; }
+      for (const ActionNode* an : pf.anodes) {
+        if (!an->preflop_exit || an->line != std::vector<int32_t>{250, 250}) continue;
+        Schematic sc;
+        sc.exit_line = an->line;
+        sc.pot[0] = sc.pot[1] = 250;
+        sc.eff_stack = 10000;
+        sc.lines.add = sp.flop_lines;
+        cfg.schematics.push_back(sc);
+      }
+    }
+    if (cfg.schematics.size() != 1) { std::printf("no exit found\n"); return false; }
+    for (auto& f : flops) cfg.subset.push_back({1.0f, {f[0], f[1], f[2]}});
+    GameTree g;
+    if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+    // what was planned, and that nothing is kept that nobody reads
+    int sets[2] = {0, 0}, tabled[2] = {0, 0}, boards[2] = {0, 0}, unbuilt = 0;
+    uint64_t table_bytes = 0;
+    for (const AllinRunouts& ar : g.allins) {
+      if (ar.exact) continue;
+      const int lvl = ar.cards.size() == 4;
+      ++sets[lvl];
+      tabled[lvl] += ar.table;
+      boards[lvl] += !ar.boards.empty();
+      unbuilt += ar.table && ar.e2.empty() && ar.e2b.empty();
+      table_bytes += ar.e2.size() * 2 + ar.e2b.size();
+    }
+    bool plan = unbuilt == 0;
+    for (int lvl = 0; lvl < 2; ++lvl) {
+      const bool t = (sp.want_tables >> lvl) & 1;
+      plan = plan && tabled[lvl] == (t ? sets[lvl] : 0) && boards[lvl] == (t ? 0 : sets[lvl]);
+    }
+    plan = plan && sets[0] == 3 && (sp.want_tables == 1 ? sets[1] == 0 : sets[1] > 3 * 20);
+    const size_t kept = g.showdowns.size();
+    if (sp.want_tables & 1 && (sets[1] == 0 || sp.want_tables & 2)) plan = plan && kept == 0;
+    // the memory count: the tables built are the tables counted, before the storage as after it
+    GameTree dry;
+    if (!dry.build(cfg, err, false)) return false;
+    const bool counted = dry.memory_bytes_for(true) == g.memory_bytes_for(true) && dry.showdowns.size() == kept;
+    uint64_t dry_tables = 0;
+    for (const AllinRunouts& ar : dry.allins)
+      if (ar.table) dry_tables += dry.allin_table_bytes(ar);
+    // values as built
+    Solver s(g);
+    struct Val {
+      uint32_t node;
+      int p;
+      std::vector<float> ro, v;
+    };
+    std::vector<Val> vals;
+    for (uint32_t ni = 0; ni < g.nodes.size(); ++ni) {
+      const GNode& n = g.nodes[ni];
+      if (n.kind != ANodeKind::Showdown || n.board_len == 5 || g.allins[n.aux].exact) continue;
+      if (vals.size() >= 40 && unit() < 0.7f) continue;  // every hand: 4 ms a board-by-board value
+      for (int p = 0; p < 2; ++p) {
+        // as the deal hands them down: no reach on a hand holding a card of the board, whose own
+        // value nobody reads
+        Val v{ni, p, std::vector<float>(g.num_hands(1 - p)), std::vector<float>(g.num_hands(p))};
+        for (float& x : v.ro) x = unit() < 0.3f ? 0.0f : unit();
+        for (uint8_t c : g.allins[n.aux].cards)
+          for (uint16_t h : g.hands_with_card[1 - p][c]) v.ro[h] = 0.0f;
+        s.showdown_value(n, p, v.ro.data(), v.v.data());
+        vals.push_back(std::move(v));
+      }
+    }
+    // the same on the boards
+    std::vector<std::vector<uint16_t>> t16;
+    std::vector<std::vector<uint8_t>> t8;
+    for (AllinRunouts& ar : g.allins) {
+      t16.push_back(std::move(ar.e2));
+      t8.push_back(std::move(ar.e2b));
+      ar.e2.clear(), ar.e2b.clear();
+    }
+    // what the boards will add is known before they are built (the memory check of set_icm): never
+    // more than they do add, and most of it (the strength groups are what the count leaves out)
+    const uint64_t missing = g.allin_boards_missing_bytes(), before_boards = g.memory_bytes_for(true);
+    g.restore_allin_boards();
+    const uint64_t added = g.memory_bytes_for(true) - before_boards;
+    const bool foreseen = g.allin_boards_missing_bytes() == 0 && missing <= added && added <= missing + missing / 2 &&
+                          (missing > 0) == (tabled[0] + tabled[1] > 0);
+    g.build_allin_tables();  // from the boards now
+    long same_counts = 0, sets_tabled = 0;
+    for (size_t i = 0; i < g.allins.size(); ++i) {
+      if (!g.allins[i].table) continue;
+      ++sets_tabled;
+      same_counts += g.allins[i].e2 == t16[i] && g.allins[i].e2b == t8[i] && !(t16[i].empty() && t8[i].empty());
+    }
+    s.allin_tables = false;
+    long bad = 0;
+    double worst = 0;
+    for (const Val& v : vals) {
+      std::vector<float> b(v.v.size());
+      const GNode& n = g.nodes[v.node];
+      s.showdown_value(n, v.p, v.ro.data(), b.data());
+      uint64_t bm = 0;
+      for (uint8_t c : g.allins[n.aux].cards) bm |= card_bit(c);
+      double mag = 0;
+      for (float x : b) mag = std::max(mag, std::fabs(static_cast<double>(x)));
+      for (size_t h = 0; h < b.size(); ++h) {
+        if (combo_mask(g.hands[v.p][h]) & bm) continue;
+        const double d = std::fabs(static_cast<double>(v.v[h]) - b[h]) / (1.0 + mag);
+        worst = std::max(worst, d);
+        if (d > 2e-5) ++bad;  // float32 sums in two orders, as in allin_tables_match
+      }
+    }
+    // ICM: turned on after the build, the tree answers as one built under it (boards, the same sums)
+    PayoffModel pm;
+    pm.icm.enabled = true;
+    pm.icm.stacks[0] = pm.icm.stacks[1] = 10000;
+    for (int p = 0; p < 2; ++p) pm.icm.points[p] = {{0.0, 0.0}, {10000.0, 50.0}, {20000.0, 80.0}};
+    GameTree gi, gj;
+    gi.set_payoff(pm);
+    if (!gi.build(cfg, err) || !gj.build(cfg, err)) return false;
+    gj.set_payoff(pm);
+    Solver si(gi), sj(gj);
+    long icm_bad = 0, icm_n = 0;
+    bool icm_boards = gi.showdowns.size() == gj.showdowns.size() && gi.nodes.size() == gj.nodes.size();
+    for (const AllinRunouts& ar : gj.allins) icm_boards = icm_boards && (ar.exact || !ar.boards.empty());
+    for (size_t k = 0; k < vals.size() && k < 12 && icm_boards; ++k) {
+      const Val& v = vals[k];
+      std::vector<float> a(v.v.size()), b(v.v.size());
+      si.showdown_value(gi.nodes[v.node], v.p, v.ro.data(), a.data());
+      sj.showdown_value(gj.nodes[v.node], v.p, v.ro.data(), b.data());
+      icm_bad += a != b;
+      ++icm_n;
+    }
+    const bool good = plan && counted && foreseen && dry_tables == table_bytes && same_counts == sets_tabled && bad == 0 &&
+                      !vals.empty() && icm_boards && icm_bad == 0 && icm_n > 0;
+    std::printf("[preflop runouts] %-22s %d+%d sets, %d+%d with tables (%.1f MB), %zu boards kept: plan %s, memory count %s, boards to come %.1f MB counted / %.1f MB added %s, "
+                "%ld/%ld tables equal the boards' counts, %zu values worst relative difference %.2e (%ld bad), ICM %ld/%ld equal\n",
+                sp.name, sets[0], sets[1], tabled[0], tabled[1], static_cast<double>(table_bytes) / 1e6, kept,
+                plan ? "ok" : "WRONG", counted && dry_tables == table_bytes ? "ok" : "WRONG", static_cast<double>(missing) / 1e6,
+                static_cast<double>(added) / 1e6, foreseen ? "ok" : "WRONG", same_counts, sets_tabled,
+                vals.size(), worst, bad, icm_n - icm_bad, icm_n);
+    ok = ok && good;
+  }
+  return ok;
+}
+
 // #484: with collapse_checkdowns a subtree in which nobody has a choice left is one showdown node on the
 // runouts. It has to be worth what the one-action nodes were: every collapsed node is compared with the
 // subtree it replaces under random opponent reaches, the roots under the uniform start, and then both
@@ -747,6 +933,7 @@ int main(int argc, char** argv) {
   fails += !decompress_midsolve();
   fails += !stochastic_sums();
   fails += !allin_tables_match();
+  fails += !preflop_runout_tables();
   fails += !river_batch_matches();
   fails += !checkdowns_collapse();
   if (big) {

@@ -1052,18 +1052,21 @@ choices (nine tenths of what is free); otherwise the smallest tree, as before. N
 first version here fell back to "flop tables only, then turn tables only", which the table above gives
 no reason for, and it went. This is not the price #494 asked for (memory against time); it only spends
 memory that is there. `small` is the smallest tree whatever the memory, and what `estimate_tree` counts
-under `auto` too, so a tree can come out 11 % over its estimate when it has the room. `fast` is tables
+under `auto` too, so a tree can come out over its estimate when it has the room (by 11 % with the
+tool's default tree, by 46 % on the two flops of the test, 35 against 51 MB). `fast` is tables
 whatever the memory. ICM keeps the boards as before.
 
 **Not done.**
 - Quiet-machine figures.
-- `auto` through the commands is tested only where memory is plentiful: nothing here can make a test
-  machine short of it, so the limit itself is tested on `GameTree` alone (to the byte).
+- `auto` through the commands (`add_all_flops`, `load_tree`) is tested only where memory is plentiful:
+  nothing here can make a test machine short of it, so the limit itself is tested on `GameTree` alone
+  (to the byte).
 - The tool and the viewer choose a number of flops by `estimate_tree`, which under `auto` is the smallest
-  tree: with room on the machine the tree built is 11 % over a `--memory` the user typed.
+  tree: with room on the machine the tree built is up to 11 % (the default tree's figure) over a
+  `--memory` the user typed.
 - A compact table is filled as a full one and then folded, so the fill is no faster and holds the full
   table of one set per thread while it runs. Still about a minute for all flops.
 - Trees with two different ranges keep the full tables. One table for turn cards that are the same up
   to suits (#494's third way) is not here.
-- `estimate_tree` says the smallest tree; it does not say what `auto` will build
-  (`estimate_rebuild_tree` says what it did build).
+- Under `auto`, `estimate_tree` says the smallest tree (under `fast`, the one with the tables); it does
+  not say what `auto` will build (`estimate_rebuild_tree` says what it did build).

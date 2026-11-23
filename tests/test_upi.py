@@ -994,10 +994,12 @@ def check_outcome_tables(u):
         path = os.path.join(td, "tables.cfr")
         wide = {m: tree(m, every, 3, path if m == "fast" else None) for m in ("small", "fast", "auto")}
         loaded = {}
-        for m in ("small", "fast"):
+        for m in ("small", "fast", "auto"):
             u.cmd("free_tree")
             u.cmd("set_outcome_tables " + m)
-            loaded[m] = {"ok": u.cmd(f'load_tree "{path}" full'), "built": in_memory()[0], "after": results()}
+            said = u.cmd(f'load_tree "{path}" full')
+            loaded[m] = {"ok": said, "built": in_memory()[0], "free": in_memory()[1],
+                         "after": results() if said == "load_tree ok!" else []}
     check(wide["small"]["built"] == wide["small"]["mb"] and wide["fast"]["built"] == wide["fast"]["mb"],
           f"the tree in memory is the one asked for (small {wide['small']['built']} MB, fast {wide['fast']['built']} MB)")
     # auto: the tree with tables where it fits in nine tenths of the memory available. Which that is
@@ -1014,7 +1016,18 @@ def check_outcome_tables(u):
           abs((loaded["fast"]["built"] - loaded["small"]["built"]) - (wide["fast"]["mb"] - wide["small"]["mb"])) <= 1,
           f"a save is loaded into the tree the setting asks for (small {loaded['small']['built']} MB, fast {loaded['fast']['built']} MB: "
           f"the tables' {wide['fast']['mb'] - wide['small']['mb']} MB apart)")
-    check(near(loaded["small"]["after"], loaded["fast"]["after"]) and all(x == x for x in loaded["small"]["after"]) and
+    # a load under auto, by the same rule as the build above
+    room = loaded["auto"]["free"] + loaded["auto"]["built"]
+    if loaded["auto"]["ok"] != "load_tree ok!":
+        check(False, f"a save is loaded under auto ({loaded['auto']['ok']})")
+    elif room >= 2 * loaded["fast"]["built"]:
+        check(loaded["auto"]["built"] == loaded["fast"]["built"] > loaded["small"]["built"] and
+              near(loaded["auto"]["after"], loaded["fast"]["after"]),
+              f"auto with room ({room} MB) loads a save into the tree with the tables ({loaded['auto']['built']} MB)")
+    else:
+        print(f"  (auto loaded {loaded['auto']['built']} MB with {room} MB of room: too close to say which it had to be)")
+    check(len(loaded["small"]["after"]) == 5 and
+          near(loaded["small"]["after"], loaded["fast"]["after"]) and all(x == x for x in loaded["small"]["after"]) and
           loaded["small"]["after"][2:] != [0.0, 0.0, 0.0],
           f"and is worth the same either way ({loaded['small']['after']})")
     check(wide["fast"]["mb"] > wide["small"]["mb"] == wide["auto"]["mb"],

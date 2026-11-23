@@ -360,6 +360,7 @@ python3 tools/preflop.py solve hu40.json --stack 40 --open 2,2.5 --3bet 3.5x --n
 python3 tools/preflop.py estimate --stack 40              # memory per number of flops and depth
 python3 tools/preflop.py tree                             # the preflop lines and their node ids
 python3 tools/preflop.py chart hu100.json r:0:b250 --ev   # one decision again, with the EVs
+python3 tools/preflop.py check hu100.json --flops all     # what that strategy gives up on all flops
 python3 tools/preflop.py script > hu100.upi               # the commands only; ./solver < hu100.upi
 ```
 
@@ -394,8 +395,11 @@ of the pot under the rules of the tree builder: `--flop-bet`, `--turn-bet`, `--r
 (60), `--raise-cap` bets and raises per street (2; the tree builder still offers an all-in after them
 when its all-in rule says so), `--donk` for a lead into the preflop raiser (none), or `--postflop FILE`
 with a whole `#Key#Value` configuration (*Tree builder* above). A solve whose postflop tree stops at the
-flop plays the turn and the river as if nobody could bet there, which is a different game from poker; how
-far its preflop strategy is from one with all three streets has not been measured yet (#483).
+flop plays the turn and the river as if nobody could bet there, which is a different game from poker, and
+the larger error of the two a preflop solve makes (the other is the flop subset, below). Measured one
+street on, with 10 flops (`check`, below): the default `--depth flop` strategy gives up 1.4 (small blind)
+and 1.9 bb/100 (big blind) in the game with turn bets, a `--depth none` strategy 8.0 and 7.5. What the
+river's bets add to that has not been measured (86 GB for 10 flops).
 
 **Flops and memory.** The tree holds a subset of flops, each with a weight and a copy of every exit's
 postflop tree, so memory goes with the number of flops and steeply with the depth. `estimate` asks the
@@ -421,8 +425,19 @@ take half a second). `--flops` takes a number we ship a
 file for (10, 25, 50, 100, 200), a flop file (`flop:weight` lines, the format of `flops/`), or `all` for
 the 1,755 suit classes with the number of flops each stands for. Without it the tool takes the largest
 shipped subset whose estimate is under `--memory` gigabytes (default half of the machine's, which leaves
-room for that) and says which. *Flop subsets* below says how close the files are to all flops; in the
-one tree compared, 50 flops or more gave the 200-flop solve's overall frequencies to within a point.
+room for that) and says which. What a subset costs, for the default tree: the preflop strategy solved on it, played in the
+game with all 1,755 flops against an opponent who knows it, gives up this many bb/100 (`check`, below;
+both solves to 0.02, each figure good to 0.04):
+
+| flops | 10 | 25 | 50 | 100 | 200 |
+|---|---|---|---|---|---|
+| small blind | 1.43 | 0.47 | 0.19 | 0.07 | 0.02 |
+| big blind | 1.03 | 0.53 | 0.17 | 0.04 | 0.01 |
+
+So 200 flops are not told from all of them. A solve to the default accuracy gives up 0.17 by itself, as
+much as 50 flops cost and several times what 100 or 200 do; `--flops all` (4.6 minutes instead of half a minute) buys nothing that
+the missing turn and river bets do not cost many times over. *Flop subsets* below says how the files
+were chosen.
 
 **The solve.** `solve OUT.json` runs until the tree is exploitable for less than `--accuracy` big blinds
 per 100 hands (default 0.5) or for `--time` seconds (default a day; Ctrl-C or a `kill` stops the solver
@@ -455,6 +470,45 @@ lost from the start of the hand, blinds included (a hand that folds the big blin
 blind's EVs at `r:0`, weighted by combos, are the value of the game to it, the first line of the output.
 `chart OUT.json [NODE ...]` prints the charts of a saved result again, all or the named decisions.
 `OUT.json` holds the same per hand class: `nodes[].hands["AKs"]` = `{reach, freq[], ev_bb}`.
+
+**Checking a result.** `check OUT.json [OUT2.json ...]` says what a result's preflop strategy gives up in
+a larger game than the one it was solved in: more flops (`--flops`, `all` where they fit) or more streets
+of betting (`--depth`; without it the result's). It builds that game and solves it; then, one player at a
+time, it locks the result's strategy into that player's preflop decisions (every combo of a hand class
+plays the class's frequencies, as the charts show them), solves everything else against it (the
+opponent's preflop play and all play after the flop, the locked player's too) and compares the two values:
+
+```
+$ python3 tools/preflop.py check hu10.json hu50.json hu200.json hu200fine.json huall.json --flops all
+The game with 1755 flops (all 1,755 flops, --depth flop), solved to 0.031 bb/100: worth 1.24 bb/100 to the small blind (1.21 to 1.28).
+What a preflop strategy gives up in it to an opponent who knows the strategy, bb/100, and the
+span the solves leave open:
+
+                               small blind                big blind
+hu10.json (10 flops)           1.64  (1.57 to 1.73)         1.26  (1.19 to 1.35)
+hu50.json (50 flops)           0.34  (0.27 to 0.43)         0.35  (0.28 to 0.44)
+hu200.json (200 flops)         0.17  (0.10 to 0.26)         0.18  (0.11 to 0.27)
+hu200fine.json (200 flops)     0.02  (-0.05 to 0.11)        0.00  (-0.07 to 0.09)
+huall.json (1755 flops)        0.17  (0.09 to 0.26)         0.18  (0.11 to 0.27)
+```
+
+(`solve` with `--flops 10`, `50`, `200` and `all` at the default accuracy, and `hu200fine.json` with 200
+flops and `--accuracy 0.02`. A solve to the default 0.5 bb/100 gives up 0.17 a player by itself, the last
+row; the 200 flops add nothing to that, and tightening the accuracy takes it away.)
+
+```
+```
+
+The first number is the difference of the two solves' EVs; the span is what the two solves leave open,
+each being exploitable for up to `--accuracy` (default 0.05 bb/100, so the span is about 0.2 wide whatever
+is checked; a loss inside it is not told from none). It is what the preflop strategy can no longer
+secure against an opponent who knows it and plays the best reply, however well its player plays after the
+flop; against an opponent who does not adapt it costs less, or nothing. The preflop options have to be
+those of the checked solve (stack, ante, sizes, ranges); the postflop options and the flops are the
+check's own, and it says when a result was solved with another postflop tree. Time: a solve of the
+larger game for the reference and one for each player of each result, each from the start: on all flops
+of the default tree about 5 minutes a solve on the M4, 52 minutes for the five results above; `--time`
+is the limit of each.
 
 **In the viewer.** Open the tree saved with `--save-tree` (Open in the top bar, then the file's path):
 Study shows it like any other tree, starting at the small blind's first decision with no board. A raise is
@@ -849,7 +903,9 @@ flops and weights whose tables are closest to those of all 1,755 classes togethe
 of a hand's value against a range (a run of hands in order of strength). Random flops of the same
 number are 2 to 4 times further off on that error even with their weights solved the same way. In the
 one tree solved with each file, 50 flops or more gave the 200-flop solve's overall action frequencies
-to within a point and 25 or fewer did not. `flops/README.md` has the numbers per file;
+to within a point and 25 or fewer did not; played on all flops, a strategy solved on 10 gives up 1.0 to
+1.4 bb/100 and one solved on 200 nothing that was measurable (*Preflop solves* above has the table).
+`flops/README.md` has the numbers per file;
 `build/flop_subsets eval FILE` measures any flop file, and `build/flop_subsets equity FILE AKs QQ,JTs`
 prints what an all-in equity becomes through a file's flops next to the exact one (#486).
 

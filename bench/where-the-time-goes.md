@@ -967,3 +967,91 @@ are the same up to suits.
   of a 16 GB machine at flop depth. Whether the default should be all flops is the accuracy study's
   question (#483).
 
+
+## What a preflop strategy from N flops gives up on all flops, and what the depth costs (#497)
+
+The accuracy question of #483 in the solver's own unit. The tree of `tools/preflop.py` at 100 bb (the
+small blind limps or raises to 2.5, 3-bet 4x, 4-bet 2.3x, all-in; bet 50 %, raise 60 % on the flop, checked
+down after: `--depth flop`), full ranges, M4, 10 threads unless said.
+
+**Method** (`tools/preflop.py check`, same commands by hand here). Solve the large game: its value V for a
+player lies between what that player's best response makes against the opponent as solved (`MES`) and
+what the opponent's best response leaves (`EV OOP + EV IP` minus the opponent's `MES`). Then, for one
+player at a time: `set_equal_strats` (a fresh start, no locks), `set_strategy` and `lock_node` at each of
+that player's preflop decisions with the strategy under test, and solve again. Everything not locked is
+solved against it: the opponent's preflop play and both players' play after the flop. The best responses
+of `calc_results` keep to the locks, so the same two bounds hold for the value V' of the game in which the
+player is tied to that preflop strategy. V - V' is what the strategy gives up against an opponent who
+knows it and plays the best reply. Figures are the difference of the two solves' EVs and, in brackets,
+the span the four bounds leave; bb/100 (chips x 1 at 100 chips a big blind).
+
+**Results on all 1,755 flops**, every solve to 0.02 bb/100, strategies under test solved to 0.02 on their
+own flops and locked per hand class (every combo of a class plays the class's frequencies):
+
+| strategy solved on | its own solve | SB's EV there | small blind gives up | big blind gives up |
+|---|---|---|---|---|
+| all flops (control) | 930 s | 1.24 | 0.004 [-0.033, 0.046] | 0.001 [-0.035, 0.044] |
+| `wsolver_200.txt` | 121 s | 1.21 | 0.021 [-0.017, 0.062] | 0.008 [-0.028, 0.051] |
+| `wsolver_100.txt` | 50 s | 1.20 | 0.067 [0.029, 0.108] | 0.041 [0.005, 0.083] |
+| `wsolver_50.txt` | 39 s | 1.24 | 0.191 [0.153, 0.232] | 0.165 [0.128, 0.206] |
+| `wsolver_25.txt` | 14 s | 1.54 | 0.473 [0.436, 0.514] | 0.531 [0.495, 0.574] |
+| `wsolver_10.txt` | 6 s | 1.91 | 1.426 [1.388, 1.467] | 1.031 [0.996, 1.074] |
+
+- **The loss falls faster than 1/N**: by 3.0, 2.5, 2.9 and 3.2 for the small blind as the flops go 10, 25,
+  50, 100, 200 (2.5, 2, 2 and 2 times as many; the last two ratios are of numbers with spans as wide as
+  themselves).
+  **200 flops are not told from all of them at this accuracy**: both spans include zero, and the point
+  estimates are a few times the control's.
+- **A solve to the default accuracy, 0.5 bb/100, gives up 0.17 to 0.18 a player by itself**, and the two
+  errors add. The shipped command on results of `solve` at its defaults (`check ... --flops all`, 0.05,
+  spans 0.17 wide): all flops 0.17 / 0.18; 200 flops 0.17 / 0.18, the same; 50 flops 0.34 / 0.35 (0.17
+  and the 0.17 to 0.19 of the table); 10 flops 1.64 / 1.26; and 200 flops solved to 0.02 instead, 0.02 /
+  0.00, which is the table's row again from the tool's own result file. So at the default accuracy the
+  subset is the smaller error from 100 flops on and equal to it at 50.
+- **The control** is the all-flops strategy locked back into its own game: 0.004 and 0.001. That is the
+  method's own error (class averaging, the 16-bit rows, the second solve), 20 times under the spans.
+- **The 200-flop solve as the reference** gives the same picture, so the study does not need the all-flops
+  tree (10 flops 1.379 / 1.029, 25 flops 0.443 / 0.540, 50 flops 0.182 / 0.164, 100 flops 0.046 / 0.028;
+  spans 0.08 wide as above): each within 0.05 of the all-flops figure.
+- **Classes against combos.** Locking the solver's own 1,326 rows instead of the class averages changes
+  no figure by more than 0.001 (10, 25, 50 and 100 flops against the 200-flop reference). A preflop chart
+  loses nothing against the combo strategy it was read from, also with a subset whose flops do not treat
+  the suits alike.
+- **A fresh start is the faster one.** The locked solve from `set_equal_strats` took 5 to 6 s where the
+  same solve continued from the reference's solved state took 20 to 25 s (50-flop reference, 0.1 bb/100);
+  the values agreed within their spans. A strategy read back after `set_strategy` differs from the one
+  sent by at most 3e-5 (the 16-bit rows).
+- **Time.** On all flops: 930 s for the reference to 0.02 (275 s to 0.5), 370 to 470 s for each locked
+  solve, 100 minutes for the whole table; to 0.05 about 285 s a solve, 52 minutes for the five results of
+  the bullet above. Against 200 flops: 95 s and 37 to 57 s.
+
+**A subset's game is not exactly zero-sum.** `EV OOP + EV IP` is 0.000 on all flops, 0.001 with 200
+flops, -0.005 with 100, 0.004 with 50, 0.035 with 25 and -0.034 with 10 (chips; the solves' own figures). `Solver::flop_deal`
+divides a hand's value by the weight of the flops the hand can see, averaged over the opponent's hands
+by reach; the weight the flops have for the *pair* of hands differs from that average unless every flop
+is in the tree. The spans above use the sum the solve reports, so they hold either way, and the reference
+here has all flops. Exact pair weights cannot go through a walk that values a hand against a whole range
+at once; not changed.
+
+**Depth: the flop-depth strategy in the turn-depth game.** The same check with `--depth turn` (bets on
+the turn too) on the 10 flops of `wsolver_10.txt`, the largest turn-depth tree that solves in reasonable
+time here (802 MB; 5 threads next to another job, 72 minutes for the five solves to 0.2 bb/100). The
+strategies under test were solved on the same 10 flops, so the subset costs them nothing here:
+
+| strategy solved with | SB's EV in its own game | small blind gives up | big blind gives up |
+|---|---|---|---|
+| the turn-depth game itself | 6.92 | | |
+| `--depth flop` | 1.9 | 1.36 [1.01, 1.79] | 1.91 [1.58, 2.36] |
+| `--depth none` | -7.1 | 7.96 [7.62, 8.40] | 7.51 [7.20, 7.98] |
+
+- **Each street of betting is worth about 5 to 9 bb/100 to the button** (-7.1, 1.9, 6.9 for none, flop,
+  turn), so the games differ far more than their preflop strategies' losses: a strategy solved with no
+  postflop bets gives up 7.5 to 8 in the turn-depth game, one solved with flop bets 1.4 to 1.9.
+- **The depth is the larger error from 25 flops on.** Not betting the turn costs a flop-depth preflop
+  strategy as much as solving on 10 flops instead of all does (1.0 to 1.4), about three times what 25
+  flops cost and eight to ten times what 50 do. More flops than 50 at `--depth flop` buy accuracy in a game that is
+  itself 1.4 to 1.9 away from the one with turn bets, as far as 10 flops show it.
+- **Not measured:** what the turn-depth strategy gives up in the game with river bets (86 GB for 10
+  flops), which is the same question one street on and may be as large; more flops at turn depth (25
+  flops are 2 GB and about 2.5 times the time; the PC holds 200); other stacks and sizes. One tree, one
+  subset, one accuracy.

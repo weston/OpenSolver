@@ -98,7 +98,7 @@ def defaults():
     form = {key: getattr(a, attr) or "" for key, (attr, _, _) in TEXT_FIELDS.items()}
     form.update({key: getattr(a, attr) for key, (attr, _, _) in SIZE_FIELDS.items()})
     form.update({"limp": not a.no_limp, "depth": a.depth or pf.Settings().depth, "raise_cap": a.raise_cap,
-                 "range_sb": pf.ALL_HANDS, "range_bb": pf.ALL_HANDS, "flops": DEFAULT_FLOPS, "accuracy": a.accuracy})
+                 "range_sb": pf.ALL_HANDS, "range_bb": pf.ALL_HANDS, "flops": DEFAULT_FLOPS, "accuracy": pf.SOLVE_ACCURACY})
     shipped = [c for c in pf.SHIPPED if os.path.exists(pf.flop_path(c))]
     if DEFAULT_FLOPS not in map(str, shipped):
         form["flops"] = str(shipped[0]) if shipped else "all"

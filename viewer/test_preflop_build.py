@@ -127,6 +127,7 @@ class PreflopBuildTest(unittest.TestCase):
         self.assertEqual((f["limp"], f["limp_raise"], f["depth"], f["raise_cap"], f["flop_bet"], f["raise"]),
                          (True, "", "flop", a.raise_cap, a.flop_bet, a.raise_))
         self.assertEqual(f["range_sb"], self.pf.ALL_HANDS)
+        self.assertEqual(f["accuracy"], self.pf.SOLVE_ACCURACY)   # not the check's, and not None (#497)
         self.assertEqual(d["flops"], [str(c) for c in self.pf.SHIPPED] + ["all"])
         self.assertIn(f["flops"], d["flops"])
         self.assertEqual(d["chips"], 100)
@@ -391,6 +392,9 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = v.req("/api/solve", "POST", {"accuracy": 50.0})
         self.assertEqual(st, 200, d)
         v.wait_solved()
+        end = time.time() + 30   # /api/solve answers before the solver says it started: a status asked
+        while not solver.series and time.time() < end:   # in between is "not solving" with no point yet
+            time.sleep(0.05)
         self.assertTrue(solver.series)
         cmds = solver.cmds
 

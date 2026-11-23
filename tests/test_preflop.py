@@ -488,6 +488,80 @@ def integration(exe):
         status, out, err = run("script", "--stack", "20", "--memory", "0.01", "--solver", exe)
         check(status == 1 and "--depth" in err, "and when not even 10 flops fit, that is said")
 
+        # check: what a result's preflop strategy loses on other flops. Three results for five flops: one
+        # solved on the five, one on three of them, and the first with the small blind folding every hand
+        opts = ("--stack", "12", "--depth", "none", "--solver", exe)
+        five = os.path.join(d, "five.txt")
+        with open(five, "w") as f:
+            f.write("Ks8s7h:30\nQsJh4d:25\n9s9h3d:15\nAh7d2c:20\nTh6h5h:10\n")
+        own, three, folds, report = (os.path.join(d, n) for n in ("own.json", "three.json", "folds.json", "report.json"))
+        solved = [run("solve", own, "--flops", five, "--accuracy", "0.02", *opts)[0],
+                  run("solve", three, "--flops", flop_file, "--accuracy", "0.02", *opts)[0]]
+        with open(own) as f:
+            folding = json.load(f)
+        for n in folding["nodes"]:
+            if n["actor"] == "SB":
+                for h in n["hands"].values():
+                    h["freq"] = [float(a == "fold") for a in n["actions"]]
+        with open(folds, "w") as f:
+            json.dump(folding, f)
+        status, out, err = run("check", own, three, folds, "--flops", five, "--accuracy", "0.02", "--report", report, *opts)
+        try:
+            with open(report) as f:
+                rep = json.load(f)
+            rows = rep["checked"]
+            lost = [[r[who]["lost_bb100"] for who in ("SB", "BB")] for r in rows]
+        except (OSError, ValueError, KeyError):
+            rep, rows, lost = {}, [], []
+        check(solved == [0, 0] and status == 0 and len(rows) == 3
+              and all(n in out for n in ("own.json (5 flops)", "three.json (3 flops)", "folds.json (5 flops)")),
+              f"check: three results on five flops, a row each ({err.strip()[-80:] if status else 'ok'})")
+        if len(lost) == 3:
+            spans = [x for r in lost for x in r]
+            check(all(lo <= at <= hi and hi - lo < 0.25 for at, lo, hi in spans),
+                  f"each loss lies in its span, and at 0.02 bb/100 the spans are narrow (widest "
+                  f"{max(hi - lo for _, lo, hi in spans):.3f})")
+            check(all(abs(at) < 0.1 for at, _, _ in lost[0]),
+                  f"the strategy solved on these flops loses nothing on them ({lost[0][0][0]:+.3f}, {lost[0][1][0]:+.3f})")
+            check(all(lo > 0.1 for _, lo, _ in lost[1]),
+                  f"the one solved on three of them loses, both players' ({lost[1][0][0]:.2f}, {lost[1][1][0]:.2f} bb/100)")
+            # folding every hand gives up the small blind, half a big blind a hand, and what the game was worth
+            value = rep["value_bb100"]["SB"][0]
+            check(abs(lost[2][0][0] - (value + 50)) < 0.1 and abs(lost[2][1][0] - lost[0][1][0]) < 0.1,
+                  f"a small blind that folds every hand loses the game's value and 50 bb/100 "
+                  f"({lost[2][0][0]:.2f} for {value:.2f} + 50); the big blind's side of that file is the first's")
+        status, _, err = run("check", own, "--flops", five, "--stack", "20", "--depth", "none", "--solver", exe)
+        check(status == 1 and "another preflop game" in err, "check refuses a result of another preflop tree before it solves")
+        # the postflop tree is the check's own: without --depth the result's, with it what the result's
+        # preflop strategy loses in that game, and the output says the result was solved in another
+        narrow = os.path.join(d, "narrow.json")
+        status, out, err = run("check", own, "--flops", flop_file, "--accuracy", "0.05", "--stack", "12", "--solver", exe)
+        check(status == 0 and "--depth none)" in out.splitlines()[0] and "another postflop tree" not in out,
+              f"check without --depth is on the result's postflop tree ({out.splitlines()[0][:60] if out else err.strip()[-60:]})")
+        status, out, err = run("check", own, "--flops", flop_file, "--accuracy", "0.05", "--stack", "12", "--depth", "flop",
+                               "--report", report, "--solver", exe)
+        try:
+            with open(report) as f:
+                deeper = json.load(f)["checked"][0]
+        except (OSError, ValueError, KeyError, IndexError):
+            deeper = {}
+        check(status == 0 and "--depth flop)" in out.splitlines()[0] and "own.json (5 flops, --depth none)" in out
+              and "another postflop tree" in out and deeper.get("other_postflop") == ["depth"]
+              and all(deeper[who]["lost_bb100"][2] > 0 for who in ("SB", "BB")),
+              "check --depth flop on a result solved without postflop bets: said, and a loss for both players")
+        status = run("solve", narrow, "--flops", flop_file, "--range-bb", "TT+,AK", *opts)[0]
+        status2, _, err = run("check", narrow, "--flops", flop_file, *opts)
+        check(status == 0 and status2 == 1 and "no strategy for" in err and "ranges of that solve" in err,
+              f"check refuses a result solved with a narrower range ({err.strip()[:70]})")
+        status, out, err = run("check", narrow, "--flops", flop_file, "--range-bb", "TT+,AK", "--accuracy", "0.05", *opts)
+        check(status == 0 and "narrow.json (3 flops)" in out, "and takes it with that range")
+        status, _, err = run("check", own, three, "--flops", flop_file, "--stack", "12", "--solver", exe)
+        check(status == 0, "two results of one depth need no --depth")
+        status, _, err = run("check", five, "--flops", five, *opts)
+        check(status == 1 and "cannot read the result" in err, "and a file that is no result")
+        status, _, err = run("check", "--flops", five, *opts)
+        check(status == 1 and "needs a result file" in err, "and no file at all")
+
 
 def main():
     exe = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "solver")

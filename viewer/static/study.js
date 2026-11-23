@@ -126,6 +126,8 @@ function describe(parent, tok, pi, path) {
       return {
         kind: allin ? "allin" : "raise", label: allin ? "All-in" : `Raise ${pctLabel(frac)}`,
         sub: allin ? fmtChips(amt - base) : `to ${fmtChips(amt - base)} · ${mult.toFixed(1)}x`,
+        // the strip's card has no room for the multiple beside the combo count: there, the amount only
+        short: allin ? undefined : `to ${fmtChips(amt - base)}`,
         color: allin ? COL.allin : betColor(frac), frac: 10 + frac,
       };
     }
@@ -606,7 +608,7 @@ function renderStrip() {
       b.style.setProperty("--c", a.color);
       b.style.setProperty("--f", (o.freqs[j] * 100).toFixed(1) + "%");
       const lbl = el("div", "lbl", a.label);
-      if (a.sub) lbl.appendChild(el("small", null, a.sub));
+      if (a.sub) lbl.appendChild(el("small", null, a.short || a.sub));
       b.title = [a.label, a.sub, a.more].filter(Boolean).join(" ");   // in full: the card cuts a long one short
       b.append(lbl, el("div", "pct num", fmt(o.freqs[j] * 100) + "%"), el("div", "cmb num", fmt(o.combos[j]) + " c"));
       b.onclick = () => gotoNode(a.id);

@@ -72,9 +72,9 @@ documentation; contains no PioSOLVER code.
   a filter by rank or card (it was a dead end, "Choose the river" over a card picker with nothing to
   click), and a board card of a flop opens the same list to change to another flop on the same line.
   Sizes is off before the flop, where a re-solve is refused. EVs stay a percentage of the node's pot,
-  counted from the start of the hand, and the tooltip says so. In every tree, an action's label that
-  does not fit its card is cut short with the whole of it in the tooltip, where it ran under the combo
-  count (#490).
+  counted from the start of the hand, and the tooltip says so. In every tree, a raise's card says
+  `Raise 40% to 60` with the multiple (`3.0x`) in its tooltip, and a label that still does not fit is
+  cut short with the whole of it there: `to 60 · 3.0x` ran under the combo count (#490).
 
 ### Build
 

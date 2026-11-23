@@ -13,12 +13,17 @@
 // who is ahead on the flop itself, on the turn, and at the river (equity).
 //
 // The error that is minimised is the one a solve sees: the squared error of a hand's value against an
-// opponent range, averaged over the streets, the hands and every range of classes (each class in or out).
-// Worked out, with d[a][b] the error of the weighted table at (a, b), that is, per hand class a,
-//     (sum_b d[a][b])^2  +  sum_b d[a][b]^2
-// the first term being the error against all hands at once (errors that do not cancel across
-// opponents: a subset with too many monotone flops misvalues every suited hand the same way) and the
-// second the matchup-by-matchup noise. Nothing in it is a chosen weight.
+// opponent range, averaged over the streets, the hands and the ranges. A range is a run of hand classes
+// in order of strength (their exact preflop equity against all hands), every run equally likely: one
+// class, the best x %, the worst x %, a band in the middle, or all hands. With d[a][b] the error of the
+// weighted table at (a, b), b in that order, and P_k = d[a][1] + ... + d[a][k] (P_0 = 0), a run from
+// i + 1 to j is off by P_j - P_i, and over all runs
+//     mean (P_j - P_i)^2  =  2 / 169 * sum_k (P_k - mean P)^2,      k = 0 .. 169
+// so a hand's row is its 170 centred partial sums. Errors of one sign add up along a run, which is the
+// point: a subset that is a little kind to weak hands in every matchup is far off for "the top 40 %
+// against the rest", and real ranges are that (first objective tried: every class in or out of the
+// range independently, where such a tilt hides; see bench/where-the-time-goes.md). Nothing in it is a
+// chosen weight.
 #pragma once
 #include <algorithm>
 #include <array>
@@ -41,7 +46,7 @@ namespace pio::flops {
 
 constexpr int NCLS = 169;           // preflop classes, preflop_class() order
 constexpr int NFEAT = NCLS * NCLS;  // ordered class pairs
-constexpr int NROW = NFEAT + NCLS;  // a flop's row per street: the pairs, then each class against all hands
+constexpr int NROW = NCLS * (NCLS + 1);  // a flop's row per street: per class, 170 partial sums over the opponents
 constexpr int STREETS = 3;          // 0: the flop, 1: the turn, 2: the river
 // Boards a flop has on each street that miss two given hands: itself, 45 turns, C(45, 2) turn-river pairs.
 constexpr int BOARDS_PER_PAIR[STREETS] = {1, 45, 990};
@@ -211,7 +216,22 @@ struct Deck {
   std::vector<double> pairs;           // class_pairs()
   std::array<int, NCLS> combos{};      // class_combos()
   std::vector<double> ahead[STREETS];  // NFEAT each
+  std::array<int, NCLS> order{};       // strength_order(): the classes, strongest first
 };
+// The classes by exact preflop equity against all hands, strongest first (ties by class index).
+// eq = preflop_equity_sums(), pairs = class_pairs().
+inline std::array<int, NCLS> strength_order(const std::vector<double>& eq, const std::vector<double>& pairs) {
+  std::array<double, NCLS> share{};
+  for (int a = 0; a < NCLS; ++a) {
+    double num = 0, den = 0;
+    for (int b = 0; b < NCLS; ++b) num += eq[a * NCLS + b], den += pairs[a * NCLS + b];
+    share[a] = num / den;
+  }
+  std::array<int, NCLS> order{};
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(order.begin(), order.end(), [&](int x, int y) { return share[x] > share[y]; });
+  return order;
+}
 // sum[k] = sum over all flop classes of count * E2[k] on that street.
 inline std::vector<double> ahead_from_sum(const std::vector<uint64_t>& sum, int street) {
   std::vector<double> ahead(NFEAT);
@@ -234,22 +254,26 @@ inline std::vector<double> preflop_equity_sums() {
 
 // A flop's row of the least-squares problem on one street (NROW floats). With weights that sum to 1,
 // sum_v w_v E_v[a][b] / FIT_SHARE estimates ahead[a][b]; d[a][b] is that estimate's error when the flop
-// stands alone. Per hand of class a (there are combos[a], each facing OPPONENTS hands) the row holds
-// d[a][b] for every b, then sum_b d[a][b], all in units of equity against all hands and scaled so that
-// |sum_v w_v row_v|^2 is the mean over the 1,326 hands of the squared error.
+// stands alone. Per hand of class a (there are combos[a], each facing OPPONENTS hands) the row holds the
+// centred partial sums of d[a][.] over the opponents in deck.order, in units of equity against all hands
+// (a run of opponents counts for its share of them) and scaled so that |sum_v w_v row_v|^2 is the mean
+// over the 1,326 hands and over the runs of the squared error.
 inline void feature_row(const std::vector<uint32_t>& E2, int street, const Deck& deck, float* row) {
   for (int a = 0; a < NCLS; ++a) {
     // a class's d is shared by its combos[a] hands: per hand d / combos, as equity d / (combos * OPPONENTS),
-    // and combos hands of 1,326 carry it: sqrt(combos / 1326) / (combos * OPPONENTS)
-    const double scale = 1.0 / (std::sqrt(deck.combos[a] * 1326.0) * OPPONENTS);
-    double all = 0;
-    for (int b = 0; b < NCLS; ++b) {
-      const int k = a * NCLS + b;
-      const double d = E2[k] / (2.0 * BOARDS_PER_PAIR[street]) / FIT_SHARE - deck.ahead[street][k];
-      row[k] = static_cast<float>(d * scale);
-      all += d;
+    // and combos hands of 1,326 carry it: sqrt(combos / 1326) / (combos * OPPONENTS); 2 / 169 as above
+    const double scale = std::sqrt(2.0 / NCLS) / (std::sqrt(deck.combos[a] * 1326.0) * OPPONENTS);
+    double part[NCLS + 1];
+    double sum = 0, mean = 0;
+    part[0] = 0;
+    for (int k = 0; k < NCLS; ++k) {
+      const int i = a * NCLS + deck.order[k];
+      sum += E2[i] / (2.0 * BOARDS_PER_PAIR[street]) / FIT_SHARE - deck.ahead[street][i];
+      part[k + 1] = sum;
+      mean += sum;
     }
-    row[NFEAT + a] = static_cast<float>(all * scale);
+    mean /= NCLS + 1;
+    for (int k = 0; k <= NCLS; ++k) row[a * (NCLS + 1) + k] = static_cast<float>((part[k] - mean) * scale);
   }
 }
 

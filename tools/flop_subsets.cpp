@@ -13,7 +13,7 @@
 //
 // All but `equity` need every flop's tables: the first run computes them (about a minute, all cores),
 // checks that all flops together reproduce the exact preflop table, and caches the products the
-// search needs in ~/.cache/wsolver/flop_gram_v3.bin (74 MB).
+// search needs in ~/.cache/wsolver/flop_gram_v4.bin (74 MB).
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,7 +38,7 @@ std::string cache_path() {
   if (dir.empty()) return {};
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
-  return dir + "/flop_gram_v3.bin";
+  return dir + "/flop_gram_v4.bin";
 }
 
 // The Gram matrices of the rows per street (flop, turn, river) and their sum, and what the whole deck
@@ -53,6 +53,7 @@ Grams gram(const std::vector<FlopClass>& fc) {
   Grams g;
   g.deck.pairs = class_pairs();
   g.deck.combos = class_combos();
+  g.deck.order = strength_order(preflop_equity_sums(), g.deck.pairs);
   for (auto& s : g.street) s.resize(nn);
   for (auto& a : g.deck.ahead) a.resize(NFEAT);
   auto total = [&] {

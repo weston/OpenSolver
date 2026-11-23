@@ -705,8 +705,8 @@ in a preflop tree (`add_to_subset <weight> <c> <c> <c>` per line of the file). T
 `tools/flop_subsets.cpp` (`make flop-subsets`) from the game alone: for every flop class it counts, per
 pair of preflop hand classes, who is ahead on the flop, on the turn and at the river, and it chooses the
 flops and weights whose tables are closest to those of all 1,755 classes together, measured as the error
-of a hand's value against a range. Random flops of the same number are 2 to 4 times further off even
-with their weights solved the same way. `flops/README.md` has the numbers per file;
+of a hand's value against a range (a run of hands in order of strength). Random flops of the same
+number are 2 to 4 times further off even with their weights solved the same way. `flops/README.md` has the numbers per file;
 `build/flop_subsets eval FILE` measures any flop file, and `build/flop_subsets equity FILE AKs QQ,JTs`
 prints what an all-in equity becomes through a file's flops next to the exact one (#486).
 

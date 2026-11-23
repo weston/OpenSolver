@@ -668,36 +668,57 @@ deck is in `flops/README.md`. This section is what was measured on the way, incl
 
 **What a subset is fitted to.** Per flop class (1,755) and street, a 169 x 169 table of who is ahead:
 on the flop, over the 45 turns, over the 990 runouts. The error of a set of weights is the squared error
-of a hand's value against a range, taken over every range (each hand class in or out with probability
-1/2), which is `(sum over opponents of the error)^2 + sum of the squared errors` per hand: the first
-term is the hand against all hands at once, the second matchup by matchup. Three streets, equal weight,
-nothing tuned. The weights of a chosen set are solved exactly (a quadratic on the simplex).
+of a hand's value against a range, averaged over hands, streets (equal weight) and ranges, where a range
+is a run of hand classes in order of preflop strength, every run equally likely. With the classes in
+that order the mean over the 14,365 runs is `2/169 * sum of (P_k - mean P)^2` over the 170 partial sums
+`P_k` of a hand's errors, so a flop's row is 169 x 170 numbers and the error of weights is a quadratic
+form in the rows' dot products (`test_flop_subsets` counts the runs one by one against it). The weights
+of a chosen set are solved exactly on the simplex. Nothing is tuned.
 
-**Two objectives that were tried first and dropped** (negative results):
+**Three objectives that were tried first and dropped** (negative results):
 
 - *River equity only* (the 990-runout table alone). Small subsets came out about 46 % monotone, with
   trips flops at 6.6 % of the weight: a monotone flop is a cheap stand-in for "a flush is possible by
-  the river", and nothing in the objective says the flop itself has to look like the flops that are dealt. All-in equities
-  through such a subset are close, but the hands are played on boards that come up 5 % of the time.
+  the river", and nothing in the objective says the flop has to look like the flops that are dealt.
   Hence the flop and turn tables.
-- *Matchup by matchup only* (no "against all hands" term). 25 flops came out 12.5 % monotone against
-  5.2 % in the deck. Errors that are small pair by pair but all of one sign add up over a range; the
-  term for a hand against all hands is what a range sees, and with it the textures settle (table in
-  `flops/README.md`: 7.0 % monotone at 25 flops, 5.3 % at 100).
+- *Matchup by matchup only* (the sum of squared errors over class pairs). 25 flops came out 12.5 %
+  monotone against 5.2 % in the deck: errors that are small pair by pair but all of one sign add up
+  over a range.
+- *Every class in or out of the range independently* (matchup by matchup, plus each hand against all
+  hands at once). Textures settled, the error against random subsets looked as good as it does now, and
+  the files were shipped to the strategy study below, where 10 and 25 flops did worse than random flops
+  with solved weights on the frequencies: the big blind folded 12.7 % and 14.2 % to a raise against 21 %
+  with 100 or 200 flops, and the small blind's EV was 0.13 and 0.09 chips low. The cause was a tilt
+  this model of a range cannot see. Equity of the best half of the hands against the worst half, through
+  the subset minus through the deck (flop / turn / river; the deck's are 75.1 / 70.1 / 65.7 %):
+
+  ```
+                                10 flops                  25 flops                  3 x 25 random, solved weights
+  classes in or out             -0.2 / -0.9 / -1.4 pp     -0.3 / -0.4 / -0.7 pp     +2.2 / +1.7 / +1.3   +0.8 / +0.6 / +0.3   +0.4 / -0.1 / -0.5
+  runs in order of strength     +0.7 / +0.5 / +0.2 pp     +0.4 / +0.1 / -0.0 pp
+  ```
+
+  Every one of the 18 splits measured for the two files (best 25 / 50 / 75 % against the rest, three
+  streets) was negative: a least-squares fit over few flops pulls matchups towards even, which is
+  under 1 % per hand and invisible against a range that is a random half of the hands, but a real
+  preflop range is the strong hands or the weak ones. Counting ranges as runs in order of strength
+  makes that tilt the first thing the error sees. Also ruled out on the way: the *spread* of a hand's
+  value across the subset's flops (suspected of handing weak hands option value) was within 0.5 % of the
+  deck's for that objective's 25-flop file, so it was not that.
 
 **Against random flops** (all three streets together, RMS, 1.0 = the pot; median of 200 random draws):
 
 | Flops | generated | random, weights solved | random, weights = how often dealt |
 |---|---|---|---|
-| 10 | 0.0309 | 0.0667 | 0.0867 |
-| 25 | 0.0128 | 0.0304 | 0.0571 |
-| 50 | 0.0049 | 0.0159 | 0.0397 |
-| 100 | 0.0018 | 0.0077 | 0.0273 |
+| 10 | 0.0142 | 0.0304 | 0.0404 |
+| 25 | 0.0055 | 0.0134 | 0.0260 |
+| 50 | 0.0024 | 0.0071 | 0.0180 |
+| 100 | 0.0008 | 0.0034 | 0.0126 |
 
 Both parts count, and more as the subset grows: solved weights alone take a random subset down by a
-factor of 1.3 (10 flops) to 3.5 (100), and choosing the flops takes it down by another 2.2 to 4.3.
-`make flop-subsets` (10 to 200 flops) took 5 min 37 s on the M4 with a solve running beside it;
-5 to 100 flops alone took 62 s on the idle machine. The search is deterministic.
+factor of 1.3 (10 flops) to 3.8 (100), and choosing the flops takes it down by another 2.1 to 4.4.
+The first run computes every flop's tables and their dot products (under a minute on the M4's 10 cores,
+then cached); the search is one thread and deterministic, 4 min 40 s for the five shipped sizes.
 
 **The engine values a preflop exit the way the generator assumes.** `tests/test_upi.py` builds a limp
 check-down tree over `wsolver_10.txt` and compares `calc_ev` at the exit with `flop_subsets equity`
@@ -707,4 +728,53 @@ through the subset, and is checked to stay so.
 
 ### What the subset does to a solved preflop strategy
 
-@@STUDY@@
+One tree: heads-up, blinds 5/10, 1000 chips, full ranges; the small blind limps or raises to 25, then
+raise to 35 over a limp, re-raise to 100 or 110, then 230, then all-in; six flop exits, each with a bet
+and raises on the flop and a check-down after (`set_collapse_checkdowns on`). `set_accuracy 0.05`
+(chips; the solves stop at 0.037 to 0.050), M4, default threads. The reference is the 200-flop file;
+compared are the small blind's EV, the largest difference in any action's overall frequency at three
+nodes (first decision, big blind against the raise, big blind against the limp), and at each of those
+nodes the RMS over the 1,326 hands of the distance between the two strategies of a hand (0 the same,
+1.41 opposite pure actions; every hand counts the same, also one that rarely gets there).
+
+```
+                                 flops   EV SB (diff)      largest freq. diff   per-hand RMS, three nodes   wall      peak RSS
+200 flops (reference)            200     +0.113                                                             862 s     3,525 MB
+200 flops, third objective above 200     +0.120 (+0.007)    0.75 pp             0.093  0.078  0.075         978 s     3,545 MB
+100 flops                        100     +0.111 (-0.002)    0.91 pp             0.124  0.092  0.063         390 s     1,898 MB
+50 flops                          50     +0.109 (-0.004)    0.69 pp             0.218  0.181  0.134         217 s     1,002 MB
+25 flops                          25     +0.143 (+0.030)    3.77 pp             0.332  0.336  0.200         120 s       526 MB
+10 flops                          10     +0.170 (+0.057)    4.48 pp             0.459  0.443  0.293          39 s       236 MB
+5 flops (not shipped)              5     +0.232 (+0.119)    8.83 pp             0.515  0.557  0.361          18 s       142 MB
+25 random, solved weights (3)   15-21    +0.093 -0.009 -0.003   5.14  2.89  3.96 pp   0.49-0.56  0.49-0.57  0.31-0.36
+25 random, dealt weights (3)      25     +0.313 +0.102 +0.117  12.82  3.60  4.91 pp   0.60-0.67  0.59-0.61  0.31-0.45
+third objective, 25 flops         25     -0.088             6.85 pp             0.366  0.445  0.243
+third objective, 10 flops         10     -0.124            14.67 pp             0.593  0.581  0.431
+```
+
+(Solving the weights of 25 random flops leaves 15 to 21 of them with any weight. Times are single runs,
+some with a one-thread job beside them: good to perhaps 10 %, as the two 200-flop rows show.)
+
+How to read it:
+
+- **The noise floor.** Two different 200-flop files (different flops, chosen by different objectives)
+  agree to 0.007 chips, 0.75 pp and a per-hand RMS of 0.08 to 0.09. The same 25 flops solved to 0.05 and
+  to 0.0125 differ by 0.005 chips, 0.7 pp and 0.09 to 0.11. So a per-hand RMS near 0.1 is two solves of
+  the same game: many hands are indifferent between two preflop actions, and which mix a solve lands on
+  is not determined to better than that. The frequencies and the EV are the firmer numbers.
+- **100 flops are at the floor, 50 nearly** (per-hand RMS about twice the floor, frequencies and EV at it).
+- **25 and 10 flops** keep the small blind's opening strategy (limp, raise and fold each within 1.6 pp)
+  and have the big blind fold 24.5 % and 24.8 % to the raise against 20.7 %; the small blind's EV is
+  0.03 and 0.06 chips high. Per hand they are clearly closer to the reference than random flops with
+  solved weights (0.33 against 0.49 to 0.56 at the first decision), and on the frequencies and the EV
+  they are inside the spread of the three random draws, not better than it. Three draws are few; the
+  claim that survives is the per-hand one.
+- **Per flop** the tree costs about 17 MB and about 4 s at this accuracy, in step with the number of flops.
+
+**Not measured, and what it would take.** The reference is still a subset: the two 200-flop files
+agreeing says the answer has stopped moving, not that it is the answer for all 1,755 flop classes
+(about 30 GB for this tree; the 63 GB PC can hold it). Strategy distance is also the wrong unit for a
+solver: the question is how much a preflop strategy from N flops loses when it is played in the
+many-flop game, which needs the preflop strategy locked into the reference tree. Both belong to the
+accuracy study of #483. One tree with flop betting only was solved; with turn and river betting the
+flop's texture matters for longer and the picture may differ.

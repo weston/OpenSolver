@@ -107,6 +107,7 @@ int main(int argc, char** argv) {
   Deck deck;
   deck.pairs = pairs;
   deck.combos = class_combos();
+  deck.order = strength_order(preflop_equity_sums(), pairs);
   const int n = static_cast<int>(fc.size());
   for (int street = 0; street < 2; ++street) {
     std::vector<uint32_t> all(static_cast<size_t>(n) * NFEAT);
@@ -138,6 +139,42 @@ int main(int argc, char** argv) {
               eq[preflop_class_of_name("72o")] < eq[preflop_class_of_name("32s")],
           "equity against all hands from the exact table: mean %.12f, AA %.4f, 72o %.4f", mean, eq[preflop_class_of_name("AA")],
           eq[preflop_class_of_name("72o")]);
+  }
+
+  // ---- a flop's row: its squared length is the error over the ranges, counted one by one ----
+  {
+    // A range is a run of classes in order of strength. For a flop standing alone, add up its error
+    // d[a][b] over each of the 169 * 170 / 2 runs, square, and average: that is what the row's 170
+    // centred partial sums per class come to (flop_subsets.hpp).
+    const bool sorted = deck.order[0] == preflop_class_of_name("AA") && deck.order[1] == preflop_class_of_name("KK") &&
+                        deck.order[NCLS - 1] == preflop_class_of_name("32o");
+    CHECK(sorted, "the classes in order of strength: AA, KK, ... 32o");
+    double worst = 0;
+    for (int street = 0; street < STREETS; ++street)
+      for (int v : {3, 700, 1750}) {
+        std::vector<uint32_t> e;
+        flop_table(fc[v].cards, street, e);
+        std::vector<float> row(NROW);
+        feature_row(e, street, deck, row.data());
+        double fast = 0, slow = 0;
+        for (float x : row) fast += static_cast<double>(x) * x;
+        for (int a = 0; a < NCLS; ++a) {
+          double runs = 0;
+          for (int i = 0; i < NCLS; ++i) {
+            double sum = 0;
+            for (int j = i; j < NCLS; ++j) {
+              const int k = a * NCLS + deck.order[j];
+              sum += e[k] / (2.0 * BOARDS_PER_PAIR[street]) / FIT_SHARE - deck.ahead[street][k];
+              runs += sum * sum;
+            }
+          }
+          // per hand of the class, as equity against all hands; the class's share of the 1,326 hands
+          const double per_hand = runs / (NCLS * (NCLS + 1) / 2) / (deck.combos[a] * OPPONENTS * deck.combos[a] * OPPONENTS);
+          slow += per_hand * deck.combos[a] / NUM_COMBOS;
+        }
+        worst = std::max(worst, std::abs(fast - slow) / slow);
+      }
+    CHECK(worst < 1e-5, "a row's squared length is the mean squared error over every run of opponents (worst relative difference %.1e)", worst);
   }
 
   // ---- weights on the simplex ----

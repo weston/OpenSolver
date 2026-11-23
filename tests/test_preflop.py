@@ -7,6 +7,7 @@ import os
 import random
 import sys
 import tempfile
+import time
 from contextlib import redirect_stderr, redirect_stdout
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -214,10 +215,10 @@ def unit():
     cards = [r + x for r in "AKQJT9" for x in "shdc"]
     hands = [a + b for i, a in enumerate(cards) for b in cards[i + 1:]]
     wa, wb = [rng.random() for _ in hands], [rng.random() if rng.random() < 0.7 else 0.0 for _ in hands]
-    brute = sum(x * y for h, x in zip(hands, wa) for g, y in zip(hands, wb)
-                if len({h[0:2], h[2:4], g[0:2], g[2:4]}) == 4)
-    check(abs(preflop._deals(hands, wa, wb) - brute) < 1e-9 * brute,
-          f"deals of two ranges that share no card: inclusion and exclusion against pair by pair ({len(hands)} hands)")
+    brute = [sum(y for g, y in zip(hands, wb) if len({h[0:2], h[2:4], g[0:2], g[2:4]}) == 4) for h in hands]
+    facing = preflop._facing(hands, wb)
+    check(max(abs(x - y) for x, y in zip(facing, brute)) < 1e-9 and sum(x * y for x, y in zip(wa, facing)) > 0,
+          f"the opponent's hands that share no card with a hand: by card sums against hand by hand ({len(hands)} hands)")
     node = {"id": "r:0", "actor": "SB", "line": [], "pot_bb": [0.5, 1], "actions": ["raise 2.5", "limp", "fold"],
             "reach": 1.0, "freq": [0.5, 0.25, 0.25],
             "hands": {"AA": {"reach": 1, "freq": [1.0, 0.0, 0.0], "ev_bb": 9.234},
@@ -318,6 +319,7 @@ def integration(exe):
             rows = lambda cmd: [[float(x) for x in l.split()] for l in u.cmd(cmd) if l.strip()]  # noqa: E731
             strat0, strat1 = rows("show_strategy r:0"), rows("show_strategy r:0:b250")
             strat2 = rows("show_strategy r:0:b250:b1000")
+            bb_start, bb_3bet = rows("show_range OOP r:0")[0], rows("show_range OOP r:0:b250:b1000")[0]
             ev0 = rows("calc_ev IP r:0")[0]
         finally:
             u.close()
@@ -330,15 +332,26 @@ def integration(exe):
                 worst = max(worst, abs(sum(strat0[a][i] for i in idx) / len(idx) - nodes["r:0"]["hands"][cls]["freq"][a]))
             for a in range(len(strat1)):
                 worst = max(worst, abs(sum(strat1[a][i] for i in idx) / len(idx) - nodes["r:0:b250"]["hands"][cls]["freq"][a]))
-            # facing the 3-bet the small blind holds a combo as often as it raised it
-            reach = [strat0[0][i] for i in idx]
-            if sum(reach) > 1e-6:
+            # facing the 3-bet a combo counts by the deals that get there: it raised, and the big blind,
+            # in a hand that shares no card with it, raised again (pair by pair here, not the tool's sums)
+            apart = lambda i, w: sum(y for h, y in zip(order, w) if not set((h[:2], h[2:])) & set((order[i][:2], order[i][2:])))  # noqa: E731
+            reach = [strat0[0][i] * apart(i, bb_3bet) for i in idx]
+            dealt = sum(apart(i, bb_start) for i in idx)
+            if sum(reach) > 1e-6 * dealt:
                 for a in range(len(strat2)):
                     mine = sum(r * strat2[a][i] for r, i in zip(reach, idx)) / sum(reach)
                     worst = max(worst, abs(mine - nodes["r:0:b250:b1000"]["hands"][cls]["freq"][a]))
-                worst = max(worst, abs(sum(reach) / len(idx) - nodes["r:0:b250:b1000"]["hands"][cls]["reach"]))
-        check(worst < 1e-5, f"a class's chart cell is show_strategy averaged over its combos, weighted by how often "
-                            f"each gets there (worst difference {worst:.1e})")
+                worst = max(worst, abs(sum(reach) / dealt - nodes["r:0:b250:b1000"]["hands"][cls]["reach"]))
+        check(worst < 1e-5, f"a class's chart cell is show_strategy averaged over its combos, weighted by the deals "
+                            f"each is in at the node (worst difference {worst:.1e})")
+        worst, pairs = 0.0, 0
+        for n in decisions(root):
+            for a, (_, child) in enumerate(n.children):
+                if child.id in nodes:
+                    pairs += 1
+                    worst = max(worst, abs(nodes[child.id]["reach"] - nodes[n.id]["reach"] * nodes[n.id]["freq"][a]))
+        check(pairs >= 5 and worst < 1e-6, f"at every depth a decision is reached as often as its parent is, times "
+                                           f"the action's share there ({pairs} decisions, worst difference {worst:.1e})")
         n0 = nodes["r:0"]
         check(abs(sum(n0["freq"]) - 1) < 1e-6 and all(abs(sum(h["freq"]) - 1) < 1e-6 for h in n0["hands"].values())
               and len(n0["hands"]) == 169 and abs(n0["reach"] - 1) < 1e-9, "169 classes; frequencies sum to 1")
@@ -375,6 +388,52 @@ def integration(exe):
         status, out, err = run("solve", os.path.join(d, "no.json"), "--solver", os.path.join(d, "nothing"), "--flops", "10")
         check(status == 1 and "no solver" in err and not os.path.exists(os.path.join(d, "no.json")),
               "without a solver: an error, no result file")
+
+        # what can go wrong is said before the solve, in one line
+        t0 = time.time()
+        bad = [("solve", os.path.join(d, "nowhere", "o.json")), ("solve", out_file, "--save-tree", os.path.join(d, "nowhere", "t.cfr")),
+               ("solve", out_file, "--stack 20 --flops 10"), ("solve",), ("solve", out_file, "--time", "0"),
+               ("solve", out_file, "--threads", "0"), ("solve", out_file, "--memory", "0"), ("tree", "extra"),
+               ("tree", "--stack", "nan"), ("tree", "--open", "inf"), ("tree", "--3bet", "nanx"), ("tree", "--ante", "inf"),
+               ("tree", "--allin-threshold", "200"), ("tree", "--allin-threshold", "-1")]
+        got = [run(*argv, "--stack", "20", "--flops", flop_file, "--solver", exe) if argv[0] == "solve" and len(argv) > 1
+               and argv[-1] != "--stack 20 --flops 10" else run(*argv, "--solver", exe) for argv in bad]
+        wrong = [argv for argv, (status, _, err) in zip(bad, got)
+                 if status != 1 or not err.startswith("error: ") or err.count("\n") != 1 or "Traceback" in err]
+        check(not wrong and time.time() - t0 < 5 and json.load(open(out_file)) == saved,
+              f"{len(bad)} mistakes (no directory for the result or the tree, options glued into one word, no result "
+              f"file, nan and inf, limits) are one line each, before anything is solved" + (f": {wrong}" if wrong else ""))
+        junk = os.path.join(d, "junk.json")
+        answers = []
+        for text in ("{}", "[1]", '{"version": 1}', "not json"):
+            with open(junk, "w") as f:
+                f.write(text)
+            answers.append(run("chart", junk))
+        check(all(status == 1 and err.startswith("error: ") and "Traceback" not in err for status, _, err in answers),
+              "chart: a file that is not a result is said to be none")
+        preflop.Solver.HELLO_SECONDS = 1
+        status, _, err = run("solve", os.path.join(d, "no.json"), "--flops", flop_file, "--solver", "/bin/cat")
+        status2, _, err2 = run("solve", os.path.join(d, "no.json"), "--flops", flop_file, "--solver", flop_file)
+        preflop.Solver.HELLO_SECONDS = 10
+        check(status == 1 and "does not answer like the solver" in err and status2 == 1 and "cannot run" in err2
+              and not os.path.exists(os.path.join(d, "no.json")),
+              "--solver with a program that is not the solver, or a file that is no program: an error, no hang")
+
+        # a range of single combos: hands the opponent's cards rule out count for nothing
+        combo_file = os.path.join(d, "combo.json")
+        status, out, err = run("solve", combo_file, "--stack", "20", "--flops", flop_file, "--depth", "none", "--time", "3",
+                               "--range-bb", "AhAs", "--solver", exe, "--ev", "--width", "132")
+        def strict(x):
+            raise ValueError(x)
+        try:
+            combo = json.load(open(combo_file), parse_constant=strict)
+        except (OSError, ValueError):
+            combo = {"nodes": []}
+        cn = {n["id"]: n for n in combo["nodes"]}
+        check(status == 0 and "nan" not in out.lower() and len(cn.get("r:0", {}).get("hands", {})) == 169
+              and all(h["ev_bb"] is not None for h in cn["r:0"]["hands"].values())
+              and set(cn["r:0:b250"]["hands"]) == {"AA"},
+              "--range-bb AhAs: every small blind class has an EV, the big blind's chart is the one hand, no nan")
         status, out, _ = run("estimate", "--stack", "20", "--flops", flop_file, "--depth", "flop", "--solver", exe)
         check(status == 0 and f"{before:,}" in out, "estimate prints that figure")
         status, out, err = run("script", "--stack", "20", "--memory", "0.5", "--solver", exe)

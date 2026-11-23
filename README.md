@@ -389,13 +389,13 @@ start                  r:0                                in: 0.5 / 1       SB t
 **After the flop.** Every line that ends in a call before the stacks are in goes to a flop, and each of
 those exits gets a postflop tree in which the pot and the stacks are the ones the preflop action left.
 `--depth` is the last street with betting: `flop` (the default), `turn`, `river`, or `none`; the streets
-after it are checked down, each as one showdown node (`set_collapse_checkdowns`). The sizes are percent of
-the pot under the rules of the tree builder: `--flop-bet`, `--turn-bet`, `--river-bet` (50), `--raise`
-(60), `--raise-cap` bets and raises per street (2), `--donk` for a lead into the preflop raiser (none),
-or `--postflop FILE` with a whole `#Key#Value` configuration (*Tree builder* above). A solve whose
-postflop tree stops at the flop plays the turn and the river as if nobody could bet there, which is a
-different game from poker; how far its preflop strategy is from one with all three streets has not been
-measured yet (#483).
+after it are checked down, each as one showdown node (`set_collapse_checkdowns`). The sizes are percent
+of the pot under the rules of the tree builder: `--flop-bet`, `--turn-bet`, `--river-bet` (50), `--raise`
+(60), `--raise-cap` bets and raises per street (2; the tree builder still offers an all-in after them
+when its all-in rule says so), `--donk` for a lead into the preflop raiser (none), or `--postflop FILE`
+with a whole `#Key#Value` configuration (*Tree builder* above). A solve whose postflop tree stops at the
+flop plays the turn and the river as if nobody could bet there, which is a different game from poker; how
+far its preflop strategy is from one with all three streets has not been measured yet (#483).
 
 **Flops and memory.** The tree holds a subset of flops, each with a weight and a copy of every exit's
 postflop tree, so memory goes with the number of flops and steeply with the depth. `estimate` asks the
@@ -415,12 +415,13 @@ count it, and at `flop` depth, where the showdown boards are nearly all of the t
 tree's memory for a moment (3.4 GB and 22 seconds for the 200 flops). `--flops` takes a number we ship a
 file for (10, 25, 50, 100, 200), a flop file (`flop:weight` lines, the format of `flops/`), or `all` for
 the 1,755 suit classes with the number of flops each stands for. Without it the tool takes the largest
-shipped subset whose estimate is under `--memory` gigabytes (default half of the machine's) and says
-which. *Flop subsets* below says how close the files are to all flops; in the one tree compared, 50 flops
-or more gave the 200-flop solve's overall frequencies to within a point.
+shipped subset whose estimate is under `--memory` gigabytes (default half of the machine's, which leaves
+room for the 1.3) and says which. *Flop subsets* below says how close the files are to all flops; in the
+one tree compared, 50 flops or more gave the 200-flop solve's overall frequencies to within a point.
 
 **The solve.** `solve OUT.json` runs until the tree is exploitable for less than `--accuracy` big blinds
-per 100 hands (default 0.5) or for `--time` seconds, with progress on stderr, and writes the preflop
+per 100 hands (default 0.5) or for `--time` seconds (default a day; Ctrl-C or a `kill` stops the solver
+with it and leaves no result), with progress on stderr, and writes the preflop
 strategies of every decision to `OUT.json`; `--save-tree FILE` also saves the solved tree (`dump_tree`
 without rivers) to open in the viewer. On an M4 (10 cores, 16 GB) the first command above took the 200
 flops and 13 minutes, 12 of them solving; `--flops 10` is under 1 bb/100 in 35 seconds, with the caveat
@@ -430,18 +431,21 @@ of a small subset.
 
 ```
 r:0:b250   SB raise 2.5   ->  BB to act
-  45.9 % of deals get here; then raise 10 19.6 %, call 56.7 %, fold 23.7 %
+  45.9 % of deals get here; then raise 10 19.2 %, call 56.5 %, fold 24.2 %
 
-raise 10 (19.6 %)                          call (56.7 %)                              fold (23.7 %)
+raise 10 (19.2 %)                          call (56.5 %)                              fold (24.2 %)
    A  K  Q  J  T  9  8  7  6  5  4  3  2      A  K  Q  J  T  9  8  7  6  5  4  3  2      A  K  Q  J  T  9  8  7  6  5  4  3  2
 A ** ** ** ** ** 64  2 **  1 61 32 11  .   A  .  .  .  .  . 36 98  . 99 39 68 89 **   A  .  .  .  .  .  .  .  .  .  .  .  .  .
 K ** ** ** ** **  .  7 **  .  . 49  .  .   K  .  .  .  .  . ** 93  . ** ** 51 ** **   K  .  .  .  .  .  .  .  .  .  .  .  .  .
 ```
 
-A cell is how often the hand takes the action once it is at this decision, in percent: `**` always, `.`
-never (under half a percent), blank when the hand never gets here. Suited hands are above the diagonal,
-offsuit below. The line under the heading is how often the deal gets to this decision at all, and the
-split of the actions there. `--ev` adds a chart of each hand's EV at the decision in big blinds won or
+A cell is how often the hand takes the action once it is at this decision, in percent: `**` always (99.5
+or more), `.` never (under half a percent), blank when the hand never gets here. Suited hands are above
+the diagonal, offsuit below. The line under the heading is how often the deal gets to this decision at
+all, and the split of the actions there. Everything counts deals: a combo weighs by the opponent's hands
+that share no card with it and get there too, so a decision is reached as often as its parent, times the
+action's share there, and with a range of single combos a hand the opponent's cards rule out counts for
+nothing. `--ev` adds a chart of each hand's EV at the decision in big blinds won or
 lost from the start of the hand, blinds included (a hand that folds the big blind is at -1.00); the small
 blind's EVs at `r:0`, weighted by combos, are the value of the game to it, the first line of the output.
 `chart OUT.json [NODE ...]` prints the charts of a saved result again, all or the named decisions.

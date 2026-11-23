@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
@@ -64,6 +67,8 @@ def parse_sizes(text: str, name: str) -> list[Size]:
                 size = Size("x", Decimal(low[:-1]), low)
             else:
                 size = Size("bb", Decimal(low[:-2] if low.endswith("bb") else low), low)
+            if not size.value.is_finite():
+                raise InvalidOperation
         except InvalidOperation:
             raise PreflopError(f"--{name}: {part!r} is not a size (2.5 = to 2.5 big blinds, 4x = four times "
                                "the bet faced, allin)")
@@ -373,12 +378,38 @@ def script(s: Settings, flops: list[tuple[str, float]], root: Node | None = None
 
 class Solver:
     END = "PREFLOP_PY_END"
+    HELLO_SECONDS = 10  # for the first exchange: a program that is not the solver may never answer
 
     def __init__(self, exe: str):
         if not os.path.exists(exe):
             raise PreflopError(f"no solver at {exe} (run `make`, or give --solver)")
-        self.p = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
-        self.cmd("set_end_string " + self.END)
+        try:
+            self.p = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        except OSError as e:
+            raise PreflopError(f"cannot run {exe}: {e}")
+        watchdog = threading.Timer(self.HELLO_SECONDS, self.p.kill)
+        watchdog.start()
+        try:
+            self.cmd("set_end_string " + self.END)
+        except PreflopError:
+            self.kill()
+            raise PreflopError(f"{exe} does not answer like the solver")
+        finally:
+            watchdog.cancel()
+
+    def __enter__(self) -> "Solver":
+        return self
+
+    def __exit__(self, kind, value, trace) -> None:
+        # after an error or an interrupt nothing is worth waiting for, and a solve may run for hours
+        if kind is None:
+            self.close()
+        else:
+            self.kill()
+
+    def kill(self) -> None:
+        self.p.kill()
+        self.p.wait()
 
     def _line(self, during: str) -> str:
         got = self.p.stdout.readline()
@@ -437,13 +468,10 @@ def default_solver() -> str:
 
 def estimate_mb(exe: str, s: Settings, flops: list[tuple[str, float]]) -> int:
     """What the solver says the tree takes (16-bit storage), without building it."""
-    u = Solver(exe)
-    try:
+    with Solver(exe) as u:
         for line in script(s, flops):
             u.need(line)
         out = u.cmd("estimate_tree")
-    finally:
-        u.close()
     for l in out:
         if l.startswith("estimated tree size:"):
             return int(l.split()[3])
@@ -490,23 +518,21 @@ def _floats(lines: list[str], want: int, what: str) -> list[list[float]]:
     return rows
 
 
-def _deals(order: list[str], a: list[float], b: list[float]) -> float:
-    """Sum of a[x] * b[y] over the pairs of hands x, y that share no card (the deals that can happen),
-    by inclusion and exclusion: all pairs, less those sharing a card (two identical hands share two
-    and are taken off twice, so they go back on once)."""
-    by_card_a: dict[str, float] = {}
-    by_card_b: dict[str, float] = {}
-    same = 0.0
-    for hand, x, y in zip(order, a, b):
+def _facing(order: list[str], theirs: list[float]) -> list[float]:
+    """For each hand, the weight of the opponent's hands that share no card with it."""
+    by_card: dict[str, float] = {}
+    for hand, y in zip(order, theirs):
         for card in (hand[0:2], hand[2:4]):
-            by_card_a[card] = by_card_a.get(card, 0.0) + x
-            by_card_b[card] = by_card_b.get(card, 0.0) + y
-        same += x * y
-    return sum(a) * sum(b) - sum(v * by_card_b[c] for c, v in by_card_a.items()) + same
+            by_card[card] = by_card.get(card, 0.0) + y
+    total = sum(theirs)
+    return [max(0.0, total - by_card[h[0:2]] - by_card[h[2:4]] + y) for h, y in zip(order, theirs)]
 
 
 def collect(u: Solver, s: Settings, root: Node) -> list[dict]:
-    """Every preflop decision as hand classes: how often each class gets there, what it does, its EV."""
+    """Every preflop decision as hand classes: how often each class gets there, what it does, its EV.
+    A combo counts by the deals it is in: its own reach times the opponent's reach in the hands that
+    share no card with it. So a combo the opponent's range rules out counts for nothing, and the split
+    of the actions at a node is the split of the deals that get there."""
     order = " ".join(u.cmd("show_hand_order")).split()
     if len(order) != 1326:
         raise PreflopError("show_hand_order did not list 1326 hands")
@@ -529,28 +555,34 @@ def collect(u: Solver, s: Settings, root: Node) -> list[dict]:
         theirs0 = _floats(u.cmd(f"show_range {other} r:0"), 1326, "show_range r:0")[0]
         ev = _floats(u.cmd(f"calc_ev {who} {node.id}"), 1326, f"calc_ev {node.id}")[0]
         start = _floats(u.cmd(f"show_range {who} r:0"), 1326, "show_range r:0")[0]
+        here = [x * y for x, y in zip(reach, _facing(order, theirs))]     # deals at this node, by combo
+        dealt = [x * y for x, y in zip(start, _facing(order, theirs0))]   # deals at the start
         per: dict[str, dict] = {}
         for i, cls in enumerate(classes):
-            c = per.setdefault(cls, {"start": 0.0, "reach": 0.0, "ev": 0.0, "freq": [0.0] * len(mine)})
-            c["start"] += start[i]
-            c["reach"] += reach[i]
-            c["ev"] += reach[i] * ev[i]
+            c = per.setdefault(cls, {"dealt": 0.0, "here": 0.0, "ev": 0.0, "ev_of": 0.0, "freq": [0.0] * len(mine)})
+            c["dealt"] += dealt[i]
+            if here[i] <= 0:
+                continue
+            c["here"] += here[i]
+            if math.isfinite(ev[i]):
+                c["ev"] += here[i] * ev[i]
+                c["ev_of"] += here[i]
             for a in range(len(mine)):
-                c["freq"][a] += reach[i] * strat[a][i]
-        total = sum(c["reach"] for c in per.values())
+                c["freq"][a] += here[i] * strat[a][i]
+        total = sum(c["here"] for c in per.values())
         hands = {}
         for cls, c in per.items():
-            if c["start"] <= 0:
-                continue  # not in the player's range at all
-            got = c["reach"] > 1e-9 * c["start"]
-            hands[cls] = {"reach": c["reach"] / c["start"],
-                          "freq": [f / c["reach"] if got else 0.0 for f in c["freq"]],
-                          "ev_bb": c["ev"] / c["reach"] / s.chips if got else None}
+            if c["dealt"] <= 0:
+                continue  # not in the player's range, or never dealt against the opponent's
+            got = c["here"] > 1e-9 * c["dealt"]
+            hands[cls] = {"reach": c["here"] / c["dealt"],
+                          "freq": [f / c["here"] if got else 0.0 for f in c["freq"]],
+                          "ev_bb": c["ev"] / c["ev_of"] / s.chips if got and c["ev_of"] > 0 else None}
         out.append({
             "id": node.id, "actor": node.actor, "line": list(node.said),
             "pot_bb": [node.inv[0] / s.chips, node.inv[1] / s.chips],
             "actions": [label for label, _ in node.children],
-            "reach": _deals(order, reach, theirs) / _deals(order, start, theirs0),
+            "reach": total / sum(dealt) if sum(dealt) > 0 else 0.0,
             "freq": [sum(c["freq"][a] for c in per.values()) / total if total > 0 else 0.0 for a in range(len(mine))],
             "hands": hands,
         })
@@ -566,8 +598,13 @@ def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
         # in a process of its own: the solver builds a whole second tree to answer, and in the solving
         # process that would stand next to the real one
         estimated_mb = estimate_mb(exe, s, flops)
-    u = Solver(exe)
-    try:
+        if log:
+            mem = physical_memory_mb()
+            print(f"{len(flops)} flops: estimated {estimated_mb} MB"
+                  + (f", more than this machine's {mem} MB" if mem and estimated_mb > mem else ""),
+                  file=sys.stderr, flush=True)
+    tree_error = None
+    with Solver(exe) as u:
         for line in script(s, flops, root):
             u.need(line)
         if threads:
@@ -597,9 +634,10 @@ def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
             progress(l)
         nodes = collect(u, s, root)
         if save_tree:
-            u.cmd(f"dump_tree {save_tree} no_rivers")
-    finally:
-        u.close()
+            try:
+                u.need(f'dump_tree "{save_tree}" no_rivers')
+            except PreflopError as e:
+                tree_error = f"--save-tree: {e}"  # the result is still worth having
     return {
         "version": 1,
         "settings": describe(s),
@@ -610,6 +648,7 @@ def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
         "target_bb100": accuracy_bb100,
         "seconds": round(time.time() - started, 1),
         "estimated_mb": estimated_mb,
+        "save_tree_error": tree_error,
         "nodes": nodes,
     }
 
@@ -718,9 +757,12 @@ def tree_text(s: Settings, root: Node) -> list[str]:
 def settings_from(a: argparse.Namespace) -> Settings:
     def number(text, name):
         try:
-            return Decimal(text)
+            value = Decimal(text)
         except InvalidOperation:
+            value = None
+        if value is None or not value.is_finite():
             raise PreflopError(f"--{name}: {text!r} is not a number")
+        return value
     s = Settings()
     s.stack, s.chips, s.ante = number(a.stack, "stack"), a.chips_per_bb, number(a.ante, "ante")
     if s.ante < 0:
@@ -731,6 +773,8 @@ def settings_from(a: argparse.Namespace) -> Settings:
                                         parse_sizes(a.fivebet, "5bet"))
     s.limp_raise = None if a.limp_raise is None else parse_sizes(a.limp_raise, "limp-raise")
     s.allin_threshold = number(a.allin_threshold, "allin-threshold")
+    if not 0 <= s.allin_threshold <= 100:
+        raise PreflopError("--allin-threshold is a percent of the stack, 0 to 100")
     s.depth = a.depth or "flop"
     s.bet = {"Flop": a.flop_bet, "Turn": a.turn_bet, "River": a.river_bet}
     s.raise_, s.donk, s.raise_cap = a.raise_, a.donk, a.raise_cap
@@ -756,6 +800,7 @@ def pick_flops(a: argparse.Namespace, s: Settings) -> tuple[str, list[tuple[str,
         name, flops = choose_flops(a.flops)
         return name, flops, [], None
     budget = int(a.memory * 1024) if a.memory else (physical_memory_mb() or 16384) // 2
+    # the budget is for the estimate; the process takes more (README), which the default's half leaves room for
     notes, best = [], None
     for count in SHIPPED:
         if not os.path.exists(flop_path(count)):
@@ -843,8 +888,8 @@ def parser() -> argparse.ArgumentParser:
     g = p.add_argument_group("flops and the solve")
     g.add_argument("--flops", help=f"a number we ship a subset for ({', '.join(map(str, SHIPPED))}), a flop file, "
                    "or `all`; default: the largest shipped subset that fits --memory")
-    g.add_argument("--memory", type=float, help="memory budget in GB for choosing the subset (default: half of "
-                   "this machine's)")
+    g.add_argument("--memory", type=float, help="GB the tree's estimate may take when the tool chooses the subset "
+                   "(default: half of this machine's; the solver process takes about 1.3 times the estimate)")
     g.add_argument("--limit", type=float, help="estimate: stop a row once a cell is over this many GB")
     g.add_argument("--accuracy", type=float, default=0.5, help="solve until exploitable for less than this many "
                    "big blinds per 100 hands (default 0.5)")
@@ -857,19 +902,49 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
+def _can_write(path: str, what: str) -> None:
+    """Refuse a file that cannot be written before a solve is spent on it."""
+    if '"' in path or "\n" in path:
+        raise PreflopError(f"{what}: a file name with a quote in it cannot be given to the solver")
+    where = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(where):
+        raise PreflopError(f"{what}: there is no directory {where}")
+    if os.path.isdir(path) or not os.access(where, os.W_OK):
+        raise PreflopError(f"{what}: cannot write {path}")
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parser().parse_intermixed_args(argv)
     try:
+        takes = {"chart": (1, None), "solve": (1, 1)}.get(a.command, (0, 0))
+        if len(a.args) < takes[0]:
+            raise PreflopError(f"{a.command} needs a result file" if a.command == "chart"
+                               else "solve needs a file for the result")
+        if takes[1] is not None and len(a.args) > takes[1]:
+            raise PreflopError(f"{a.command}: do not know what to do with {' '.join(a.args[takes[1]:])!r} "
+                               "(options are separate words: --stack 20, not \"--stack 20\")")
         if a.command == "chart":
-            if not a.args:
-                raise PreflopError("chart needs a result file")
             try:
                 with open(a.args[0]) as f:
                     result = json.load(f)
             except (OSError, ValueError) as e:
                 raise PreflopError(f"cannot read the result: {e}")
-            print("\n".join(charts(result, a.args[1:], a.width, a.ev)))
+            try:
+                if not isinstance(result, dict) or result.get("version") != 1:
+                    raise KeyError("version")
+                text = charts(result, a.args[1:], a.width, a.ev)
+            except (KeyError, TypeError, IndexError, AttributeError, ValueError):
+                raise PreflopError(f"{a.args[0]} is not a result of `preflop.py solve`")
+            print("\n".join(text))
             return 0
+        if a.time < 1:
+            raise PreflopError("--time is a number of seconds, 1 or more")
+        if a.threads is not None and a.threads < 1:
+            raise PreflopError("--threads is 1 or more")
+        if a.memory is not None and not a.memory > 0:
+            raise PreflopError("--memory is a number of gigabytes over 0")
+        if not a.accuracy >= 0:
+            raise PreflopError("--accuracy cannot be negative")
         s = settings_from(a)
         root = build_tree(s)
         if a.command == "tree":
@@ -878,25 +953,42 @@ def main(argv: list[str] | None = None) -> int:
         if a.command == "estimate":
             print("\n".join(estimate_table(a, s)))
             return 0
+        if a.command == "solve":
+            _can_write(a.args[0], "the result")
+            if a.save_tree:
+                _can_write(a.save_tree, "--save-tree")
         name, flops, notes, estimated = pick_flops(a, s)
         for note in notes:
             print(note, file=sys.stderr)
         if a.command == "script":
             print("\n".join(script(s, flops, root) + ["add_all_flops"]))
             return 0
-        if not a.args:
-            raise PreflopError("solve needs a file for the result")
         result = solve(a.solver, s, name, flops, a.accuracy, a.time, a.threads, a.save_tree, estimated)
-        with open(a.args[0], "w") as f:
-            json.dump(result, f)
+        try:
+            with open(a.args[0], "w") as f:
+                json.dump(result, f)
+        except OSError as e:
+            raise PreflopError(f"cannot write the result: {e}")
         print("\n".join(charts(result, None, a.width, a.ev)))
+        if result["save_tree_error"]:
+            raise PreflopError(result["save_tree_error"])
         return 0
     except PreflopError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
     except BrokenPipeError:
         return 0
 
 
+def _stop(signum, frame):
+    raise KeyboardInterrupt  # so the solver process is taken down on the way out
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _stop)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _stop)
     sys.exit(main())

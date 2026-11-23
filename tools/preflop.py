@@ -1,0 +1,902 @@
+#!/usr/bin/env python3
+"""Heads-up preflop solves: settings in big blinds -> the script the solver needs, a memory table,
+13x13 charts of the result.
+
+    python3 tools/preflop.py script   [settings]            print the UPI script
+    python3 tools/preflop.py tree     [settings]            print the preflop tree and its flop exits
+    python3 tools/preflop.py estimate [settings]            memory per number of flops and postflop depth
+    python3 tools/preflop.py solve OUT.json [settings]      solve, save the preflop strategies, print charts
+    python3 tools/preflop.py chart OUT.json [NODE ...]      print the charts of a saved result again
+
+The small blind is the button: it acts first before the flop (IP in the solver's terms) and last
+after it. Sizes are in big blinds: `2.5` is a raise to 2.5 big blinds, `4x` four times the bet faced,
+`allin` the stack. A preflop solve deals a subset of flops (`flops/`, our own files) and gives every
+flop exit a postflop tree; how deep that tree bets (`--depth`) and how many flops there are decide
+the memory, which `estimate` prints before anything is built. README, "Preflop solves".
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import tree_builder as tb  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RANKS = "AKQJT98765432"
+SB, BB = "SB", "BB"
+DEPTHS = ("none", "flop", "turn", "river")
+SHIPPED = (10, 25, 50, 100, 200)
+ALL_HANDS = ("AA-22,AKs-A2s,KQs-K2s,QJs-Q2s,JTs-J2s,T9s-T2s,98s-92s,87s-82s,76s-72s,65s-62s,54s-52s,43s-42s,32s,"
+             "AKo-A2o,KQo-K2o,QJo-Q2o,JTo-J2o,T9o-T2o,98o-92o,87o-82o,76o-72o,65o-62o,54o-52o,43o-42o,32o")
+MAX_CHIPS = 65535  # the solver's limit on a stack or an investment
+
+
+class PreflopError(Exception):
+    """Settings that do not describe a legal tree, or a solver that did not answer as expected."""
+
+
+# ---- settings -------------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Size:
+    kind: str  # "bb" (raise to that many big blinds), "x" (times the bet faced), "allin"
+    value: Decimal = Decimal(0)
+    text: str = ""
+
+
+def parse_sizes(text: str, name: str) -> list[Size]:
+    out = []
+    for part in text.replace(",", " ").split():
+        low = part.lower()
+        try:
+            if low in ("allin", "all-in", "a"):
+                size = Size("allin", text="allin")
+            elif low.endswith("x"):
+                size = Size("x", Decimal(low[:-1]), low)
+            else:
+                size = Size("bb", Decimal(low[:-2] if low.endswith("bb") else low), low)
+        except InvalidOperation:
+            raise PreflopError(f"--{name}: {part!r} is not a size (2.5 = to 2.5 big blinds, 4x = four times "
+                               "the bet faced, allin)")
+        if size.kind != "allin" and size.value <= 0:
+            raise PreflopError(f"--{name}: {part!r} is not a positive size")
+        out.append(size)
+    return out
+
+
+@dataclass
+class Settings:
+    stack: Decimal = Decimal(100)        # big blinds
+    chips: int = 100                     # chips per big blind
+    ante: Decimal = Decimal(0)           # dead money in the pot before the blinds, big blinds
+    limp: bool = True
+    open: list[Size] = field(default_factory=lambda: parse_sizes("2.5", "open"))
+    iso: list[Size] = field(default_factory=lambda: parse_sizes("3.5", "iso"))
+    threebet: list[Size] = field(default_factory=lambda: parse_sizes("4x", "3bet"))
+    limp_raise: list[Size] | None = None  # the small blind's raise after limping; None: the 3-bet sizes
+    fourbet: list[Size] = field(default_factory=lambda: parse_sizes("2.3x", "4bet"))
+    fivebet: list[Size] = field(default_factory=lambda: parse_sizes("allin", "5bet"))
+    allin_threshold: Decimal = Decimal(50)  # a raise to more than this % of the stack is all-in
+    depth: str = "flop"
+    bet: dict[str, str] = field(default_factory=lambda: {"Flop": "50", "Turn": "50", "River": "50"})
+    raise_: str = "60"
+    donk: str = ""
+    raise_cap: int = 2
+    postflop_allin_threshold: Decimal = Decimal(67)
+    postflop_allin_pot: Decimal = Decimal(150)  # an all-in is offered when the stack left is under this % of the pot
+    postflop_config: str | None = None   # text of a `#Key#Value` file that replaces the options above
+    range_sb: str = ALL_HANDS
+    range_bb: str = ALL_HANDS
+
+    @property
+    def stack_chips(self) -> int:
+        return _chips(self.stack, self.chips)
+
+
+def _chips(bb: Decimal, per_bb: int) -> int:
+    return int((bb * per_bb).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
+
+
+def _bb(chips: int | float, per_bb: int) -> str:
+    """Chips as big blinds, without trailing zeros: 250 at 100 a blind is `2.5`."""
+    text = f"{chips / per_bb:.2f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+# ---- the preflop tree -----------------------------------------------------------------------------
+
+@dataclass
+class Node:
+    id: str
+    kind: str                 # "decision", "fold", "flop" (a flop exit), "allin" (called all-in)
+    inv: tuple[int, int]      # chips in: (small blind, big blind)
+    actor: str | None = None  # who acts, for a decision
+    line: tuple[int, ...] = ()            # the amounts of add_preflop_line that lead here
+    said: tuple[str, ...] = ()            # the actions in words
+    aggressor: str | None = None          # who raised last
+    children: list[tuple[str, "Node"]] = field(default_factory=list)   # (label, child), solver's order
+
+
+def _raise_sizes(s: Settings, raises: int, limped: bool) -> tuple[str, list[Size]]:
+    """The option that sizes raise number `raises + 1` of the hand, and its sizes."""
+    if raises == 0:
+        return ("iso", s.iso) if limped else ("open", s.open)
+    if raises == 1:
+        if limped and s.limp_raise is not None:
+            return "limp-raise", s.limp_raise
+        return "3bet", s.threebet
+    if raises == 2:
+        return "4bet", s.fourbet
+    if raises == 3:
+        return "5bet", s.fivebet
+    return "5bet", [Size("allin", text="allin")]  # past the 5-bet the only raise is all-in
+
+
+def build_tree(s: Settings) -> Node:
+    """The preflop tree the settings describe. Children are in the solver's order: raises from the
+    largest down, then call or check, then fold."""
+    stack, per_bb = s.stack_chips, s.chips
+    if per_bb < 2 or per_bb % 2:
+        raise PreflopError("--chips-per-bb must be an even number (the small blind is half of it)")
+    if stack > MAX_CHIPS:
+        raise PreflopError(f"a stack of {s.stack} big blinds is {stack} chips, over the solver's {MAX_CHIPS}: "
+                           f"lower --chips-per-bb (now {per_bb})")
+    if stack <= per_bb:
+        raise PreflopError("the stack must be more than one big blind")
+    if not s.limp and not s.open:
+        raise PreflopError("the small blind can neither limp nor raise: give --open sizes or allow the limp")
+
+    def amounts(node_inv, me, raises, limped, last_raise) -> list[tuple[int, str]]:
+        facing = max(node_inv)
+        if facing >= stack:
+            return []
+        name, sizes = _raise_sizes(s, raises, limped)
+        out: dict[int, str] = {}
+        for size in sizes:
+            if size.kind == "allin":
+                to = stack
+            elif size.kind == "x":
+                to = int((size.value * facing).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
+            else:
+                to = _chips(size.value, per_bb)
+            if to * 100 > s.allin_threshold * stack:
+                to = stack
+            if to < stack and to < facing + last_raise:
+                raise PreflopError(
+                    f"--{name} {size.text}: a raise to {_bb(to, per_bb)} big blinds over {_bb(facing, per_bb)} is "
+                    f"below the minimum raise ({_bb(facing + last_raise, per_bb)})")
+            out.setdefault(to, size.text)
+        return sorted(out.items(), reverse=True)
+
+    def grow(node: Node, raises: int, limped: bool, last_raise: int, first: bool) -> None:
+        me = 0 if node.actor == SB else 1
+        other = BB if node.actor == SB else SB
+        mine, facing = node.inv[me], max(node.inv)
+        for to, _ in amounts(node.inv, me, raises, limped, last_raise):
+            inv = list(node.inv)
+            inv[me] = to
+            word = ("all-in" if to >= stack else f"raise {_bb(to, per_bb)}")
+            child = Node(f"{node.id}:b{to}", "decision", (inv[0], inv[1]), other, node.line + (to,),
+                         node.said + (f"{node.actor} {word}",), node.actor)
+            node.children.append((word, child))
+            grow(child, raises + 1, limped, to - facing, False)
+        if facing > mine or not first:
+            inv = list(node.inv)
+            inv[me] = facing
+            word = "call" if facing > mine else "check"
+            if first and node.actor == SB:
+                # the limp: the big blind still has the option
+                if s.limp:
+                    child = Node(f"{node.id}:c", "decision", (inv[0], inv[1]), BB, node.line + (facing,),
+                                 node.said + ("SB limp",), None)
+                    node.children.append(("limp", child))
+                    grow(child, 0, True, per_bb, False)
+            else:
+                kind = "allin" if facing >= stack else "flop"
+                child = Node(f"{node.id}:c", kind, (inv[0], inv[1]), None, node.line + (facing,),
+                             node.said + (f"{node.actor} {word}",), node.aggressor)
+                node.children.append((word, child))
+        if facing > mine:
+            child = Node(f"{node.id}:f", "fold", node.inv, None, node.line, node.said + (f"{node.actor} fold",),
+                         node.aggressor)
+            node.children.append(("fold", child))
+
+    root = Node("r:0", "decision", (per_bb // 2, per_bb), SB)
+    grow(root, 0, False, per_bb, True)
+    return root
+
+
+def walk(node: Node):
+    yield node
+    for _, child in node.children:
+        yield from walk(child)
+
+
+# ---- the postflop tree of a flop exit --------------------------------------------------------------
+
+def postflop_config(s: Settings) -> tb.Config:
+    """The tree builder's config for the postflop betting: the options, or the `#Key#Value` file."""
+    if s.postflop_config is not None:
+        return tb.parse_config(s.postflop_config)
+    streets_on = DEPTHS.index(s.depth)
+    head = [f"#AllinThreshold#{s.postflop_allin_threshold}",
+            f"#AddAllinOnlyIfLessThanThisTimesThePot#{s.postflop_allin_pot}"]
+    for i, street in enumerate(tb.STREETS):
+        on = i < streets_on
+        for who in ("", "IP"):
+            head += [f"#{street}Config{who}.BetSize#{s.bet[street] if on else ''}",
+                     f"#{street}Config{who}.RaiseSize#{s.raise_ if on and s.raise_cap > 1 else ''}",
+                     f"#{street}Config{who}.AddAllin#{on}",
+                     f"#{street}Config{who}.RaiseCap#{s.raise_cap}"]
+        head.append(f"#{street}Config.DonkBetSize#{s.donk if on else ''}")
+    try:
+        return tb.parse_config("\n".join(head))
+    except (ValueError, InvalidOperation) as e:
+        raise PreflopError(f"postflop sizes: {e}")
+
+
+def exit_lines(s: Settings, cfg: tb.Config, node: Node) -> list[list[int]]:
+    """The `add_line`s of a flop exit, in whole-hand amounts: what each player has put in since the
+    blinds, so a check on the flop repeats the amount the preflop action ended on."""
+    put_in = node.inv[0]
+    dead = _chips(s.ante, s.chips)
+    cfg = tb.dataclasses.replace(cfg, pot=2 * put_in + dead, stack=s.stack_chips - put_in)
+    aggressor = {SB: tb.IP, BB: tb.OOP, None: None}[node.aggressor]
+    start = tb.Node(0, (0, 0), tb.OOP, False, aggressor,
+                    removed=tuple(cfg.removed_lines), extra=tuple(cfg.extra_lines))
+    try:
+        lines = tb.build_lines(cfg, start)
+    except ValueError as e:
+        raise PreflopError(f"the postflop tree after {', '.join(node.said)}: {e}")
+    return [[a + put_in for a in line] for line in lines]
+
+
+# ---- flops ----------------------------------------------------------------------------------------
+
+def read_flop_file(path: str) -> list[tuple[str, float]]:
+    """`flop:weight` lines (the format of flops/); `#` starts a comment."""
+    out = []
+    try:
+        with open(path) as f:
+            for n, raw in enumerate(f, 1):
+                line = raw.split("#")[0].strip()
+                if not line:
+                    continue
+                cards, sep, weight = line.partition(":")
+                cards = cards.replace(" ", "")
+                try:
+                    w = float(weight) if sep else 1.0
+                except ValueError:
+                    w = -1.0
+                if not 0 <= w < float("inf"):
+                    raise PreflopError(f"{path}:{n}: {weight.strip()!r} is not a weight")
+                if (len(cards) != 6 or any(c not in "AKQJT98765432" for c in cards[0::2])
+                        or any(c not in "cdhs" for c in cards[1::2]) or len({cards[0:2], cards[2:4], cards[4:6]}) != 3):
+                    raise PreflopError(f"{path}:{n}: {cards!r} is not a flop")
+                if w > 0:
+                    out.append((cards, w))
+    except OSError as e:
+        raise PreflopError(f"cannot read the flop file: {e}")
+    if not out:
+        raise PreflopError(f"{path}: no flops")
+    return out
+
+
+def all_flops() -> list[tuple[str, float]]:
+    """Every flop up to a renaming of the suits (1,755), each with the number of flops it stands for."""
+    count: dict[str, int] = {}
+    suits = "shdc"
+    cards = [(r, x) for r in range(13) for x in range(4)]
+    for i in range(52):
+        for j in range(i + 1, 52):
+            for k in range(j + 1, 52):
+                flop = sorted((cards[i], cards[j], cards[k]))
+                # name the suits in order of first appearance (s, h, d); cards of one rank can go in
+                # either order, and the one that reuses the earliest suit is kept (AsAhTs, not AsAhTh),
+                # which is how the files in flops/ name a class
+                best = None
+                for order in _orders(flop):
+                    seen: dict[int, int] = {}
+                    key = tuple(seen.setdefault(x, len(seen)) for _, x in order)
+                    if best is None or key < best:
+                        best = key
+                name = "".join(RANKS[r] + suits[x] for (r, _), x in zip(flop, best))
+                count[name] = count.get(name, 0) + 1
+    return [(name, float(n)) for name, n in sorted(count.items())]
+
+
+def _orders(flop):
+    """The orderings of three cards that keep the ranks sorted (cards of one rank in any order)."""
+    a, b, c = flop
+    out = [(a, b, c)]
+    if a[0] == b[0]:
+        out.append((b, a, c))
+    if b[0] == c[0]:
+        out += [(x, z, y) for x, y, z in list(out)]
+    if a[0] == b[0] == c[0]:
+        out += [(c, a, b), (c, b, a)]
+    return out
+
+
+def flop_path(count: int) -> str:
+    return os.path.join(ROOT, "flops", f"wsolver_{count}.txt")
+
+
+def choose_flops(spec: str) -> tuple[str, list[tuple[str, float]]]:
+    """`--flops`: a number of flops we ship a file for, `all`, or a flop file. (name, flops)."""
+    if spec == "all":
+        return "all 1,755 flops", all_flops()
+    if spec.isdigit():
+        path = flop_path(int(spec))
+        if not os.path.exists(path):
+            raise PreflopError(f"no shipped subset of {spec} flops (there are {', '.join(map(str, SHIPPED))}; "
+                               "`make flop-subsets FLOP_SIZES=N` makes another, or give a flop file)")
+        return f"flops/wsolver_{spec}.txt", read_flop_file(path)
+    return spec, read_flop_file(spec)
+
+
+# ---- the script -----------------------------------------------------------------------------------
+
+def script(s: Settings, flops: list[tuple[str, float]], root: Node | None = None) -> list[str]:
+    """The UPI commands that set the tree up, to `add_all_flops` (which builds it) but not including it."""
+    root = root or build_tree(s)
+    per_bb, stack, dead = s.chips, s.stack_chips, _chips(s.ante, s.chips)
+    out = [f"set_range OOP {s.range_bb}", f"set_range IP {s.range_sb}",
+           f"set_pot {per_bb} {per_bb // 2} {dead}", f"set_eff_stack {stack}",
+           "small_strats on", "set_collapse_checkdowns on", "clear_preflop_lines"]
+    closing = [n for n in walk(root) if n.kind in ("flop", "allin")]
+    out += ["add_preflop_line " + " ".join(map(str, n.line)) for n in closing]
+    if not s.limp:
+        out.append(f"remove_preflop_line {per_bb}")
+    out += ["build_preflop_tree", "reset_subset", "set_board " + flops[0][0]]
+    out += [f"add_to_subset {w:g} {f[0:2]} {f[2:4]} {f[4:6]}" for f, w in flops]
+    cfg = postflop_config(s)
+    for node in closing:
+        if node.kind != "flop":
+            continue
+        out += ["clear_lines", f"set_pot {node.inv[1]} {node.inv[0]} {dead}", f"set_eff_stack {stack}"]
+        out += tb.format_lines(exit_lines(s, cfg, node))
+        out.append(f"add_schematic_tree {node.id}")
+    return out
+
+
+# ---- talking to the solver -------------------------------------------------------------------------
+
+class Solver:
+    END = "PREFLOP_PY_END"
+
+    def __init__(self, exe: str):
+        if not os.path.exists(exe):
+            raise PreflopError(f"no solver at {exe} (run `make`, or give --solver)")
+        self.p = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        self.cmd("set_end_string " + self.END)
+
+    def _line(self, during: str) -> str:
+        got = self.p.stdout.readline()
+        if not got:
+            raise PreflopError(f"the solver went away during `{during}` (out of memory?)")
+        return got.rstrip("\n")
+
+    def cmd(self, line: str, on_report=None) -> list[str]:
+        """Send a command, return the lines of its answer. A solve's progress reports arrive in between
+        (`SOLVER:` and a block of lines closed by the end string, or one `SOLVER: ...` line); they go to
+        `on_report`, line by line, and are not part of the answer."""
+        name = line.split()[0]
+        try:
+            self.p.stdin.write(line + "\n")
+            self.p.stdin.flush()
+        except (BrokenPipeError, OSError):
+            raise PreflopError(f"the solver went away before `{name}`")
+        out: list[str] = []
+        while True:
+            got = self._line(name)
+            if got.startswith("SOLVER:") and not out:
+                if got == "SOLVER:":
+                    while True:
+                        report = self._line(name)
+                        if report == self.END:
+                            break
+                        if on_report:
+                            on_report(report)
+                continue
+            if got == self.END:
+                return out
+            out.append(got)
+
+    def need(self, line: str) -> list[str]:
+        """A set-up command: anything but its `ok!` is an error."""
+        out = self.cmd(line)
+        if not any(l.rstrip().endswith("ok!") for l in out):
+            raise PreflopError(f"the solver refused `{line[:70]}`: {' '.join(out)[:200]}")
+        return out
+
+    def close(self) -> None:
+        try:
+            self.p.stdin.write("exit\n")
+            self.p.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+        try:
+            self.p.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+
+
+def default_solver() -> str:
+    return os.path.join(ROOT, "solver.exe" if os.name == "nt" else "solver")
+
+
+def estimate_mb(exe: str, s: Settings, flops: list[tuple[str, float]]) -> int:
+    """What the solver says the tree takes (16-bit storage), without building it."""
+    u = Solver(exe)
+    try:
+        for line in script(s, flops):
+            u.need(line)
+        out = u.cmd("estimate_tree")
+    finally:
+        u.close()
+    for l in out:
+        if l.startswith("estimated tree size:"):
+            return int(l.split()[3])
+    raise PreflopError(f"estimate_tree answered {' '.join(out)[:200]}")
+
+
+def physical_memory_mb() -> int | None:
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") >> 20
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+# ---- results --------------------------------------------------------------------------------------
+
+def hand_class(hand: str) -> str:
+    """`AhKh` -> `AKs`."""
+    r1, s1, r2, s2 = hand
+    if r1 == r2:
+        return r1 + r2
+    if RANKS.index(r1) > RANKS.index(r2):
+        r1, r2 = r2, r1
+    return r1 + r2 + ("s" if s1 == s2 else "o")
+
+
+def cell_class(row: int, col: int) -> str:
+    """The class in a chart's cell: pairs on the diagonal, suited above it, offsuit below."""
+    if row == col:
+        return RANKS[row] * 2
+    return RANKS[min(row, col)] + RANKS[max(row, col)] + ("s" if row < col else "o")
+
+
+def _floats(lines: list[str], want: int, what: str) -> list[list[float]]:
+    rows = []
+    for l in lines:
+        parts = l.split()
+        if len(parts) == want:
+            try:
+                rows.append([float(x) for x in parts])
+            except ValueError:
+                pass
+    if not rows:
+        raise PreflopError(f"{what} answered {' '.join(lines)[:200]}")
+    return rows
+
+
+def _deals(order: list[str], a: list[float], b: list[float]) -> float:
+    """Sum of a[x] * b[y] over the pairs of hands x, y that share no card (the deals that can happen),
+    by inclusion and exclusion: all pairs, less those sharing a card (two identical hands share two
+    and are taken off twice, so they go back on once)."""
+    by_card_a: dict[str, float] = {}
+    by_card_b: dict[str, float] = {}
+    same = 0.0
+    for hand, x, y in zip(order, a, b):
+        for card in (hand[0:2], hand[2:4]):
+            by_card_a[card] = by_card_a.get(card, 0.0) + x
+            by_card_b[card] = by_card_b.get(card, 0.0) + y
+        same += x * y
+    return sum(a) * sum(b) - sum(v * by_card_b[c] for c, v in by_card_a.items()) + same
+
+
+def collect(u: Solver, s: Settings, root: Node) -> list[dict]:
+    """Every preflop decision as hand classes: how often each class gets there, what it does, its EV."""
+    order = " ".join(u.cmd("show_hand_order")).split()
+    if len(order) != 1326:
+        raise PreflopError("show_hand_order did not list 1326 hands")
+    classes = [hand_class(h) for h in order]
+    out = []
+    for node in walk(root):
+        if node.kind != "decision":
+            continue
+        who = "IP" if node.actor == SB else "OOP"
+        kids = [l.strip() for l in u.cmd(f"show_children {node.id}") if l.startswith("r:")]
+        mine = [child.id for _, child in node.children]
+        if kids != mine:
+            raise PreflopError(f"the solver's tree differs at {node.id}: it has {kids}, expected {mine}")
+        strat = _floats(u.cmd(f"show_strategy {node.id}"), 1326, f"show_strategy {node.id}")
+        if len(strat) != len(mine):
+            raise PreflopError(f"show_strategy {node.id}: {len(strat)} rows for {len(mine)} actions")
+        reach = _floats(u.cmd(f"show_range {who} {node.id}"), 1326, f"show_range {node.id}")[0]
+        other = "OOP" if who == "IP" else "IP"
+        theirs = _floats(u.cmd(f"show_range {other} {node.id}"), 1326, f"show_range {node.id}")[0]
+        theirs0 = _floats(u.cmd(f"show_range {other} r:0"), 1326, "show_range r:0")[0]
+        ev = _floats(u.cmd(f"calc_ev {who} {node.id}"), 1326, f"calc_ev {node.id}")[0]
+        start = _floats(u.cmd(f"show_range {who} r:0"), 1326, "show_range r:0")[0]
+        per: dict[str, dict] = {}
+        for i, cls in enumerate(classes):
+            c = per.setdefault(cls, {"start": 0.0, "reach": 0.0, "ev": 0.0, "freq": [0.0] * len(mine)})
+            c["start"] += start[i]
+            c["reach"] += reach[i]
+            c["ev"] += reach[i] * ev[i]
+            for a in range(len(mine)):
+                c["freq"][a] += reach[i] * strat[a][i]
+        total = sum(c["reach"] for c in per.values())
+        hands = {}
+        for cls, c in per.items():
+            if c["start"] <= 0:
+                continue  # not in the player's range at all
+            got = c["reach"] > 1e-9 * c["start"]
+            hands[cls] = {"reach": c["reach"] / c["start"],
+                          "freq": [f / c["reach"] if got else 0.0 for f in c["freq"]],
+                          "ev_bb": c["ev"] / c["reach"] / s.chips if got else None}
+        out.append({
+            "id": node.id, "actor": node.actor, "line": list(node.said),
+            "pot_bb": [node.inv[0] / s.chips, node.inv[1] / s.chips],
+            "actions": [label for label, _ in node.children],
+            "reach": _deals(order, reach, theirs) / _deals(order, start, theirs0),
+            "freq": [sum(c["freq"][a] for c in per.values()) / total if total > 0 else 0.0 for a in range(len(mine))],
+            "hands": hands,
+        })
+    return out
+
+
+def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]], accuracy_bb100: float,
+          seconds: int, threads: int | None, save_tree: str | None, estimated_mb: int | None = None,
+          log: bool = True) -> dict:
+    root = build_tree(s)
+    started = time.time()
+    if estimated_mb is None:
+        # in a process of its own: the solver builds a whole second tree to answer, and in the solving
+        # process that would stand next to the real one
+        estimated_mb = estimate_mb(exe, s, flops)
+    u = Solver(exe)
+    try:
+        for line in script(s, flops, root):
+            u.need(line)
+        if threads:
+            u.cmd(f"set_threads {threads}")
+        u.need("add_all_flops")
+        accuracy = accuracy_bb100 / 100 * s.chips
+        u.cmd(f"set_accuracy {accuracy:.6g}")
+        u.cmd("set_info_freq auto")
+        last: dict[str, float] = {}
+
+        def progress(line: str) -> None:
+            key, _, value = line.partition(":")
+            if key in ("running time", "EV OOP", "EV IP", "Exploitable for"):
+                try:
+                    last[key] = float(value)
+                except ValueError:
+                    return
+                if key == "Exploitable for" and log:
+                    print(f"  {last.get('running time', 0):7.0f} s   exploitable for "
+                          f"{last[key] / s.chips * 100:.2f} bb/100 (target {accuracy_bb100:g})", file=sys.stderr,
+                          flush=True)
+
+        u.cmd(f"go {seconds} seconds")
+        u.cmd("wait_for_solver", progress)
+        log = False  # the final figures are in the result, not another progress line
+        for l in u.cmd("calc_results"):
+            progress(l)
+        nodes = collect(u, s, root)
+        if save_tree:
+            u.cmd(f"dump_tree {save_tree} no_rivers")
+    finally:
+        u.close()
+    return {
+        "version": 1,
+        "settings": describe(s),
+        "flops": flop_name, "flop_count": len(flops),
+        "chips_per_bb": s.chips,
+        "ev_sb_bb": last.get("EV IP", 0.0) / s.chips, "ev_bb_bb": last.get("EV OOP", 0.0) / s.chips,
+        "exploitable_bb100": last.get("Exploitable for", 0.0) / s.chips * 100,
+        "target_bb100": accuracy_bb100,
+        "seconds": round(time.time() - started, 1),
+        "estimated_mb": estimated_mb,
+        "nodes": nodes,
+    }
+
+
+def describe(s: Settings) -> dict:
+    def sizes(v):
+        return None if v is None else " ".join(x.text for x in v)
+    return {"stack_bb": str(s.stack), "ante_bb": str(s.ante), "limp": s.limp, "open": sizes(s.open),
+            "iso": sizes(s.iso), "3bet": sizes(s.threebet), "limp_raise": sizes(s.limp_raise),
+            "4bet": sizes(s.fourbet), "5bet": sizes(s.fivebet), "allin_threshold": str(s.allin_threshold),
+            "depth": s.depth if s.postflop_config is None else "file", "bet": dict(s.bet), "raise": s.raise_,
+            "donk": s.donk, "raise_cap": s.raise_cap}
+
+
+# ---- charts ---------------------------------------------------------------------------------------
+
+def _cell(value: float | None) -> str:
+    """A frequency in two characters: blank for a hand that never gets here, `.` for never, `**` for
+    always, otherwise the percent."""
+    if value is None:
+        return "  "
+    pct = int(round(100 * value))
+    return " ." if pct <= 0 else "**" if pct >= 100 else f"{pct:2d}"
+
+
+def grid(title: str, value, cell: int = 2) -> list[str]:
+    """A 13x13 chart, 40 characters wide with cells of two. `value(class)` gives a cell's characters."""
+    width = 1 + 13 * (cell + 1)
+    out = [title[:width].ljust(width), "  " + " ".join(r.rjust(cell) for r in RANKS)]
+    for r in range(13):
+        out.append(RANKS[r] + " " + " ".join(value(cell_class(r, c)).rjust(cell) for c in range(13)))
+    return out
+
+
+def chart_node(node: dict, width: int, ev: bool = False) -> list[str]:
+    hands = node["hands"]
+    head = f"{node['id']}   {' / '.join(node['line']) or 'first to act'}   ->  {node['actor']} to act"
+    freqs = ", ".join(f"{a} {100 * f:.1f} %" for a, f in zip(node["actions"], node["freq"]))
+    out = [head, f"  {100 * node['reach']:.1f} % of deals get here; then {freqs}", ""]
+    grids = []
+    for a, label in enumerate(node["actions"]):
+        def value(cls, a=a):
+            h = hands.get(cls)
+            return _cell(None if h is None or h["ev_bb"] is None else h["freq"][a])
+        grids.append(grid(f"{label} ({100 * node['freq'][a]:.1f} %)", value))
+    if ev:
+        def value(cls):
+            h = hands.get(cls)
+            if h is None or h["ev_bb"] is None:
+                return ""
+            v = h["ev_bb"]
+            return f"{v:+.2f}" if abs(v) < 9.995 else f"{v:+.1f}" if abs(v) < 99.95 else f"{v:+.0f}"
+        grids.append(grid(f"EV of the hand here, big blinds won from the start of the hand", value, 5))
+    row: list[list[str]] = []  # as many charts side by side as the width holds
+    for g in grids + [None]:
+        if row and (g is None or sum(len(x[0]) + 3 for x in row) + len(g[0]) > width):
+            out += ["   ".join(parts).rstrip() for parts in zip(*row)] + [""]
+            row = []
+        if g is not None:
+            row.append(g)
+    return out
+
+
+def charts(result: dict, only: list[str] | None = None, width: int | None = None, ev: bool = False) -> list[str]:
+    width = width or shutil.get_terminal_size((80, 24)).columns
+    out = [f"Heads-up, {result['settings']['stack_bb']} big blinds, {result['flops']} ({result['flop_count']} flops): "
+           f"small blind {result['ev_sb_bb']:+.3f} bb a hand, big blind {result['ev_bb_bb']:+.3f}; "
+           f"exploitable for {result['exploitable_bb100']:.2f} bb/100",
+           "Each chart: how often the hand takes the action, in percent (** always, . never, blank: the hand "
+           "never gets here). Suited hands above the diagonal, offsuit below.", ""]
+    if not result["nodes"]:
+        out.append("(no decisions in this result)")
+    known = {n["id"] for n in result["nodes"]}
+    for want in only or []:
+        if want not in known:
+            raise PreflopError(f"no decision {want} in this result (there are {', '.join(sorted(known))})")
+    for node in result["nodes"]:
+        if only and node["id"] not in only:
+            continue
+        out += chart_node(node, width, ev)
+    return out
+
+
+# ---- command line ---------------------------------------------------------------------------------
+
+def tree_text(s: Settings, root: Node) -> list[str]:
+    cfg = postflop_config(s)
+    out = []
+    for node in walk(root):
+        depth = node.id.count(":") - 1
+        pot = f"{_bb(node.inv[0], s.chips)} / {_bb(node.inv[1], s.chips)}"
+        what = node.said[-1] if node.said else "start"
+        if node.kind == "decision":
+            tail = f"{node.actor} to act"
+        elif node.kind == "fold":
+            tail = "hand over"
+        elif node.kind == "allin":
+            tail = "all-in, showdown"
+        else:
+            lines = exit_lines(s, cfg, node)
+            tail = f"flop, {len(lines)} postflop line{'s' if len(lines) != 1 else ''}"
+        out.append(f"{'  ' * depth}{what:<{max(1, 22 - 2 * depth)}} {node.id:<34} in: {pot:<13} {tail}")
+    return out
+
+
+def settings_from(a: argparse.Namespace) -> Settings:
+    def number(text, name):
+        try:
+            return Decimal(text)
+        except InvalidOperation:
+            raise PreflopError(f"--{name}: {text!r} is not a number")
+    s = Settings()
+    s.stack, s.chips, s.ante = number(a.stack, "stack"), a.chips_per_bb, number(a.ante, "ante")
+    if s.ante < 0:
+        raise PreflopError("--ante cannot be negative")
+    s.limp = not a.no_limp
+    s.open, s.iso = parse_sizes(a.open, "open"), parse_sizes(a.iso, "iso")
+    s.threebet, s.fourbet, s.fivebet = (parse_sizes(a.threebet, "3bet"), parse_sizes(a.fourbet, "4bet"),
+                                        parse_sizes(a.fivebet, "5bet"))
+    s.limp_raise = None if a.limp_raise is None else parse_sizes(a.limp_raise, "limp-raise")
+    s.allin_threshold = number(a.allin_threshold, "allin-threshold")
+    s.depth = a.depth or "flop"
+    s.bet = {"Flop": a.flop_bet, "Turn": a.turn_bet, "River": a.river_bet}
+    s.raise_, s.donk, s.raise_cap = a.raise_, a.donk, a.raise_cap
+    s.postflop_allin_threshold = number(a.postflop_allin_threshold, "postflop-allin-threshold")
+    s.postflop_allin_pot = number(a.postflop_allin_pot, "postflop-allin-pot")
+    if a.postflop:
+        try:
+            with open(a.postflop) as f:
+                s.postflop_config = f.read()
+        except OSError as e:
+            raise PreflopError(f"cannot read --postflop: {e}")
+    if a.range_sb:
+        s.range_sb = a.range_sb
+    if a.range_bb:
+        s.range_bb = a.range_bb
+    return s
+
+
+def pick_flops(a: argparse.Namespace, s: Settings) -> tuple[str, list[tuple[str, float]], list[str], int | None]:
+    """`--flops`, or the largest shipped subset the memory budget holds. (name, flops, notes, the
+    estimate in MB when one was made)."""
+    if a.flops:
+        name, flops = choose_flops(a.flops)
+        return name, flops, [], None
+    budget = int(a.memory * 1024) if a.memory else (physical_memory_mb() or 16384) // 2
+    notes, best = [], None
+    for count in SHIPPED:
+        if not os.path.exists(flop_path(count)):
+            continue
+        mb = estimate_mb(a.solver, s, read_flop_file(flop_path(count)))
+        if mb <= budget:
+            best = (count, mb)
+        else:
+            break
+    if best is None:
+        raise PreflopError(f"not even {SHIPPED[0]} flops fit in {budget} MB with this postflop tree: "
+                           "bet on fewer streets (--depth), or raise --memory")
+    notes.append(f"{best[0]} flops: the largest shipped subset under {budget} MB "
+                 f"({'--memory' if a.memory else 'half of this machine'}); estimated {best[1]} MB")
+    return f"flops/wsolver_{best[0]}.txt", read_flop_file(flop_path(best[0])), notes, best[1]
+
+
+def estimate_table(a: argparse.Namespace, s: Settings) -> list[str]:
+    if a.flops:  # one column: the flops asked for
+        name, flops = choose_flops(a.flops)
+        sets = [(str(len(flops)), flops)]
+    else:
+        sets = [(str(c), read_flop_file(flop_path(c))) for c in SHIPPED if os.path.exists(flop_path(c))]
+    depths = [s.depth] if s.postflop_config is not None or a.depth else list(DEPTHS)
+    out = ["Estimated memory of the tree, MB (16-bit storage; the solver's estimate_tree). Rows: the last street "
+           "with betting.", ""]
+    out.append(f"{'':<8}" + "".join(f"{c:>11}" for c, _ in sets) + "   flops")
+    mem = physical_memory_mb()
+    limit = a.limit * 1024 if a.limit else mem
+    for depth in depths:
+        row: list[int | None] = []
+        over = False
+        sd = tb.dataclasses.replace(s, depth=depth)
+        for _, flops in sets:
+            if over:
+                row.append(None)  # more flops only cost more
+                continue
+            row.append(estimate_mb(a.solver, sd, flops))
+            over = bool(limit) and row[-1] > limit
+        name = "file" if s.postflop_config is not None else depth
+        out.append(f"{name:<8}" + "".join(f"{'-':>11}" if v is None else f"{v:>11,}" for v in row))
+    if mem:
+        out += ["", f"This machine has {mem:,} MB. A row stops at the first size over "
+                    + (f"--limit {a.limit:g} GB." if a.limit else "that (--limit GB for another bound).")]
+    return out
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("command", choices=("script", "tree", "estimate", "solve", "chart"))
+    p.add_argument("args", nargs="*", help="solve: the result file; chart: the result file, then node ids")
+    g = p.add_argument_group("the game (big blinds)")
+    g.add_argument("--stack", default="100", help="effective stack (default 100)")
+    g.add_argument("--ante", default="0", help="dead money in the pot before the blinds (default 0)")
+    g.add_argument("--chips-per-bb", type=int, default=100, help="chips in a big blind (default 100)")
+    g.add_argument("--range-sb", help="the small blind's range (default every hand)")
+    g.add_argument("--range-bb", help="the big blind's range (default every hand)")
+    g = p.add_argument_group("preflop sizes (2.5 = raise to 2.5 big blinds, 4x = four times the bet faced, allin; "
+                             "several sizes separated by commas)")
+    g.add_argument("--no-limp", action="store_true", help="the small blind raises or folds")
+    g.add_argument("--open", default="2.5", help="small blind's first raise (default 2.5)")
+    g.add_argument("--iso", default="3.5", help="big blind's raise over a limp (default 3.5; empty: none)")
+    g.add_argument("--3bet", dest="threebet", default="4x", help="the second raise (default 4x)")
+    g.add_argument("--limp-raise", help="small blind's raise after limping (default: the --3bet sizes)")
+    g.add_argument("--4bet", dest="fourbet", default="2.3x", help="the third raise (default 2.3x)")
+    g.add_argument("--5bet", dest="fivebet", default="allin", help="the fourth raise (default allin); "
+                   "any raise after it is all-in")
+    g.add_argument("--allin-threshold", default="50", help="a raise to more than this percent of the stack "
+                   "is made all-in (default 50)")
+    g = p.add_argument_group("postflop (percent of the pot, the sizing rules of tools/tree_builder.py)")
+    g.add_argument("--depth", choices=DEPTHS, help="the last street with betting; later streets are checked "
+                   "down (default flop; estimate: every depth unless one is given)")
+    g.add_argument("--flop-bet", default="50")
+    g.add_argument("--turn-bet", default="50")
+    g.add_argument("--river-bet", default="50")
+    g.add_argument("--raise", dest="raise_", default="60", help="raise sizes on every street (default 60)")
+    g.add_argument("--donk", default="", help="big blind's lead into the preflop raiser (default none)")
+    g.add_argument("--raise-cap", type=int, default=2, help="bets and raises per street (default 2)")
+    g.add_argument("--postflop-allin-threshold", default="67", help="a bet or raise to more than this percent "
+                   "of the stack left at the flop is made all-in (default 67)")
+    g.add_argument("--postflop-allin-pot", default="150", help="an all-in is offered next to the sizes when the "
+                   "stack left is under this percent of the pot (default 150)")
+    g.add_argument("--postflop", metavar="FILE", help="a `#Key#Value` tree config (a PioViewer save's header) for "
+                   "the postflop betting, instead of the options above; its pot and stack are ignored")
+    g = p.add_argument_group("flops and the solve")
+    g.add_argument("--flops", help=f"a number we ship a subset for ({', '.join(map(str, SHIPPED))}), a flop file, "
+                   "or `all`; default: the largest shipped subset that fits --memory")
+    g.add_argument("--memory", type=float, help="memory budget in GB for choosing the subset (default: half of "
+                   "this machine's)")
+    g.add_argument("--limit", type=float, help="estimate: stop a row once a cell is over this many GB")
+    g.add_argument("--accuracy", type=float, default=0.5, help="solve until exploitable for less than this many "
+                   "big blinds per 100 hands (default 0.5)")
+    g.add_argument("--time", type=int, default=86400, help="solve for at most this many seconds (default a day)")
+    g.add_argument("--threads", type=int)
+    g.add_argument("--save-tree", metavar="FILE", help="solve: also save the solved tree (dump_tree, no rivers)")
+    g.add_argument("--ev", action="store_true", help="charts: add a chart of each hand's EV")
+    g.add_argument("--width", type=int, help="charts: characters across (default: the terminal's)")
+    g.add_argument("--solver", default=default_solver(), help="the solver binary (default ./solver)")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    a = parser().parse_intermixed_args(argv)
+    try:
+        if a.command == "chart":
+            if not a.args:
+                raise PreflopError("chart needs a result file")
+            try:
+                with open(a.args[0]) as f:
+                    result = json.load(f)
+            except (OSError, ValueError) as e:
+                raise PreflopError(f"cannot read the result: {e}")
+            print("\n".join(charts(result, a.args[1:], a.width, a.ev)))
+            return 0
+        s = settings_from(a)
+        root = build_tree(s)
+        if a.command == "tree":
+            print("\n".join(tree_text(s, root)))
+            return 0
+        if a.command == "estimate":
+            print("\n".join(estimate_table(a, s)))
+            return 0
+        name, flops, notes, estimated = pick_flops(a, s)
+        for note in notes:
+            print(note, file=sys.stderr)
+        if a.command == "script":
+            print("\n".join(script(s, flops, root) + ["add_all_flops"]))
+            return 0
+        if not a.args:
+            raise PreflopError("solve needs a file for the result")
+        result = solve(a.solver, s, name, flops, a.accuracy, a.time, a.threads, a.save_tree, estimated)
+        with open(a.args[0], "w") as f:
+            json.dump(result, f)
+        print("\n".join(charts(result, None, a.width, a.ev)))
+        return 0
+    except PreflopError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except BrokenPipeError:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

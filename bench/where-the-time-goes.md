@@ -782,3 +782,58 @@ solver: the question is how much a preflop strategy from N flops loses when it i
 many-flop game, which needs the preflop strategy locked into the reference tree. Both belong to the
 accuracy study of #483. One tree with flop betting only was solved; with turn and river betting the
 flop's texture matters for longer and the picture may differ.
+
+## Preflop solves from `tools/preflop.py`: memory and time (#488)
+
+The tool's default tree: heads-up, 100 bb, full ranges, the small blind limps or raises to 2.5, 3-bet 4x,
+4-bet 2.3x, all-in; 7 flop exits, each with a postflop tree (bet 50 %, raise 60 %) down to `--depth` and
+checked down after it (`set_collapse_checkdowns on`), 16-bit rows. M4, 10 threads, 16 GB.
+
+**Memory by flops and depth** (`estimate_tree`, MB):
+
+| `--depth` | 10 flops | 25 | 50 | 100 | 200 | all 1,755 classes |
+|---|---|---|---|---|---|---|
+| none | 154 | 383 | 757 | 1,463 | 2,737 | 12,279 |
+| flop | 159 | 396 | 782 | 1,513 | 2,837 | 13,156 |
+| turn | 802 | 2,039 | 4,049 | 7,948 | 15,573 | 121,802 |
+| river | 85,988 | 221,624 | 437,639 | 854,547 | 1,681,788 | not run |
+
+- **All 1,755 flop classes with flop betting are 13 GB**: about 7 MB per class against 14 to 16 MB per
+  flop of our subsets, so multiplying a subset's cost per flop by 1,755 (the "about 30 GB" of the section
+  above, for its similar tree) is twice too much. Why a class costs half as much on average was not
+  looked into. With the 1.3 below that is about 17 GB in the process: over this machine, well inside the
+  PC's 63 GB, so the all-flops reference of #483 can be held there at this depth. The estimate itself
+  took 67 s; no all-flops tree was built or solved.
+- **The flop's decisions are 3 % of a flop-depth tree** (159 against 154 MB with no postflop betting at
+  all). The rest is what the check-downs and all-ins are valued on: the showdown boards of every runout
+  of every flop. `GameTree::allin_table_plan` returns 0 for a preflop tree, so none of them uses the
+  hand-against-hand outcome tables a postflop all-in has (3.5 MB for a flop, and one table would serve
+  every exit of that flop). That is the first thing to try for the memory and the time of these trees.
+  Not done here.
+- **The process takes 1.3 to 1.4 times the estimate.** A 200-flop build and solve: 2,837 MB estimated,
+  3,686 MB maximum resident size of the solver (`/usr/bin/time -l ./solver`); 10 flops: 159 MB estimated,
+  220 MB footprint once built. `heap` on the 200-flop solve: 1.47 million allocations, 3.75 GB, which
+  fits 6 vectors for each of the 235,200 runouts of 200 flops (`ShowdownBoard`: two entry arrays, two
+  group arrays, two blocked-hand lists). `memory_bytes_for` counts the entry arrays and the groups at
+  their sizes; it leaves out the blocked-hand lists, whatever capacity the vectors hold over their size,
+  the allocator's rounding and the board index. Which of those is the 30 % was not measured. Not changed
+  here.
+- **`estimate_tree` builds a whole second tree even when the tree is built** (preflop configs only; a
+  postflop tree answers from the built one). The tool first asked after `add_all_flops`, and the 200-flop
+  solve peaked at 7,163 MB instead of 3,686. It now asks in a solver process of its own before the solve
+  starts. The solver could answer from the built tree; not changed here.
+- **The estimate costs most of a flop-depth tree.** `estimate_tree` builds the tree without its strategy
+  storage and counts it: 22 s and a 3,379 MB peak for the 200 flops, since the showdown boards are built.
+  Choosing the subset by `--memory` estimates the shipped sizes upward until one is over, so it builds
+  (and frees) one tree larger than the budget's worth of boards. An estimate that counted without
+  building would remove both costs. Not done here.
+- Measuring: `vmmap`'s physical footprint under-reports after a large free (1.2 GB shown for the built
+  200-flop tree once a throwaway build had been freed in the same process); the maximum resident size
+  and `heap`'s total are the figures above.
+
+**Time.** The default command (200 flops, the largest subset under half of 16 GB): 717 s of solving to
+0.49 bb/100, 810 s for the whole command with the estimates, the build and the charts; exploitability by
+time 33.6 bb/100 at 61 s, 17.1 at 193 s, 1.21 at 538 s, 0.57 at 675 s. 10 flops: 35 s to 0.93 bb/100. The
+values differ with the subset as in the section above: the small blind wins 0.013 bb a hand with 200
+flops and 0.021 with 10.
+

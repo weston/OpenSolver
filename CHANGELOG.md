@@ -58,6 +58,13 @@ documentation; contains no PioSOLVER code.
   within 1 point; 25 and 10 had the big blind fold 4 points too often. The viewer's
   Jobs tab offers them when no other flop directory is set, and the macOS app carries them (#486).
 - `tools/jobs.py`: a `#` comment in a flop file may contain commas and semicolons.
+- `tools/preflop.py`: **heads-up preflop solves** from one command. The stack and the sizes in big blinds
+  (open, raise over a limp, 3-bet, 4-bet, 5-bet, limp or not; postflop bets and raises down to a chosen
+  street) become the preflop tree and a postflop tree per flop exit in whole-hand amounts; `estimate`
+  prints the memory per number of flops and postflop depth before anything is built, and the flops default
+  to the largest subset of ours that fits; `solve` runs to an accuracy in bb/100 and prints 13x13 charts
+  of every preflop decision (frequencies, optionally EVs in big blinds), also saved as JSON; `chart`
+  prints them again. `--flops all` deals all 1,755 flop classes (#488).
 
 ### Build
 

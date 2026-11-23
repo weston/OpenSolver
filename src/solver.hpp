@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "game.hpp"
+#include "reach_digits.hpp"
 
 namespace pio {
 
@@ -189,6 +190,9 @@ class Solver {
   // All-in terminals before the river from the precomputed outcome tables (AllinRunouts::e2) when
   // they exist; false evaluates every runout with the showdown kernel (the reference, for tests).
   bool allin_tables = true;
+  // A compact byte table's sums on reaches held as whole numbers (reach_digits.hpp), where that is the
+  // faster way. Tests set it either way and compare.
+  bool allin_digits = PIO_ALLIN_DIGITS;
   // Values of p's hands at a showdown terminal against opponent reach ro (public for tests).
   void showdown_value(const GNode& n, int p, const float* ro, float* out) const;
   void traverser_update(const GNode& n, uint32_t ni, int p, const float* rp, const float* ro, const float* sigma,

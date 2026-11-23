@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <string>
 
@@ -10,6 +11,7 @@
 #include "../src/game.hpp"
 #include "../src/parallel.hpp"
 #include "../src/range.hpp"
+#include "../src/reach_digits.hpp"
 #include "../src/solver.hpp"
 #include "../src/upi.hpp"
 
@@ -850,6 +852,11 @@ static bool preflop_runout_tables() {
       std::vector<float> ro, v;
     };
     std::vector<Val> vals;
+    // #507: a byte table's sums on whole-number reaches or on the floats, as allin_digits says. Each value
+    // of such a table is taken both ways: they differ as two orders of the same float sums do; and where
+    // the reaches have no whole-number form the floats are used, to the bit.
+    long digit_vals = 0, digit_bad = 0, digit_same = 0, digit_fallback_bad = 0;
+    double digit_worst = 0;
     for (uint32_t ni = 0; ni < g.nodes.size(); ++ni) {
       const GNode& n = g.nodes[ni];
       if (n.kind != ANodeKind::Showdown || n.board_len == 5 || g.allins[n.aux].exact) continue;
@@ -862,10 +869,53 @@ static bool preflop_runout_tables() {
         for (uint8_t c : g.allins[n.aux].cards)
           for (uint16_t h : g.hands_with_card[1 - p][c]) v.ro[h] = 0.0f;
         s.showdown_value(n, p, v.ro.data(), v.v.data());
+        if (!g.allins[n.aux].tri8.empty()) {
+          uint64_t bm = 0;
+          for (uint8_t c : g.allins[n.aux].cards) bm |= card_bit(c);
+          auto valued = [&](bool digits, const std::vector<float>& ro) {
+            std::vector<float> out(v.v.size());
+            s.allin_digits = digits;
+            s.showdown_value(n, p, ro.data(), out.data());
+            return out;
+          };
+          const std::vector<float> on = valued(true, v.ro), off = valued(false, v.ro);
+          double mag = 0;
+          for (float x : off) mag = std::max(mag, std::fabs(static_cast<double>(x)));
+          bool same = true;
+          for (size_t h = 0; h < off.size(); ++h) {
+            if (combo_mask(g.hands[p][h]) & bm) continue;
+            const double d = std::fabs(static_cast<double>(on[h]) - off[h]) / (1.0 + mag);
+            digit_worst = std::max(digit_worst, d);
+            // the float sums are within 2e-6 of sums in doubles on these shapes, and the whole-number sums
+            // as near (the review's measure; the largest difference between the two here is 3e-7)
+            digit_bad += d > 2e-6;
+            same = same && on[h] == off[h];
+          }
+          ++digit_vals;
+          digit_same += same;
+          // a reach below zero (a solve has none) and no reach at all: the floats, whatever allin_digits says
+          std::vector<float> odd = v.ro, none(v.ro.size(), 0.0f);
+          for (float& x : odd)
+            if (x > 0.0f) { x = -x; break; }
+          digit_fallback_bad += !same_bytes(valued(true, odd), valued(false, odd)) || !same_bytes(valued(true, none), valued(false, none));
+          s.allin_digits = Solver(g).allin_digits;  // as built
+        }
         vals.push_back(std::move(v));
       }
     }
     // the same on the boards
+    // #507: the whole numbers of a set of reaches are the calling thread's own. Every value again, many
+    // at once on the pool's threads: each as it was alone, to the bit.
+    long at_once_bad = 0;
+    for (int round = 0; round < 5; ++round) {
+      std::vector<std::vector<float>> at_once(vals.size());
+      std::function<void(int)> again = [&](int i) {
+        at_once[i].resize(vals[i].v.size());
+        s.showdown_value(g.nodes[vals[i].node], vals[i].p, vals[i].ro.data(), at_once[i].data());
+      };
+      pool().parallel_for(static_cast<int>(vals.size()), again);
+      for (size_t i = 0; i < vals.size(); ++i) at_once_bad += !same_bytes(at_once[i], vals[i].v);
+    }
     struct Tables {
       std::vector<uint16_t> e2, live;
       std::vector<uint8_t> e2b;
@@ -943,17 +993,117 @@ static bool preflop_runout_tables() {
       icm_bad += a != b;
       ++icm_n;
     }
+    // (values on whole numbers are not the floats' to the bit: were they all, the switch would do nothing)
+    const bool compact8 = (sp.want_tables & 2) && !sp.range2;
+    const bool digits_ok = digit_bad == 0 && digit_fallback_bad == 0 && at_once_bad == 0 && (compact8 ? digit_vals > 0 && digit_same < digit_vals : digit_vals == 0);
     const bool good = plan && counted && foreseen && dry_tables == table_bytes && same_counts == sets_tabled && bad == 0 &&
-                      !vals.empty() && icm_boards && icm_bad == 0 && icm_n > 0;
+                      !vals.empty() && icm_boards && icm_bad == 0 && icm_n > 0 && digits_ok;
     std::printf("[preflop runouts] %-24s %d+%d sets, %d+%d with tables (%.1f MB), %zu boards kept: plan %s, memory count %s, boards to come %.1f MB counted / %.1f MB added %s, "
-                "%ld/%ld tables equal the boards' counts, %zu values worst relative difference %.2e (%ld bad), ICM %ld/%ld equal\n",
+                "%ld/%ld tables equal the boards' counts, %zu values worst relative difference %.2e (%ld bad), ICM %ld/%ld equal, "
+                "%ld values of byte tables on whole-number reaches against floats: worst %.2e (%ld bad, %ld without a form not the floats'), "
+                "%ld of the values not the same when many threads take theirs at once %s\n",
                 sp.name, sets[0], sets[1], tabled[0], tabled[1], static_cast<double>(table_bytes) / 1e6, kept,
                 plan ? "ok" : "WRONG", counted && dry_tables == table_bytes ? "ok" : "WRONG", static_cast<double>(missing) / 1e6,
                 static_cast<double>(added) / 1e6, foreseen ? "ok" : "WRONG", same_counts, sets_tabled,
-                vals.size(), worst, bad, icm_n - icm_bad, icm_n);
+                vals.size(), worst, bad, icm_n - icm_bad, icm_n, digit_vals, digit_worst, digit_bad, digit_fallback_bad,
+                at_once_bad, digits_ok ? "ok" : "WRONG");
     ok = ok && good;
   }
   return ok;
+}
+
+// #507: the sums of a byte table on reaches as whole numbers (reach_digits.hpp). What the header says of
+// itself is checked to the letter: a reach is its whole number to half a unit, the largest is all the
+// units, the sum of a row is the sum of the whole numbers exactly (the dot-product instruction and the
+// plain loop alike, at every length from 1 to 300 and the 32 longest there are, which is every way a row
+// can end on the blocks of 16 and 32 at both ends of the lengths, and at lengths through the middle), so
+// it is off the real sum by no more than half a unit a term; and reaches that have no such form are refused.
+static bool reach_digits_sums() {
+  uint64_t rng = 0x243f6a8885a308d3ull;
+  auto next = [&] {
+    rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+    return rng;
+  };
+  auto unit = [&] { return static_cast<float>(next() >> 40) / static_cast<float>(1 << 24); };
+  struct Kind {
+    const char* name;
+    float scale;
+    int shape;  // 0: one size, 1: six decades, 2: one large and the rest tiny, 3: most without reach, 4: all the same
+  } kinds[] = {{"one size", 1.0f, 0},        {"six decades", 1.0f, 1},   {"one large", 1.0f, 2},      {"mostly none", 1.0f, 3},
+               {"all the same", 0.37f, 4},   {"very small", 1e-30f, 0},  {"very large", 1e30f, 1},    {"denormal", 1e-41f, 0}};
+  std::vector<int> lengths;
+  for (int len = 1; len <= 300; ++len) lengths.push_back(len);
+  for (int len : {411, 500, 513, 640, 777, 900, 1000, 1023, 1024, 1025, 1100, 1127, 1128}) lengths.push_back(len);
+  for (int len = NUM_COMBOS - 31; len <= NUM_COMBOS; ++len) lengths.push_back(len);
+  static ReachDigits q;
+  std::vector<float> r(NUM_COMBOS);
+  std::vector<int8_t> row(NUM_COMBOS);
+  bool ok = true;
+  for (const Kind& k : kinds) {
+    long sums = 0, wrong_digits = 0, wrong_whole = 0, wrong_sum = 0;
+    double worst = 0.0;  // of a sum's error, in the half units a term that are allowed
+    for (int round = 0; round < 40; ++round) {
+      const int n = round < 4 ? NUM_COMBOS : 1 + static_cast<int>(next() % NUM_COMBOS);
+      for (int i = 0; i < n; ++i) {
+        const float u = unit();
+        r[i] = k.shape == 1   ? std::pow(10.0f, -6.0f * u)
+               : k.shape == 2 ? (i == n / 2 ? 1.0f : 1e-7f * u)
+               : k.shape == 3 ? (unit() < 0.9f ? 0.0f : 0.05f + u)
+               : k.shape == 4 ? 1.0f
+                              : u;
+        r[i] *= k.scale;
+      }
+      if (k.shape == 3 || k.shape == 0) r[next() % n] = k.scale;  // some reach, whatever was drawn
+      if (!q.set(r.data(), n)) { ++wrong_digits; continue; }
+      float mx = 0.0f;
+      for (int i = 0; i < n; ++i) mx = std::max(mx, r[i]);
+      // each reach is its whole number to half a unit, the largest all of them, none is negative,
+      // no reach is no units, and what a block reads beyond the last hand is zero
+      wrong_digits += std::fabs(q.unit * kReachUnits / mx - 1.0) > 1e-12;
+      for (int i = 0; i < n; ++i) {
+        const double at = static_cast<double>(r[i]) / mx * kReachUnits;
+        const int32_t w = q.whole(i);
+        wrong_whole += std::fabs(w - at) > 0.5 + 1e-6 || w < 0 || w > kReachUnits || (r[i] == 0.0f && w != 0) || (r[i] == mx && w != kReachUnits);
+      }
+      for (int d = 0; d < 3; ++d)
+        for (int i = n; i < n + 16; ++i) wrong_digits += q.d[d][i] != 0;
+      // rows as a table has them (counts up to 44 either way) and as bytes can be (to -128 and 127)
+      for (int wide = 0; wide < 2; ++wide) {
+        for (int i = 0; i < n; ++i) row[i] = static_cast<int8_t>(wide ? static_cast<int>(next() % 256) - 128 : static_cast<int>(next() % 89) - 44);
+        if (round == 5) std::fill(row.begin(), row.end(), static_cast<int8_t>(wide ? -128 : 127));
+        for (int len : lengths) {
+          if (len > n) continue;
+          int64_t exact = 0;
+          double real = 0.0, terms = 0.0;
+          for (int j = 0; j < len; ++j) {
+            exact += static_cast<int64_t>(q.whole(j)) * row[j];
+            real += static_cast<double>(r[j]) * row[j];
+            terms += std::abs(static_cast<int>(row[j]));
+          }
+          const int64_t fast = tri_dot_digits(q, row.data(), len), plain = tri_dot_digits_plain(q, row.data(), len);
+          wrong_sum += fast != exact || plain != exact;
+          const double off = std::fabs(static_cast<double>(fast) * q.unit - real), allowed = 0.5 * q.unit * terms;
+          if (terms > 0) worst = std::max(worst, off / allowed);
+          wrong_sum += off > allowed * (1.0 + 1e-9) + 1e-12 * std::fabs(real);
+          ++sums;
+        }
+      }
+    }
+    const bool good = wrong_digits == 0 && wrong_whole == 0 && wrong_sum == 0 && sums > 0;
+    std::printf("[reach digits] %-12s %ld sums: %ld wrong (the largest error %.2f of the half unit a term allowed), %ld reaches off their whole number, %ld other faults %s\n",
+                k.name, sums, wrong_sum, worst, wrong_whole, wrong_digits, good ? "ok" : "WRONG");
+    ok = ok && good;
+  }
+  // no such form: nobody has reach, a reach below zero, not a number, without end, a sum without end
+  const float inf = std::numeric_limits<float>::infinity(), nan = std::numeric_limits<float>::quiet_NaN();
+  const float cases[][3] = {{0.0f, 0.0f, 0.0f}, {0.5f, -1e-20f, 0.25f}, {0.5f, nan, 0.25f}, {0.5f, inf, 0.25f}, {3e38f, 3e38f, 0.0f}, {-0.0f, 0.0f, 0.0f}};
+  int refused = 0;
+  for (const auto& c : cases) refused += !q.set(c, 3);
+  const float fine[3] = {0.0f, -0.0f, 1e-45f};  // a zero with a sign is a zero; the smallest float there is
+  const bool taken = q.set(fine, 3) && q.whole(0) == 0 && q.whole(1) == 0 && q.whole(2) == kReachUnits;
+  std::printf("[reach digits] %d of 6 sets of reaches without such a form refused, the smallest reach there is taken: %s\n", refused,
+              refused == 6 && taken ? "ok" : "WRONG");
+  return ok && refused == 6 && taken;
 }
 
 // #484: with collapse_checkdowns a subtree in which nobody has a choice left is one showdown node on the
@@ -1220,6 +1370,7 @@ int main(int argc, char** argv) {
   fails += !allin_tables_match();
   fails += !flop_deal_adds_up();
   fails += !flop_subset_one_weight();
+  fails += !reach_digits_sums();
   fails += !preflop_runout_tables();
   fails += !river_batch_matches();
   fails += !checkdowns_collapse();

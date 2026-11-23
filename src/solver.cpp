@@ -957,7 +957,18 @@ void Solver::allin_tri_value(const AllinRunouts& ar, const E* tri, float W, floa
   float* s = sc.a.alloc_zero(n);
   for (int i = 0; i < n; ++i) r[i] = ro[live[i]];
   const E* row = tri;
-  for (int i = 1; i < n; row += i, ++i) {
+  bool whole = false;
+  if constexpr (sizeof(E) == 1) {
+    // A byte table: the sums under the diagonal on whole numbers (reach_digits.hpp; 9 KB of stack).
+    if (ReachDigits q; allin_digits && q.set(r, n)) {
+      for (int i = 1; i < n; row += i, ++i) {
+        s[i] += static_cast<float>(static_cast<double>(tri_dot_digits(q, row, i)) * q.unit);
+        if (r[i] != 0.0f) tri_axpy(s, -r[i], row, i);
+      }
+      whole = true;
+    }
+  }
+  for (int i = 1; !whole && i < n; row += i, ++i) {
     s[i] += tri_dot(r, row, i);
     if (r[i] != 0.0f) tri_axpy(s, -r[i], row, i);  // most opponent hands have no reach at an all-in
   }

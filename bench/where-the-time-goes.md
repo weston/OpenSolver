@@ -1221,6 +1221,54 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   it changes what is won and lost after a flop by 0.035 % in an all-flops game, the references here,
   and by 0.001 % or less on the shipped subsets. On all flops the note no longer blames a subset for
   a sum that is not zero.
+- **Rows that do not add up to 1** (#502). `check` used to rescale them without a word: `[0.2, 0.2, 0.2]`
+  was checked as thirds, a single 1.5 or 2**70 as 1. It still makes them add up to 1, and now measures
+  what that leaves open the way it measures the hands a locked decision is silent on: the class's share
+  of the player's deals, times how often the result's own play brings it there, times the part of the
+  row that is not as written (what is missing under 1; over 1, what the entries have over 1 with none
+  counted as more than 1: two strategies that play no action more than the row says, and none more
+  than always, differ by no more than that, so `[1.5, 0, 0]` leaves nothing open and `[1.2, 0.3]`
+  leaves 0.3), times the swing. A class's rows at one decision after another add up, to all of the
+  class at the most: without that, rows of nonsense at every decision came to 4,604 bb/100 for a
+  player whose whole result spans 2,400 (found in the PR's verification). The note comes when the
+  figure is not 0.00 bb/100, with the row that counts the most in it (the row furthest from 1 can be
+  one the class never comes to); nothing is refused for it, because the measure grows with the stack and
+  a refusal would in the end meet a file nobody touched, as the note does: a result of the tool before
+  this change gets it at 1200 bb and at every deeper stack measured, and not at 1100 and under, on
+  three flops with no bets after the flop (the third non-author run's figures, small blind and big
+  blind in bb/100; a player is named in the note from 0.005):
+
+  | Stack, bb | Small blind | Big blind | Note |
+  |---|---|---|---|
+  | 100 | 0.0001 | 0.0002 | none |
+  | 500 | 0.0017 | 0.0028 | none |
+  | 1,000 | 0.0024 | 0.0025 | none |
+  | 1,100 | 0.0027 | 0.0029 | none |
+  | 1,200 | 0.0061 | 0.0084 | both |
+  | 1,300 | 0.0045 | 0.0053 | big blind |
+  | 1,400 | 0.0039 | 0.0052 | big blind |
+  | 1,500 | 0.0052 | 0.0065 | both |
+  | 2,000 | 0.0073 | 0.0074 | both |
+  | 3,000 | 0.0128 | 0.0153 | both |
+  | 6,000 | 0.0185 | 0.0250 | both |
+
+  The figure does not only grow with the stack (1,300 and 1,400 measure less than 1,200): it follows
+  which rows a solve's rounding left furthest off.
+  The ten results of this section (100 bb, rows as the
+  solver's seven digits left them, 1.2e-7 off at the most) measure 0.0002 to 0.0008 bb/100 a player,
+  6 to 25 times under the line, and their plans are the same rows as before, entry for entry
+  (compared with `_plan` of the commit before). `solve` now divides a class's row by its own sum, so a
+  new result's rows add up to 1 as doubles (1e-16) at any stack. The class dealt too rarely to show
+  (weight 1e-6) that may be missing at a first decision gets no note, by the same rule: what it can
+  move is 0.00 bb/100 or the decision would not have been locked, and the figure is in the report
+  (`unsaid_bb100`).
+- **The figure of a game too small for it** (#502). Asked for: a loss that does not move with
+  `--accuracy` by more than its span in the two small cases above, or the decision that the note is
+  what there is. The note is what there is at the tool's level: a loss is the difference of two
+  values, the locked solve's and the reference's, and where the two players' values do not add up to
+  the same thing at every pair of strategies neither is the value of anything; a best reply computed
+  some other way is a reply in the same game. The cause is in the solver's deal, which gives one pair
+  of hands two weights, one for each player (`Solver::flop_deal`), and is taken up there (#513).
 - **What the fifth review's mutations got past the tests** (seven of its thirteen): no test ran `check`
   with an ante, so the ante could go back into either sum, or out of the stake, unseen; versions 0 and
   -1 were read as results by a `_fits` that refused only "over 1", and `chart` could take any whole
@@ -1296,3 +1344,134 @@ not fit this machine (#498).
   flops), which is the same question one street on and may be as large; more flops at turn depth than
   25 (50 are 4 GB here; the PC holds 200); which decisions carry the loss; other stacks and sizes. One
   tree, two subsets, one accuracy (#498).
+
+## The turn sets' byte tables summed on whole numbers (#507)
+
+At turn depth, with tables at both levels (#496), the time is one loop: a row of a turn set's triangle
+of signed bytes against the opponent's reaches (`tri_dot` in `Solver::allin_tri_value`). Counted in a
+10-flop solve of the tool's tree, it is about 80 % of the threads' time, and 74 % of the opponent hands
+it meets have no reach. A float times a byte has to be widened and converted, sixteen bytes to four
+vectors, before it is a product.
+
+**What changed.** The reaches of one value are turned once into whole numbers: in units of the largest
+of them over `0x7f7f7f`, rounded, and each written as three signed digits of base 256
+(`src/reach_digits.hpp`). A row's sum is then three sums of byte times byte, sixteen products to an
+instruction (ARM `SDOT`), put together as `a + 256 b + 65536 c`: exact on the whole numbers, so all the
+error is the rounding of the reaches, half a unit each, 2^-24 of the largest. Reaches with none above
+zero, one below, one that is not a number, or a float sum without end have no such form and are summed
+in float as before. The
+other half of a row (the row times its own hand's reach, added into the sums of the hands before it)
+is still float, and is skipped for a hand without reach as before. Flop sets (16-bit entries) and the
+full tables are untouched. On when the build has the instruction (AArch64 with `dotprod`: every Apple
+M-series), float elsewhere; `-DPIO_NO_ALLIN_DIGITS` builds the float sum here too, and
+`Solver::allin_digits` chooses in a test.
+
+M4, 10 threads, the machine quiet but for the runs themselves.
+
+**One evaluation** (a scratch program on `Solver::showdown_value`, one flop of the tool's tree at turn
+depth, random reaches, best of 15 rounds, microseconds a value):
+
+| opponent hands without reach | turn set: float | whole numbers | | flop set (unchanged), the two builds |
+|---|---|---|---|---|
+| 0 % | 81.6 | 57.9 | 1.41x | 87.1 / 87.2 |
+| 30 % | 70.3 | 49.5 | 1.42x | 75.9 / 75.7 |
+| 74 % | 55.2 | 35.4 | 1.56x | 59.0 / 59.0 |
+| 90 % | 49.5 | 29.4 | 1.68x | 52.1 / 52.0 |
+
+The two ways differ by 2.7e-7 to 3.8e-7 of the largest value here; the non-author run of PR #512
+measured 4.1e-7 with 90 % of the hands without reach and 3.0e-6 with one reach far above all the
+others. Those are measurements and no bound: the bound is half a unit a term, relative to the largest
+reach, so a reach under 2^-24 of the largest counts as none in the sums. The gain grows with the hands without
+reach because the float half that is left shrinks with them.
+
+**Solves** (old = `3fea596`; whole command = build + `go N steps` + `calc_results`; taken in turn, old
+after new):
+
+| tree | old | new |
+|---|---|---|
+| 10 flops, turn depth, 100 steps | 93.5, 92.9 s (911, 910 s of processor); 992, 1,004 MiB | 68.6, 67.3 s (656, 658 s); 1,002 MiB |
+| 200 flops, flop depth, 60 steps | 14.9, 14.9 s | 14.9, 15.0 s |
+
+1.37 times as fast at turn depth (1.39 in processor time, which is what 80 % of the time at 1.56
+gives), and nothing at flop depth, where the sets are flop sets. After the 100 steps: EV OOP -6.897 old
+and -6.899 new, exploitable 0.624 and 0.626.
+
+**Does the rounding cost convergence?** The 10-flop tree, 300 steps, the exploitable figure of
+`calc_results` along the way. A solve is the same to the last digit from run to run, so the rows differ
+by what they sum and nothing else:
+
+| steps | 25 | 50 | 75 | 100 | 150 | 200 | 300 |
+|---|---|---|---|---|---|---|---|
+| float (`-DPIO_NO_ALLIN_DIGITS`; `3fea596` is the same at every report) | 19.995 | 3.649 | 1.291 | 0.624 | 0.248 | 0.128 | 0.054 |
+| whole numbers | 19.992 | 3.685 | 1.304 | 0.626 | 0.249 | 0.129 | 0.054 |
+| whole numbers, and the flop sets' float sum taken in 8 parts for 16 | 19.993 | 3.651 | 1.289 | 0.624 | 0.248 | 0.129 | 0.055 |
+| units of the largest over `0x7f7f7e` (one fewer) | 19.997 | 3.711 | 1.319 | 0.632 | 0.249 | 0.129 | 0.054 |
+| over `0x3f7f7f` (half as fine) | 19.995 | 3.670 | 1.293 | 0.624 | 0.249 | 0.128 | 0.054 |
+| over `0x7f7f` (256 times as coarse, two digits) | 20.003 | 3.721 | 1.325 | 0.633 | 0.250 | 0.130 | 0.055 |
+
+The third row is the measure of what an order of summing does: a float sum elsewhere in the same solve,
+taken in another order, moves the figure at 50 steps by as much (0.034) as the whole numbers moved it
+(0.036), and a grid one unit different moves it by 0.026 more. So nothing here tells the whole numbers
+from the floats, and a grid 256 times as coarse costs 0.001 at the end. EV OOP after 300 steps: -6.885
+float, -6.884 whole numbers.
+
+**Do the tests notice?** `tests/test_solver.cpp` checks the header alone (every sum of the instruction
+path and of the plain loop against the whole numbers summed in 64 bits, every reach within half a unit,
+rows of every length from 1 to 300, the 32 longest and thirteen between, the forms refused) and the
+solver with the switch on and off (to 2e-6 of the values, and every value again while many threads
+take theirs at once). 23 changes to the kernel and its use, one at a time, against
+`build/test_solver`; the last seven are the two reviews'. The first review's five, and the one part in
+100,000 before them, the tests as first written (twenty row lengths, 2e-5, one thread) did not notice
+or noticed only in the solver's comparison; the second review's two were found with every length to
+130 and twenty longer ones:
+
+| change | noticed by |
+|---|---|
+| a reach cut to its whole number, not rounded | the header's checks |
+| the unit one part in 8 million small | the header's |
+| the unit one part in 10,000 large | both |
+| the end of a row (under 16 bytes) left out | both |
+| the middle digit counted 255, in the instruction path; in the plain loop | the header's (both) |
+| the second block of a round meets the first block's row | both |
+| the sixteen digits to spare not cleared | the header's |
+| a negative reach taken | both |
+| a reach that is not a number taken; reaches with none above zero taken | the header's (both) |
+| the solver ignores its switch; adds the float sums on top; never uses the whole numbers | the solver's (all three) |
+| the solver's sum one part in 10,000 large | the solver's |
+| the solver's sum one part in 100,000 large | the solver's (not noticed at 2e-5) |
+| one set of whole numbers shared by all threads | the solver's |
+| the last byte of a row's end dropped when the end is 5, 6 or 9 to 12 bytes | both |
+| no lowest digit for rows 101 to 1,126 long; in the last block of those rows only | both; the header's |
+| the float half of a row skipped for a hand whose reach is under half a unit | **not noticed**: the tests' reaches have no such hand (counted: none), so it does nothing there |
+| no lowest digit for rows 131 to 199 long | the header's (nothing, with no length between 131 and 199) |
+| the last byte of an end of 5 bytes dropped, in rows over 130 only | both (the solver's only, before) |
+
+What the comparison in the solver does not see, by the second review's measurements: its sum one part
+in a million large (1.2e-6 of a value; one in 500,000 is seen), the lowest 12 bits of its sum dropped
+(1.0e-6; 16 bits are seen), and the float half skipped for reaches under 3e-5 of the largest (1.0e-6;
+1e-4 is seen). The 2e-6 is 4.7 times the largest difference the review produced with a correct kernel
+(4.25e-7 with `-ffp-contract=off`; 3.2e-7 as built, 20 other seeds 3.0e-7 to 3.5e-7), and it belongs
+to the test's reaches: one reach far above the others gave 3.0e-6 in the first review, so another
+shape of reaches needs its own figure. The check of many threads at once says nothing on a pool of one
+thread, and a race with a narrow window can pass a run: a scratch array made static gave between 0
+and 492 values off a spot, and one spot of five none, in one run of three.
+
+**Not done.**
+- x86. AVX2 has byte products only as unsigned times signed, pairs added with saturation; VNNI has the
+  instruction. Neither is written, and there is no x86 machine here to time one on, so x86 keeps the
+  float sum (#511).
+- The half of a row that is still float (taken for the hands with reach only). How the time that is
+  left splits between it and the three sums was not measured.
+- The flop sets' 16-bit rows, which are the time at flop depth (the 200-flop row above).
+- The solver's comparison of the two ways is to 2e-6 of the values (the two differ by 3.2e-7 at the
+  most in the test, and on ordinary reaches a float sum is within 2e-6 of the same sum in doubles): an
+  error in the solver's use of the kernel smaller than that passes. The kernel's own sums are checked
+  exactly, at the row lengths the header's test has: 1 to 300, thirteen between, and 1,295 to 1,326.
+  At the other lengths up to 1,127 (the longest row a solve or the solver's test has) only the 2e-6
+  comparison looks, and a lowest digit lost at some of them passes it (found in the third non-author
+  run: rows 301 to 410, or length 412 alone); from 1,129 to 1,294 nothing looks, and no solve has a
+  row that long.
+- Nothing pins how much of the work takes the new path: whole numbers for one player only, or for half
+  of the rows, pass every test. That is speed and not values; the timings above are the check.
+- One tree, one machine. To an accuracy with the tool was not timed; by the steps above it is the
+  same number of steps.

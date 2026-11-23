@@ -539,12 +539,13 @@ bets after the flop).
 Ranges that hold a hand class in part (single combos, combos at different weights) are checked
 with a note: the combos of a class need not play alike there, a result has one strategy for a class, and
 the loss includes what playing them alike costs. On all flops the two values of a solve add up to zero
-(to the ante, with one) and the spans are bounds. A flop subset is not dealt quite evenly to the two
-players and the values do not add up to that then; the check prints what they added up to, less the
-ante, when it shows: the losses and the ends of their spans are that uncertain,
-which was 0.004 bb/100 in a check on 50 shipped flops and can be most of the figure with three flops or
-narrow ranges, where the same check at another `--accuracy` has printed a loss outside the first one's
-span (`bench/where-the-time-goes.md`). Time: a solve of the
+(to the ante, with one) and the spans are bounds. On a flop subset they do too, as the tool builds it:
+its script has `set_zero_sum_subset on`, which deals a pair of hands at one weight for both players
+(#513). Without it a subset is not dealt quite evenly to the two and the values did not add up: by up to
+0.07 bb/100 on the shipped subsets, and by 2.8 with three flops and narrow ranges, where the same check
+at another `--accuracy` printed a loss outside the first one's span. The check still prints what the
+values added up to, less the ante, when it shows, which is then how far the solver's own figures are
+from exact (`bench/where-the-time-goes.md`). Time: a solve of the
 larger game for the reference and one for each player of each result, each from the start: on all flops
 of the default tree about 11 minutes for the reference and 3.5 to 5 for each of the others on the M4, 52
 minutes for the five results above; `--time`

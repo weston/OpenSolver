@@ -116,6 +116,40 @@ int main() {
     CHECK(wt(w, A, 2, A, 3) == 1.0f);  // AhAs
     CHECK(wt(w, A, 0, K, 0) == 0.0f);
   }
+  // A pair of digits alone is a hand, not one of 1326 weights (#501).
+  for (int r = 0; r <= 7; ++r) {  // 22 .. 99
+    const std::string name(2, static_cast<char>('2' + r));
+    RangeWeights w = parse_ok(name);
+    CHECK(count_nonzero(w) == 6);
+    CHECK(wt(w, r, 0, r, 1) == 1.0f);
+    CHECK(wt(w, r, 2, r, 3) == 1.0f);
+    CHECK(w == parse_ok(name + ":1"));
+    CHECK(w == parse_ok(" " + name + " "));
+    CHECK(w == parse_ok(name + "," + name));
+  }
+  {
+    RangeWeights w = parse_ok("98");  // two unlike digits alone: the suited and the offsuit hands
+    CHECK(count_nonzero(w) == 16);
+    CHECK(w == parse_ok("98s,98o"));
+    CHECK(parse_ok("32") == parse_ok("32s,32o"));
+    CHECK(parse_ok("92") == parse_ok("92s,92o"));
+  }
+  // One number that is no hand is still short of 1326 weights, and says so.
+  for (const char* t : {"0.5", "1326", "11", "00", "10", "2", "222", "22.", "22.0", "1e1", "+22", "-22", "022"}) {
+    RangeWeights w;
+    std::string err;
+    CHECK(!parse_range(t, w, err));
+    CHECK(err == "expected 1326 weights, got 1");
+    CHECK(count_nonzero(w) == 0);
+  }
+  parse_must_fail("22 33"); // two numbers: weights, and too few
+  {
+    std::string all;        // 1326 times "22" are weights of 22
+    for (int i = 0; i < 1326; ++i) all += "22 ";
+    RangeWeights w = parse_ok(all);
+    CHECK(count_nonzero(w) == 1326);
+    CHECK(w[0] == 22.0f && w[1325] == 22.0f);
+  }
   {
     RangeWeights w = parse_ok("kk:0.5");  // case-insensitive + weight
     CHECK(count_nonzero(w) == 6);

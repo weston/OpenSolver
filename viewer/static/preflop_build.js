@@ -4,7 +4,7 @@
 
 import { get, post, prefs } from "./api.js";
 import { el } from "./cards.js";
-import { memoryNote, fmtMemory, streetsBet, flopsLabel, nextEstimate, treeSummary } from "./preflop.js";
+import { memoryNote, fmtMemoryRange, estimateCell, streetsBet, flopsLabel, nextEstimate, treeSummary } from "./preflop.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -104,7 +104,7 @@ async function describe() {
 function renderMem() {
   const out = $("pf-mem-text"), row = $("pf-mem-row"), chosen = $("pf-flops").value;
   const own = mem && mem.cells[chosen];
-  const note = own ? memoryNote(own.mb, mem.machine, own.flops) : null;
+  const note = own ? memoryNote(own.mb, mem.machine, own.flops, own.mbTables) : null;
   out.textContent = note ? note.text : mem && mem.error ? mem.error : mem && mem.running ? "Asking the solver…" : "";
   out.classList.toggle("warn", note ? !note.fits : !!(mem && mem.error));
   row.textContent = "";
@@ -117,20 +117,20 @@ function renderMem() {
     const b = el("button", `pf-mem-cell${c === chosen ? " active" : ""}${over ? " warn" : ""}`);
     b.type = "button";
     b.title = over ? "More than this machine's memory" : c === chosen ? "The number of flops chosen" : "Take this number of flops";
-    b.append(el("span", null, flopsLabel(c)), el("b", "num", fmtMemory(e.mb)));
+    b.append(el("span", null, flopsLabel(c)), el("b", "num", fmtMemoryRange(e.mb, e.mbTables)));
     b.onclick = () => { $("pf-flops").value = c; changed(); };
     row.appendChild(b);
   }
   if (mem.running) row.appendChild(el("span", "hint", "…"));
 }
 
-/** An estimate the server gave for this form ({mb, memory_mb, flops}: Build asks for one too). */
+/** An estimate the server gave for this form ({mb, mb_tables, memory_mb, flops}: Build asks for one too). */
 export function noteEstimate(form, e) {
   const sig = memSig(form);
   if (!defaults || sig !== memSig(readPreflopForm())) return;   // the form changed while the server worked
   if (!mem || mem.sig !== sig) { mem = { sig, machine: 0, cells: {}, running: false, error: null }; memRun++; }
   mem.machine = e.memory_mb || 0;
-  mem.cells[form.flops] = { mb: e.mb, flops: e.flops };
+  mem.cells[form.flops] = estimateCell(e);
   mem.error = null;
   renderMem();
 }
@@ -151,7 +151,7 @@ async function estimate() {
       const e = await post("/api/preflop/estimate", { ...form, flops: c });
       if (run !== memRun || mem !== mine) return;   // the form is another one now, or a newer run took over
       mine.machine = e.memory_mb || 0;
-      mine.cells[c] = { mb: e.mb, flops: e.flops };
+      mine.cells[c] = estimateCell(e);
       renderMem();
     }
   } catch (e) {

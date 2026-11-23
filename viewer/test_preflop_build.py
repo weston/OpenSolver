@@ -310,7 +310,7 @@ class PreflopBuildTest(unittest.TestCase):
         finally:
             del self.v.solver.cmds
         self.assertEqual(st, 200, d)
-        self.assertEqual(sent[2:4], ["small_strats auto", "set_collapse_checkdowns off"])
+        self.assertEqual(sent[2:5], ["small_strats auto", "set_collapse_checkdowns off", "set_zero_sum_subset off"])
         self.assertIsNone(self.v.solver.preflop)
         self.assertFalse(self.v.solver.preflop_touched)
         self.assertEqual(self.v.solver.cmd("show_node r:0").split("\n")[3].split(), ["100", "50", "0"])

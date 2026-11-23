@@ -171,6 +171,52 @@ void GameTree::compute_flop_compat() {
     flop_card[p].assign(card.begin(), card.end());
     flop_pair[p].assign(pair.begin(), pair.end());
   }
+  for (int p = 0; p < 2; ++p) flop_scale[p].clear();
+  if (!cfg.zero_sum_subset) return;
+  // The factors (#513). A pair (h, o) is dealt the subset's flops with weight N(h,o), which is one number
+  // for every pair only when every flop is in the tree. A game with one value needs one weight per pair
+  // for both players, or the two values do not add up to the dead money (dividing each player's hand by
+  // its own mean of N, as is done without the switch, gives a pair two weights). Any a_h * N(h,o) * b_o
+  // is one weight; these a and b are the ones with which every hand of either player meets, against the
+  // opponent's starting range, exactly its share of deals: sum_o r_o a_h N(h,o) b_o = sum_o r_o over the
+  // opponent hands o that share no card with h, and the same for b. Found by scaling the two sides in
+  // turn (Sinkhorn), which converges because the weights that are 1 on every pair have those sums too.
+  // On all flops N is one number and a_h * b_o is 1 / N.
+  std::vector<double> scale[2];
+  for (int p = 0; p < 2; ++p) scale[p].assign(hands[p].size(), 1.0);
+  for (int round = 0; round < 200; ++round) {
+    double moved = 0;
+    for (int p = 0; p < 2; ++p) {
+      const int o = 1 - p;
+      const size_t H = hands[p].size(), Ho = hands[o].size();
+      for (size_t h = 0; h < H; ++h) {
+        const uint64_t hm = combo_mask(hands[p][h]);
+        const float* nch = flop_card[p].data() + h * NUM_CARDS;
+        const float* nph = flop_pair[p].data() + h * NUM_COMBOS;
+        double num = 0, den = 0;
+        for (size_t j = 0; j < Ho; ++j) {
+          const double r = init_reach[o][j];
+          if (r == 0 || (combo_mask(hands[o][j]) & hm)) continue;
+          num += r * scale[o][j] * (flop_compat[p][h] - nch[hcard[o][0][j]] - nch[hcard[o][1][j]] + nph[hands[o][j]]);
+          den += r;
+        }
+        const double v = num > 0 ? den / num : 1.0;  // no flop for any pair of this hand: it has no value to scale
+        moved = std::max(moved, std::fabs(v - scale[p][h]) / v);
+        scale[p][h] = v;
+      }
+    }
+    if (moved < 1e-9) break;  // the factors are kept as floats
+  }
+  // Hands that are one hand under a suit symmetry of the ranges get one factor to the last bit: the sums
+  // above run in hand order and differ by rounding, which CFR turns into different strategies (#300).
+  for (int p = 0; p < 2; ++p) {
+    flop_scale[p].resize(hands[p].size());
+    for (size_t h = 0; h < hands[p].size(); ++h) {
+      double sum = 0;
+      for (uint8_t pm : perm_all) sum += scale[p][perm_hand[p][pm][h]];
+      flop_scale[p][h] = static_cast<float>(sum / static_cast<double>(perm_all.size()));
+    }
+  }
 }
 
 namespace {
@@ -563,6 +609,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
     flop_compat[p].clear();
     flop_card[p].clear();
     flop_pair[p].clear();
+    flop_scale[p].clear();
   }
   regrets.clear();
   regrets.shrink_to_fit();

@@ -588,11 +588,9 @@ def unit():
     every = dict(report, flops=preflop.ALL_FLOPS, flop_count=1755)
     told = [" ".join("\n".join(preflop.check_text(r)).split())
             for r in (report, every, dict(every, settings={"depth": "file", "ante_bb": "2"}))]
-    check("a flop subset is not dealt quite evenly" in told[0]
-          and all("flop subset" not in t and "added up to 0.82 to 0.86" in t for t in told[1:])
-          and all("the solver's own figures" in t for t in told[1:])
+    check(all("flop subset" not in t and "added up to 0.82 to 0.86" in t and "the solver's own figures" in t for t in told)
           and "less the ante" not in told[1] and "less the ante" in told[2],
-          "a sum that is not zero is put down to the flop subset only where the flops are one")
+          "a sum that is not zero is the solver's own figures, on a flop subset as on all flops (#513)")
 
 
 def integration(exe):
@@ -977,9 +975,20 @@ def integration(exe):
         check(status == 0 and "--postflop FILE)" in out.splitlines()[0] and "does not say which" in " ".join(out.split())
               and status2 == 0 and "filed.json (3 flops, --postflop FILE)" in out2,
               "with the file it says a result does not name its file; with a depth the row names the result's tree")
-        status, out, _ = run("check", own, "--flops", flop_file, "--accuracy", "0.5", *opts)
-        check(status == 0 and "added up to" in out and "not to zero" in out and "flop subset" in out,
-              "on a flop subset the check says what the two values add up to")
+        # a flop subset is dealt to the two at one weight a pair of hands (#513): the values of every solve of
+        # a check add up to zero there too, however roughly it is solved. Main's deal gave a pair two
+        # weights, and these three flops' sums were 0.8 bb/100 and moved with the strategies
+        subset_report = os.path.join(d, "subset_report.json")
+        status, out, _ = run("check", own, "--flops", flop_file, "--accuracy", "0.5", "--report", subset_report, *opts)
+        try:
+            with open(subset_report) as f:
+                rep = json.load(f)
+            sums = [rep["sum_bb100"]] + [r[who]["sum_bb100"] for r in rep["checked"] for who in ("SB", "BB")]
+        except (OSError, ValueError, KeyError):
+            sums = []
+        check(status == 0 and len(sums) == 3 and not any(preflop._shows(x) for x in sums) and "added up" not in out,
+              f"on a flop subset the two values of every solve of a check add up to zero "
+              f"({', '.join(f'{x:+.4f}' for x in sums)})")
         # with an ante, on all flops: the stake is two stacks and the ante, and the sums are taken less the
         # ante (left in, each would be the ante, 100 bb/100) and are zero then, with nothing to note (#505:
         # the solver's two values were 0.03 bb/100 short of the ante here)

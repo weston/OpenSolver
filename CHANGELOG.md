@@ -29,6 +29,13 @@ documentation; contains no PioSOLVER code.
   down to a showdown, is built as one showdown node on the runouts, like an all-in. Same values, none of
   the nodes and rows: a preflop tree whose schematics bet on the flop only goes from 2.7 GB to 78 MB and
   solves 2.7x faster. Such a tree saves as version 6 (#484).
+- `set_zero_sum_subset on` (off by default): a preflop tree on a flop subset is a constant-sum game.
+  A pair of hands can be dealt only the subset's flops that hold none of its cards, and by default each
+  player's hand is divided by its own mean of what is left, so the two players' values do not add up to
+  the dead money (by up to 0.07 bb/100 at the solutions of the shipped subsets, and by 0.33 chips in
+  19.63 on a probe of three flops). On, a pair has one weight for both players and the values add up at
+  every pair of strategies. All flops are the same game either way. `tools/preflop.py` builds with it;
+  a save records it in a flags bit (#513).
 - Multi-threaded over turn and river cards with a nested work-stealing pool and per-thread arena
   allocators.
 - Node **locking**: whole-node and per-combo (`lock_node`, `combo_lock_node`, `set_strategy`,

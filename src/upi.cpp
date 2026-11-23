@@ -1064,6 +1064,15 @@ void Upi::register_commands() {
     cfg_.collapse_checkdowns = pf_cfg_.collapse_checkdowns = a[0] == "on";
     return std::string("set_collapse_checkdowns ok!");
   };
+  // Not a Pio command (#513). A preflop tree on a subset of the flops deals a pair of hands the flops
+  // that hold none of its cards; with this on a pair has one weight for both players and the two
+  // players' values add up to the dead money, as on all flops. Off, each hand's value is divided by its
+  // own mean weight, as in Pio's best responses (AGENTS.md). Set before building; all flops are the same.
+  H["set_zero_sum_subset"] = [this](const Args& a) {
+    if (a.empty() || (a[0] != "on" && a[0] != "off")) throw CmdError{"incorrect or missing argument"};
+    cfg_.zero_sum_subset = pf_cfg_.zero_sum_subset = a[0] == "on";
+    return std::string("set_zero_sum_subset ok!");
+  };
   H["change_step"] = [this](const Args& a) {
     step_ = arg_double(a, 0, "step");
     return std::string("change_step ok!");

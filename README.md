@@ -832,7 +832,7 @@ UPI probe matches the macOS build up to floating-point rounding).
 | Node IDs | `r`, `r:0`, then `c` / `f` / `b<amount>` where the amount is the **cumulative** chips invested by the bettor (e.g. `r:0:c:b20:c:7s:b60`), and card tokens at chance nodes. `?` means the first runout in display order (the highest card). |
 | Node types | `ROOT`, `OOP_DEC`, `IP_DEC`, `SPLIT_NODE`, `END_NODE`. All-ins before the river are `END_NODE`s whose value averages over every runout (no chance nodes), exactly like Pio. |
 | Children order | Bets/raises largest first, then check/call, then fold; dealt cards from `As` down to `2c`. `show_all_lines` walks the reverse order with `?` card markers. |
-| EVs | Chips relative to the tree start: payoff = share of the final pot - own chips invested in the tree, so `EV OOP + EV IP` = the dead money (`set_pot`'s third number: the players' own chips there are investments, so `set_pot 10 5 0` sums to 0). It held only approximately on boards with a suit symmetry and a flop all-in until #300. `calc_ev` matchups are weighted by the hand's own reach (Pio semantics); out-of-range hands print `nan`/`inf`, and an in-range hand that never reaches the node prints its counterfactual EV with matchups 0, as Pio does (#247). |
+| EVs | Chips relative to the tree start: payoff = share of the final pot - own chips invested in the tree, so `EV OOP + EV IP` = the dead money (`set_pot`'s third number: the players' own chips there are investments, so `set_pot 10 5 0` sums to 0). It held only approximately on boards with a suit symmetry and a flop all-in until #300. On a flop subset of a preflop tree it holds only nearly (within 0.07 bb/100 at the solutions of the shipped subsets) unless the tree was built with `set_zero_sum_subset on` (#513). `calc_ev` matchups are weighted by the hand's own reach (Pio semantics); out-of-range hands print `nan`/`inf`, and an in-range hand that never reaches the node prints its counterfactual EV with matchups 0, as Pio does (#247). |
 | Hands of either range | By default each player's hand list is their own range. `set_union_hands on` (before `build_tree`) makes it the union of both, like Pio: a hand only in the opponent's range gets a slot with reach 0, so `calc_ev` reports the **sign** of its counterfactual value (`inf`/`-inf` rather than a bare `inf`) and `calc_ev_pp`/`show_strategy_pp` list it. The equilibrium is unchanged; vectors get wider (about +23% solve time on `bench_flop`), which is why it is off by default. |
 | Check-downs | A line with no bets left (only checks down to the showdown) keeps its nodes, as in Pio: every turn and river card is there to browse, each with a one-action node that stores a row per hand. `set_collapse_checkdowns on` (before `build_tree` / `build_preflop_tree`) builds each such subtree as one `END_NODE` valued over the runouts, exactly as an all-in is: same values and strategies, a fraction of the memory and time when the late streets have no bets (see *Preflop trees*). The nodes inside it then don't exist (a node id inside it answers `incorrect path`); `calc_ev` at the `END_NODE` works. "No choice left" is meant literally: one-action bets and calls (what `remove_line` can leave) collapse too, and the `END_NODE` shows the pot of the showdown it stands for. A save of such a tree is version 6 and carries the setting: `load_tree` turns it on for a version 6 file and off for an older one, as it replaces the rest of the configuration. |
 | SOLVER output | `SOLVER: started`, periodic `SOLVER:` blocks (running time, EVs, MES, `Exploitable for`) ending in END, and `SOLVER: stopped (<reason>)`. Command responses never interleave with these. |
@@ -849,7 +849,7 @@ their implementation status, known differences, and regression/probe coverage.
 show_settings, bench, load_script, load_script_silent, skip_if_done, LABEL:, echo, repeat,
 show_hand_order, show_preflop_order, go, stop, wait_for_solver, take_a_break, solver_time,
 set_threads, set_info_freq, set_accuracy, set_recalc_accuracy, set_always_recalc (stored),
-set_isomorphism, set_union_hands, set_collapse_checkdowns, change_step / show_step (stored), show_iters, set_first_iteration_player,
+set_isomorphism, set_union_hands, set_collapse_checkdowns, set_zero_sum_subset, change_step / show_step (stored), show_iters, set_first_iteration_player,
 set_range, set_eff_stack, set_board, set_pot, add_line, remove_line, force_line, clear_lines,
 build_tree, list_algorithms, set_algorithm, ignore_mem_check, small_strats, set_outcome_tables,
 estimate_schematic_tree, show_memory, is_tree_present, show_node, show_children,
@@ -903,7 +903,9 @@ add preflop lines (absolute amounts incl. blinds; the SB = IP acts first), `buil
 `set_pot`/`set_eff_stack`/`add_line` for its postflop tree and `add_schematic_tree <exit>`; finally
 `add_all_flops` and `go`. Each subset flop stands for its whole suit-isomorphism class (its values are
 averaged over suit permutations; deal probabilities are normalized per hand pair by
-inclusion-exclusion), and preflop all-ins / pure-preflop exits use exact equity from the
+inclusion-exclusion, for each player's hand over the opponent's range, or with `set_zero_sum_subset on`
+at one weight a pair for both players, which makes the subset's game constant-sum: `docs/commands.md`),
+and preflop all-ins / pure-preflop exits use exact equity from the
 hand-vs-hand table (see below). As in Pio, each schematic's
 `set_pot` is taken literally: its per-player chips are investments and its dead money is free money.
 For whole-hand accounting give the preflop investments per player (e.g. `set_pot 100 100 0` after a

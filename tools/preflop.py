@@ -365,7 +365,7 @@ def script(s: Settings, flops: list[tuple[str, float]], root: Node | None = None
     per_bb, stack, dead = s.chips, s.stack_chips, _chips(s.ante, s.chips)
     out = [f"set_range OOP {s.range_bb}", f"set_range IP {s.range_sb}",
            f"set_pot {per_bb} {per_bb // 2} {dead}", f"set_eff_stack {stack}",
-           "small_strats on", "set_collapse_checkdowns on", "clear_preflop_lines"]
+           "small_strats on", "set_collapse_checkdowns on", "set_zero_sum_subset on", "clear_preflop_lines"]
     closing = [n for n in walk(root) if n.kind in ("flop", "allin")]
     out += ["add_preflop_line " + " ".join(map(str, n.line)) for n in closing]
     if not s.limp:
@@ -939,8 +939,9 @@ def _lost(base: list[float], locked: list[float]) -> list[float]:
 
 
 def _sum(r: dict[str, float], s: Settings) -> float:
-    """The two players' values added up, less the ante they play for, bb/100: zero in a game whose flops
-    are dealt evenly to the two (on all flops)."""
+    """The two players' values added up, less the ante they play for, bb/100: zero, nobody else being at
+    the table, on all flops and on a subset (whose flops a pair of hands is dealt at one weight for both
+    players: the script's `set_zero_sum_subset on`, #513), as far as the solver's figures are exact."""
     return (r.get("EV OOP", 0.0) + r.get("EV IP", 0.0) - _chips(s.ante, s.chips)) / s.chips * 100
 
 
@@ -1070,11 +1071,9 @@ def check_text(report: dict) -> list[str]:
     sums = [report["sum_bb100"]] + [r[who]["sum_bb100"] for r in report["checked"] for who in (SB, BB)]
     if any(_shows(x) for x in sums):
         ante = Decimal(str(report["settings"].get("ante_bb") or 0)) > 0   # `describe` wrote it
-        why = ("a flop subset is not dealt quite evenly to the two" if report["flops"] != ALL_FLOPS
-               else "the solver's own figures are that far from exact")
         notes += [f"The two players' values{', less the ante,' if ante else ''} added up to {_f2(min(sums))} to "
                 f"{_f2(max(sums))} bb/100 in these solves, "
-                f"not to zero: {why}. Where that sum moves with the "
+                "not to zero: the solver's own figures are that far from exact. Where that sum moves with the "
                 f"strategies ({max(sums) - min(sums):.2f} here) the losses and the ends of their spans are that "
                 "uncertain, and a loss can come out under zero."]
     return out + [line for note in notes for line in [""] + textwrap.wrap(note, 100)]

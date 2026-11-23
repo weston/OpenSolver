@@ -67,7 +67,7 @@ documentation; contains no PioSOLVER code.
   prints them again. `--flops all` deals all 1,755 flop classes (#488).
 - **Viewer: Study on preflop trees** (a tree saved by `tools/preflop.py solve --save-tree`). Raises
   before the flop get their real amounts (`Raise 75% to 250`, with `2.5x` in the tooltip: the open to
-  2.5 big blinds read `to 200 · 4.0x`, the blind taken off it), the line under the title says small
+  2.5 big blinds read `to 200 · 4.0x`, the blind taken off it), the text beside "to act" says small
   blind or big blind and what the call costs, the deal after a preflop call lists the tree's flops with
   a filter by rank or card (it was a dead end, "Choose the river" over a card picker with nothing to
   click), and a board card of a flop opens the same list to change to another flop on the same line.

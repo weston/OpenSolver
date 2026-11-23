@@ -454,8 +454,8 @@ blind's EVs at `r:0`, weighted by combos, are the value of the game to it, the f
 **In the viewer.** Open the tree saved with `--save-tree` (Open in the top bar, then the file's path):
 Study shows it like any other tree, starting at the small blind's first decision with no board. A raise is
 named by its size over the pot once the bet in front is called, with the amount it is to (`Raise 75% to
-250` is the open to 2.5 big blinds of 100 chips; its tooltip adds `2.5x`), and the line under the title
-says who is to act and what the call costs. After a preflop call the strip lists **the flops of the
+250` is the open to 2.5 big blinds of 100 chips; its tooltip adds `2.5x`), and the text beside "to act"
+says which blind that is and what the call costs. After a preflop call the strip lists **the flops of the
 tree**, highest cards first; type ranks or cards in its filter (`K8`, `KK`, `Ah7`) and click one, or
 press Enter for the first. On a flop, click a board card to change to another flop of the tree on the
 same line. EVs are as everywhere in the viewer a percentage of the pot at the node, and count from the

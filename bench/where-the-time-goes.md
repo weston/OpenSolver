@@ -968,6 +968,111 @@ are the same up to suits.
   question (#483).
 
 
+## Compact outcome tables, and tables for the turn all-ins when they fit (#496)
+
+Two of the ways #494 left for the tables to shrink, and the turn-level trade it left open. M4, 10
+threads, the tree of `tools/preflop.py` at 100 bb, 16-bit rows, every hand in both ranges. **The machine
+was not quiet for any of this** (load 8 to 14: a review's test runs next to it), so times are for
+comparing runs taken together, not figures to quote; memory does not depend on it.
+
+**The compact table.** When both players hold the same hands in the same order (a preflop tree with one
+range, the usual case) a table of `2 * wins + ties` is antisymmetric about the number of runouts the two
+hands leave: what one hand has over that number, the other has under it. So a set keeps, for the hands
+its cards leave (1,176 of 1,326 on a flop, 1,128 on a turn), each pair once, as the count minus that
+number: a triangle of signed 16-bit entries for a flop set, signed bytes for a turn set (48 runouts).
+One function values both players on it (`Solver::allin_tri_value`): a row of the triangle is the part of
+its own hand's sum under the diagonal and, negated, a column of the sums of the hands before it. Trees
+whose players hold different hands keep the full tables of #494, and postflop trees are untouched.
+
+| | full (#494) | compact |
+|---|---|---|
+| a flop's table | 3.52 MB | 1.38 MB |
+| a flop's 36 turn sets (the turns with an all-in in the scratch tree) | 63.30 MB | 22.96 MB |
+| `estimate_tree`, flop bets, 10 / 200 / all 1,755 flops | 38 / 770 / 6,763 | 18 / 364 / 3,194 |
+| no postflop bets | 33 / 670 / 5,886 | 13 / 264 / 2,317 |
+
+**One evaluation** (a scratch program on `Solver::showdown_value`, one flop, random reaches, best of 9
+rounds; microseconds a value, OOP / IP):
+
+| opponent hands without reach | flop set: compact | full | boards | turn set: compact | full | boards |
+|---|---|---|---|---|---|---|
+| 0 % | 93 / 89 | 110 / 89 | 929 / 904 | 83 / 82 | 111 / 105 | 99 / 97 |
+| 30 % | 87 / 84 | 110 / 69 | 881 / 953 | 74 / 73 | 111 / 78 | 103 / 104 |
+| 90 % | 59 / 58 | 110 / 18 | 763 / 654 | 52 / 52 | 113 / 18 | 86 / 92 |
+
+The full table's two sides differ (OOP takes a product per row whatever the reaches, IP adds a row per
+opponent hand with reach and skips the others); the compact one costs the same for both. Added over the two players it is the faster at every density
+here (flop: 182 against 199, 171 against 179, 117 against 128), and it is the slower one for IP when
+most hands have no reach (58 against 18). The three ways agree to 3e-6 of the largest value.
+
+**Solves at flop depth** (old = `ed7a32f`; whole command = build + `go N steps` + `calc_results`,
+maximum resident of `/usr/bin/time -l`; two runs each, taken in turn):
+
+| tree | old | new |
+|---|---|---|
+| 200 flops, flop bets, 60 steps | 21.8, 23.9 s; 840 MiB | 15.2, 17.5 s; 462, 466 MiB |
+| all 1,755 flops, flop bets, 5 steps | (7,037 MiB with 20 steps, #494) | 45 s; 3,455 MiB |
+
+1.4 times as fast, which is more than the single evaluations say; the smaller tables are the likely
+reason and that was not looked into. The build of the 200-flop tree alone: 4.0 s both ways (the fill is
+the same work), 335 MiB at its peak where it was 712. After 60 steps: EV -1.328 against -1.329, exploitable 1.266
+against 1.276 (the same sums in another order, as with #494).
+
+**Turn depth: which sets get a table.** With turn bets the smallest tree keeps boards (#494: tables for
+the turn sets are more bytes than the boards, and a flop's table then replaces nothing). The compact
+tables change the sizes, not that order. The four choices on the 10-flop tree, 20 steps, estimates
+802 MiB (boards) and 888 (tables at both levels):
+
+| tables for | whole command | maximum resident | built in (0 steps) |
+|---|---|---|---|
+| none (`small`; the old binary is the same: 62.1 s, 891 MiB) | 54.8, 46.9 s; later 62.2 | 890 MiB | 0.7 s |
+| the flop sets only | 51.9 s | 918 MiB | 0.9 s |
+| the turn sets only | 25.0 s | 1,159 MiB | 2.4 s |
+| both (`fast`) | 25.7, 22.5 s; later 29.1 (`auto`) | 1,004 MiB | 2.1 s |
+
+EV OOP -7.413 / -7.414 and exploitable 31.57 to 31.62 across them. So:
+
+- **the turn tables are the time**: twice as fast, with or without the flop's;
+- **flop tables alone buy nothing that shows** (51.9 s between two runs of none at 54.8 and 46.9), which
+  takes back #494's "5 % for 4 %" as a reason to have them on their own;
+- **turn tables without the flop's are the worst buy**: the boards all stay, for the flop sets, and the
+  tables come on top (1,159 MiB). With both levels no board is left and the tree is 11 % over the
+  smallest (888 for 802; 2,270 for 2,039 with 25 flops; 4,509 for 4,049 with 50).
+
+**To an accuracy with the tool** (`tools/preflop.py solve --depth turn --flops 25`, to its default
+0.5 bb/100; one run each, one after the other, the machine at load 20 for both, so the ratio is the
+figure and not the minutes): the old binary 1,567 s (8,925 s of processor time) and 2,193 MiB at its
+peak; the new one, under `auto`, 584 s (3,255 s) and 2,473 MiB. 2.7 times, to the same answer (small
+blind +0.067 bb a hand both, exploitable 0.47 and 0.48 bb/100). The steps were not counted, so how much
+of that is the time per step and how much a different number of steps is not known.
+
+**The rule** (`set_outcome_tables auto`, the default): tables at both levels if the tree with them
+fits in the memory available, by the margin `build_tree` already keeps for its other automatic storage
+choices (nine tenths of what is free); otherwise the smallest tree, as before. Nothing in between: the
+first version here fell back to "flop tables only, then turn tables only", which the table above gives
+no reason for, and it went. This is not the price #494 asked for (memory against time); it only spends
+memory that is there. `small` is the smallest tree whatever the memory, and what `estimate_tree` counts
+under `auto` too, so a tree can come out over its estimate when it has the room: by what the turn
+tables add, 86 MB for 10 flops at `--depth turn` whatever the sizes. That is 11 % with the tool's
+default sizes (888 for 802), 19 % with `--stack 20` (540 for 454), 23 % with `--no-limp` (463 for
+377), 46 % on the two flops of the test (51 for 35 MB), and nothing at `--depth flop`, the tool's
+default, where the smallest tree has the tables already. `fast` is tables whatever the memory. ICM keeps the boards as before.
+
+**Not done.**
+- Quiet-machine figures.
+- `auto` through the commands (`add_all_flops`, `load_tree`) is tested only where memory is plentiful:
+  nothing here can make a test machine short of it, so the limit itself is tested on `GameTree` alone
+  (to the byte).
+- The tool and the viewer choose a number of flops by `estimate_tree`, which under `auto` is the smallest
+  tree: with room on the machine a `--depth turn` tree is built over a `--memory` the user typed, by
+  the turn tables (11 % with the default sizes, more on a smaller tree, see above).
+- A compact table is filled as a full one and then folded, so the fill is no faster and holds the full
+  table of one set per thread while it runs. Still about a minute for all flops.
+- Trees with two different ranges keep the full tables. One table for turn cards that are the same up
+  to suits (#494's third way) is not here.
+- Under `auto`, `estimate_tree` says the smallest tree (under `fast`, the one with the tables); it does
+  not say what `auto` will build (`estimate_rebuild_tree` says what it did build).
+
 ## What a preflop strategy from N flops gives up on all flops, and what the depth costs (#497)
 
 The accuracy question of #483 in the solver's own unit. The tree of `tools/preflop.py` at 100 bb (the

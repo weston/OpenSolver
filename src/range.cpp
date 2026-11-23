@@ -200,6 +200,8 @@ std::string class_name(int hi, int lo, bool pair, SuitKind sk) {
 
 }  // namespace
 
+static bool parse_text(std::string_view text, RangeWeights& out, std::string& err);
+
 bool parse_range(std::string_view text, RangeWeights& out, std::string& err) {
   err.clear();
   out.fill(0.0f);
@@ -218,7 +220,11 @@ bool parse_range(std::string_view text, RangeWeights& out, std::string& err) {
       float dummy;
       if (!parse_float(t, dummy)) { all_float = false; break; }
     }
+    // One number alone is never a list of weights, and two digits can be a hand: "22", "98" are range
+    // text (#501). Anything else that is one number keeps the weights error.
+    if (all_float && tokens.size() == 1 && parse_text(text, out, err)) return true;
     if (all_float) {
+      out.fill(0.0f);
       if (tokens.size() != 1326) {
         err = "expected 1326 weights, got " + std::to_string(tokens.size());
         return false;
@@ -239,7 +245,11 @@ bool parse_range(std::string_view text, RangeWeights& out, std::string& err) {
     }
   }
 
-  // Form (b): PioSOLVER range text. Empty text is the empty (all-zero) range.
+  return parse_text(text, out, err);
+}
+
+// Form (b): PioSOLVER range text. Empty text is the empty (all-zero) range.
+static bool parse_text(std::string_view text, RangeWeights& out, std::string& err) {
   std::string_view txt = trim(text);
   if (txt.empty()) return true;
   for (size_t pos = 0;;) {

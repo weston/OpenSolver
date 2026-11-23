@@ -257,6 +257,10 @@ class Upi {
   std::string algorithm_ = "auto";
   std::string tree_alg_ = "auto";  // algorithm the current tree was built with
   std::string small_strats_ = "auto";
+  std::string outcome_tables_ = "auto";  // set_outcome_tables
+  // Hands a tree about to be built what set_outcome_tables says (GameTree::table_limit): `avail` the
+  // memory it may take, `compress` the storage it will most likely have.
+  void plan_outcome_tables(GameTree& t, uint64_t avail, bool compress) const;
   bool ignore_mem_check_ = false;
   int compression_precision_ = 11, compression_level_ = 11;
   int display_perm_ = IDENTITY_PERM;

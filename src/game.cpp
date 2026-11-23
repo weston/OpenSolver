@@ -264,6 +264,14 @@ uint64_t GameTree::showdown_board_bytes(uint64_t m) const {
   return live * sizeof(SdEntry) + sizeof(ShowdownBoard);
 }
 
+int GameTree::allin_live_hands(const AllinRunouts& ar) const {
+  uint64_t mask = 0;
+  for (uint8_t c : ar.cards) mask |= card_bit(c);
+  int n = 0;
+  for (uint16_t h : hands[0]) n += (combo_mask(h) & mask) == 0;
+  return n;
+}
+
 uint64_t GameTree::allin_boards_missing_bytes() const {
   std::vector<uint64_t> need;
   for (const AllinRunouts& ar : allins) {
@@ -311,9 +319,13 @@ void GameTree::plan_allins() {
   // (they are also the faster way to value a set). ICM values every runout on its board.
   const uint64_t cost[4] = {only[0] + only[1] + both, tab[0] + only[1] + both, tab[1] + only[0] + both, tab[0] + tab[1]};
   int best = 0;
-  if (!payoff_.icm.enabled)
+  if (!payoff_.icm.enabled) {
     for (int k = 1; k < 4; ++k)
       if (cost[k] <= cost[best]) best = k;
+    // nothing of the runouts is in the count yet: no set has a table, no board of theirs is built
+    if (table_limit && memory_bytes_for(limit_compress, limit_preds) + cost[3] <= table_limit) best = 3;
+    if (allin_plan >= 0) best = allin_plan & 3;
+  }
   for (AllinRunouts& ar : allins) {
     if (ar.exact) continue;
     ar.table = (best >> (ar.cards.size() == 4)) & 1;
@@ -613,6 +625,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
     same_hand[p].assign(hands[p].size(), -1);
     for (size_t h = 0; h < hands[p].size(); ++h) same_hand[p][h] = local[1 - p][hands[p][h]];
   }
+  same_hands = hands[0] == hands[1];
   // Symmetries that preserve the root board and both ranges.
   for (int pm = 0; pm < NUM_SUIT_PERMS; ++pm) {
     uint64_t img = 0;
@@ -831,6 +844,26 @@ void fill_allin_table(const GameTree& g, const AllinRunouts& ar, std::vector<E>&
     for (int k = 0; k < 2; ++k)
       for (uint16_t o : g.hands_with_card[1][g.hcard[0][k][h]]) e2[static_cast<size_t>(h) * H1 + o] = 0;
 }
+
+// A full table as filled above, made compact: AllinRunouts::tri8 / tri16.
+template <class E, class T>
+void compact_allin_table(const GameTree& g, AllinRunouts& ar, const std::vector<E>& e2, std::vector<T>& tri) {
+  const size_t H = static_cast<size_t>(g.num_hands(0));
+  uint64_t mask = 0;
+  for (uint8_t c : ar.cards) mask |= card_bit(c);
+  ar.live.clear();
+  for (size_t h = 0; h < H; ++h)
+    if (!(combo_mask(g.hands[0][h]) & mask)) ar.live.push_back(static_cast<uint16_t>(h));
+  const size_t n = ar.live.size();
+  tri.assign(n * (n - (n > 0)) / 2, 0);
+  T* t = tri.data();
+  for (size_t i = 1; i < n; ++i) {
+    const E* row = e2.data() + ar.live[i] * H;
+    const uint64_t mi = combo_mask(g.hands[0][ar.live[i]]);
+    for (size_t j = 0; j < i; ++j, ++t)
+      if (!(combo_mask(g.hands[0][ar.live[j]]) & mi)) *t = static_cast<T>(static_cast<int>(row[ar.live[j]]) - ar.valid);
+  }
+}
 }  // namespace
 
 void GameTree::build_allin_tables() {
@@ -840,7 +873,7 @@ void GameTree::build_allin_tables() {
   for (uint32_t i = 0; i < allins.size(); ++i) {
     if (!allins[i].table) continue;
     todo.push_back(i);
-    built |= !(allins[i].e2.empty() && allins[i].e2b.empty());
+    built |= allins[i].built();
   }
   if (todo.empty() || built) return;
   // Pairs sharing a card never meet: their counts stay 0, so a reach on them contributes nothing.
@@ -857,8 +890,14 @@ void GameTree::build_allin_tables() {
     AllinRunouts& ar = allins[todo[static_cast<size_t>(k)]];
     ar.valid = static_cast<int>(std::lround(1.0 / static_cast<double>(ar.scale)));
     const bool small = ar.runouts <= 127;  // 2 * 127 fits uint8
-    if (ar.boards.empty()) small ? fill_allin_table(*this, ar, ar.e2b) : fill_allin_table(*this, ar, ar.e2);
-    else small ? fill_allin_table(*this, ar, compat, ar.e2b) : fill_allin_table(*this, ar, compat, ar.e2);
+    std::vector<uint8_t> full8;  // a compact table is filled as a full one first, which then goes
+    std::vector<uint16_t> full16;
+    const bool tri = compact_tables();
+    std::vector<uint8_t>& t8 = tri ? full8 : ar.e2b;
+    std::vector<uint16_t>& t16 = tri ? full16 : ar.e2;
+    if (ar.boards.empty()) small ? fill_allin_table(*this, ar, t8) : fill_allin_table(*this, ar, t16);
+    else small ? fill_allin_table(*this, ar, compat, t8) : fill_allin_table(*this, ar, compat, t16);
+    if (tri) small ? compact_allin_table(*this, ar, full8, ar.tri8) : compact_allin_table(*this, ar, full16, ar.tri16);
   };
   pool().parallel_for(static_cast<int>(todo.size()), fn);
 }

@@ -597,6 +597,18 @@ std::string Upi::cmd_build_tree(const Args& a) {
   return build_from(c, mem_ignore, pessimistic, "build_tree ok!");
 }
 
+// The outcome tables of a preflop tree's runout sets (#494, #496) are the faster way to value them and,
+// with every hand, more bytes than the boards they replace. auto: built where the tree with them fits
+// in memory by the margin the other automatic choices of storage keep (build_from), the smallest tree
+// otherwise. A tree is not the same to the last bit with and without them: the same sums, in another
+// order.
+void Upi::plan_outcome_tables(GameTree& t, uint64_t avail, bool compress) const {
+  t.table_limit = outcome_tables_ == "auto" ? avail * 9 / 10 : 0;
+  t.limit_compress = compress;
+  t.limit_preds = predictive_;
+  t.allin_plan = outcome_tables_ == "fast" ? 3 : -1;
+}
+
 std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, const char* okmsg) {
   stop_solver();
   auto t = std::make_unique<GameTree>();
@@ -608,9 +620,10 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   pm.icm.enabled = false;
   t->set_payoff(pm);
   std::string err;
-  if (!t->build(c, err, false)) throw CmdError{err};
   // Old tree memory is released before allocating the new one, so count it as available.
   uint64_t avail = available_memory_bytes() + (tree_ ? tree_->memory_bytes() : 0);
+  plan_outcome_tables(*t, avail, small_strats_ != "off");  // a preflop tree's storage is 16-bit unless turned off
+  if (!t->build(c, err, false)) throw CmdError{err};
   uint64_t full = t->memory_bytes_for(false, predictive_), small = t->memory_bytes_for(true, predictive_);
   if (small_strats_ == "on" || small_strats_ == "compact") t->compressed = true;
   else if (small_strats_ == "off") t->compressed = false;
@@ -1286,6 +1299,13 @@ void Upi::register_commands() {
     small_strats_ = a[0];
     return std::string("small_strats ok!");
   };
+  // Not a Pio command (#496): the outcome tables of a preflop tree's runout sets. auto: where the tree
+  // with them fits in memory; small: the smallest tree, as estimate_tree counts it; fast: everywhere.
+  H["set_outcome_tables"] = [this](const Args& a) {
+    if (a.empty() || (a[0] != "auto" && a[0] != "small" && a[0] != "fast")) throw CmdError{"incorrect or missing argument"};
+    outcome_tables_ = a[0];
+    return std::string("set_outcome_tables ok!");
+  };
   H["estimate_schematic_tree"] = [this](const Args&) { return estimate_text(); };
   H["estimate_tree"] = [this](const Args&) {
     // Preflop tree with the current subset and schematic trees (or the pure preflop tree). Without a
@@ -1299,7 +1319,10 @@ void Upi::register_commands() {
     c.schematics = schematics_;
     c.subset = subset_;
     if (c.subset.empty()) c.schematics.clear();
+    // The smallest tree (what it needs: set_outcome_tables auto adds tables only to a tree with memory
+    // to spare), or the one with tables everywhere when that is asked for.
     GameTree t;
+    t.allin_plan = outcome_tables_ == "fast" ? 3 : -1;
     std::string err;
     if (!t.build(c, err, false)) throw CmdError{err};
     return "estimated tree size: " + std::to_string(t.memory_bytes_for(true, predictive_) >> 20) + " MB";

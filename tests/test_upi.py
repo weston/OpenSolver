@@ -712,6 +712,14 @@ def check_output_format(u):
     rng = u.cmd("show_range OOP")
     check("0.300000012 " in rng and rng.endswith(" ") and len(rng.split()) == 1326,
           "floats print as %.9g of the float32, like Pio (0.3 -> 0.300000012)")
+    # A pair of digits alone is a hand, not one of 1326 weights (#501).
+    said = u.cmd("set_range OOP 22")
+    rng = u.cmd("show_range OOP").split()
+    check(said == "set_range ok!" and len(rng) == 1326 and rng.count("1") == 6 and rng.count("0") == 1320,
+          "set_range 22: the six combos of deuces, not one weight")
+    check(u.cmd("set_range OOP 0.5") == "ERROR: set_range expected 1326 weights, got 1",
+          "set_range with one number that is no hand: still the weights error")
+    u.cmd("set_range OOP AA:0.3")
     for c in ("show_strategy_pp r:0", "calc_ev_pp OOP r:0", "calc_eq_pp OOP"):
         out = u.cmd(c)
         check(out.endswith("\n") and not out.endswith("\n\n"), f"{c.split()[0]} ends with one blank line, like Pio")
@@ -949,6 +957,98 @@ def check_collapse_checkdowns(u):
     check(p_on["mb"] < p_off["mb"], f"and the tree is smaller ({p_off['mb']} -> {p_on['mb']} MB)")
     check(near(p_off["start"], p_on["start"]) and near(p_off["after"], p_on["after"]) and near(p_off["ev"], p_on["ev"]) and
           any(x == x and x != 0 for x in p_on["ev"]), f"with the same values ({p_on['start']}, after an iteration {p_on['after']})")
+    u.cmd("set_collapse_checkdowns off")
+    u.cmd("reset_subset")
+    u.cmd("free_tree")
+
+
+def check_outcome_tables(u):
+    """set_outcome_tables (#496): the tables of a preflop tree's runout sets cost memory with wide ranges and
+    none with narrow ones, a solve has the same values with them and without, and the setting decides the
+    tree that is built and the tree a save is loaded into (read from the tree in memory: `estimate_tree`
+    builds one of its own)."""
+    print("[set_outcome_tables: outcome tables of a preflop tree's runouts]")
+    mb = lambda out: int(re.search(r"(\d+) MB", out).group(1))
+    results = lambda: [float(l.split(": ")[1]) for l in u.cmd("calc_results").split("\n")[:5]]
+    near = lambda a, b: len(a) == len(b) and all(abs(x - y) <= 0.0015 + 1e-5 * abs(x) for x, y in zip(a, b))
+    every = "22+,A2s+,K2s+,Q2s+,J2s+,T2s+,92s+,82s+,72s+,62s+,52s+,42s+,32s,A2o+,K2o+,Q2o+,J2o+,T2o+,92o+,82o+,72o+,62o+,52o+,42o+,32o"
+
+    def in_memory():  # (MB of the tree in memory, MB available)
+        m = re.search(r"Memory needed: (\d+) MB; available: (\d+) MB", u.cmd("estimate_rebuild_tree"))
+        return (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
+
+    def tree(mode, hands, steps=0, save=None):
+        u.cmd("free_tree")
+        check(u.cmd("set_outcome_tables " + mode) == "set_outcome_tables ok!", f"set_outcome_tables {mode} accepted")
+        for c in ("set_range OOP " + hands, "set_range IP " + hands, "set_pot 10 5 0", "set_eff_stack 1000",
+                  "set_collapse_checkdowns on", "clear_preflop_lines", "add_preflop_line 25 25", "add_preflop_line 1000 1000",
+                  "build_preflop_tree", "reset_subset", "add_to_subset 1 Qs 4h 2s", "add_to_subset 1 7s 7h 3d",
+                  "set_board Qs4h2s", "set_pot 25 25 0", "set_eff_stack 1000", "clear_lines",
+                  # bets on the flop and the turn: all-ins and check-downs from both streets
+                  "add_line 25 50 50 100", "add_line 25 25 50 1000", "add_line 25 1000", "add_schematic_tree r:0:b25:c"):
+            u.cmd(c)
+        r = {"mb": mb(u.cmd("estimate_tree"))}
+        if steps:
+            u.cmd("add_all_flops")
+            r["built"], r["free"] = in_memory()
+            u.cmd("set_accuracy 0")
+            u.cmd(f"go {steps} steps"); u.cmd("wait_for_solver")
+            r["after"] = results()
+            if save:
+                r["saved"] = u.cmd(f'dump_tree "{save}"')
+        return r
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "tables.cfr")
+        wide = {m: tree(m, every, 3, path if m == "fast" else None) for m in ("small", "fast", "auto")}
+        loaded = {}
+        for m in ("small", "fast", "auto"):
+            u.cmd("free_tree")
+            u.cmd("set_outcome_tables " + m)
+            said = u.cmd(f'load_tree "{path}" full')
+            loaded[m] = {"ok": said, "built": in_memory()[0], "free": in_memory()[1],
+                         "after": results() if said == "load_tree ok!" else []}
+    check(wide["small"]["built"] == wide["small"]["mb"] and wide["fast"]["built"] == wide["fast"]["mb"],
+          f"the tree in memory is the one asked for (small {wide['small']['built']} MB, fast {wide['fast']['built']} MB)")
+    # auto: the tree with tables where it fits in nine tenths of the memory available. Which that is
+    # depends on the machine, so the test says which only where there is no doubt (twice the room, or none).
+    room = wide["auto"]["free"] + wide["auto"]["built"]
+    if room >= 2 * wide["fast"]["mb"]:
+        check(wide["auto"]["built"] == wide["fast"]["mb"], f"auto with room ({room} MB) builds the tree with the tables ({wide['auto']['built']} MB)")
+    elif room * 9 // 10 < wide["small"]["mb"]:
+        check(wide["auto"]["built"] == wide["small"]["mb"], f"auto without room ({room} MB) builds the smallest tree")
+    else:
+        print(f"  (auto built {wide['auto']['built']} MB with {room} MB of room: too close to say which it had to be)")
+    check(wide["fast"]["saved"] == "dump_tree ok!" and loaded["small"]["ok"] == loaded["fast"]["ok"] == "load_tree ok!" and
+          loaded["small"]["built"] > 0 and
+          abs((loaded["fast"]["built"] - loaded["small"]["built"]) - (wide["fast"]["mb"] - wide["small"]["mb"])) <= 1,
+          f"a save is loaded into the tree the setting asks for (small {loaded['small']['built']} MB, fast {loaded['fast']['built']} MB: "
+          f"the tables' {wide['fast']['mb'] - wide['small']['mb']} MB apart)")
+    # a load under auto, by the same rule as the build above
+    room = loaded["auto"]["free"] + loaded["auto"]["built"]
+    if loaded["auto"]["ok"] != "load_tree ok!":
+        check(False, f"a save is loaded under auto ({loaded['auto']['ok']})")
+    elif room >= 2 * loaded["fast"]["built"]:
+        check(loaded["auto"]["built"] == loaded["fast"]["built"] > loaded["small"]["built"] and
+              near(loaded["auto"]["after"], loaded["fast"]["after"]),
+              f"auto with room ({room} MB) loads a save into the tree with the tables ({loaded['auto']['built']} MB)")
+    else:
+        print(f"  (auto loaded {loaded['auto']['built']} MB with {room} MB of room: too close to say which it had to be)")
+    check(len(loaded["small"]["after"]) == 5 and
+          near(loaded["small"]["after"], loaded["fast"]["after"]) and all(x == x for x in loaded["small"]["after"]) and
+          loaded["small"]["after"][2:] != [0.0, 0.0, 0.0],
+          f"and is worth the same either way ({loaded['small']['after']})")
+    check(wide["fast"]["mb"] > wide["small"]["mb"] == wide["auto"]["mb"],
+          f"every hand: the tables are more memory than the boards ({wide['small']['mb']} -> {wide['fast']['mb']} MB), "
+          f"and the estimate under auto is the smallest tree's")
+    check(near(wide["small"]["after"], wide["fast"]["after"]) and near(wide["small"]["after"], wide["auto"]["after"]) and
+          all(x == x for x in wide["fast"]["after"]) and wide["fast"]["after"][2:] != [0.0, 0.0, 0.0],
+          f"three iterations end at the same values with them, without and under auto ({wide['fast']['after']})")
+    narrow = {m: tree(m, "22+,A2s+,K9s+,QTs+,JTs,ATo+,KJo+") for m in ("small", "fast")}
+    check(narrow["fast"]["mb"] == narrow["small"]["mb"] > 0, f"narrow ranges: the smallest tree has them already ({narrow['small']['mb']} MB)")
+    check(u.cmd("set_outcome_tables on").startswith("ERROR") and u.cmd("set_outcome_tables").startswith("ERROR"),
+          "set_outcome_tables rejects a bad or missing argument")
+    u.cmd("set_outcome_tables auto")
     u.cmd("set_collapse_checkdowns off")
     u.cmd("reset_subset")
     u.cmd("free_tree")
@@ -2149,6 +2249,7 @@ def main(exe, big=False):
         check_calc_ev_zero_reach(u)
         check_union_hands(u)
         check_collapse_checkdowns(u)
+        check_outcome_tables(u)
         check_schematic_after_build(u)
         check_flop_subset_equity(u, exe)
         check_iso_symmetry(u)

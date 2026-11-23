@@ -203,6 +203,8 @@ class Solver {
   void river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br);
   template <class E>
   void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
+  template <class E>
+  void allin_tri_value(const AllinRunouts& ar, const E* tri, float W, float L, int p, const float* ro, float* out) const;
   // #186: Solver::river_cfr for river subtrees in the CFR walk. AVX-512, AVX2 and NEON builds batch the
   // kernels; elsewhere the two-phase walk is overhead (M4 before the NEON kernel: +2-3.5%), so it is
   // off by default there.

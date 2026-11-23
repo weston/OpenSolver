@@ -485,6 +485,157 @@ static bool allin_tables_match() {
   return bad == 0 && terminals > 0;
 }
 
+// #484: with collapse_checkdowns a subtree in which nobody has a choice left is one showdown node on the
+// runouts. It has to be worth what the one-action nodes were: every collapsed node is compared with the
+// subtree it replaces under random opponent reaches, the roots under the uniform start, and then both
+// trees are solved. The two solves do not follow the same path (a hand that wins the same pot by betting
+// into folds as by checking has a regret of exactly zero, and rounding then decides its next strategy),
+// so after solving they are compared through what the theory guarantees: each solve brackets the value
+// of the game between what its two best responses get, and the brackets of two solves of the same game
+// have to overlap. A tree without such a subtree must not change at all.
+static bool checkdowns_collapse() {
+  struct Spot {
+    const char* name;
+    const char* board;
+    bool iso;
+    std::vector<std::vector<int>> lines;
+  } spots[] = {
+      {"flop tree, flop bets only", "KhQs7d", true, {{0, 50, 150, 150}, {50, 150, 400}, {0, 0}}},
+      {"flop tree, no isomorphism", "Kh9h4h", false, {{0, 50, 150, 150}, {50, 50}, {0, 0}}},
+      {"flop tree, flop and turn bets", "KhQs7d", true, {{0, 50, 50, 50, 150, 400, 400}, {50, 150, 150, 250, 250}, {0, 0, 0, 100, 100}}},
+      {"turn tree, turn bets only", "KhQs7d4c", false, {{0, 50, 150, 150}, {50, 150, 400}, {0, 0}}},
+      {"river tree, IP can only check back", "KhQs7d4c2s", false, {{50, 150, 150}, {0, 0}}},
+      {"no bets at all", "KhQs7d", true, {{0, 0}}},
+  };
+  auto config = [](const Spot& sp, bool collapse, GameConfig& cfg) {
+    parse_cards(sp.board, cfg.board);
+    std::string err;
+    RangeWeights w;
+    if (!parse_range("AA,KK,QQ,JJ,TT,99,77,44,AK,AQ,AJ,KQ,KJ,QJ,JT,T9s,98s,87s,A5s,K5s", w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+    if (!parse_range("AA,KK,QQ,JJ,TT,88,77,55,AK,AQ,KQ,KT,QJ,QT,JT,J9s,T9s,65s,A4s", w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+    cfg.pot[2] = 100;
+    cfg.eff_stack = 400;
+    cfg.iso_flop = sp.iso;
+    cfg.lines.add = sp.lines;
+    cfg.collapse_checkdowns = collapse;
+    return true;
+  };
+  bool ok = true;
+  uint64_t rng = 0x13198a2e03707344ull;
+  auto unit = [&] {
+    rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+    return static_cast<float>(rng >> 40) / static_cast<float>(1 << 24);
+  };
+  for (const Spot& sp : spots) {
+    GameConfig c1, c2;
+    if (!config(sp, false, c1) || !config(sp, true, c2)) return false;
+    GameTree g1, g2;
+    std::string err;
+    if (!g1.build(c1, err) || !g2.build(c2, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+    const bool shape = g1.checkdowns == 0 && g2.checkdowns > 0 && g2.nodes.size() < g1.nodes.size() &&
+                       g2.storage_floats < g1.storage_floats;
+    Solver s1(g1), s2(g2);
+    // Node by node: the two trees are the same down to each collapsed node.
+    long compared = 0, bad = 0;
+    double worst = 0;
+    {
+      Solver w1(g1);
+      w1.parallel = false;
+      // (node in g1, node in g2, cards dealt on the way: no hand holding one of them reaches the node)
+      std::vector<std::tuple<uint32_t, uint32_t, std::vector<uint8_t>>> todo;
+      todo.push_back({0, 0, {}});
+      while (!todo.empty()) {
+        const auto [i1, i2, dealt] = todo.back();
+        todo.pop_back();
+        const GNode& n1 = g1.nodes[i1];
+        const GNode& n2 = g2.nodes[i2];
+        if (n1.kind == n2.kind) {
+          if (n1.kind != ANodeKind::Decision && n1.kind != ANodeKind::Chance) continue;
+          if (n1.num_children != n2.num_children) { ++bad; continue; }
+          for (uint32_t k = 0; k < n1.num_children; ++k) {
+            std::vector<uint8_t> d = dealt;
+            if (n1.kind == ANodeKind::Chance) d.push_back(g1.chances[n1.aux].cards[k]);
+            todo.push_back({n1.first_child + k, n2.first_child + k, d});
+          }
+          continue;
+        }
+        if (n2.kind != ANodeKind::Showdown) { ++bad; continue; }
+        for (int p = 0; p < 2; ++p) {
+          const int Hp = g1.num_hands(p), Ho = g1.num_hands(1 - p);
+          std::vector<float> rp(Hp, 1.0f), ro(Ho), x(Hp), y(Hp);
+          for (float& v : ro) v = unit() < 0.3f ? 0.0f : unit();
+          for (uint8_t c : dealt)
+            for (uint16_t h : g1.hands_with_card[1 - p][c]) ro[h] = 0.0f;
+          w1.walk(Walk::Evaluate, i1, p, rp.data(), ro.data(), x.data());
+          s2.showdown_value(n2, p, ro.data(), y.data());
+          std::vector<char> live(Hp, 1);  // the same for the player's own hands: their values are not read
+          for (uint8_t c : dealt)
+            for (uint16_t h : g1.hands_with_card[p][c]) live[h] = 0;
+          double mag = 0;
+          for (int h = 0; h < Hp; ++h)
+            if (live[h]) mag = std::max(mag, std::fabs(static_cast<double>(x[h])));
+          for (int h = 0; h < Hp; ++h) {
+            if (!live[h]) continue;
+            const double d = std::fabs(static_cast<double>(x[h]) - y[h]) / (1.0 + mag);
+            worst = std::max(worst, d);
+            if (d > 2e-5) ++bad;  // float32 sums in two orders, as in allin_tables_match
+          }
+          ++compared;
+        }
+      }
+    }
+    // pot 100: 1e-3 chips is 1e-5 of the pot
+    const RootStats a0 = s1.root_stats(), b0 = s2.root_stats();
+    double d0 = std::fabs(a0.exploitability - b0.exploitability);
+    for (int p = 0; p < 2; ++p) d0 = std::max({d0, std::fabs(a0.ev[p] - b0.ev[p]), std::fabs(a0.mes[p] - b0.mes[p])});
+    for (int t = 1; t <= 60; ++t) {
+      s1.iterate(t);
+      s2.iterate(t);
+    }
+    // OOP's value of the game is at most what OOP's best response gets and at least the pot minus what
+    // IP's best response gets, for either solve.
+    const RootStats a = s1.root_stats(), b = s2.root_stats();
+    const double pot = a.ev[0] + a.ev[1];
+    const double lo = std::max(pot - a.mes[1], pot - b.mes[1]), hi = std::min(a.mes[0], b.mes[0]);
+    const bool good = shape && compared > 0 && bad == 0 && d0 <= 1e-3 && lo <= hi + 1e-3;
+    ok &= good;
+    std::printf("[checkdowns] %s: nodes %zu -> %zu, rows %llu -> %llu floats, %ld collapsed node/player pairs worst "
+                "relative difference %.2e, roots differ by %.1e at the start, value of the game in [%.4f, %.4f] and "
+                "[%.4f, %.4f] after 60 iterations: %s\n",
+                sp.name, g1.nodes.size(), g2.nodes.size(), static_cast<unsigned long long>(g1.storage_floats),
+                static_cast<unsigned long long>(g2.storage_floats), compared, worst, d0, pot - a.mes[1], a.mes[0],
+                pot - b.mes[1], b.mes[0], good ? "ok" : "FAILED");
+    if (!good) std::printf("  shape %d, bad %ld\n", shape, bad);
+  }
+  // Every decision down to the river showdowns has two actions or more here: nothing to collapse, and
+  // nothing may change.
+  {
+    Spot sp{"", "KhQs7d4c", false,
+            {{0, 0, 0, 0}, {0, 0, 50, 50}, {0, 0, 0, 50, 50},
+             {50, 50, 50, 50}, {50, 50, 150, 150}, {50, 50, 50, 150, 150},
+             {0, 50, 50, 50, 50}, {0, 50, 50, 150, 150}, {0, 50, 50, 50, 150, 150}}};
+    GameConfig c1, c2;
+    if (!config(sp, false, c1) || !config(sp, true, c2)) return false;
+    GameTree g1, g2;
+    std::string err;
+    if (!g1.build(c1, err) || !g2.build(c2, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+    Solver s1(g1), s2(g2);
+    for (int t = 1; t <= 30; ++t) {
+      s1.iterate(t);
+      s2.iterate(t);
+    }
+    const bool same = g2.checkdowns == 0 && g1.nodes.size() == g2.nodes.size() && g1.regrets == g2.regrets &&
+                      g1.strat == g2.strat && !g1.regrets.empty();
+    ok &= same;
+    std::printf("[checkdowns] a tree without one is untouched (%zu nodes, %llu collapsed, regrets and sums after 30 "
+                "iterations): %s\n",
+                g1.nodes.size(), static_cast<unsigned long long>(g2.checkdowns), same ? "identical" : "DIFFER");
+  }
+  return ok;
+}
+
 // #186: the two-phase river walk (river_cfr) must reproduce walk_t exactly: same regrets and
 // strategy sums, bit for bit, after many iterations with pruning, fold pairing, the opponent's fused
 // fold and all-in tables in play. Forced on here so scalar builds test the walk logic too.
@@ -597,6 +748,7 @@ int main(int argc, char** argv) {
   fails += !stochastic_sums();
   fails += !allin_tables_match();
   fails += !river_batch_matches();
+  fails += !checkdowns_collapse();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

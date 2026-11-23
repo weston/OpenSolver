@@ -1043,6 +1043,14 @@ void Upi::register_commands() {
     cfg_.union_hands = a[0] == "on";
     return std::string("set_union_hands ok!");
   };
+  // Not a Pio command (#484). A tree that stops betting before the river (a preflop tree with flop-only
+  // postflop play, say) is mostly check-downs: with this on each is one showdown node on the runouts
+  // instead of one-action nodes for every turn and river card. Set before building.
+  H["set_collapse_checkdowns"] = [this](const Args& a) {
+    if (a.empty() || (a[0] != "on" && a[0] != "off")) throw CmdError{"incorrect or missing argument"};
+    cfg_.collapse_checkdowns = pf_cfg_.collapse_checkdowns = a[0] == "on";
+    return std::string("set_collapse_checkdowns ok!");
+  };
   H["change_step"] = [this](const Args& a) {
     step_ = arg_double(a, 0, "step");
     return std::string("change_step ok!");

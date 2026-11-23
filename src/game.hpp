@@ -97,6 +97,11 @@ struct GameConfig {
   // of being filtered out. They enter with reach 0, so the equilibrium is unaffected; the
   // cost is wider vectors. Off by default: see set_union_hands.
   bool union_hands = false;
+  // Build a subtree in which nobody has a choice left (every decision has one action: the checks down
+  // to a showdown) as one showdown node on the runouts, like an all-in: the same values, without the
+  // nodes and the regret and strategy rows of the checks. Off by default (Pio keeps the nodes, and so
+  // do we: they can be browsed, e.g. per turn card); see set_collapse_checkdowns.
+  bool collapse_checkdowns = false;
   LineSet lines;
   int32_t start_pot() const { return pot[0] + pot[1] + pot[2]; }
   bool full_preflop() const { return preflop && !schematics.empty(); }
@@ -265,6 +270,7 @@ class GameTree {
   std::vector<float> rscale, sscale;
   uint64_t storage_floats = 0;
   uint64_t num_decisions = 0;
+  uint64_t checkdowns = 0;  // subtrees without a decision that the build made one showdown node (cfg.collapse_checkdowns)
   // Compact 16-bit rows (#239). At a river decision node, a hand holding a card dealt after the root board
   // can't occur: its reach is 0, and its regrets and strategy sums stay exactly 0 (measured on every river
   // node of flop trees, float32 and 16-bit; not so at turn nodes, which stay full). The 16-bit arrays keep

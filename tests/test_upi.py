@@ -796,6 +796,141 @@ def check_threads_auto(u):
     u.cmd("set_threads 0")
 
 
+def check_collapse_checkdowns(u):
+    """set_collapse_checkdowns (#484): a subtree without a decision is one END_NODE on the runouts, worth the same."""
+    print("[set_collapse_checkdowns: check-downs as one showdown node]")
+    setup = [
+        "set_range OOP AA:0.5,KK,QQ:0.25,JJ,TT,99,AK:0.75,AQ,AJ,KQ,KJ,QJ,JT,T9",
+        "set_range IP AA,KK,QQ,JJ,TT,99,88,AK,AQ:0.5,KQ,QJ,JT",
+        "set_board Kh9h4h",
+        "set_pot 0 0 60",
+        "set_eff_stack 200",
+        "clear_lines ",
+        "add_line 20 60 200",  # bets on the flop only: every line that sees a turn is checked down from there
+        "add_line 0 20 60",
+        "add_line 0 0",
+    ]
+    mb = lambda out: int(re.search(r"(\d+) MB", out).group(1))
+    results = lambda: [float(l.split(": ")[1]) for l in u.cmd("calc_results").split("\n")[:5]]
+
+    def solve(collapse, td):
+        u.cmd("free_tree")
+        for c in setup:
+            u.cmd(c)
+        check(u.cmd("set_collapse_checkdowns " + ("on" if collapse else "off")) == "set_collapse_checkdowns ok!",
+              f"set_collapse_checkdowns {'on' if collapse else 'off'} accepted")
+        r = {"estimate": u.cmd("estimate_schematic_tree")}
+        u.cmd("build_tree")
+        r["built_mb"] = mb(u.cmd("estimate_tree"))
+        r["node"] = u.cmd("show_node r:0:c:c").split("\n")
+        r["children"] = u.cmd("show_children r:0:c:c")
+        r["start"] = results()
+        u.cmd("set_accuracy 0")
+        # One iteration: the strategies are still the same in both trees, so the node's EVs can be compared.
+        u.cmd("go 1 steps"); u.cmd("wait_for_solver")
+        r["ev"] = [floats(l) for l in u.cmd("calc_ev OOP r:0:c:c").split("\n")[:2]]
+        r["ev_ip"] = [floats(l) for l in u.cmd("calc_ev IP r:0:b20:c").split("\n")[:2]]
+        u.cmd("go 150 steps"); u.cmd("wait_for_solver")
+        r["end"] = results()
+        r["turn"] = u.cmd("show_strategy r:0:c:c:2c")
+        r["lock"] = u.cmd("lock_node r:0:c:c")
+        r["all"] = u.cmd("calc_results")
+        r["root"] = u.cmd("show_strategy r:0")
+        r["path"] = os.path.join(td, f"checkdown{int(collapse)}.cfr")
+        check(u.cmd(f'dump_tree "{r["path"]}" lossless') == "dump_tree ok!", "dump_tree")
+        r["version"] = u.cmd(f'show_save_version "{r["path"]}"').split("\n")[0]
+        return r
+
+    with tempfile.TemporaryDirectory() as td:
+        off, on = solve(False, td), solve(True, td)
+        check(u.cmd("set_collapse_checkdowns maybe").startswith("ERROR") and u.cmd("set_collapse_checkdowns").startswith("ERROR"),
+              "set_collapse_checkdowns rejects a bad or missing argument")
+        check(off["node"][1] == "SPLIT_NODE" and off["node"][4] == "49 children" and "r:0:c:c:2c" in off["children"],
+              "off (the default): the checked-down flop deals its 49 turns, as in Pio")
+        check(on["node"][1] == "END_NODE" and on["node"][4] == "0 children" and on["node"][2:4] == off["node"][2:4],
+              f"on: it is one END_NODE with the same board and pot ({on['node'][1:5]})")
+        check(not off["turn"].startswith("ERROR") and on["turn"].startswith("ERROR") and on["lock"].startswith("ERROR"),
+              "on: the nodes inside the check-down do not exist (show_strategy on a turn, lock_node on the END_NODE)")
+        check(mb(on["estimate"]) < mb(off["estimate"]) and on["built_mb"] < off["built_mb"],
+              f"the estimate and the built tree are smaller ({off['built_mb']} -> {on['built_mb']} MB)")
+        # Printed to 3 decimals; float32 sums in two orders differ by about 1e-6 of the value.
+        near = lambda a, b: len(a) == len(b) and all(x == y or abs(x - y) <= 0.0015 + 1e-5 * abs(x) or (x != x and y != y) for x, y in zip(a, b))
+        check(near(off["start"], on["start"]), f"same EVs and best responses under the starting strategies ({on['start']})")
+        check(any(x == x for x in on["ev"][0]) and near(off["ev"][0], on["ev"][0]) and near(off["ev"][1], on["ev"][1]),
+              "calc_ev at the collapsed node: the same EVs and matchups as the subtree it replaces")
+        check(near(off["ev_ip"][0], on["ev_ip"][0]), "and after a bet and a call, for IP")
+        # Solved separately the two can differ within their accuracy (a hand with a regret of exactly zero goes
+        # where rounding sends it); each solve brackets OOP's value of the game between pot - IP's best
+        # response and OOP's best response, and two solves of the same game have to overlap.
+        pot = 60
+        lo, hi = max(pot - off["end"][3], pot - on["end"][3]), min(off["end"][2], on["end"][2])
+        check(lo <= hi + 0.002 and on["end"][4] < 0.05 and off["end"][4] < 0.05,
+              f"both solves agree on the value of the game (OOP {off['end'][0]} / {on['end'][0]}, "
+              f"exploitable for {off['end'][4]} / {on['end'][4]})")
+        # Saves: version 6 marks a collapsed tree (an older binary refuses it instead of misreading it); a
+        # tree without one stays the version 5 everyone reads. The save carries the setting, like union_hands.
+        check(off["version"] == "5" and on["version"] == "6", f"save versions: 5 without, 6 with a collapsed tree ({off['version']}, {on['version']})")
+        u.cmd("set_collapse_checkdowns off")
+        check(u.cmd(f'load_tree "{on["path"]}"') == "load_tree ok!", "a collapsed save loads with the session's setting off")
+        check(u.cmd("show_node r:0:c:c").split("\n")[1] == "END_NODE" and u.cmd("calc_results") == on["all"] and
+              u.cmd("show_strategy r:0") == on["root"], "and is the same tree: END_NODE, identical results and strategy")
+        check(u.cmd(f'load_tree "{off["path"]}"') == "load_tree ok!" and u.cmd("show_node r:0:c:c").split("\n")[1] == "SPLIT_NODE" and
+              u.cmd("calc_results") == off["all"], "the plain save loads as before")
+        # Nothing to collapse: the setting changes nothing, the save included.
+        u.cmd("free_tree")
+        river = ["set_board Kh9h4h2c7d", "clear_lines", "add_line 20 60 200", "add_line 0 20 60", "add_line 0 0"]
+        outs = []
+        for flag in ("off", "on"):
+            for c in river:
+                u.cmd(c)
+            u.cmd("set_collapse_checkdowns " + flag)
+            u.cmd("build_tree")
+            u.cmd("go 50 steps"); u.cmd("wait_for_solver")
+            path = os.path.join(td, f"river_{flag}.cfr")
+            u.cmd(f'dump_tree "{path}" lossless')
+            outs.append((u.cmd("calc_results"), u.cmd("show_strategy r:0"), u.cmd("show_tree_info"), u.cmd(f'show_save_version "{path}"')))
+        check(outs[0] == outs[1] and outs[1][3].split("\n")[0] == "5",
+              "a tree without a check-down is identical with the setting on, and its save stays version 5")
+
+    # Preflop: the flops under an exit whose schematic has no bets (or bets on the flop only) are where the
+    # memory goes; collapsed, each is one node (or a few).
+    def preflop(collapse):
+        u.cmd("free_tree")
+        for c in ("set_range OOP 22+,A2s+,K9s+,ATo+,KJo+", "set_range IP 22+,A2s+,K5s+,A2o+,K9o+", "set_pot 10 5 0",
+                  "set_eff_stack 1000", "set_collapse_checkdowns " + ("on" if collapse else "off"), "clear_preflop_lines",
+                  "add_preflop_line 25 25", "add_preflop_line 25 100 100", "add_preflop_line 10 10"):
+            u.cmd(c)
+        u.cmd("build_preflop_tree")
+        u.cmd("reset_subset")
+        u.cmd("add_to_subset 1 As Ks Qs")
+        u.cmd("add_to_subset 2 9h 6d 2c")
+        for c in ("set_board AsKsQs", "set_pot 25 25 0", "set_eff_stack 1000", "clear_lines", "add_line 25 50 50", "add_line 50 125"):
+            u.cmd(c)
+        u.cmd("add_schematic_tree r:0:b25:c")  # flop bets, then checked down
+        for c in ("set_pot 100 100 0", "set_eff_stack 1000", "clear_lines", "add_line 100 100"):
+            u.cmd(c)
+        u.cmd("add_schematic_tree r:0:b25:b100:c")  # no postflop bets at all
+        u.cmd("add_all_flops")
+        r = {"mb": mb(u.cmd("estimate_tree")), "start": results(),
+             "flop": u.cmd("show_node r:0:b25:b100:c:AsKsQs").split("\n")[1],
+             "turn": u.cmd("show_node r:0:b25:c:AsKsQs:c:c").split("\n")[1]}
+        u.cmd("set_accuracy 0")
+        u.cmd("go 1 steps"); u.cmd("wait_for_solver")
+        r["ev"] = floats(u.cmd("calc_ev OOP r:0:b25:c:9h6d2c:c:c").split("\n")[0])
+        r["after"] = results()
+        return r
+
+    p_off, p_on = preflop(False), preflop(True)
+    check((p_off["flop"], p_off["turn"]) == ("OOP_DEC", "SPLIT_NODE") and (p_on["flop"], p_on["turn"]) == ("END_NODE", "END_NODE"),
+          f"preflop tree: a flop without bets and a checked flop are END_NODEs ({p_on['flop']}, {p_on['turn']})")
+    check(p_on["mb"] < p_off["mb"], f"and the tree is smaller ({p_off['mb']} -> {p_on['mb']} MB)")
+    check(near(p_off["start"], p_on["start"]) and near(p_off["after"], p_on["after"]) and near(p_off["ev"], p_on["ev"]) and
+          any(x == x and x != 0 for x in p_on["ev"]), f"with the same values ({p_on['start']}, after an iteration {p_on['after']})")
+    u.cmd("set_collapse_checkdowns off")
+    u.cmd("reset_subset")
+    u.cmd("free_tree")
+
+
 def check_schematic_after_build(u):
     """#306: Pio's preflop workflow builds each schematic before attaching it (set_board, set_pot, set_eff_stack,
     lines, build_tree, add_schematic_tree), so the tree in memory is the postflop one by then. The exit is
@@ -1937,6 +2072,7 @@ def main(exe, big=False):
 
         check_calc_ev_zero_reach(u)
         check_union_hands(u)
+        check_collapse_checkdowns(u)
         check_schematic_after_build(u)
         check_iso_symmetry(u)
         check_threads_auto(u)

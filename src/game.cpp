@@ -579,7 +579,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   nodes.reserve(1024);
   nodes.resize(1);
   std::vector<int> board = cfg.board;
-  Filler f{*this, iso, {}};
+  Filler f{*this, iso, {}, {}, {}};
   f.fill(0, aroot.get(), board);
   select_rows(false);
   if (allocate) allocate_storage();

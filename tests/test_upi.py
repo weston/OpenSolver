@@ -876,6 +876,29 @@ def check_collapse_checkdowns(u):
               u.cmd("show_strategy r:0") == on["root"], "and is the same tree: END_NODE, identical results and strategy")
         check(u.cmd(f'load_tree "{off["path"]}"') == "load_tree ok!" and u.cmd("show_node r:0:c:c").split("\n")[1] == "SPLIT_NODE" and
               u.cmd("calc_results") == off["all"], "the plain save loads as before")
+        # load_tree replaces the configuration, this setting included: what is built next follows the file.
+        u.cmd("set_collapse_checkdowns on")
+        u.cmd(f'load_tree "{off["path"]}"')
+        u.cmd("build_tree")
+        after_plain = u.cmd("show_node r:0:c:c").split("\n")[1]
+        u.cmd(f'load_tree "{on["path"]}"')
+        u.cmd("build_tree")
+        check(after_plain == "SPLIT_NODE" and u.cmd("show_node r:0:c:c").split("\n")[1] == "END_NODE",
+              "load_tree sets the setting from the file: a tree built after a plain save is plain, after a collapsed one collapsed")
+        # eliminate_path refuses a check that closes the round and takes one that does not; which it is
+        # comes from the action tree, so a check answered by a forced check is taken in both trees.
+        answers = []
+        for flag in ("off", "on"):
+            u.cmd("free_tree")
+            for c in setup[:5] + ["clear_lines", "add_line 30 30 90", "add_line 0 30", "add_line 30 90", "add_line 0 0 0 60",
+                                  "set_collapse_checkdowns " + flag, "build_tree"]:
+                u.cmd(c)
+            u.cmd("go 5 steps"); u.cmd("wait_for_solver")
+            answers.append((u.cmd("show_node r:0:b30:c:2c:c").split("\n")[1], u.cmd("eliminate_path r:0:b30:c:2c:c"),
+                            u.cmd("eliminate_path r:0:c:c")))
+        check(answers[0][0] == "IP_DEC" and answers[1][0] == "END_NODE" and answers[0][1:] == answers[1][1:] and
+              answers[0][1] == "eliminate_path ok!" and answers[0][2].startswith("ERROR"),
+              f"eliminate_path answers the same in a collapsed tree ({answers[1][1:]})")
         # Nothing to collapse: the setting changes nothing, the save included.
         u.cmd("free_tree")
         river = ["set_board Kh9h4h2c7d", "clear_lines", "add_line 20 60 200", "add_line 0 20 60", "add_line 0 0"]

@@ -341,10 +341,13 @@ def flop_path(count: int) -> str:
     return os.path.join(ROOT, "flops", f"wsolver_{count}.txt")
 
 
+ALL_FLOPS = "all 1,755 flops"
+
+
 def choose_flops(spec: str) -> tuple[str, list[tuple[str, float]]]:
     """`--flops`: a number of flops we ship a file for, `all`, or a flop file. (name, flops)."""
     if spec == "all":
-        return "all 1,755 flops", all_flops()
+        return ALL_FLOPS, all_flops()
     if spec.isdigit():
         path = flop_path(int(spec))
         if not os.path.exists(path):
@@ -712,6 +715,9 @@ def _f2(x: float) -> str:
     return f"{x:.2f}" if _shows(x) else "0.00"  # not -0.00
 
 
+OTHER_VERSION = "{name} is a version {version} result: this `preflop.py` reads version 1"
+
+
 def _fits(name: str, result: dict, s: Settings, decisions: list[Node]) -> list[str]:
     """A result can be checked on a tree with its preflop game: the same stack, sizes and decisions. The
     flops and the postflop tree are the check's own; returns the postflop settings that are not the
@@ -725,7 +731,7 @@ def _fits(name: str, result: dict, s: Settings, decisions: list[Node]) -> list[s
         if type(version) is not int:  # not true, not 1.0
             raise TypeError
         if version != 1:
-            raise PreflopError(f"{name} is a version {version} result: this `preflop.py` reads version 1")
+            raise PreflopError(OTHER_VERSION.format(name=name, version=version))
         ok = (all(_same(said(its, k), said(mine, k)) for k in PREFLOP_SETTINGS)
               and result["chips_per_bb"] == s.chips
               and [(n["id"], n["actions"]) for n in result["nodes"]]
@@ -916,7 +922,8 @@ def _value(r: dict[str, float], who: str, chips: int) -> list[float]:
     value is no more than the player's best response makes against the opponent as solved, and no less
     than what the opponent's best response leaves; the two meet as the solve gets exact. (What the
     opponent's best response leaves is the two EVs' sum less the opponent's best: exact where the game is
-    zero-sum, which it is on all flops; on a subset the sum moves a little with the strategies.)"""
+    zero-sum, which it is on all flops without an ante; on a subset, and a little with an ante (#505), the
+    sum moves with the strategies.)"""
     try:
         total = r["EV OOP"] + r["EV IP"]
         mine, theirs, ev = (("IP's MES", "OOP's MES", "EV IP") if who == SB else ("OOP's MES", "IP's MES", "EV OOP"))
@@ -934,7 +941,8 @@ def _lost(base: list[float], locked: list[float]) -> list[float]:
 
 def _sum(r: dict[str, float], s: Settings) -> float:
     """The two players' values added up, less the ante they play for, bb/100: zero in a game whose flops
-    are dealt evenly to the two."""
+    are dealt evenly to the two (on all flops; with an ante the solver's values are about 0.03 % of it
+    short there, #505)."""
     return (r.get("EV OOP", 0.0) + r.get("EV IP", 0.0) - _chips(s.ante, s.chips)) / s.chips * 100
 
 
@@ -1063,13 +1071,13 @@ def check_text(report: dict) -> list[str]:
                 "for a class: the loss includes what playing them alike costs, which can be much."]
     sums = [report["sum_bb100"]] + [r[who]["sum_bb100"] for r in report["checked"] for who in (SB, BB)]
     if any(_shows(x) for x in sums):
-        try:
-            ante = Decimal(str(report["settings"].get("ante_bb") or 0)) > 0
-        except ArithmeticError:
-            ante = False
+        ante = Decimal(str(report["settings"].get("ante_bb") or 0)) > 0   # `describe` wrote it
+        why = ("a flop subset is not dealt quite evenly to the two" if report["flops"] != ALL_FLOPS
+               else "with an ante the solver's two values come out a little short of it, on all flops too" if ante
+               else "the solver's own figures are that far from exact")
         notes += [f"The two players' values{', less the ante,' if ante else ''} added up to {_f2(min(sums))} to "
                 f"{_f2(max(sums))} bb/100 in these solves, "
-                "not to zero: a flop subset is not dealt quite evenly to the two. Where that sum moves with the "
+                f"not to zero: {why}. Where that sum moves with the "
                 f"strategies ({max(sums) - min(sums):.2f} here) the losses and the ends of their spans are that "
                 "uncertain, and a loss can come out under zero."]
     return out + [line for note in notes for line in [""] + textwrap.wrap(note, 100)]
@@ -1087,12 +1095,23 @@ def describe(s: Settings) -> dict:
 
 # ---- charts ---------------------------------------------------------------------------------------
 
+def _percent(value) -> float:
+    """A frequency as a percent. What is no number, or is none as a percent (`10**400`, `1e308`, NaN), is
+    no frequency of a result."""
+    if type(value) not in (int, float):
+        raise TypeError
+    pct = 100 * float(value)
+    if not math.isfinite(pct):
+        raise ValueError
+    return pct
+
+
 def _cell(value: float | None) -> str:
     """A frequency in two characters: blank for a hand that never gets here, `.` for never, `**` for
     always, otherwise the percent."""
     if value is None:
         return "  "
-    pct = int(round(100 * value))
+    pct = int(round(_percent(value)))
     return " ." if pct <= 0 else "**" if pct >= 100 else f"{pct:2d}"
 
 
@@ -1108,14 +1127,14 @@ def grid(title: str, value, cell: int = 2) -> list[str]:
 def chart_node(node: dict, width: int, ev: bool = False) -> list[str]:
     hands = node["hands"]
     head = f"{node['id']}   {' / '.join(node['line']) or 'first to act'}   ->  {node['actor']} to act"
-    freqs = ", ".join(f"{a} {100 * f:.1f} %" for a, f in zip(node["actions"], node["freq"]))
-    out = [head, f"  {100 * node['reach']:.1f} % of deals get here; then {freqs}", ""]
+    freqs = ", ".join(f"{a} {_percent(f):.1f} %" for a, f in zip(node["actions"], node["freq"]))
+    out = [head, f"  {_percent(node['reach']):.1f} % of deals get here; then {freqs}", ""]
     grids = []
     for a, label in enumerate(node["actions"]):
         def value(cls, a=a):
             h = hands.get(cls)
             return _cell(None if h is None or h["ev_bb"] is None else h["freq"][a])
-        grids.append(grid(f"{label} ({100 * node['freq'][a]:.1f} %)", value))
+        grids.append(grid(f"{label} ({_percent(node['freq'][a]):.1f} %)", value))
     if ev:
         def value(cls):
             h = hands.get(cls)
@@ -1324,8 +1343,9 @@ def parser() -> argparse.ArgumentParser:
                    "(default: half of this machine's; the solver process takes about 1.1 times the estimate)")
     g.add_argument("--limit", type=float, help="estimate: stop a row once a cell is over this many GB")
     g.add_argument("--accuracy", type=float, help="solve until exploitable for less than this many big blinds "
-                   f"per 100 hands (default {SOLVE_ACCURACY:g}; check: {CHECK_ACCURACY:g}, the losses it "
-                   "prints are known to about four times this)")
+                   f"per 100 hands (default {SOLVE_ACCURACY:g}; check: {CHECK_ACCURACY:g}; with full ranges the "
+                   "losses it prints are known to about four times this, in a game of a few hands they can "
+                   "move by much more)")
     g.add_argument("--time", type=int, default=86400, help="solve for at most this many seconds (default a day)")
     g.add_argument("--threads", type=int)
     g.add_argument("--save-tree", metavar="FILE", help="solve: also save the solved tree (dump_tree, no rivers)")
@@ -1347,6 +1367,15 @@ def _can_write(path: str, what: str, for_solver: bool = False) -> None:
         raise PreflopError(f"{what}: cannot write {path}")
 
 
+def read_result(path: str) -> object:
+    """A result file as JSON. A string that cannot be written out again (a lone surrogate escape) is
+    refused here, in words, and not where it would be printed."""
+    with open(path) as f:
+        result = json.load(f)
+    json.dumps(result, ensure_ascii=False).encode("utf-8")  # UnicodeEncodeError is a ValueError
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parser().parse_intermixed_args(argv)
     try:
@@ -1359,13 +1388,14 @@ def main(argv: list[str] | None = None) -> int:
                                "(options are separate words: --stack 20, not \"--stack 20\")")
         if a.command == "chart":
             try:
-                with open(a.args[0]) as f:
-                    result = json.load(f)
+                result = read_result(a.args[0])
             except (OSError, ValueError, RecursionError) as e:
                 raise PreflopError(f"cannot read the result: {e}")
             try:
-                if not isinstance(result, dict) or type(result.get("version")) is not int or result["version"] != 1:
+                if not isinstance(result, dict) or type(result.get("version")) is not int:
                     raise KeyError("version")
+                if result["version"] != 1:
+                    raise PreflopError(OTHER_VERSION.format(name=a.args[0], version=result["version"]))
                 text = charts(result, a.args[1:], a.width, a.ev)
             except (KeyError, TypeError, IndexError, AttributeError, ValueError, ArithmeticError):  # a number no float holds
                 raise PreflopError(f"{a.args[0]} is not a result of `preflop.py solve`")
@@ -1387,12 +1417,14 @@ def main(argv: list[str] | None = None) -> int:
         if a.command == "check":
             for path in a.args:
                 try:
-                    with open(path) as f:
-                        results.append((path, json.load(f)))
+                    results.append((path, read_result(path)))
                 except (OSError, ValueError, RecursionError) as e:
                     raise PreflopError(f"cannot read the result {path}: {e}")
                 if not isinstance(results[-1][1], dict) or not isinstance(results[-1][1].get("settings"), dict):
                     raise PreflopError(f"{path} is not a result of `preflop.py solve`")
+                version = results[-1][1].get("version")
+                if type(version) is int and version != 1:
+                    raise PreflopError(OTHER_VERSION.format(name=path, version=version))
             if a.depth is None and a.postflop is None:
                 depths = [r["settings"].get("depth") for _, r in results]
                 for (path, _), depth in zip(results, depths):

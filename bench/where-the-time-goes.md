@@ -1183,8 +1183,9 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   (the reviews' files) 2 changed note, of 300 more solved for this (random narrow ranges, one to three
   flops, stacks of 3 to 300 bb) 3 did and none was refused, and none of the nine files of this section
   changed. A player none of
-  whose decisions is locked gets no figure. An integer no float holds (`10**400` as a frequency) is refused like any other frequency that
-  is no strategy; it was a traceback. None of the result files of this section is touched by any of
+  whose decisions is locked gets no figure. An integer no float holds (`10**400` as a frequency) is refused by `check` like any other frequency that
+  is no strategy; it was a traceback. (`chart` drew it as `**`, and printed a decision's frequencies of
+  `1e308` as "inf %", until the sixth commit: the fifth review's.) None of the result files of this section is touched by any of
   this: all ten decisions are locked, with the same rows as before. They do have hand classes without
   frequencies, 66 to 794 class-and-decision entries a file (32o against the 3-bet of an open it never
   makes): every one a hand the result's own play does not bring to that decision (nine files, read
@@ -1196,18 +1197,36 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   That was at the default `--accuracy 0.05`; the same check at 0.02 and at 0.005 printed 0.02 (0.01 to
   0.03) and 0.02 (0.02 to 0.03), so in a game this small the figure moves with the accuracy of the check
   by more than its span, and a span is no bound there. A worse one (the fourth review's): `AA,72o`
-  against `AKs`, 12 bb, three flops, one result solved to 0.004 and checked three times: the big blind's
+  against `AKs`, 12 bb, three flops, one result (solved to 0.005) checked three times: the big blind's
   loss 1.31 (1.30 to 1.41) at 0.05, -0.54 (-0.55 to -0.53) at 0.005, -0.20 (-0.21 to -0.20) at 0.001, the
-  small blind's -0.15, -0.16 and 2.03 (2.03 to 2.03), with the sums moving by 1.55, 0.54 and 2.53.
+  small blind's -0.15, -0.16 and 2.03 (2.03 to 2.03), with the sums moving by 1.55, 0.54 and 2.53. The
+  reference game itself was worth -9.31 at 0.05 and at 0.005 and -7.13 at 0.001, each with a span 0.01
+  wide (the fifth review's reading): the value of the game moved by 200 times its span.
   In the first example the two values added up to -0.42 to -0.02 over the
   three solves; the free opponent of the locked solve does not hold the checked player's value down, it
   pushes its own up, and off all flops those are not the same thing. The check prints the range of the
   sums and now says the losses are that uncertain. With full ranges on three flops the sums moved by
   0.18 (100 bb: small blind -0.21, span -0.24 to -0.07, the review's run); in the one check of this
-  section that recorded them, 50 shipped flops with turn bets, by 0.004, and on all flops the game is
-  zero-sum. Not corrected for: no rule for it that is not a guess. With an ante the two values add up to
-  the ante and not to zero, and the sums are taken less it (the note used to count an ante of 2 as 200
-  bb/100 of uneven dealing, on all flops too; the fourth review's).
+  section that recorded them, 50 shipped flops with turn bets, by 0.004, and on all flops without an
+  ante the two values add up to zero (0.000 chips). Not corrected for: no rule for it that is not a guess.
+  With an ante the two values add up to the ante and not to zero, and the sums are taken less it (the
+  note used to count an ante of 2 as 200 bb/100 of uneven dealing, on all flops too; the fourth
+  review's). Not quite to the ante: on all flops the solver's two values come out 0.01 to 0.03 % of it
+  short (99.988 of 100 chips at uniform play, 99.970 solved; 999.883 and 999.689 of 1,000: `--stack 8
+  --depth none --range-sb AA,KQs,72o --range-bb QQ,T9s,32o --flops all`; the fifth review saw it first),
+  which is the solver's and not the check's (#505: the weights of the 1,755 flops in their 24 suit
+  variants are summed as floats and come out 3.5e-4 over, so every value that goes through a flop is
+  that much too small, with or without an ante; found while this was written, fixed there and not
+  here); on all flops the note now says that and no longer blames a subset.
+- **What the fifth review's mutations got past the tests** (seven of its thirteen): no test ran `check`
+  with an ante, so the ante could go back into either sum, or out of the stake, unseen; versions 0 and
+  -1 were read as results by a `_fits` that refused only "over 1", and `chart` could take any whole
+  number; a decision the file has nothing for could pass half its hands on instead of all. Each now
+  fails a test: the six run again and five more for the sixth commit's own rules, 11 of 11 stopped by a
+  `FAIL:` line with the unchanged copy passing. The seventh was a branch nothing could reach (a report whose ante is
+  no number: `check` writes the report itself), now gone. And one traceback was left on a broken file: a
+  string holding half a surrogate pair (`"\ud800"`) died at the `print`, after the solves in `check`;
+  such a file is now refused when it is read, in one line.
 - **A fresh start is the faster one.** The locked solve from `set_equal_strats` took 5 to 6 s where the
   same solve continued from the reference's solved state took 20 to 25 s (50-flop reference; the fresh
   ones to 0.1 bb/100, the continued ones only to 0.5);
@@ -1226,7 +1245,7 @@ at once; not changed.
 
 For the spans this matters as follows. The low end of a value is the solve's sum less the opponent's
 best response, which is what the opponent's best reply would leave the player only if the sum did not
-move with the strategies. On all flops it does not (0.000), and with 200 it is 0.001, so the two tables
+move with the strategies. On all flops it does not (0.000; no ante in any solve of this section, with one see #505), and with 200 it is 0.001, so the two tables
 above stand as bounds; the depth table below is on 10 flops (0.03 in the reference, against spans 0.8
 wide). On a small, uneven subset the span is not a bound: with three flops and 12 bb the sum was 0.82 in
 one locked solve and 0.86 in the other, and a loss came out as -0.029 with the span -0.030 to -0.023,

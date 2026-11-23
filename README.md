@@ -510,9 +510,10 @@ flop; against an opponent who does not adapt it costs less, or nothing. The pref
 those of the checked solve (stack, ante, sizes, ranges); the postflop options and the flops are the
 check's own, and it says when a result was solved with another postflop tree. A result solved with other
 ranges is refused where its hand classes show it: a class with a strategy that the check's range does not
-hold, a class without one at the small blind's first decision, or a class the range holds whole without
-one at the big blind's, each where the class is dealt often enough to show in the second decimal (ranges
-that differ only in weights or suits are not seen: a result does not record its ranges). A decision the result's opponent never brings about has no frequencies in the result,
+hold (any such class), or classes without one at the small blind's first decision, or that the range
+holds whole without one at the big blind's, where those classes together are dealt often enough to show
+in the second decimal (ranges that differ only in weights or suits are not seen: a result does not record
+its ranges). A decision the result's opponent never brings about has no frequencies in the result,
 and one that only some hands came to has them for only those. A decision is locked whole or not at all:
 the check leaves such a decision to the solve and names it, so the loss is that of what the result says
 at the others, and can only be understated by it. (It is locked all the same where the hands without
@@ -521,9 +522,10 @@ refused: one with nothing for hands at a decision that its own two strategies br
 cut short or changed by hand can be (looked for when both ranges hold whole hand classes at one weight).
 Ranges that hold a hand class in part (single combos, combos at different weights) are checked
 with a note: the combos of a class need not play alike there, a result has one strategy for a class, and
-the loss includes what playing them alike costs. On all flops the spans are bounds; a flop subset is not dealt quite evenly to the
-two players, the two values of a solve then do not add up to zero (to the ante, with one), and the check
-prints what they added up to when it shows: the losses and the ends of their spans are that uncertain,
+the loss includes what playing them alike costs. On all flops without an ante the two values of a solve
+add up to zero and the spans are bounds. A flop subset is not dealt quite evenly to the two players and
+the values do not add up to zero then (to the ante, with one; with an ante they are also about 0.03 % of
+it short on all flops, #505), and the check prints what they added up to, less the ante, when it shows: the losses and the ends of their spans are that uncertain,
 which was 0.004 bb/100 in a check on 50 shipped flops and can be most of the figure with three flops or
 narrow ranges, where the same check at another `--accuracy` has printed a loss outside the first one's
 span (`bench/where-the-time-goes.md`). Time: a solve of the

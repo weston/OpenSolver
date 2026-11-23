@@ -291,22 +291,44 @@ def unit():
         check("r:0" in str(e), "chart: a node the result lacks is refused, with the ones it has")
     with tempfile.TemporaryDirectory() as d:
         answers = []
+
+        def written(name, text):
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+            return os.path.join(d, name)
         for name, text in (("reach.json", json.dumps(dict(result, version=1, nodes=[dict(node, reach=10 ** 400)]))),
                            ("freq.json", json.dumps(dict(result, version=1, nodes=[dict(node, hands={
                                "AA": {"reach": 1, "freq": [1e308, 1e308, 0.0], "ev_bb": 1.0}})]))),
                            ("true.json", json.dumps(dict(result, version=True))),
-                           ("deep.json", "[" * 100000)):
-            with open(os.path.join(d, name), "w") as f:
-                f.write(text)
-            answers += [quiet("chart", os.path.join(d, name)), quiet("check", os.path.join(d, name))]
-        with open(os.path.join(d, "ok.json"), "w") as f:
-            json.dump(dict(result, version=1), f)
+                           ("deep.json", "[" * 100000),
+                           ("surrogate.json", json.dumps(dict(result, version=1, flops="\ud800"))),
+                           ("action.json", json.dumps(dict(result, version=1, nodes=[dict(
+                               node, actions=["\udfff"] + node["actions"][1:])])))):
+            answers += [quiet("chart", written(name, text)), quiet("check", written(name, text))]
+        ok = written("ok.json", json.dumps(dict(result, version=1)))
         check(all(status == 1 and err.startswith("error: ") and "Traceback" not in err for status, _, err in answers)
               and all("cannot read the result" in err for _, _, err in answers[6:])
               and all("is not a result of `preflop.py solve`" in err for _, _, err in answers[:6])
-              and quiet("chart", os.path.join(d, "ok.json"))[0] == 0,
+              and quiet("chart", ok)[0] == 0,
               "chart and check say in words that a file is no result: a number no float holds, a version that is "
-              f"`true`, brackets nested past reading ({[a[0] for a in answers]})")
+              "`true`, brackets nested past reading, a string that cannot be printed (half a surrogate pair) "
+              f"({[a[0] for a in answers]})")
+        # what `chart` alone reads: a frequency that is no percent, in a cell or in a node's line
+        answers = [quiet("chart", written(name, json.dumps(dict(result, version=1, nodes=[changed]))))
+                   for name, changed in (
+                       ("cell.json", dict(node, hands={"AA": {"reach": 1, "freq": [10 ** 400, 0, 0], "ev_bb": 1.0}})),
+                       ("line.json", dict(node, freq=[1e308] * len(node["freq"]))),
+                       ("inf.json", dict(node, freq=[float("inf")] * len(node["freq"]))),
+                       ("nan.json", dict(node, reach=float("nan"))),
+                       ("text.json", dict(node, reach="1")))]
+        check(all(status == 1 and "is not a result of `preflop.py solve`" in err for status, _, err in answers),
+              "chart refuses a frequency that is no percent (`10**400` in a cell, `1e308`, Infinity or NaN in a "
+              f"decision's line, a number in quotes) ({[a[0] for a in answers]})")
+        answers = [quiet(cmd, written(f"v{v}.json", json.dumps(dict(result, version=v))))
+                   for v in (2, 0, -1) for cmd in ("chart", "check")]
+        check(all(status == 1 and f"is a version {v} result: this `preflop.py` reads version 1" in err
+                  for (status, _, err), v in zip(answers, (2, 2, 0, 0, -1, -1))),
+              f"chart and check read version 1 only: 2, 0 and -1 are named and refused ({[a[0] for a in answers]})")
     tree = "\n".join(preflop.tree_text(settings(), preflop.build_tree(settings())))
     check("r:0:b250:c" in tree and "flop" in tree and "all-in" in tree, "tree: the lines in words with their node ids")
 
@@ -464,6 +486,16 @@ def unit():
           and never_there["BB"]["free"] == [],
           "nothing at a decision under one of the opponent's that the file has nothing for either: not said to be never "
           "come to; under one whose frequencies say the opponent does not go on, it is")
+
+    def only_there(h):  # the small blind always goes to the emptied decision
+        for hand in h[root.id].values():
+            hand["freq"] = [float(a == under) for a in range(len(root.children))]
+        emptied(h)
+    stake = 7e-5  # all of the big blind's deals show against it (0.007 bb/100); half of them would not (0.0035)
+    plan = made(only_there, swing=stake)
+    check(preflop._shows(stake * 100) and not preflop._shows(stake * 50) and sb_inner[0].id in plan["SB"]["part"],
+          "and it passes every hand on, not some: with a stake at which half the big blind's deals would not show, "
+          "the decision under it is still one it comes to")
     # what shows is a share of the deals times the stake, 0.005 bb/100 or more, summed over the hands
     between = [n for n in nodes if n.actor == "SB" and n is not root and preflop._under(n, inner[0])]
     passed = 1.0
@@ -516,9 +548,9 @@ def unit():
         except preflop.PreflopError as e:
             return str(e)
     check(unfit() == [] and all("x.json is not a result of `preflop.py solve`" in unfit(version=v) for v in (True, 1.0, "1", None))
-          and "x.json is a version 2 result: this `preflop.py` reads version 1" in unfit(version=2)
+          and all(f"x.json is a version {v} result: this `preflop.py` reads version 1" in unfit(version=v) for v in (2, 0, -1))
           and "another preflop game" in unfit(chips_per_bb=20),
-          "a result's version is the whole number 1: `true` and 1.0 are no result, 2 is one this tool does not read")
+          "a result's version is the whole number 1: `true` and 1.0 are no result; 2, 0 and -1 are ones this tool does not read")
     check(abs(preflop._sum({"EV OOP": -3.0, "EV IP": 204.0}, fits) - 1.0) < 1e-9
           and abs(preflop._sum({"EV OOP": -3.0, "EV IP": 4.0}, s) - 1.0) < 1e-9,
           "the two values' sum is taken less the ante: 2 big blinds of dead money are 200 bb/100 that are not a misdeal")
@@ -553,6 +585,14 @@ def unit():
           and "less the ante" not in "\n".join(preflop.check_text(dict(report, settings={"depth": "file", "ante_bb": "0.0"}))),
           "the check's text: the trees by their options, the decisions left free, a player with nothing locked, "
           "and the sum where it is not zero")
+    every = dict(report, flops=preflop.ALL_FLOPS, flop_count=1755)
+    told = [" ".join("\n".join(preflop.check_text(r)).split())
+            for r in (report, every, dict(every, settings={"depth": "file", "ante_bb": "2"}))]
+    check("a flop subset is not dealt quite evenly" in told[0]
+          and all("flop subset" not in t and "added up to 0.82 to 0.86" in t for t in told[1:])
+          and "the solver's own figures" in told[1] and "less the ante" not in told[1]
+          and "less the ante" in told[2] and "a little short of it, on all flops too" in told[2],
+          "a sum that is not zero is put down to the flop subset only where the flops are one")
 
 
 def integration(exe):
@@ -938,8 +978,34 @@ def integration(exe):
               and status2 == 0 and "filed.json (3 flops, --postflop FILE)" in out2,
               "with the file it says a result does not name its file; with a depth the row names the result's tree")
         status, out, _ = run("check", own, "--flops", flop_file, "--accuracy", "0.5", *opts)
-        check(status == 0 and "added up to" in out and "not to zero" in out,
+        check(status == 0 and "added up to" in out and "not to zero" in out and "flop subset" in out,
               "on a flop subset the check says what the two values add up to")
+        # with an ante, on all flops: the stake is two stacks and the ante, and the sums are taken less the
+        # ante (left in, each would be the ante, 100 bb/100)
+        game = ("--stack", "8", "--ante", "1", "--depth", "none", "--range-sb", "AA,KQs,72o", "--range-bb", "QQ,T9s,32o",
+                "--flops", "all", "--accuracy", "0.05", "--solver", exe)
+        anted, report = os.path.join(d, "anted.json"), os.path.join(d, "anted_report.json")
+        stakes, plan = [], preflop._plan
+
+        def watched(*args):
+            stakes.append(args[-1])
+            return plan(*args)
+        preflop._plan = watched
+        try:
+            solved = run("solve", anted, *game)[0]
+            status, out, err = run("check", anted, "--report", report, *game)
+        finally:
+            preflop._plan = plan
+        try:
+            with open(report) as f:
+                rep = json.load(f)
+            sums = [rep["sum_bb100"]] + [r[who]["sum_bb100"] for r in rep["checked"] for who in ("SB", "BB")]
+        except (OSError, ValueError, KeyError):
+            sums = []
+        check(solved == 0 and status == 0 and stakes == [17.0] and len(sums) == 3
+              and all(abs(x) < abs(x - 100) for x in sums) and "flop subset" not in out,
+              f"check with an ante of 1 bb on all flops: a stake of 17 bb, and sums that are nearer zero than the "
+              f"ante ({', '.join(f'{x:+.3f}' for x in sums)}; {err.strip()[-80:] if status else 'ok'})")
 
 
 def main():

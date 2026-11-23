@@ -84,6 +84,32 @@ class Viewer:
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"{}")
 
+    def solve(self, body, limit=120):
+        """POST /api/solve and wait for the solve: (status, answer, the state after it). The request
+        answers before the solver says it started, and until then the state is "not solving" with no
+        new point: that is not "solved". Seen solving, or a new point, is."""
+        before, seen = len(self.solver.series), False
+        st, d = self.req("/api/solve", "POST", body)
+        if st != 200:
+            return st, d, None
+        end = time.time() + limit
+        while time.time() < end:
+            state = self.req("/api/status")[1]
+            seen = seen or state["solving"]
+            if not state["solving"] and (seen or len(self.solver.series) > before or state.get("dead")):
+                return st, d, state
+            time.sleep(0.05)
+        raise AssertionError("the solve did not start and stop")
+
+    def wait_solving(self, limit=30):
+        """After a 200 from /api/solve: the solver has said it started (the request answers before it)."""
+        end = time.time() + limit
+        while time.time() < end:
+            if self.solver.state()["solving"]:
+                return True
+            time.sleep(0.02)
+        return False
+
     def wait_solved(self, limit=120):
         end = time.time() + limit
         while time.time() < end:
@@ -127,6 +153,7 @@ class PreflopBuildTest(unittest.TestCase):
         self.assertEqual((f["limp"], f["limp_raise"], f["depth"], f["raise_cap"], f["flop_bet"], f["raise"]),
                          (True, "", "flop", a.raise_cap, a.flop_bet, a.raise_))
         self.assertEqual(f["range_sb"], self.pf.ALL_HANDS)
+        self.assertEqual(f["accuracy"], self.pf.SOLVE_ACCURACY)   # not the check's, and not None (#497)
         self.assertEqual(d["flops"], [str(c) for c in self.pf.SHIPPED] + ["all"])
         self.assertIn(f["flops"], d["flops"])
         self.assertEqual(d["chips"], 100)
@@ -228,10 +255,9 @@ class PreflopBuildTest(unittest.TestCase):
 
     def test_07_solve_to_bb_per_100(self):
         # 2 bb/100 of a 100-chip big blind: 2 chips
-        st, d = self.v.req("/api/solve", "POST", {"accuracy": 2.0, "preview": True})
+        st, d, status = self.v.solve({"accuracy": 2.0, "preview": True})
         self.assertEqual(st, 200, d)
         self.assertIsNone(vsrv._preview, "no board to preview a preflop solve on")
-        status = self.v.wait_solved()
         self.assertFalse(status.get("dead"))
         explo = float(self.v.solver.cmd("calc_results").split("Exploitable for:")[1].split()[0])
         self.assertLessEqual(explo, 2.0)
@@ -311,7 +337,7 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = self.v.req("/api/solve", "POST", {"accuracy": 1e-9})
         self.assertEqual(st, 200, d)
         try:
-            self.assertTrue(self.v.solver.state()["solving"])
+            self.assertTrue(self.v.wait_solving())
             body = dict(POSTFLOP, id=node, accuracy_pct=0.3)
             st, d = self.v.req("/api/refine/view", "POST", body)
             self.assertEqual((st, d.get("state")), (200, "none"), (node, d))
@@ -352,6 +378,7 @@ class PreflopBuildTest(unittest.TestCase):
         st, d = v.req("/api/solve", "POST", {"accuracy": 1e-9})
         self.assertEqual(st, 200, d)
         try:
+            self.assertTrue(v.wait_solving())
             solver.hold("test")
             st, d = v.req("/api/preflop/build", "POST", dict(FORM, open="abc"))
             self.assertEqual(st, 400, d)
@@ -388,9 +415,8 @@ class PreflopBuildTest(unittest.TestCase):
             est.running = None
 
         # a build that fails in the solver: no tree, and nothing of the old one's solve
-        st, d = v.req("/api/solve", "POST", {"accuracy": 50.0})
+        st, d, _ = v.solve({"accuracy": 50.0})
         self.assertEqual(st, 200, d)
-        v.wait_solved()
         self.assertTrue(solver.series)
         cmds = solver.cmds
 

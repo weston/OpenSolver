@@ -7,12 +7,16 @@
     python3 tools/preflop.py estimate [settings]            memory per number of flops and postflop depth
     python3 tools/preflop.py solve OUT.json [settings]      solve, save the preflop strategies, print charts
     python3 tools/preflop.py chart OUT.json [NODE ...]      print the charts of a saved result again
+    python3 tools/preflop.py check OUT.json ... [settings]  what a result's strategy loses in a game with
+                                                            more flops (--flops) or streets (--depth), bb/100
 
 The small blind is the button: it acts first before the flop (IP in the solver's terms) and last
 after it. Sizes are in big blinds: `2.5` is a raise to 2.5 big blinds, `4x` four times the bet faced,
 `allin` the stack. A preflop solve deals a subset of flops (`flops/`, our own files) and gives every
 flop exit a postflop tree; how deep that tree bets (`--depth`) and how many flops there are decide
-the memory, which `estimate` prints before anything is built. README, "Preflop solves".
+the memory, which `estimate` prints before anything is built. `check` takes the settings of the
+solve it checks, the flops to check it on (`--flops all` where they fit) and, to check it in a game
+with more betting after the flop, the `--depth`. README, "Preflop solves".
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import signal
 import subprocess
 import sys
 import threading
+import textwrap
 import time
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
@@ -336,10 +341,13 @@ def flop_path(count: int) -> str:
     return os.path.join(ROOT, "flops", f"wsolver_{count}.txt")
 
 
+ALL_FLOPS = "all 1,755 flops"
+
+
 def choose_flops(spec: str) -> tuple[str, list[tuple[str, float]]]:
     """`--flops`: a number of flops we ship a file for, `all`, or a flop file. (name, flops)."""
     if spec == "all":
-        return "all 1,755 flops", all_flops()
+        return ALL_FLOPS, all_flops()
     if spec.isdigit():
         path = flop_path(int(spec))
         if not os.path.exists(path):
@@ -528,6 +536,8 @@ def _facing(order: list[str], theirs: list[float]) -> list[float]:
     return [max(0.0, total - by_card[h[0:2]] - by_card[h[2:4]] + y) for h, y in zip(order, theirs)]
 
 
+SOLVE_ACCURACY, CHECK_ACCURACY = 0.5, 0.05  # bb/100
+
 NO_DEAL = "the two ranges leave no deal: every hand of one shares a card with every hand of the other"
 
 
@@ -597,6 +607,35 @@ def collect(u: Solver, s: Settings, root: Node) -> list[dict]:
     return out
 
 
+def solve_on(u: Solver, s: Settings, accuracy_bb100: float, seconds: int, log: bool) -> dict[str, float]:
+    """Solve the tree in `u` to the accuracy or for the seconds; the figures of `calc_results` at the end
+    (chips: the two EVs, each player's best response against the other, the exploitability)."""
+    u.cmd(f"set_accuracy {accuracy_bb100 / 100 * s.chips:.6g}")
+    u.cmd("set_info_freq auto")
+    last: dict[str, float] = {}
+    quiet = not log
+
+    def progress(line: str) -> None:
+        key, _, value = line.partition(":")
+        if key in ("running time", "EV OOP", "EV IP", "OOP's MES", "IP's MES", "Exploitable for"):
+            try:
+                last[key] = float(value)
+            except ValueError:
+                return
+            if key == "Exploitable for" and not quiet:
+                print(f"  {time.time() - began:7.0f} s   exploitable for "
+                      f"{last[key] / s.chips * 100:.2f} bb/100 (target {accuracy_bb100:g})", file=sys.stderr,
+                      flush=True)
+
+    began = time.time()  # the solver's own running time goes on from one solve of a check to the next
+    u.cmd(f"go {seconds} seconds")
+    u.cmd("wait_for_solver", progress)
+    quiet = True  # the final figures are in the result, not another progress line
+    for l in u.cmd("calc_results"):
+        progress(l)
+    return last
+
+
 def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]], accuracy_bb100: float,
           seconds: int, threads: int | None, save_tree: str | None, estimated_mb: int | None = None,
           log: bool = True) -> dict:
@@ -622,28 +661,7 @@ def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
         sb, bb = (_floats(u.cmd(f"show_range {who} r:0"), 1326, "show_range r:0")[0] for who in ("IP", "OOP"))
         if len(order) != 1326 or not ranges_meet(order, sb, bb):
             raise PreflopError(NO_DEAL)
-        accuracy = accuracy_bb100 / 100 * s.chips
-        u.cmd(f"set_accuracy {accuracy:.6g}")
-        u.cmd("set_info_freq auto")
-        last: dict[str, float] = {}
-
-        def progress(line: str) -> None:
-            key, _, value = line.partition(":")
-            if key in ("running time", "EV OOP", "EV IP", "Exploitable for"):
-                try:
-                    last[key] = float(value)
-                except ValueError:
-                    return
-                if key == "Exploitable for" and log:
-                    print(f"  {last.get('running time', 0):7.0f} s   exploitable for "
-                          f"{last[key] / s.chips * 100:.2f} bb/100 (target {accuracy_bb100:g})", file=sys.stderr,
-                          flush=True)
-
-        u.cmd(f"go {seconds} seconds")
-        u.cmd("wait_for_solver", progress)
-        log = False  # the final figures are in the result, not another progress line
-        for l in u.cmd("calc_results"):
-            progress(l)
+        last = solve_on(u, s, accuracy_bb100, seconds, log)
         nodes = collect(u, s, root)
         if save_tree:
             try:
@@ -665,6 +683,403 @@ def solve(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]],
     }
 
 
+# ---- what a result loses in a larger game ------------------------------------------------------------
+
+PREFLOP_SETTINGS = ("stack_bb", "ante_bb", "limp", "open", "iso", "3bet", "limp_raise", "4bet", "5bet",
+                    "allin_threshold")
+
+
+def _same(a, b) -> bool:
+    """Two recorded settings say the same: amounts and sizes compare as numbers where they are numbers,
+    so 2.50 is 2.5 and a stack of 12.0 is one of 12."""
+    def parts(v):
+        out = []
+        for word in v.split():
+            unit = "x" if word.endswith("x") else "bb"
+            digits = word[:-1] if word.endswith("x") else word[:-2] if word.endswith("bb") else word
+            try:
+                number = Decimal(digits)
+            except InvalidOperation:
+                number = None
+            out.append((unit, number) if number is not None and number.is_finite() else word)
+        return out
+    return parts(a) == parts(b) if isinstance(a, str) and isinstance(b, str) else a == b
+
+
+def _shows(x: float) -> bool:
+    """A figure in bb/100 that is not 0.00 as the check prints it."""
+    return f"{abs(x):.2f}" != "0.00"
+
+
+def _f2(x: float) -> str:
+    return f"{x:.2f}" if _shows(x) else "0.00"  # not -0.00
+
+
+OTHER_VERSION = "{name} is a version {version} result: this `preflop.py` reads version 1"
+
+
+def _fits(name: str, result: dict, s: Settings, decisions: list[Node]) -> list[str]:
+    """A result can be checked on a tree with its preflop game: the same stack, sizes and decisions. The
+    flops and the postflop tree are the check's own; returns the postflop settings that are not the
+    result's (`file`: both have a postflop file, and a result does not say which)."""
+    try:
+        mine, its = describe(s), result["settings"]
+
+        def said(d: dict, k: str):  # no limp-raise sizes: the 3-bet's
+            return d["3bet"] if k == "limp_raise" and d[k] is None else d[k]
+        version = result.get("version")
+        if type(version) is not int:  # not true, not 1.0
+            raise TypeError
+        if version != 1:
+            raise PreflopError(OTHER_VERSION.format(name=name, version=version))
+        ok = (all(_same(said(its, k), said(mine, k)) for k in PREFLOP_SETTINGS)
+              and result["chips_per_bb"] == s.chips
+              and [(n["id"], n["actions"]) for n in result["nodes"]]
+              == [(n.id, [label for label, _ in n.children]) for n in decisions])
+        if not isinstance(its.get("depth"), str) or not all(isinstance(n["hands"], dict) for n in result["nodes"]):
+            raise TypeError
+        other = [k for k in mine if k not in PREFLOP_SETTINGS and not _same(its.get(k), mine[k])]
+    except (KeyError, TypeError, AttributeError):
+        raise PreflopError(f"{name} is not a result of `preflop.py solve`")
+    if not ok:
+        raise PreflopError(f"{name} was solved with another preflop game: give `check` the options of that solve "
+                           "(stack, ante, sizes, --chips-per-bb; the flops and the postflop tree are the check's own)")
+    return ["file"] if mine["depth"] == its["depth"] == "file" else other
+
+
+def _class_rows(name: str, node: dict, actions: int) -> dict[str, list[float]]:
+    """What a result says at one decision: the frequencies of every hand class it brought there, summing
+    to 1. A class with no frequency was not brought there (by the player, or by the opponent)."""
+    def share(f) -> bool:
+        try:
+            return isinstance(f, (int, float)) and not isinstance(f, bool) and math.isfinite(f) and f >= 0
+        except OverflowError:  # an integer no float holds
+            return False
+    out = {}
+    for cls, h in node["hands"].items():
+        freq = h.get("freq") if isinstance(h, dict) else None
+        if not isinstance(freq, list) or len(freq) != actions or not all(share(f) for f in freq):
+            raise PreflopError(f"{name}: the frequencies of {cls} at {node['id']} are not a strategy")
+        freq = [float(f) for f in freq]
+        total = sum(freq)
+        if not math.isfinite(total):
+            raise PreflopError(f"{name}: the frequencies of {cls} at {node['id']} are not a strategy")
+        if total > 0:
+            out[cls] = [f / total for f in freq]
+    return out
+
+
+def locked_rows(known: dict[str, list[float]], actions: int, classes: list[str]) -> list[list[float]]:
+    """A result's strategy at one decision as the solver takes it, a row of 1326 per action: every combo
+    of a hand class plays the class's frequencies. A class the result has nothing for plays every action
+    equally: `_plan` locks a decision only where that cannot show in the loss."""
+    return [[known[cls][a] if cls in known else 1.0 / actions for cls in classes] for a in range(actions)]
+
+
+def _plan(name: str, result: dict, root: Node, decisions: list[Node], classes: list[str],
+          dealt: dict[str, list[float]], ranges: dict[str, list[float]], swing_bb: float) -> dict[str, dict]:
+    """What the check locks of a result, per player: `rows` by node id, and `free`, the decisions it
+    leaves to the solve, which plays them as well as they can be played (`part`: those of them that are
+    not simply decisions the result's opponent never goes to). `dealt`: per combo, over 0 for one the
+    check deals; `ranges`: the weights; `swing_bb`: the most one hand can move a player's result, two
+    stacks and the ante.
+
+    The solver locks a decision whole. A result has no frequencies for a hand class at a decision the
+    class did not come to in its solve: by the player's own play, or because the opponent never went
+    there with a hand that leaves it possible. Locked, such a class plays evenly, and an opponent who
+    is free in the check can make that cost what it likes. So a decision is locked only where the hands
+    the result is silent on cannot show: their share of the player's deals, times how often the result's
+    own play before it brings them there, times the swing, is 0.00 bb/100 (`unsaid_bb100`, summed over
+    the locked decisions). Below a decision left free every hand may come.
+
+    A result that cannot be one of these ranges' solve is refused where its hand classes show it:
+    - a class with frequencies that the player's range does not hold;
+    - a class the check deals without them at the small blind's first decision, where every hand is;
+    - a class with all its combos in the player's range without them at a first decision that has them
+      for others (no hand shares a card with every combo of a class, so an opponent who comes there
+      meets it);
+    - where both ranges hold whole classes at one weight: hands without frequencies at a decision the
+      result's own strategies bring them to, the player's by the opponent's, often enough to show (a
+      result changed so that hands go where it has nothing for them is refused by this too). That
+      counts a class's combos as playing alike and as meeting any hand of the opponent, which ranges
+      that name suits or weights undo: a combo the opponent's cards rule out need not be there.
+    What is left free after that is named: `part` unless the result's own opponent comes to the
+    decision too rarely to show, which is then the reason it has nothing there. How often the opponent
+    comes is taken from the opponent's frequencies in the result, and a decision on the way that has none
+    for a hand counts as passed by it, so nothing is said to be never come to because a file is silent
+    higher up."""
+    by_id = {n["id"]: n for n in result["nodes"]}
+    known = {n.id: _class_rows(name, by_id[n.id], len(n.children)) for n in decisions}
+    even = not _uneven(classes, ranges)
+    share: dict[str, dict[str, float]] = {}
+    for who in (SB, BB):
+        total = sum(dealt[who])
+        share[who] = {}
+        for cls, x in zip(classes, dealt[who]):
+            if x > 0:
+                share[who][cls] = share[who].get(cls, 0.0) + x / total
+
+    def reaches(who: str) -> dict[str, dict[str, float]]:
+        """Per decision, how often the result's play brings each hand class of the player there at the
+        most: the product of its frequencies on the way. Where the result has none for the class it goes
+        on as it came: the result does not say that it stops, and a decision emptied in a file must not
+        read as one the player never passes."""
+        at: dict[str, dict[str, float]] = {}
+
+        def go(n: Node, reach: dict[str, float]) -> None:
+            if n.kind != "decision":
+                return
+            at[n.id] = reach
+            for a, (_, child) in enumerate(n.children):
+                go(child, reach if n.actor != who else
+                   {cls: p * (known[n.id][cls][a] if cls in known[n.id] else 1.0) for cls, p in reach.items()})
+        go(root, {cls: 1.0 for cls in share[who]})
+        return at
+    own = {who: reaches(who) for who in (SB, BB)}
+    out = {}
+    for who, them in ((SB, BB), (BB, SB)):
+        blind = f"the {'small' if who == SB else 'big'} blind's"
+        mine = share[who]
+        whole = set(mine) - {cls for cls, w in zip(classes, ranges[who]) if w <= 0}
+
+        def refuse(text: str, some: list[str], why: str = "give `check` the ranges of that solve") -> None:
+            raise PreflopError(f"{name} {text} ({', '.join(some[:5])}{', ...' if len(some) > 5 else ''}): {why}")
+        if who == SB and not known[root.id]:
+            raise PreflopError(f"{name} has no strategy for the small blind's first decision")
+        extra = sorted({cls for n in decisions if n.actor == who for cls in known[n.id]} - set(mine))
+        if extra:
+            refuse(f"has a strategy for {len(extra)} hand classes that are not in {blind} range", extra)
+        rows: dict[str, list[list[float]]] = {}
+        free: list[str] = []
+        part: list[str] = []
+        unsaid = 0.0
+
+        def visit(n: Node, comes: dict[str, float], first: bool, loose: bool = False) -> None:
+            nonlocal unsaid
+            if n.kind != "decision":
+                return
+            if n.actor != who:
+                for _, child in n.children:
+                    visit(child, comes, first, loose)
+                return
+            here, k = known[n.id], len(n.children)
+            gap = sum(mine[cls] * p for cls, p in comes.items() if cls not in here) * swing_bb * 100
+            if not _shows(unsaid + gap):
+                if not here:   # nothing to lock, and nothing that comes here to speak of
+                    for _, child in n.children:
+                        visit(child, comes, False, loose)
+                    return
+                unsaid += gap
+                rows[n.id] = locked_rows(here, k, classes)
+                for a, (_, child) in enumerate(n.children):
+                    visit(child, {cls: p * (here[cls][a] if cls in here else 1.0 / k) for cls, p in comes.items()},
+                          False, loose)
+                return
+            lacking = sorted(cls for cls in (mine if n is root else whole) if cls not in here)
+            if first and here and lacking:
+                refuse(f"has no strategy for {len(lacking)} hand classes of {blind} range at {n.id}", lacking)
+            opponent = sum(share[them][cls] * p for cls, p in own[them][n.id].items())  # how often it comes here
+            if even:
+                told = {cls: mine[cls] * p * opponent for cls, p in own[who][n.id].items() if cls not in here and p > 0}
+                if _shows(sum(told.values()) * swing_bb * 100):
+                    refuse(f"has no strategy at {n.id} for hands of {blind} range that its own strategies bring there",
+                           sorted(told, key=lambda cls: -told[cls]),
+                           "it is not all of a strategy (a result of other ranges, or one changed since its solve)")
+            free.append(n.id)
+            if here or loose or _shows(opponent * swing_bb * 100):
+                part.append(n.id)
+            for _, child in n.children:
+                visit(child, comes, False, loose or bool(here))
+
+        visit(root, {cls: 1.0 for cls in mine}, True)
+        out[who] = {"rows": rows, "free": free, "part": part, "unsaid_bb100": unsaid}
+    return out
+
+
+def _swing_bb(s: Settings) -> float:
+    """The most one hand can move a player's result, in big blinds: two stacks and the ante."""
+    return float(2 * s.stack + s.ante)
+
+
+def _uneven(classes: list[str], ranges: dict[str, list[float]]) -> bool:
+    """A range holds a hand class in part: some of its combos, or its combos at different weights."""
+    for weights in ranges.values():
+        low: dict[str, float] = {}
+        high: dict[str, float] = {}
+        for cls, w in zip(classes, weights):
+            low[cls], high[cls] = min(low.get(cls, w), w), max(high.get(cls, w), w)
+        if any(low[cls] != high[cls] for cls in low):
+            return True
+    return False
+
+
+def _under(top: Node, n: Node) -> bool:
+    return any(child is n or _under(child, n) for _, child in top.children)
+
+
+def _value(r: dict[str, float], who: str, chips: int) -> list[float]:
+    """The value of the game for a player from one solve, bb/100: [the solve's EV, low, high]. The
+    value is no more than the player's best response makes against the opponent as solved, and no less
+    than what the opponent's best response leaves; the two meet as the solve gets exact. (What the
+    opponent's best response leaves is the two EVs' sum less the opponent's best: exact where the game is
+    zero-sum but for an ante, which it is on all flops; on a subset the sum moves with the strategies.)"""
+    try:
+        total = r["EV OOP"] + r["EV IP"]
+        mine, theirs, ev = (("IP's MES", "OOP's MES", "EV IP") if who == SB else ("OOP's MES", "IP's MES", "EV OOP"))
+        out = [r[ev], total - r[theirs], r[mine]]
+    except KeyError:
+        raise PreflopError("the solver gave no results for the check (calc_results)")
+    return [x / chips * 100 for x in out]
+
+
+def _lost(base: list[float], locked: list[float]) -> list[float]:
+    """What the locked strategy gives up, from the two values [EV, low, high]: the difference of the EVs,
+    and the least and the most the two spans allow."""
+    return [base[0] - locked[0], base[1] - locked[2], base[2] - locked[1]]
+
+
+def _sum(r: dict[str, float], s: Settings) -> float:
+    """The two players' values added up, less the ante they play for, bb/100: zero in a game whose flops
+    are dealt evenly to the two (on all flops)."""
+    return (r.get("EV OOP", 0.0) + r.get("EV IP", 0.0) - _chips(s.ante, s.chips)) / s.chips * 100
+
+
+def check(exe: str, s: Settings, flop_name: str, flops: list[tuple[str, float]], results: list[tuple[str, dict]],
+          accuracy_bb100: float, seconds: int, threads: int | None, estimated_mb: int | None = None,
+          log: bool = True) -> dict:
+    """What each result's preflop strategy gives up in the game with these flops. One player at a time:
+    the player's preflop decisions are the result's, locked; everything else (the opponent's preflop
+    play, all play after the flop) is solved against them; the value of that game for the player, under
+    the value of the game as it is, is the loss against an opponent who knows the strategy."""
+    root = build_tree(s)
+    decisions = [n for n in walk(root) if n.kind == "decision"]
+    other = {name: _fits(name, r, s, decisions) for name, r in results}
+    started = time.time()
+
+    def say(text: str) -> None:
+        if log:
+            print(text, file=sys.stderr, flush=True)
+
+    if estimated_mb is None:
+        estimated_mb = estimate_mb(exe, s, flops)
+        mem = physical_memory_mb()
+        say(f"{len(flops)} flops: estimated {estimated_mb} MB"
+            + (f", more than this machine's {mem} MB" if mem and estimated_mb > mem else ""))
+    with Solver(exe) as u:
+        for line in script(s, flops, root):
+            u.need(line)
+        if threads:
+            u.cmd(f"set_threads {threads}")
+        u.need("add_all_flops")
+        order = " ".join(u.cmd("show_hand_order")).split()
+        sb, bb = (_floats(u.cmd(f"show_range {who} r:0"), 1326, "show_range r:0")[0] for who in ("IP", "OOP"))
+        if len(order) != 1326 or not ranges_meet(order, sb, bb):
+            raise PreflopError(NO_DEAL)
+        classes = [hand_class(h) for h in order]
+        dealt = {SB: [x * y for x, y in zip(sb, _facing(order, bb))], BB: [x * y for x, y in zip(bb, _facing(order, sb))]}
+        ranges = {SB: sb, BB: bb}
+        plans = [_plan(name, r, root, decisions, classes, dealt, ranges, _swing_bb(s))
+                 for name, r in results]  # all read before any solve
+        say("the game as it is:")
+        free = solve_on(u, s, accuracy_bb100, seconds, log)
+        base = {who: _value(free, who, s.chips) for who in (SB, BB)}
+        checked = []
+        for (name, r), plan in zip(results, plans):
+            row: dict = {"file": name, "flops": r.get("flops"), "flop_count": r.get("flop_count"),
+                         "depth": r["settings"].get("depth"), "other_postflop": other[name]}
+            for who in (SB, BB):
+                say(f"{os.path.basename(name)}, the {'small' if who == SB else 'big'} blind's strategy:")
+                u.need("set_equal_strats")  # a fresh solve, and no lock left from the last one
+                for node, rows in plan[who]["rows"].items():
+                    u.need(f"set_strategy {node} " + " ".join(f"{x:.6g}" for line in rows for x in line))
+                    u.need(f"lock_node {node}")
+                got = solve_on(u, s, accuracy_bb100, seconds, log)
+                v = _value(got, who, s.chips)
+                row[who] = {"value_bb100": v, "lost_bb100": _lost(base[who], v),
+                            "exploitable_bb100": got.get("Exploitable for", 0.0) / s.chips * 100,
+                            "sum_bb100": _sum(got, s), "locked": len(plan[who]["rows"]),
+                            "free": plan[who]["free"], "free_part": plan[who]["part"],
+                            "unsaid_bb100": plan[who]["unsaid_bb100"]}
+            checked.append(row)
+    return {
+        "version": 1, "kind": "check",
+        "settings": describe(s),
+        "flops": flop_name, "flop_count": len(flops),
+        "target_bb100": accuracy_bb100,
+        "exploitable_bb100": free.get("Exploitable for", 0.0) / s.chips * 100,
+        "value_bb100": base, "sum_bb100": _sum(free, s),
+        "uneven_ranges": _uneven(classes, ranges),
+        "seconds": round(time.time() - started, 1),
+        "estimated_mb": estimated_mb,
+        "checked": checked,
+    }
+
+
+def check_text(report: dict) -> list[str]:
+    def cell(side: dict) -> str:
+        if side.get("locked") == 0:
+            return "     —  (none of it to check)"
+        x = side["lost_bb100"]
+        return f"{_f2(x[0]):>6}  ({_f2(x[1])} to {_f2(x[2])})"
+
+    def tree_of(depth: str) -> str:
+        return "--postflop FILE" if depth == "file" else f"--depth {depth}"
+    v = report["value_bb100"][SB]
+    depth = report["settings"]["depth"]
+    out = [f"The game with {report['flop_count']} flops ({report['flops']}, {tree_of(depth)}), solved to "
+           f"{report['exploitable_bb100']:.3f} bb/100: worth {v[0]:.2f} bb/100 to the small blind "
+           f"({v[1]:.2f} to {v[2]:.2f}).",
+           "What a preflop strategy gives up in it to an opponent who knows the strategy, bb/100, and the",
+           "span the solves leave open:", ""]
+    names = [f"{os.path.basename(str(r['file']))} ({r['flop_count']} flops"
+             + (f", {tree_of(r['depth'])}" if r["depth"] != depth else "") + ")" for r in report["checked"]]
+    width = max([len(n) for n in names] + [8])
+    out.append(f"{'':{width}}     {'small blind':<26} big blind")
+    for name, r in zip(names, report["checked"]):
+        out.append(f"{name:{width}}   {cell(r[SB]):<28} {cell(r[BB])}")
+    notes: list[str] = []
+    for r in report["checked"]:
+        file = os.path.basename(str(r["file"]))
+        if r["other_postflop"] == ["file"]:
+            notes += [f"{file} was solved with a postflop file, and a result does not say which: if it was not "
+                    "the check's, its loss is what its preflop strategy gives up in the check's tree."]
+        elif r["other_postflop"]:
+            notes += [f"{file} was solved with another postflop tree than the check's ({tree_of(depth)}; "
+                    f"different: {', '.join(r['other_postflop'])}): its loss is what its preflop strategy gives up "
+                    "in this one."]
+        for who, word, their in ((SB, "small", "big"), (BB, "big", "small")):
+            part = r[who].get("free_part", [])
+            none = [n for n in r[who]["free"] if n not in part]
+
+            def ids(nodes: list[str]) -> str:
+                return f"{len(nodes)} of the {word} blind's decisions ({', '.join(nodes[:4])}{', ...' if len(nodes) > 4 else ''})"
+            if none:
+                notes += [f"{file} has no strategy at {ids(none)}: its {their} blind never goes there. The check "
+                        "plays them as well as they can be played, so the loss is that of what the result does say."]
+            if part:
+                notes += [f"{file} has a strategy for only some of the hands that can come to {ids(part)} (for "
+                        "none of them at some). A decision is locked whole or not at all, so the check plays these "
+                        "as well as they can be played, and the loss is that of what the result says at the others. "
+                        "(A result leaves out the hands its solve did not bring to a decision: by their own play, or "
+                        f"because no hand of the {their} blind met them there. Under a decision left to the solve, "
+                        "more hands come than the result has.)"]
+    if report.get("uneven_ranges"):
+        notes += ["The ranges of this check hold hand classes in part (some of a class's combos, or combos at "
+                "different weights). The combos of a class need not play alike then, and a result has one strategy "
+                "for a class: the loss includes what playing them alike costs, which can be much."]
+    sums = [report["sum_bb100"]] + [r[who]["sum_bb100"] for r in report["checked"] for who in (SB, BB)]
+    if any(_shows(x) for x in sums):
+        ante = Decimal(str(report["settings"].get("ante_bb") or 0)) > 0   # `describe` wrote it
+        why = ("a flop subset is not dealt quite evenly to the two" if report["flops"] != ALL_FLOPS
+               else "the solver's own figures are that far from exact")
+        notes += [f"The two players' values{', less the ante,' if ante else ''} added up to {_f2(min(sums))} to "
+                f"{_f2(max(sums))} bb/100 in these solves, "
+                f"not to zero: {why}. Where that sum moves with the "
+                f"strategies ({max(sums) - min(sums):.2f} here) the losses and the ends of their spans are that "
+                "uncertain, and a loss can come out under zero."]
+    return out + [line for note in notes for line in [""] + textwrap.wrap(note, 100)]
+
+
 def describe(s: Settings) -> dict:
     def sizes(v):
         return None if v is None else " ".join(x.text for x in v)
@@ -677,12 +1092,23 @@ def describe(s: Settings) -> dict:
 
 # ---- charts ---------------------------------------------------------------------------------------
 
+def _percent(value) -> float:
+    """A frequency as a percent. What is no number, or is none as a percent (`10**400`, `1e308`, NaN), is
+    no frequency of a result."""
+    if type(value) not in (int, float):
+        raise TypeError
+    pct = 100 * float(value)
+    if not math.isfinite(pct):
+        raise ValueError
+    return pct
+
+
 def _cell(value: float | None) -> str:
     """A frequency in two characters: blank for a hand that never gets here, `.` for never, `**` for
     always, otherwise the percent."""
     if value is None:
         return "  "
-    pct = int(round(100 * value))
+    pct = int(round(_percent(value)))
     return " ." if pct <= 0 else "**" if pct >= 100 else f"{pct:2d}"
 
 
@@ -698,14 +1124,14 @@ def grid(title: str, value, cell: int = 2) -> list[str]:
 def chart_node(node: dict, width: int, ev: bool = False) -> list[str]:
     hands = node["hands"]
     head = f"{node['id']}   {' / '.join(node['line']) or 'first to act'}   ->  {node['actor']} to act"
-    freqs = ", ".join(f"{a} {100 * f:.1f} %" for a, f in zip(node["actions"], node["freq"]))
-    out = [head, f"  {100 * node['reach']:.1f} % of deals get here; then {freqs}", ""]
+    freqs = ", ".join(f"{a} {_percent(f):.1f} %" for a, f in zip(node["actions"], node["freq"]))
+    out = [head, f"  {_percent(node['reach']):.1f} % of deals get here; then {freqs}", ""]
     grids = []
     for a, label in enumerate(node["actions"]):
         def value(cls, a=a):
             h = hands.get(cls)
             return _cell(None if h is None or h["ev_bb"] is None else h["freq"][a])
-        grids.append(grid(f"{label} ({100 * node['freq'][a]:.1f} %)", value))
+        grids.append(grid(f"{label} ({_percent(node['freq'][a]):.1f} %)", value))
     if ev:
         def value(cls):
             h = hands.get(cls)
@@ -871,8 +1297,9 @@ def estimate_table(a: argparse.Namespace, s: Settings) -> list[str]:
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=("script", "tree", "estimate", "solve", "chart"))
-    p.add_argument("args", nargs="*", help="solve: the result file; chart: the result file, then node ids")
+    p.add_argument("command", choices=("script", "tree", "estimate", "solve", "chart", "check"))
+    p.add_argument("args", nargs="*", help="solve: the result file; chart: the result file, then node ids; "
+                   "check: the result files to check")
     g = p.add_argument_group("the game (big blinds)")
     g.add_argument("--stack", default="100", help="effective stack (default 100)")
     g.add_argument("--ante", default="0", help="dead money in the pot before the blinds (default 0)")
@@ -912,11 +1339,14 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("--memory", type=float, help="GB the tree's estimate may take when the tool chooses the subset "
                    "(default: half of this machine's; the solver process takes about 1.1 times the estimate)")
     g.add_argument("--limit", type=float, help="estimate: stop a row once a cell is over this many GB")
-    g.add_argument("--accuracy", type=float, default=0.5, help="solve until exploitable for less than this many "
-                   "big blinds per 100 hands (default 0.5)")
+    g.add_argument("--accuracy", type=float, help="solve until exploitable for less than this many big blinds "
+                   f"per 100 hands (default {SOLVE_ACCURACY:g}; check: {CHECK_ACCURACY:g}; with full ranges the "
+                   "losses it prints are known to about four times this, in a game of a few hands they can "
+                   "move by much more)")
     g.add_argument("--time", type=int, default=86400, help="solve for at most this many seconds (default a day)")
     g.add_argument("--threads", type=int)
     g.add_argument("--save-tree", metavar="FILE", help="solve: also save the solved tree (dump_tree, no rivers)")
+    g.add_argument("--report", metavar="FILE", help="check: also write the numbers as JSON")
     g.add_argument("--ev", action="store_true", help="charts: add a chart of each hand's EV")
     g.add_argument("--width", type=int, help="charts: characters across (default: the terminal's)")
     g.add_argument("--solver", default=default_solver(), help="the solver binary (default ./solver)")
@@ -934,27 +1364,37 @@ def _can_write(path: str, what: str, for_solver: bool = False) -> None:
         raise PreflopError(f"{what}: cannot write {path}")
 
 
+def read_result(path: str) -> object:
+    """A result file as JSON. A string that cannot be written out again (a lone surrogate escape) is
+    refused here, in words, and not where it would be printed."""
+    with open(path) as f:
+        result = json.load(f)
+    json.dumps(result, ensure_ascii=False).encode("utf-8")  # UnicodeEncodeError is a ValueError
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parser().parse_intermixed_args(argv)
     try:
-        takes = {"chart": (1, None), "solve": (1, 1)}.get(a.command, (0, 0))
+        takes = {"chart": (1, None), "solve": (1, 1), "check": (1, None)}.get(a.command, (0, 0))
         if len(a.args) < takes[0]:
-            raise PreflopError(f"{a.command} needs a result file" if a.command == "chart"
+            raise PreflopError(f"{a.command} needs a result file" if a.command in ("chart", "check")
                                else "solve needs a file for the result")
         if takes[1] is not None and len(a.args) > takes[1]:
             raise PreflopError(f"{a.command}: do not know what to do with {' '.join(a.args[takes[1]:])!r} "
                                "(options are separate words: --stack 20, not \"--stack 20\")")
         if a.command == "chart":
             try:
-                with open(a.args[0]) as f:
-                    result = json.load(f)
-            except (OSError, ValueError) as e:
+                result = read_result(a.args[0])
+            except (OSError, ValueError, RecursionError) as e:
                 raise PreflopError(f"cannot read the result: {e}")
             try:
-                if not isinstance(result, dict) or result.get("version") != 1:
+                if not isinstance(result, dict) or type(result.get("version")) is not int:
                     raise KeyError("version")
+                if result["version"] != 1:
+                    raise PreflopError(OTHER_VERSION.format(name=a.args[0], version=result["version"]))
                 text = charts(result, a.args[1:], a.width, a.ev)
-            except (KeyError, TypeError, IndexError, AttributeError, ValueError):
+            except (KeyError, TypeError, IndexError, AttributeError, ValueError, ArithmeticError):  # a number no float holds
                 raise PreflopError(f"{a.args[0]} is not a result of `preflop.py solve`")
             print("\n".join(text))
             return 0
@@ -966,8 +1406,34 @@ def main(argv: list[str] | None = None) -> int:
             value = getattr(a, name)
             if value is not None and not (value > 0 and math.isfinite(value)):
                 raise PreflopError(f"--{name} is a number of gigabytes over 0")
+        if a.accuracy is None:
+            a.accuracy = CHECK_ACCURACY if a.command == "check" else SOLVE_ACCURACY
         if not (a.accuracy >= 0 and math.isfinite(a.accuracy)):
             raise PreflopError("--accuracy is a number of big blinds per 100 hands, 0 or more")
+        results = []
+        if a.command == "check":
+            for path in a.args:
+                try:
+                    results.append((path, read_result(path)))
+                except (OSError, ValueError, RecursionError) as e:
+                    raise PreflopError(f"cannot read the result {path}: {e}")
+                if not isinstance(results[-1][1], dict) or not isinstance(results[-1][1].get("settings"), dict):
+                    raise PreflopError(f"{path} is not a result of `preflop.py solve`")
+                version = results[-1][1].get("version")
+                if type(version) is int and version != 1:
+                    raise PreflopError(OTHER_VERSION.format(name=path, version=version))
+            if a.depth is None and a.postflop is None:
+                depths = [r["settings"].get("depth") for _, r in results]
+                for (path, _), depth in zip(results, depths):
+                    if depth == "file":
+                        raise PreflopError(f"{path} was solved with a postflop file: give `check` that file "
+                                           "(--postflop FILE), or a --depth")
+                    if depth not in DEPTHS:
+                        raise PreflopError(f"{path} is not a result of `preflop.py solve`")
+                if len(set(depths)) > 1:
+                    raise PreflopError("the results were solved with different postflop trees: say which the check "
+                                       "is on (--depth, or --postflop FILE)")
+                a.depth = depths[0]
         s = settings_from(a)
         root = build_tree(s)
         if a.command == "tree":
@@ -980,11 +1446,26 @@ def main(argv: list[str] | None = None) -> int:
             _can_write(a.args[0], "the result")
             if a.save_tree:
                 _can_write(a.save_tree, "--save-tree", for_solver=True)
+        if a.command == "check":
+            for path, r in results:
+                _fits(path, r, s, [n for n in walk(root) if n.kind == "decision"])
+            if a.report:
+                _can_write(a.report, "--report")
         name, flops, notes, estimated = pick_flops(a, s)
         for note in notes:
             print(note, file=sys.stderr)
         if a.command == "script":
             print("\n".join(script(s, flops, root) + ["add_all_flops"]))
+            return 0
+        if a.command == "check":
+            report = check(a.solver, s, name, flops, results, a.accuracy, a.time, a.threads, estimated)
+            if a.report:
+                try:
+                    with open(a.report, "w") as f:
+                        json.dump(report, f)
+                except OSError as e:
+                    raise PreflopError(f"cannot write --report: {e}")
+            print("\n".join(check_text(report)))
             return 0
         result = solve(a.solver, s, name, flops, a.accuracy, a.time, a.threads, a.save_tree, estimated)
         try:

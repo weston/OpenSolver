@@ -965,7 +965,8 @@ void Solver::showdown_value(const GNode& n, int p, const float* ro, float* out) 
     for (int h = 0; h < Hp; ++h) body(h);
     return;
   }
-  if (allin_tables && !(ar.e2.empty() && ar.e2b.empty()) && !g_.payoff().icm.enabled) {
+  // (`allin_tables` off is for tests, which compare the two ways; a set without boards has only its table.)
+  if ((allin_tables || ar.boards.empty()) && !(ar.e2.empty() && ar.e2b.empty()) && !g_.payoff().icm.enabled) {
     // value(h) = scale * sum_o ro[o] * (W*wins + T*ties + L*losses) over the runouts. Without ICM a
     // tie pays the midpoint, so with e2 = 2*wins + ties and V = runouts per disjoint pair,
     // value(h) = (W - L) / (2V) * sum_o ro[o] * e2[h][o] + L * compat(h). For IP the table is read

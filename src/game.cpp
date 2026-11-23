@@ -169,15 +169,50 @@ void GameTree::compute_flop_compat() {
   }
 }
 
+namespace {
+// The runouts of an all-in before the river, in the order their values are summed: the terminal's
+// board, then every river (a turn all-in) or every turn and river (a flop all-in) of the cards left.
+template <class F>
+void for_each_runout(const AllinRunouts& ar, F&& f) {
+  std::vector<int> b(ar.cards.begin(), ar.cards.end());
+  const uint64_t mask = board_mask(b);
+  std::vector<int> avail;
+  for (int c = 0; c < NUM_CARDS; ++c)
+    if (!(mask & card_bit(c))) avail.push_back(c);
+  if (b.size() == 4) {
+    for (int c : avail) {
+      b.push_back(c);
+      f(b);
+      b.pop_back();
+    }
+    return;
+  }
+  for (size_t x = 0; x < avail.size(); ++x)
+    for (size_t y = x + 1; y < avail.size(); ++y) {
+      b.push_back(avail[x]);
+      b.push_back(avail[y]);
+      f(b);
+      b.pop_back();
+      b.pop_back();
+    }
+}
+}  // namespace
+
+void GameTree::store_allin_boards(AllinRunouts& ar) {
+  if (ar.exact || !ar.boards.empty()) return;
+  ar.boards.reserve(ar.runouts);
+  for_each_runout(ar, [&](const std::vector<int>& b) { ar.boards.push_back(static_cast<uint32_t>(showdown_board_id(b))); });
+}
+
+void GameTree::restore_allin_boards() {
+  for (AllinRunouts& ar : allins) store_allin_boards(ar);
+}
+
 int GameTree::allin_runouts_id(const std::vector<int>& board) {
   uint64_t mask = board_mask(board);
   auto it = allin_index_.find(mask);
   if (it != allin_index_.end()) return it->second;
   AllinRunouts ar;
-  std::vector<int> avail;
-  for (int c = 0; c < NUM_CARDS; ++c)
-    if (!(mask & card_bit(c))) avail.push_back(c);
-  std::vector<int> b = board;
   if (board.empty()) {
     // Preflop all-in (or a pure preflop tree's exits): exact equity via the hand-vs-hand table
     // (Solver::showdown_value handles `exact` entries; no sampled boards).
@@ -187,29 +222,103 @@ int GameTree::allin_runouts_id(const std::vector<int>& board) {
     // solver worker would deadlock: generation uses the thread pool, whose other workers would be
     // blocked on this static initialiser.
     (void)pf_table();
-  } else if (board.size() == 4) {
-    for (int c : avail) {
-      b.push_back(c);
-      ar.boards.push_back(static_cast<uint32_t>(showdown_board_id(b)));
-      b.pop_back();
-    }
-    ar.scale = 1.0f / static_cast<float>(avail.size() - 4);  // rivers compatible with both hands
   } else {
-    for (size_t x = 0; x < avail.size(); ++x)
-      for (size_t y = x + 1; y < avail.size(); ++y) {
-        b.push_back(avail[x]);
-        b.push_back(avail[y]);
-        ar.boards.push_back(static_cast<uint32_t>(showdown_board_id(b)));
-        b.pop_back();
-        b.pop_back();
-      }
-    double k = static_cast<double>(avail.size() - 4);
-    ar.scale = static_cast<float>(2.0 / (k * (k - 1.0)));  // 1 / C(k, 2)
+    ar.cards.assign(board.begin(), board.end());
+    const size_t left = static_cast<size_t>(NUM_CARDS) - board.size();
+    const double k = static_cast<double>(left - 4);  // cards a pair of hands leaves for the runout
+    if (board.size() == 4) {
+      ar.runouts = static_cast<uint16_t>(left);
+      ar.scale = 1.0f / static_cast<float>(left - 4);  // rivers compatible with both hands
+    } else {
+      ar.runouts = static_cast<uint16_t>(left * (left - 1) / 2);
+      ar.scale = static_cast<float>(2.0 / (k * (k - 1.0)));  // 1 / C(k, 2)
+    }
+    // A postflop tree has its boards and a table for every set, as it always had. A preflop tree has
+    // a set per flop of its subset, which is most of its memory: plan_allins decides once all exist.
+    if (!cfg.preflop) {
+      store_allin_boards(ar);
+      ar.table = true;
+    }
   }
   int id = static_cast<int>(allins.size());
   allins.push_back(std::move(ar));
   allin_index_[mask] = id;
   return id;
+}
+
+// What a stored board takes at least: an entry per hand it does not block (its strength groups, which
+// need the evaluator, are left out, so a tie in bytes goes to the boards' side by a little).
+uint64_t GameTree::showdown_board_bytes(uint64_t m) const {
+  uint64_t live = 0;
+  int cs[5], n = 0;
+  for (int c = 0; c < NUM_CARDS; ++c)
+    if (m & card_bit(c)) cs[n++] = c;
+  for (int p = 0; p < 2; ++p) {
+    int64_t blocked = 0;
+    for (int i = 0; i < n; ++i) {
+      blocked += static_cast<int64_t>(hands_with_card[p][cs[i]].size());
+      for (int j = i + 1; j < n; ++j) blocked -= local[p][combo_index(cs[i], cs[j])] >= 0;  // counted twice
+    }
+    live += hands[p].size() - static_cast<uint64_t>(blocked);
+  }
+  return live * sizeof(SdEntry) + sizeof(ShowdownBoard);
+}
+
+uint64_t GameTree::allin_boards_missing_bytes() const {
+  std::vector<uint64_t> need;
+  for (const AllinRunouts& ar : allins) {
+    if (ar.exact || !ar.boards.empty()) continue;
+    for_each_runout(ar, [&](const std::vector<int>& b) {
+      const uint64_t m = board_mask(b);
+      if (!showdown_index_.count(m)) need.push_back(m);
+    });
+  }
+  std::sort(need.begin(), need.end());
+  need.erase(std::unique(need.begin(), need.end()), need.end());
+  uint64_t bytes = 0;
+  for (uint64_t m : need) bytes += showdown_board_bytes(m);
+  return bytes;
+}
+
+void GameTree::plan_allins() {
+  if (!cfg.preflop) return;
+  // Boards that only all-ins read (no river showdown of the tree has them), by the level that reads
+  // them: [0] flop sets, [1] turn sets. A flop set's runouts are also those of its flop's turn sets.
+  std::vector<uint64_t> need[2];
+  uint64_t tab[2] = {0, 0};
+  for (const AllinRunouts& ar : allins) {
+    if (ar.exact) continue;
+    const int lvl = ar.cards.size() == 4;
+    tab[lvl] += allin_table_bytes(ar);
+    for_each_runout(ar, [&](const std::vector<int>& b) {
+      const uint64_t m = board_mask(b);
+      if (!showdown_index_.count(m)) need[lvl].push_back(m);
+    });
+  }
+  for (auto& v : need) {
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()), v.end());
+  }
+  auto board_bytes = [&](uint64_t m) { return showdown_board_bytes(m); };
+  uint64_t only[2] = {0, 0}, both = 0;
+  for (size_t i = 0, j = 0; i < need[0].size() || j < need[1].size();) {
+    if (j == need[1].size() || (i < need[0].size() && need[0][i] < need[1][j])) only[0] += board_bytes(need[0][i++]);
+    else if (i == need[0].size() || need[1][j] < need[0][i]) only[1] += board_bytes(need[1][j++]);
+    else both += board_bytes(need[0][i]), ++i, ++j;
+  }
+  // The tree's bytes for each choice of levels with tables (bit 0: flop sets, bit 1: turn sets): the
+  // tables, and the boards a level without tables still reads. The smallest wins, tables on a tie
+  // (they are also the faster way to value a set). ICM values every runout on its board.
+  const uint64_t cost[4] = {only[0] + only[1] + both, tab[0] + only[1] + both, tab[1] + only[0] + both, tab[0] + tab[1]};
+  int best = 0;
+  if (!payoff_.icm.enabled)
+    for (int k = 1; k < 4; ++k)
+      if (cost[k] <= cost[best]) best = k;
+  for (AllinRunouts& ar : allins) {
+    if (ar.exact) continue;
+    ar.table = (best >> (ar.cards.size() == 4)) & 1;
+    if (!ar.table) store_allin_boards(ar);
+  }
 }
 
 namespace {
@@ -581,6 +690,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   std::vector<int> board = cfg.board;
   Filler f{*this, iso, {}, {}, {}};
   f.fill(0, aroot.get(), board);
+  plan_allins();
   select_rows(false);
   if (allocate) allocate_storage();
   return true;
@@ -620,6 +730,10 @@ void GameTree::select_rows(bool compact) {
 }
 
 namespace {
+// Runouts whose ranks are held back before they are added to the table (see the fill without boards).
+// Measured on 200 flops with every hand (M4, 10 threads, whole build): 1 runout 9.5 s, 4 7.3 s,
+// 8 7.1 s, 16 7.0 s, 32 7.2 s, 64 7.6 s - flat from 4 to 32, so the value is not a tuned one.
+constexpr int ALLIN_FILL_BLOCK = 16;
 template <class E>
 void fill_allin_table(const GameTree& g, const AllinRunouts& ar, const std::vector<uint8_t>& compat, std::vector<E>& e2) {
   const int H0 = g.num_hands(0), H1 = g.num_hands(1);
@@ -651,41 +765,100 @@ void fill_allin_table(const GameTree& g, const AllinRunouts& ar, const std::vect
     }
   }
 }
-}  // namespace
 
-uint64_t GameTree::allin_table_plan(std::vector<uint32_t>* todo) const {
-  if (cfg.preflop) return 0;
-  const uint64_t pairs = static_cast<uint64_t>(num_hands(0)) * num_hands(1);
-  uint64_t total = 0;
-  for (uint32_t i = 0; i < allins.size(); ++i) {
-    const AllinRunouts& ar = allins[i];
-    if (ar.exact || ar.boards.empty()) continue;
-    const uint64_t per = pairs * (ar.boards.size() <= 127 ? 1 : 2);
-    if (total + per > (uint64_t(512) << 20)) break;
-    total += per;
-    if (todo) todo->push_back(i);
-  }
-  return total;
+// The same counts for a set whose boards are not stored: strengths straight from the evaluator, so
+// nothing but the table is ever allocated for the set. The runouts are taken ALLIN_FILL_BLOCK at a
+// time: a row of the table then takes the ranks of all of them while it sits in the first-level cache,
+// instead of the whole table (3.5 MB for a flop with every hand) being streamed once per runout.
+template <class E>
+void fill_allin_table(const GameTree& g, const AllinRunouts& ar, std::vector<E>& e2) {
+  const int H0 = g.num_hands(0), H1 = g.num_hands(1);
+  const int B = ALLIN_FILL_BLOCK;
+  e2.assign(static_cast<size_t>(H0) * H1, 0);
+  std::vector<uint32_t> s0(H0), s1(H1), all;  // strength, 0 for a hand the board blocks
+  std::vector<int16_t> r0(static_cast<size_t>(B) * H0), r1(static_cast<size_t>(B) * H1);
+  all.reserve(static_cast<size_t>(H0) + H1);
+  int nb = 0;
+  auto flush = [&] {
+    for (int h = 0; h < H0; ++h) {
+      E* row = e2.data() + static_cast<size_t>(h) * H1;
+      for (int b = 0; b < nb; ++b) {
+        const int16_t rh = r0[static_cast<size_t>(b) * H0 + h];
+        if (rh < 0) continue;
+        const int16_t* r = r1.data() + static_cast<size_t>(b) * H1;
+        for (int o = 0; o < H1; ++o) row[o] = static_cast<E>(row[o] + (rh > r[o]) + (rh >= r[o]));
+      }
+    }
+    nb = 0;
+  };
+  for_each_runout(ar, [&](const std::vector<int>& b) {
+    const uint64_t mask = board_mask(b);
+    int cs[7];
+    for (int i = 0; i < 5; ++i) cs[i] = b[i];
+    all.clear();
+    for (int h = 0; h < H0; ++h) {
+      s0[h] = 0;
+      if (combo_mask(g.hands[0][h]) & mask) continue;
+      cs[5] = g.hcard[0][0][h];
+      cs[6] = g.hcard[0][1][h];
+      all.push_back(s0[h] = evaluate(cs, 7));
+    }
+    for (int o = 0; o < H1; ++o) {
+      s1[o] = 0;
+      if (combo_mask(g.hands[1][o]) & mask) continue;
+      const int32_t same = g.same_hand[1][o];
+      if (same >= 0) {
+        s1[o] = s0[same];
+        continue;
+      }
+      cs[5] = g.hcard[1][0][o];
+      cs[6] = g.hcard[1][1][o];
+      all.push_back(s1[o] = evaluate(cs, 7));
+    }
+    // Ranks in 16 bits (a board has at most 2 * 1,081 hands), so the pair loop above is narrow.
+    std::sort(all.begin(), all.end());
+    all.erase(std::unique(all.begin(), all.end()), all.end());
+    auto rank = [&](uint32_t v) { return static_cast<int16_t>(std::lower_bound(all.begin(), all.end(), v) - all.begin()); };
+    int16_t* q0 = r0.data() + static_cast<size_t>(nb) * H0;
+    int16_t* q1 = r1.data() + static_cast<size_t>(nb) * H1;
+    for (int h = 0; h < H0; ++h) q0[h] = s0[h] ? rank(s0[h]) : int16_t(-1);
+    for (int o = 0; o < H1; ++o) q1[o] = s1[o] ? rank(s1[o]) : INT16_MAX;  // above every rank: counts 0
+    if (++nb == B) flush();
+  });
+  flush();
+  // Pairs sharing a card never meet: their counts are 0, so a reach on them contributes nothing.
+  for (int h = 0; h < H0; ++h)
+    for (int k = 0; k < 2; ++k)
+      for (uint16_t o : g.hands_with_card[1][g.hcard[0][k][h]]) e2[static_cast<size_t>(h) * H1 + o] = 0;
 }
+}  // namespace
 
 void GameTree::build_allin_tables() {
   const int H0 = num_hands(0), H1 = num_hands(1);
   std::vector<uint32_t> todo;
-  allin_table_plan(&todo);
   bool built = false;
-  for (uint32_t i : todo) built |= !(allins[i].e2.empty() && allins[i].e2b.empty());
+  for (uint32_t i = 0; i < allins.size(); ++i) {
+    if (!allins[i].table) continue;
+    todo.push_back(i);
+    built |= !(allins[i].e2.empty() && allins[i].e2b.empty());
+  }
   if (todo.empty() || built) return;
   // Pairs sharing a card never meet: their counts stay 0, so a reach on them contributes nothing.
-  std::vector<uint8_t> compat(static_cast<size_t>(H0) * H1);
-  for (int h = 0; h < H0; ++h) {
-    const uint64_t mh = combo_mask(hands[0][h]);
-    for (int o = 0; o < H1; ++o) compat[static_cast<size_t>(h) * H1 + o] = (combo_mask(hands[1][o]) & mh) == 0;
-  }
+  std::vector<uint8_t> compat;
+  for (uint32_t i : todo)
+    if (!allins[i].boards.empty() && compat.empty()) {
+      compat.resize(static_cast<size_t>(H0) * H1);
+      for (int h = 0; h < H0; ++h) {
+        const uint64_t mh = combo_mask(hands[0][h]);
+        for (int o = 0; o < H1; ++o) compat[static_cast<size_t>(h) * H1 + o] = (combo_mask(hands[1][o]) & mh) == 0;
+      }
+    }
   std::function<void(int)> fn = [&](int k) {
     AllinRunouts& ar = allins[todo[static_cast<size_t>(k)]];
     ar.valid = static_cast<int>(std::lround(1.0 / static_cast<double>(ar.scale)));
-    if (ar.boards.size() <= 127) fill_allin_table(*this, ar, compat, ar.e2b);  // 2 * 127 fits uint8
-    else fill_allin_table(*this, ar, compat, ar.e2);
+    const bool small = ar.runouts <= 127;  // 2 * 127 fits uint8
+    if (ar.boards.empty()) small ? fill_allin_table(*this, ar, ar.e2b) : fill_allin_table(*this, ar, ar.e2);
+    else small ? fill_allin_table(*this, ar, compat, ar.e2b) : fill_allin_table(*this, ar, compat, ar.e2);
   };
   pool().parallel_for(static_cast<int>(todo.size()), fn);
 }
@@ -701,9 +874,8 @@ uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds, bool compact
   for (auto& s : showdowns)
     b += (s.ent[0].size() + s.ent[1].size()) * sizeof(SdEntry) + (s.groups[0].size() + s.groups[1].size()) * 4 +
          sizeof(ShowdownBoard);
-  uint64_t tables = 0;
-  for (auto& a : allins) tables += a.e2.size() * sizeof(uint16_t) + a.e2b.size();
-  b += tables ? tables : allin_table_plan(nullptr);  // before allocate_storage builds them
+  for (auto& a : allins)
+    if (a.table) b += allin_table_bytes(a);  // built by allocate_storage, counted before as after
   return b;
 }
 

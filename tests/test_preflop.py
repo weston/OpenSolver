@@ -479,9 +479,11 @@ def integration(exe):
               "--range-bb AhAs: every small blind class has an EV, the big blind's chart is the one hand, no nan")
         status, out, _ = run("estimate", "--stack", "20", "--flops", flop_file, "--depth", "flop", "--solver", exe)
         check(status == 0 and f"{before:,}" in out, "estimate prints that figure")
-        status, out, err = run("script", "--stack", "20", "--memory", "0.5", "--solver", exe)
-        check(status == 0 and "flops: the largest shipped subset under 512 MB" in err and out.rstrip().endswith("add_all_flops")
-              and 10 <= sum(l.startswith("add_to_subset") for l in out.splitlines()) <= 50,
+        # a quarter of a gigabyte: more than the smallest file and less than the largest (#494 made the
+        # flop-depth tree a quarter of what it was, so half a gigabyte holds 100 flops now)
+        status, out, err = run("script", "--stack", "20", "--memory", "0.25", "--solver", exe)
+        check(status == 0 and "flops: the largest shipped subset under 256 MB" in err and out.rstrip().endswith("add_all_flops")
+              and 25 <= sum(l.startswith("add_to_subset") for l in out.splitlines()) <= 100,
               f"without --flops the largest shipped subset under the budget is taken ({err.strip()[:60]})")
         status, out, err = run("script", "--stack", "20", "--memory", "0.01", "--solver", exe)
         check(status == 1 and "--depth" in err, "and when not even 10 flops fit, that is said")

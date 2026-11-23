@@ -910,7 +910,7 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("--flops", help=f"a number we ship a subset for ({', '.join(map(str, SHIPPED))}), a flop file, "
                    "or `all`; default: the largest shipped subset that fits --memory")
     g.add_argument("--memory", type=float, help="GB the tree's estimate may take when the tool chooses the subset "
-                   "(default: half of this machine's; the solver process takes about 1.3 times the estimate)")
+                   "(default: half of this machine's; the solver process takes about 1.1 times the estimate)")
     g.add_argument("--limit", type=float, help="estimate: stop a row once a cell is over this many GB")
     g.add_argument("--accuracy", type=float, default=0.5, help="solve until exploitable for less than this many "
                    "big blinds per 100 hands (default 0.5)")

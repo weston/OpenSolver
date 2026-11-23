@@ -653,7 +653,8 @@ With the setting off nothing changes: `turn`, `flop_srp_2` and the preflop tree 
 results and root strategy as before the change, character for character, after 24 / 24 / 12 iterations.
 
 **Left on the table.**
-- Preflop trees get no all-in tables (`allin_table_plan` returns 0 for them), so a collapsed check-down
+- (Done for flop exits in #494, last section.) Preflop trees get no all-in tables (`allin_table_plan`
+  returns 0 for them), so a collapsed check-down
   there still sums over its 48 or 1,176 showdown boards each time it is valued. A table per flop is
   1326 x 1326 x 2 bytes = 3.5 MB, less than the 19 MB of showdown boards it would replace when nothing
   else on that flop needs them. Expected to be the larger part of what is left of the 15 s above.
@@ -809,7 +810,8 @@ checked down after it (`set_collapse_checkdowns on`), 16-bit rows. M4, 10 thread
   of every flop. `GameTree::allin_table_plan` returns 0 for a preflop tree, so none of them uses the
   hand-against-hand outcome tables a postflop all-in has (3.5 MB for a flop, and one table would serve
   every exit of that flop). That is the first thing to try for the memory and the time of these trees.
-  Not done here.
+  Not done here; done in #494 (last section), which also takes the 30 % and the cost of the estimate
+  below away from trees that stop at the flop.
 - **The process takes 1.3 to 1.4 times the estimate.** A 200-flop build and solve: 2,837 MB estimated,
   3,686 MB maximum resident size of the solver (`/usr/bin/time -l ./solver`); 10 flops: 159 MB estimated,
   220 MB footprint once built. `heap` on the 200-flop solve: 1.47 million allocations, 3.75 GB, which
@@ -836,4 +838,132 @@ checked down after it (`set_collapse_checkdowns on`), 16-bit rows. M4, 10 thread
 time 33.6 bb/100 at 61 s, 17.1 at 193 s, 1.21 at 538 s, 0.57 at 675 s. 10 flops: 35 s to 0.93 bb/100. The
 values differ with the subset as in the section above: the small blind wins 0.013 bb a hand with 200
 flops and 0.021 with 10.
+
+## Outcome tables for the flop exits of a preflop tree (#494)
+
+A preflop tree values every all-in and every checked-down line of a flop on that flop's 1,176 turn and
+river runouts. Until here it did so on stored showdown boards, one per runout, 16 MB a flop with every
+hand; a postflop tree has had a hand-against-hand table of `2 * wins + ties` for the same job since the
+all-in tables. All figures: M4, 10 threads, the tree of `tools/preflop.py` at 100 bb, 16-bit rows.
+
+**One evaluation, table against boards** (a scratch program calling `Solver::showdown_value` both ways
+on one node; random reaches with 0 %, 30 % and 90 % zeros; H = hands per player):
+
+| set | H | table | boards | one evaluation, table | boards, 1 thread | boards, 10 threads |
+|---|---|---|---|---|---|---|
+| flop, 1,176 runouts | 1,176 | 2.8 MB | 16.0 MB | 27 to 79 us | 2.9 to 4.4 ms (38 to 112x) | 8 to 23x |
+| flop | 840 | | | | 53 to 169x | |
+| flop | 317 | | | | 107 to 344x | |
+| flop | 41 | | | | 345 to 609x | |
+| turn, 48 runouts | 1,128 | 1.27 MB | 0.65 MB | 29 to 81 us | 120 to 168 us (1.6 to 4.2x) | 0.8 to 2.2x |
+| turn | 818 | | | | 2.2 to 4.9x | |
+| turn | 313 | | | | 4.8 to 12.6x | |
+| turn | 41 | | | | 14 to 24x | |
+
+A flop's table is both smaller and faster than its boards. A turn's is faster and, with every hand, twice
+the size of its 48 boards; with 41 hands the 10-thread boards path is slower than the serial one (17 us
+against 5 us), which nothing here changes.
+
+**Which sets get a table** is decided by the tree's size, with no constant: `GameTree::plan_allins`
+adds up the tree for the four choices (tables for the flop sets, for the turn sets, for both, for
+neither): the tables, plus the boards that a level without tables still reads and no river showdown of
+the tree already stores. The smallest wins, tables on a tie. Boards of a set with a table are never
+built. What that gives for the default tree:
+
+- last bet on the flop, or no postflop betting: flop tables, no boards at all;
+- last bet on the turn: boards only. The flop sets' runouts are the turn sets' boards, and turn tables
+  for a flop are 49 x 1.76 = 86 MB against 16 MB of boards, so tables cost more whichever level has them;
+- river betting: every board is a river showdown's anyway, so a table is only an addition. None.
+
+ICM values a tie differently from the middle of a win and a loss, so the tables cannot be used and the
+boards are kept (stored when ICM is switched on after the build; `set_icm` counts them first and refuses
+when they do not fit: 11,750 MB on top of the 6.8 GB tree for all flops). Postflop trees are as before: boards
+and a table for every set (at most one flop set and 49 turn sets, 71 MB with every hand); the cap of
+512 MB that could never be reached there is gone.
+
+**Results** (same script, old binary at `9568e92` against this change; `go N steps`, whole command =
+build + solve + `calc_results`; resident = `/usr/bin/time -l`'s maximum, in MiB as the estimates are):
+
+| tree | | old | new | |
+|---|---|---|---|---|
+| 10 flops, flop bets, 50 steps | solve | 18.63 s | 0.84 s | 22x |
+| | whole command | 20.94 s | 1.10 s | 19x |
+| | maximum resident | 236 MiB | 77 MiB | 3.1x |
+| 200 flops, flop bets, 20 steps | solve | 132.2 s | 4.98 s | 27x |
+| | whole command | 180.4 s | 9.9 s | 18x |
+| | maximum resident | 3,522 MiB | 836 MiB | 4.2x |
+| 10 flops, no postflop bets, 20 steps | solve | 1.73 s | 0.16 s | 10.7x |
+| | whole command | 2.84 s | 0.38 s | 7.5x |
+| | maximum resident | 227 MiB | 69 MiB | 3.3x |
+| 10 flops, turn bets, 20 steps | solve | 35.80 s | 35.91 s | unchanged, as planned |
+| | maximum resident | 891 MiB | 889 MiB | |
+| all 1,755 flops, flop bets, 20 steps | solve | did not fit (13 GB estimated) | 42.8 s | |
+| | whole command | | 85.5 s | |
+| | maximum resident | | 7,037 MiB | |
+
+Time to accuracy with `tools/preflop.py solve` (0.5 bb/100): the default command (200 flops) 31 s, 26 of
+them solving, where it was 810 s and 717 s; 10 flops 2.1 s where it was 35 s; **all 1,755 flops 275 s
+(229 solving) in 7.1 GB**, a solve this machine could not hold before. The small blind's value: 0.0198
+bb a hand with 10 flops, 0.0128 with 200, 0.0131 with all of them.
+
+`estimate_tree` (preflop configs build a tree without storage to count it): 200 flops at flop depth 0.10
+s where it was 12.7 s, all flops 0.56 s where it was 67 s; nothing is built for a set with a table.
+Estimates (MiB): flop depth 38 / 96 / 192 / 385 / 770 for 10 to 200 flops and 6,763 for all (159 to 2,837
+and 13,156 before); no postflop betting 33 to 670 and 5,886. Turn and river depths are unchanged (802 for
+10 flops, 85,988). The process against the estimate at flop depth: 842 MiB for 770 and 7,111 for 6,763 in
+whole solves with the tool (1.09 and 1.05), where the old tree took 3,522 for 2,837 (1.24): most of what
+the estimate left out went with the boards. A 10-flop tree takes 77 MiB for 38, about 40 MiB that does
+not grow with the flops. At turn depth: 889 MiB for 802 (1.11).
+
+**Filling the tables** is now what the build of such a tree spends its time on: 0.33 CPU-seconds a flop
+(one rank comparison for each of 1,326 x 1,326 hand pairs on 1,176 runouts), 7.0 s for 200 flops and
+about a minute for all of them on 10 threads. Taking the runouts 16 at a time, so that a row of the table
+gets the ranks of all 16 while it is in the cache instead of the 3.5 MB table being streamed once per
+runout: whole 200-flop build 9.5 s (1 at a time), 7.3 (4), 7.1 (8), 7.0 (16), 7.2 (32), 7.6 (64). Flat
+from 4 to 32; 16 is in the code.
+
+**Same values?** The counts in a table built without boards equal those of a table built from the
+boards exactly (`test_solver`'s `[preflop runouts]`: 3/3 and 125/125 tables). The values are the same
+sum in another order, as with the check-downs above: on a flop all-in for 100 bb with random reaches,
+against the sum taken in double precision, the table is off by at most 4.7 and 1.5 rms on values up to
+3.7 million, the boards by 3.1 and 1.0. Neither is the exact one. Two solves therefore differ in the
+last digits from the first iteration (10 flops, flop bets: exploitability 528.109 against 528.119 before
+any iteration, 65.192 against 65.191 after 5, 2.586 against 2.628 after 50) and agree to 3 decimals in
+EV. A trap for whoever tests this: the two ways differ wildly on hands that hold a card of the flop,
+whose values nobody reads (`flop_deal` zeroes them and their reaches); a test must zero those reaches as
+the solver does.
+
+Postflop trees: the nine bench trees print the same `calc_results`, root strategy and root EVs as before
+after 12 iterations, character for character, and so does `preflop_full` (river betting, so no tables)
+after 4.
+
+**Tried and not kept: tables in a tree with turn bets** (env switches in a scratch build; 10 flops, 20
+steps; in that build a set with a table kept its boards too):
+
+| | solve | exploitability |
+|---|---|---|
+| boards only (what is merged) | 36.2 s | 31.617 |
+| + flop tables | 34.4 s (-5 %) | 31.605 |
+| + flop and turn tables | 19.0 s (1.9x) | 31.591 |
+
+Flop tables there are 3.5 MB a flop on top of a tree of 80 MB a flop: 5 % of the time for 4 % of the
+memory. Turn tables are 86 MB a flop (49 turn cards, a byte per hand pair) and would replace the 16 MB
+of boards: 1.9x for about twice the tree. (The memory of these three runs was measured with the tree
+built twice in the process, a mistake in the script, so only the arithmetic is given.) A rule that
+trades memory for time needs a price, and none is known here that is not a made-up constant, so the
+merged rule is the smallest tree. Left for a follow-up, with the ways the tables could shrink until
+they are the smaller side: only the hands that are live on the turn card (1,128 of 1,326), half the
+table when both players hold the same hands (who wins is antisymmetric), one table for turn cards that
+are the same up to suits.
+
+**Left on the table.**
+- The turn-level trade above, and flop tables as an extra in trees with turn or river bets (5 % for 4 %).
+- `add_all_flops` on a tree that already has its flops builds the tree again while the first is held
+  (found by the script mistake above: the old 200-flop tree peaked at 7.2 GB that way instead of 3.7).
+- A ties table next to the wins would let ICM use tables.
+- The table fill: about a minute for all flops. Suit-isomorphic runouts of a flop have the same ranks
+  up to a permutation of hands; both players holding the same hands halves the comparisons.
+- `tools/preflop.py` still picks its default among the shipped subsets; all 1,755 flops now fit in half
+  of a 16 GB machine at flop depth. Whether the default should be all flops is the accuracy study's
+  question (#483).
 

@@ -168,6 +168,9 @@ struct AllinRunouts {
   std::vector<int16_t> tri16;
   std::vector<uint16_t> live;
   int valid = 0;
+  // (A compact set whose cards leave fewer than two hands has no pair to keep, so it reads as not
+  // built. Its value is then the zeros of a set without boards, which is its value: no hand in it
+  // meets another.)
   bool built() const { return !(e2.empty() && e2b.empty() && tri8.empty() && tri16.empty()); }
 };
 

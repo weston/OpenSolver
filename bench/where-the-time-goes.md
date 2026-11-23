@@ -1039,6 +1039,13 @@ EV OOP -7.413 / -7.414 and exploitable 31.57 to 31.62 across them. So:
   tables come on top (1,159 MiB). With both levels no board is left and the tree is 11 % over the
   smallest (888 for 802; 2,270 for 2,039 with 25 flops; 4,509 for 4,049 with 50).
 
+**To an accuracy with the tool** (`tools/preflop.py solve --depth turn --flops 25`, to its default
+0.5 bb/100; one run each, one after the other, the machine at load 20 for both, so the ratio is the
+figure and not the minutes): the old binary 1,567 s (8,925 s of processor time) and 2,193 MiB at its
+peak; the new one, under `auto`, 584 s (3,255 s) and 2,473 MiB. 2.7 times, to the same answer (small
+blind +0.067 bb a hand both, exploitable 0.47 and 0.48 bb/100). The steps were not counted, so how much
+of that is the time per step and how much a different number of steps is not known.
+
 **The rule** (`set_outcome_tables auto`, the default): tables at both levels if the tree with them
 fits in the memory available, by the margin `build_tree` already keeps for its other automatic storage
 choices (nine tenths of what is free); otherwise the smallest tree, as before. Nothing in between: the
@@ -1049,10 +1056,14 @@ under `auto` too, so a tree can come out 11 % over its estimate when it has the 
 whatever the memory. ICM keeps the boards as before.
 
 **Not done.**
-- Quiet-machine figures, and time to an accuracy with `tools/preflop.py` at turn depth (the iterations
-  give the same numbers a step, so it should follow the time per step; not run).
+- Quiet-machine figures.
+- `auto` through the commands is tested only where memory is plentiful: nothing here can make a test
+  machine short of it, so the limit itself is tested on `GameTree` alone (to the byte).
+- The tool and the viewer choose a number of flops by `estimate_tree`, which under `auto` is the smallest
+  tree: with room on the machine the tree built is 11 % over a `--memory` the user typed.
 - A compact table is filled as a full one and then folded, so the fill is no faster and holds the full
   table of one set per thread while it runs. Still about a minute for all flops.
 - Trees with two different ranges keep the full tables. One table for turn cards that are the same up
   to suits (#494's third way) is not here.
-- `estimate_tree` says the smallest tree; it does not say what `auto` will build.
+- `estimate_tree` says the smallest tree; it does not say what `auto` will build
+  (`estimate_rebuild_tree` says what it did build).

@@ -697,14 +697,19 @@ static bool preflop_runout_tables() {
     pm.icm.enabled = true;
     pm.icm.stacks[0] = pm.icm.stacks[1] = 10000;
     for (int p = 0; p < 2; ++p) pm.icm.points[p] = {{0.0, 0.0}, {10000.0, 50.0}, {20000.0, 80.0}};
+    // The one built under it is asked for tables everywhere, with all the room: it gets none (a table
+    // cannot say what a runout pays under ICM, and a set with a table and no boards would be worth 0).
     GameTree gi, gj;
     gi.set_payoff(pm);
+    gi.allin_plan = 3;
+    gi.table_limit = ~uint64_t(0);
     if (!gi.build(cfg, err) || !gj.build(cfg, err)) return false;
     gj.set_payoff(pm);
     Solver si(gi), sj(gj);
     long icm_bad = 0, icm_n = 0;
     bool icm_boards = gi.showdowns.size() == gj.showdowns.size() && gi.nodes.size() == gj.nodes.size();
     for (const AllinRunouts& ar : gj.allins) icm_boards = icm_boards && (ar.exact || !ar.boards.empty());
+    for (const AllinRunouts& ar : gi.allins) icm_boards = icm_boards && (ar.exact || (!ar.table && !ar.built() && !ar.boards.empty()));
     for (size_t k = 0; k < vals.size() && k < 12 && icm_boards; ++k) {
       const Val& v = vals[k];
       std::vector<float> a(v.v.size()), b(v.v.size());

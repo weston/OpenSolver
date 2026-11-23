@@ -956,14 +956,20 @@ def check_collapse_checkdowns(u):
 
 def check_outcome_tables(u):
     """set_outcome_tables (#496): the tables of a preflop tree's runout sets cost memory with wide ranges and
-    none with narrow ones, and a solve has the same values with them and without."""
+    none with narrow ones, a solve has the same values with them and without, and the setting decides the
+    tree that is built and the tree a save is loaded into (read from the tree in memory: `estimate_tree`
+    builds one of its own)."""
     print("[set_outcome_tables: outcome tables of a preflop tree's runouts]")
     mb = lambda out: int(re.search(r"(\d+) MB", out).group(1))
     results = lambda: [float(l.split(": ")[1]) for l in u.cmd("calc_results").split("\n")[:5]]
     near = lambda a, b: len(a) == len(b) and all(abs(x - y) <= 0.0015 + 1e-5 * abs(x) for x, y in zip(a, b))
     every = "22+,A2s+,K2s+,Q2s+,J2s+,T2s+,92s+,82s+,72s+,62s+,52s+,42s+,32s,A2o+,K2o+,Q2o+,J2o+,T2o+,92o+,82o+,72o+,62o+,52o+,42o+,32o"
 
-    def tree(mode, hands, steps=0):
+    def in_memory():  # (MB of the tree in memory, MB available)
+        m = re.search(r"Memory needed: (\d+) MB; available: (\d+) MB", u.cmd("estimate_rebuild_tree"))
+        return (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
+
+    def tree(mode, hands, steps=0, save=None):
         u.cmd("free_tree")
         check(u.cmd("set_outcome_tables " + mode) == "set_outcome_tables ok!", f"set_outcome_tables {mode} accepted")
         for c in ("set_range OOP " + hands, "set_range IP " + hands, "set_pot 10 5 0", "set_eff_stack 1000",
@@ -976,12 +982,41 @@ def check_outcome_tables(u):
         r = {"mb": mb(u.cmd("estimate_tree"))}
         if steps:
             u.cmd("add_all_flops")
+            r["built"], r["free"] = in_memory()
             u.cmd("set_accuracy 0")
             u.cmd(f"go {steps} steps"); u.cmd("wait_for_solver")
             r["after"] = results()
+            if save:
+                r["saved"] = u.cmd(f'dump_tree "{save}"')
         return r
 
-    wide = {m: tree(m, every, 3) for m in ("small", "fast", "auto")}
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "tables.cfr")
+        wide = {m: tree(m, every, 3, path if m == "fast" else None) for m in ("small", "fast", "auto")}
+        loaded = {}
+        for m in ("small", "fast"):
+            u.cmd("free_tree")
+            u.cmd("set_outcome_tables " + m)
+            loaded[m] = {"ok": u.cmd(f'load_tree "{path}" full'), "built": in_memory()[0], "after": results()}
+    check(wide["small"]["built"] == wide["small"]["mb"] and wide["fast"]["built"] == wide["fast"]["mb"],
+          f"the tree in memory is the one asked for (small {wide['small']['built']} MB, fast {wide['fast']['built']} MB)")
+    # auto: the tree with tables where it fits in nine tenths of the memory available. Which that is
+    # depends on the machine, so the test says which only where there is no doubt (twice the room, or none).
+    room = wide["auto"]["free"] + wide["auto"]["built"]
+    if room >= 2 * wide["fast"]["mb"]:
+        check(wide["auto"]["built"] == wide["fast"]["mb"], f"auto with room ({room} MB) builds the tree with the tables ({wide['auto']['built']} MB)")
+    elif room * 9 // 10 < wide["small"]["mb"]:
+        check(wide["auto"]["built"] == wide["small"]["mb"], f"auto without room ({room} MB) builds the smallest tree")
+    else:
+        print(f"  (auto built {wide['auto']['built']} MB with {room} MB of room: too close to say which it had to be)")
+    check(wide["fast"]["saved"] == "dump_tree ok!" and loaded["small"]["ok"] == loaded["fast"]["ok"] == "load_tree ok!" and
+          loaded["small"]["built"] > 0 and
+          abs((loaded["fast"]["built"] - loaded["small"]["built"]) - (wide["fast"]["mb"] - wide["small"]["mb"])) <= 1,
+          f"a save is loaded into the tree the setting asks for (small {loaded['small']['built']} MB, fast {loaded['fast']['built']} MB: "
+          f"the tables' {wide['fast']['mb'] - wide['small']['mb']} MB apart)")
+    check(near(loaded["small"]["after"], loaded["fast"]["after"]) and all(x == x for x in loaded["small"]["after"]) and
+          loaded["small"]["after"][2:] != [0.0, 0.0, 0.0],
+          f"and is worth the same either way ({loaded['small']['after']})")
     check(wide["fast"]["mb"] > wide["small"]["mb"] == wide["auto"]["mb"],
           f"every hand: the tables are more memory than the boards ({wide['small']['mb']} -> {wide['fast']['mb']} MB), "
           f"and the estimate under auto is the smallest tree's")

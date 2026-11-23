@@ -16,9 +16,9 @@ function niceTime(t) {
   const s = Math.round(t);   // round first: 119.7 s is 2m00, not 1m60
   return Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0");
 }
-function pctLabel(v, step) {
+function pctLabel(v, step, unit = "%") {
   const d = step >= 1 ? 0 : step >= 0.1 ? 1 : step >= 0.01 ? 2 : 3;
-  return v.toFixed(d) + "%";
+  return v.toFixed(d) + unit;
 }
 
 /** A "nice" tick step (1, 2 or 5 x 10^k) giving about `n` intervals up to `max`. */
@@ -28,8 +28,9 @@ function niceStep(max, n = 4) {
   return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
 }
 
-/** points: [{t, explo}], pot: chips, target: % of pot (optional). */
-export function drawChart(svg, points, pot, target) {
+/** points: [{t, explo}], pot: chips, target: % of pot (optional). With a unit the scale is another one:
+ *  a preflop tree (#492) passes its big blind as `pot` and "bb/100", and the axis counts bb/100. */
+export function drawChart(svg, points, pot, target, unit = null) {
   const W = 360, Hh = 200, L = 40, R = 10, T = 10, B = 24;
   svg.textContent = "";
   const defs = mk("defs", {}, svg);
@@ -56,7 +57,7 @@ export function drawChart(svg, points, pot, target) {
     const yy = y(v);
     mk("line", { x1: L, x2: W - R, y1: yy, y2: yy }, grid);
     const t = mk("text", { x: L - 6, y: yy + 3, "text-anchor": "end" }, axis);
-    t.textContent = pctLabel(v, step);
+    t.textContent = pctLabel(v, step, unit ? "" : "%");
   }
   for (let i = 0; i <= 4; i++) {
     const tt = (tMax * i) / 4;
@@ -67,7 +68,7 @@ export function drawChart(svg, points, pot, target) {
     const yy = y(target);
     mk("line", { x1: L, x2: W - R, y1: yy, y2: yy, class: "target" }, svg);
     const t = mk("text", { x: W - R, y: yy - 4, "text-anchor": "end", class: "target-lbl" }, svg);
-    t.textContent = "target " + pctLabel(target, target >= 1 ? 1 : target >= 0.1 ? 0.1 : 0.01);
+    t.textContent = "target " + pctLabel(target, target >= 1 ? 1 : target >= 0.1 ? 0.1 : 0.01, unit ? ` ${unit}` : "%");
   }
   const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.y).toFixed(1)}`).join("");
   mk("path", { d: `${d}L${x(pts[pts.length - 1].t).toFixed(1)},${Hh - B}L${x(pts[0].t).toFixed(1)},${Hh - B}Z`, class: "area" }, svg);

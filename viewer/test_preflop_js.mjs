@@ -1,6 +1,7 @@
 // Unit test for what Study knows about preflop trees (viewer/static/preflop.js, #490).
 // usage: node viewer/test_preflop_js.mjs
-import { dealName, seat, flopCards, sortFlops, parseFilter, flopMatches, preflopRaise } from "./static/preflop.js";
+import { dealName, seat, flopCards, sortFlops, parseFilter, flopMatches, preflopRaise, bigBlindOf, bb100ToChips, chipsToBb100,
+  fmtMemory, memoryNote, streetsBet, flopsLabel, treeSummary } from "./static/preflop.js";
 
 let fails = 0;
 const check = (cond, msg) => { console.log((cond ? "  ok: " : "  FAIL: ") + msg); if (!cond) fails++; };
@@ -52,6 +53,30 @@ check(near(iso.frac, 1.25) && near(iso.mult, 3.5), "a raise over a limp to 3.5 b
 const four = preflopRaise(1250, 250, 1000, 2300);    // 4-bet to 23 bb over 10
 check(near(four.frac, 0.65) && near(four.mult, 2.3), "a 4-bet to 23 bb over 10: 65% of the pot, 2.3x");
 check(preflopRaise(0, 0, 0, 100).mult === 0 && preflopRaise(0, 0, 0, 100).frac === 0, "no pot and nothing to raise: zeros, not a division by zero");
+
+// ---- the Build tab's Preflop form (#492)
+check(bigBlindOf({ board: "", pot: [100, 50, 0] }) === 100 && bigBlindOf({ board: "", pot: [20, 10, 4] }) === 20,
+  "bigBlindOf: a preflop root (no board) has the big blind as its first pot entry");
+check(bigBlindOf({ board: "Qs 8d 7s", pot: [0, 0, 40] }) === 0 && bigBlindOf({ board: "Qs8d7s", pot: [20, 20, 0] }) === 0
+  && bigBlindOf(null) === 0 && bigBlindOf({ board: "" }) === 0 && bigBlindOf({ board: "", pot: ["x"] }) === 0,
+  "bigBlindOf: 0 for a postflop tree, and for a root that cannot be read");
+check(near(bb100ToChips(0.5, 100), 0.5) && near(bb100ToChips(2, 20), 0.4) && near(chipsToBb100(0.5, 100), 0.5)
+  && near(chipsToBb100(bb100ToChips(1.25, 40), 40), 1.25), "bb/100 and chips of accuracy: 0.5 bb/100 of a 100-chip big blind is 0.5 chips");
+check(chipsToBb100(1, 0) === null && chipsToBb100(NaN, 100) === null, "chipsToBb100: nothing without a big blind or a number");
+check(fmtMemory(396) === "396 MB" && fmtMemory(2837) === "2.8 GB" && fmtMemory(16384) === "16.0 GB" && fmtMemory(0) === "0 MB"
+  && fmtMemory(NaN) === "—", `fmtMemory: megabytes, then gigabytes (${fmtMemory(396)}, ${fmtMemory(2837)})`);
+const fit = memoryNote(396, 16384, 25), over = memoryNote(85988, 16384, 10), unknown = memoryNote(396, null, 1755);
+check(fit.fits && fit.text === "25 flops · about 396 MB · this machine has 16.0 GB", `memoryNote: ${fit.text}`);
+check(!over.fits && over.text === "10 flops · about 84.0 GB · more than this machine's 16.0 GB", `memoryNote: ${over.text}`);
+check(unknown.fits && unknown.text === "1,755 flops · about 396 MB" && memoryNote(16384, 16384, 1).fits && memoryNote(5, 9, 1).text.startsWith("1 flop ·"),
+  "memoryNote: a machine of unknown size refuses nothing; a tree of exactly the machine's size is not refused here");
+check(same(streetsBet("none"), { flop: false, turn: false, river: false }) && same(streetsBet("flop"), { flop: true, turn: false, river: false })
+  && same(streetsBet("turn"), { flop: true, turn: true, river: false }) && same(streetsBet("river"), { flop: true, turn: true, river: true })
+  && same(streetsBet("x"), { flop: false, turn: false, river: false }), "streetsBet: the streets up to the depth");
+check(flopsLabel("25") === "25 flops" && flopsLabel("all") === "All 1,755 flops", "flopsLabel");
+check(treeSummary({ rows: new Array(19), exits: 4, flops: 10 }) === "19 nodes before the flop · 4 ways to a flop · 10 flops"
+  && treeSummary({ rows: [1], exits: 0, flops: 1755 }) === "1 node before the flop · no way to a flop · 1,755 flops"
+  && treeSummary({ rows: [1, 2], exits: 1, flops: 1 }) === "2 nodes before the flop · 1 way to a flop · 1 flop", "treeSummary");
 
 console.log(fails ? `${fails} FAILED` : "ALL PASSED");
 process.exit(fails ? 1 : 0);

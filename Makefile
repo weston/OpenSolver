@@ -69,6 +69,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	if command -v node >/dev/null; then node viewer/test_preflop_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_preflop_js.mjs; else echo "node not found: skipping viewer/test_preflop_js.mjs"; fi
 	python3 viewer/test_hand_lines.py ./solver
 	python3 viewer/test_preflop_view.py ./solver
+	python3 viewer/test_preflop_build.py ./solver
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 
@@ -99,6 +100,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	if command -v node >/dev/null; then node viewer/test_preflop_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_preflop_js.mjs; else echo "node not found: skipping viewer/test_preflop_js.mjs"; fi
 	python3 viewer/test_hand_lines.py ./solver
 	python3 viewer/test_preflop_view.py ./solver
+	python3 viewer/test_preflop_build.py ./solver
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_refine.py ./solver
 

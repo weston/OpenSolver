@@ -75,3 +75,11 @@ and the EV within 0.004 chips of a 10-chip big blind, which is about what two so
 differ by; hand by hand, 100 flops were near that too and 50 flops about twice as far. 25 and 10 flops
 kept the opening ranges but had the big blind fold 4 points too often to a raise. Ten flops are for
 trying things out.
+
+What that is worth, measured on the default tree of `tools/preflop.py` (100 big blinds, flop betting):
+the preflop strategy solved on a file, played in the game with all 1,755 flop classes against an
+opponent who knows it, gives up 1.43 bb/100 (small blind) and 1.03 (big blind) with 10 flops, 0.47 and
+0.53 with 25, 0.19 and 0.17 with 50, 0.07 and 0.04 with 100, 0.02 and 0.01 with 200, each good to 0.04
+(`python3 tools/preflop.py check RESULT.json --flops all` measures any result; the numbers and the
+method are in `bench/where-the-time-goes.md`, #497). A solve to the default 0.5 bb/100 gives up 0.17 a
+player by itself: what 50 flops cost, and several times what 100 or 200 do.

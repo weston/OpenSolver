@@ -502,10 +502,11 @@ class PreflopBuildTest(unittest.TestCase):
         self.assertIn(f"Memory needed: {d['built_mb']} MB; available: 8192 MB", self.v.solver.cmd("estimate_rebuild_tree"))
 
     def test_13_the_page_reads_the_sizes_through_the_tested_functions(self):
-        # The page's code that touches the document runs in no test. What it does with the two sizes is in
-        # functions of preflop.js that viewer/test_preflop_js.mjs runs, and this holds the page to them:
-        # every name a module takes from preflop.js is one it gives, the line after Build is builtLine's,
-        # and an estimate is kept by estimateCell and read as the note and the row read it.
+        # The Build tab's code runs against a stub document in viewer/test_build_page_js.mjs (#520); this reads the
+        # source of every module of the page. What the page does with the two sizes is in functions of preflop.js
+        # that viewer/test_preflop_js.mjs runs, and this holds the page to them: every name a module takes from
+        # another is one it gives, the line after Build is builtLine's, and an estimate is kept by estimateCell
+        # and read as the note and the row read it.
         import re
         static = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
         src = {n: open(os.path.join(static, n)).read() for n in os.listdir(static) if n.endswith(".js")}

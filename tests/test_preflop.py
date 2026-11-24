@@ -545,6 +545,35 @@ def unit():
           and two_below["BB"]["rescaled_most"] == ["KK", line[2].id, 0.5],
           "two locked decisions below one left free: the locked row between narrows how often the class is at the "
           "lower one as it does anywhere (a third of the deals, a quarter of the time, half open: 1,250 bb/100)")
+    # what narrows is the frequency of the action taken, and two rows on the way narrow one after the other.
+    # The small blind's line after a limp: its first decision (limp is its second action), the one after
+    # the big blind's raise, and the one after its own raise is raised. KK is a quarter of its deals
+    sb_line = [root150] + [n for n in nodes150 if n.actor == "SB" and preflop._under(limped, n)]
+    limp150 = next(a for a, (_, child) in enumerate(root150.children) if child is limped)
+    on_sb = next(a for a, (_, child) in enumerate(sb_line[1].children) if preflop._under(child, sb_line[2]))
+    check(len(sb_line) == 3 and preflop._under(sb_line[1], sb_line[2]) and limp150 == 1 and len(root150.children) == 3
+          and len(sb_line[1].children) == 3,
+          "the 150 bb tree: three decisions of the small blind on one line, the limp not its first action")
+    limps = lambda h: h[root150.id]["KK"].update(freq=[0.5, 0.25, 0.25])  # noqa: E731
+    taken = made(several(limps, scaled(sb_line[1].id, "KK", 0.5)), swing=300.0, root=root150, nodes=nodes150)
+    check(abs(taken["SB"]["rescaled_bb100"] - 0.25 * 0.25 * 0.5 * 30000) < 1e-6
+          and taken["SB"]["rescaled_most"] == ["KK", sb_line[1].id, 0.5],
+          "a locked row narrows by the frequency of the action that leads on, not of the first one (a quarter of "
+          "the deals, limped a quarter of the time, half open: 937.5 bb/100)")
+    onward_sb = [0.5 if a == (on_sb + 1) % 3 else 0.25 for a in range(3)]
+    twice = made(several(limps, lambda h: h[sb_line[1].id]["KK"].update(freq=onward_sb), scaled(sb_line[2].id, "KK", 0.5)),
+                 swing=300.0, root=root150, nodes=nodes150)
+    check(abs(twice["SB"]["rescaled_bb100"] - 0.25 * 0.25 * 0.25 * 0.5 * 30000) < 1e-6
+          and twice["SB"]["rescaled_most"] == ["KK", sb_line[2].id, 0.5],
+          "two locked rows on the way narrow one after the other: a quarter of a quarter (234.375 bb/100)")
+    # the row between does not add up to 1 either: it is measured for what it leaves open (a fifth, where
+    # the class always is), and narrows by the row as it is locked, a quarter of the time on
+    both = made(several(lambda h: h[line[0].id].pop("AA"), lambda h: h[line[1].id]["KK"].update(freq=[f * 0.8 for f in onward]),
+                        scaled(line[2].id, "KK", 0.5)), swing=300.0, root=root150, nodes=nodes150)
+    check(abs(both["BB"]["rescaled_bb100"] - (1 / 3) * (0.2 + 0.25 * 0.5) * 30000) < 1e-6
+          and both["BB"]["rescaled_most"][:2] == ["KK", line[1].id] and abs(both["BB"]["rescaled_most"][2] - 0.8) < 1e-12,
+          "a row between that adds up to 0.8 is measured itself and narrows as the row that is locked, rescaled "
+          "(a third of the deals, a fifth and a quarter of a half open: 3,250 bb/100)")
 
     def no_limp(h):  # the small blind never limps, and the big blind has nothing for the decision after one
         for hand in h[root.id].values():

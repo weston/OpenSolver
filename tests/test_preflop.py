@@ -251,6 +251,13 @@ def unit():
         by_machine = table()
         preflop.physical_memory_mb = lambda: None
         unknown = table("--depth", "turn")
+        counts.update(none=100, flop=300)
+        preflop.physical_memory_mb = lambda: 16384
+        thousands = table("--depth", "none")
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "post.txt"), "w") as f:
+                f.write("#FlopConfig.BetSize#50\n")
+            filed = table("--postflop", os.path.join(d, "post.txt"))
     finally:
         preflop.estimates_mb, preflop.physical_memory_mb = real
     legend = ("Two sizes in a cell: the smallest tree, then the tree with outcome tables at every level, which the "
@@ -273,6 +280,12 @@ def unit():
           "a table of single sizes is the table it was: the columns as wide, no legend, the last line's words")
     check(unknown[3:] == ["turn          100-300      250-750    500-1,500  1,000-3,000  2,000-6,000", "", legend],
           "a machine whose memory is not known: no row stops, no last line")
+    single = "                 10         25         50        100        200   flops"
+    check(thousands[2:4] == [single, "none          1,000      2,500      5,000     10,000     20,000"]
+          and filed[2:4] == [single, "file          3,000      7,500     15,000     30,000          -"]
+          and thousands[4:] == filed[4:] == one_depth[4:],
+          "single sizes of four and five figures with their commas, in columns as wide; the row of a --postflop "
+          "file is named `file`, and stops as the others do")
 
     print("results and charts")
     check([preflop.hand_class(h) for h in ("AhKh", "KdAs", "7c7d", "2s3s")] == ["AKs", "AKo", "77", "32s"]

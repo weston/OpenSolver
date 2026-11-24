@@ -112,7 +112,8 @@
           </select></label>
           <div id="drill-live" class="sub-settings">
             <label class="field"><span>Spot</span><select id="drill-spot"><option value="">Current tree</option></select></label>
-            <label class="field"><span>Boards</span><select id="drill-boards"><option value="random">Random flops</option><option value="fixed">Tree board</option></select></label>
+            <label class="field"><span>Boards</span><select id="drill-boards"><option value="random">Random flops</option><option value="selected">Select boards</option><option value="filtered">Board filters</option></select></label>
+            <div id="drill-board-options" class="sub-settings hidden"></div>
           </div>
           <div id="drill-batch-field" class="sub-settings hidden">
             <label class="field"><span>Batch</span><select id="drill-batch"></select></label>
@@ -123,11 +124,11 @@
             <option value="hand">Whole hand</option><option value="node">From a node</option>
           </select></label>
           <div id="drill-node-field" class="sub-settings hidden">
-            <label class="field"><span>Node</span><input id="drill-node" value="r:0" spellcheck="false"></label>
+            <input id="drill-node" type="hidden" value="r:0"><div id="drill-node-picker"></div>
           </div>
         </div>
         <label class="field"><span>Play as</span><select id="drill-seat">
-          <option value="OOP">OOP</option><option value="IP">IP</option><option value="alternate">Alternating</option>
+          <option value="alternate">Alternating</option><option value="OOP">OOP</option><option value="IP">IP</option>
         </select></label>
         <div class="drill-option">
           <label class="field"><span>Hands</span><select id="drill-format"><option value="single">One hand</option><option value="set">Hand set</option></select></label>
@@ -138,6 +139,7 @@
       </fieldset>
       <button id="drill-start" class="btn primary wide">Start drilling</button>
       <button id="drill-stop" class="btn wide hidden">End session</button>
+      <button id="drill-sessions" class="btn wide">Sessions</button>
       <div id="drill-stats" class="stats"></div>
       <div id="drill-preparing" class="drill-status" role="status"></div>
       <div id="drill-error" class="drill-error" role="alert"></div>
@@ -158,10 +160,13 @@
       </div>
       <div id="drill-actions" class="drill-actions"></div>
       <div id="drill-feedback" class="drill-feedback hidden"></div>
-      <div class="drill-controls"><button id="drill-continue" class="btn primary hidden">Continue</button><button id="drill-next" class="btn primary hidden">Next hand</button></div>
+      <div class="drill-controls"><button id="drill-submit" class="btn primary hidden">Submit</button><button id="drill-continue" class="btn primary hidden">Continue</button><button id="drill-next" class="btn primary hidden">Next hand</button></div>
     </section>
   </div>
 </main>
+
+<dialog id="drill-board-dialog" class="dialog drill-board-dialog" aria-label="Select boards"></dialog>
+<dialog id="drill-sessions-dialog" class="dialog wide" aria-label="Sessions"></dialog>
 
 <main id="view-settings" class="view hidden">
   <div class="settings-layout">

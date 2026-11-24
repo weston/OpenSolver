@@ -1377,16 +1377,8 @@ def op_lock_revert(solver):
     return {"ok": True}
 
 
-def setup_from_body(b):
-    """The Build form (ranges, pot, stack, sizes, optional board) -> (UPI setup commands, line count).
-
-    Shared by /api/generate and the job queue (#196), which runs the same setup on many flops: the
-    board-free form has no set_board and expands the lines from the flop."""
-    range_oop = no_newlines(str(b.get("range_oop", "")).strip(), "range_oop")
-    range_ip = no_newlines(str(b.get("range_ip", "")).strip(), "range_ip")
+def tree_config_from_body(b):
     board = no_newlines(str(b.get("board", "")).replace(" ", "").strip(), "board")
-    if not range_oop or not range_ip:
-        raise SolverError("both ranges are required")
     def whole(v):   # int() would truncate 10.5 to 10, building another pot than the form shows
         if isinstance(v, bool):
             raise ValueError
@@ -1413,7 +1405,25 @@ def setup_from_body(b):
     header += pio_extra_lines(b)
 
     try:
-        cfg = tb.parse_config("\n".join(header))
+        return tb.parse_config("\n".join(header))
+    except (ValueError, ArithmeticError) as e:
+        raise SolverError(f"bad sizes: {e}")
+
+
+def setup_from_body(b):
+    """The Build form (ranges, pot, stack, sizes, optional board) -> (UPI setup commands, line count).
+
+    Shared by /api/generate and the job queue (#196), which runs the same setup on many flops: the
+    board-free form has no set_board and expands the lines from the flop."""
+    range_oop = no_newlines(str(b.get("range_oop", "")).strip(), "range_oop")
+    range_ip = no_newlines(str(b.get("range_ip", "")).strip(), "range_ip")
+    if not range_oop or not range_ip:
+        raise SolverError("both ranges are required")
+    tb = load_tree_builder()
+    cfg = tree_config_from_body(b)
+    board = cfg.board or ""
+
+    try:
         # A 4- or 5-card board starts the tree on the turn or river: the builder must start
         # there too, or its lines run past the end of the hand.
         n_cards = len(board) // 2
@@ -1434,7 +1444,7 @@ def setup_from_body(b):
             "set_range IP " + range_ip]
     if board:
         cmds.append("set_board " + board)
-    cmds += [f"set_eff_stack {stack}", f"set_pot 0 0 {pot}",
+    cmds += [f"set_eff_stack {cfg.stack}", f"set_pot 0 0 {cfg.pot}",
              "set_isomorphism 1 1", "clear_lines"]
     cmds += lines
     return cmds, lines

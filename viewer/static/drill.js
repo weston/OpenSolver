@@ -1,8 +1,9 @@
-import { get, post, fmt, fmtChips } from "./api.js";
+import { get, post, fmt } from "./api.js";
 import { el, cardEl, comboEl, parseCards } from "./cards.js";
-import { currentTree } from "./build.js";
-import { drillSettings } from "./settings.js";
-import { mixEditor, feedbackCards, chipStack } from "./drill_controls.js";
+import { mixEditor, feedbackCards, chipStack, actionHeader, bb } from "./drill_controls.js";
+
+import { liveConfig, renderBoardOptions, restoreSelection, refreshNode, resetNode, selectCurrentBoard } from "./drill_setup.js";
+import { openSessions } from "./drill_sessions.js";
 
 const $ = (id) => document.getElementById(id);
 let state = null, visible = false, busy = false, timer = null, sequence = 0, rendered = null, autoDealToken = null;
@@ -14,6 +15,8 @@ function fields() {
   $("drill-live").classList.toggle("hidden", $("drill-source").value !== "live");
   $("drill-node-field").classList.toggle("hidden", $("drill-mode").value !== "node");
   $("drill-count-field").classList.toggle("hidden", $("drill-format").value !== "set");
+  renderBoardOptions();
+  refreshNode();
 }
 
 function controls() {
@@ -26,12 +29,14 @@ function controls() {
   $("drill-continue").classList.toggle("hidden", hand?.phase !== "feedback");
   $("drill-continue").disabled = busy;
   $("drill-continue").textContent = state?.config?.mode === "node" ? "Finish decision" : "Continue";
+  $("drill-submit").classList.toggle("hidden", hand?.phase !== "decision");
+  $("drill-submit").disabled = busy || !hand?.exercises.every((e, i) => e.chosen || drafts.has(i));
   $("drill-next").classList.toggle("hidden", !active || (hand && hand.phase !== "complete"));
   $("drill-next").disabled = busy || !state?.can_deal;
   $("drill-next").textContent = hand ? "Next hand" : "Deal hand";
   $("drill-retry").classList.toggle("hidden", !active || !state?.error);
   $("drill-retry").disabled = busy || state?.preparing;
-  document.querySelectorAll("#drill-actions button").forEach((b) => { b.disabled = busy || b.dataset.answered === "yes"; });
+  document.querySelectorAll("#drill-actions button").forEach((b) => { b.disabled = busy || b.dataset.answered === "yes" || b.dataset.empty === "yes"; });
 }
 
 function renderPreparation(s) {
@@ -82,6 +87,7 @@ function render(s) {
     if (s.config.format === "set") $("drill-count").value = s.config.count;
     if (s.config.source === "live") {
       for (const key of ["boards", "spot"]) $("drill-" + key).value = s.config[key];
+      restoreSelection(s.config);
     }
     if (s.config.source === "saved") $("drill-batch").value = s.config.batch;
     fields();
@@ -103,16 +109,18 @@ function render(s) {
   for (const id of ["drill-hero-wager", "drill-villain-wager"]) $(id).replaceChildren();
   if (hand) {
     const pot = hand.node.pot.reduce((a, b) => a + b, 0);
-    $("drill-pot").append(chipStack(pot), el("span", "num", `Pot ${fmtChips(pot)}`));
+    $("drill-pot").append(chipStack(pot), el("span", "num", `Pot ${bb(pot, hand.big_blind)}`));
     const player = hand.seat === "OOP" ? 0 : 1;
     for (const [id, wager] of [["drill-hero-wager", hand.wagers[player]], ["drill-villain-wager", hand.wagers[1 - player]]]) {
-      if (wager > 0) $(id).append(chipStack(wager), el("span", "num", fmtChips(wager)));
+      if (wager > 0) $(id).append(chipStack(wager), el("span", "num", bb(wager, hand.big_blind)));
     }
   }
   $("drill-result").textContent = hand?.result || (hand?.phase === "decision" ? "Your action" : "");
   $("drill-hero-seat").textContent = hand ? `You · ${hand.seat}` : "You";
   $("drill-villain-seat").textContent = hand ? `Solver · ${hand.seat === "OOP" ? "IP" : "OOP"}` : "Solver";
   if (!hand) return;
+  const buttonSeat = $(hand.seat === "IP" ? "drill-hero-seat" : "drill-villain-seat");
+  buttonSeat.append(el("span", "dealer-button", "BTN"));
   if (hand.continuation || hand.hero) $("drill-hero").append(comboEl(hand.continuation?.combo || hand.hero, "lg"));
   else $("drill-hero").append(el("span", "drill-set-count", `${hand.exercises.length} hands`));
   if (hand.villain) $("drill-villain").append(comboEl(hand.villain, "lg"));
@@ -121,28 +129,45 @@ function render(s) {
   const key = `${s.token.split(":")[0]}:${s.number}:${hand.node.id}`;
   if (draftNode !== key) { drafts.clear(); draftNode = key; }
   $("drill-actions").classList.toggle("hand-set", s.config.format === "set");
+  const set = s.config.format === "set";
+  $("drill-actions").style.setProperty("--action-count", hand.actions.length);
+  if (set && hand.actions.length) $("drill-actions").append(actionHeader(hand.actions, hand.big_blind));
   for (const [index, exercise] of hand.exercises.entries()) {
     if (!hand.actions.length) break;
     const row = el("div", "drill-exercise");
     if (s.config.format === "set") row.append(comboEl(exercise.combo, ""));
     row.append(mixEditor(hand.actions, exercise.chosen, drafts.get(index),
-      (frequencies) => drafts.set(index, frequencies),
-      (frequencies) => command("action", { frequencies, exercise: index })));
+      (frequencies) => { drafts.set(index, frequencies); controls(); }, hand.big_blind, set));
     $("drill-actions").append(row);
   }
-  if (hand.feedback) $("drill-feedback").append(feedbackCards(hand.feedback, hand.continuation));
-  for (const item of hand.history) {
-    const row = el("span", "drill-history-item");
-    if (item.board) for (const card of item.board) row.append(cardEl(card, "xs"));
-    else row.textContent = `${item.actor} ${item.label}${item.amount != null ? " · " + fmtChips(item.amount) : ""}`;
-    $("drill-history").append(row);
-  }
-  if (hand.continuation) {
-    const action = hand.continuation;
-    $("drill-history").append(el("span", "drill-history-item upcoming",
-      `Next · ${hand.seat} ${action.label}${action.amount != null ? " · " + fmtChips(action.amount) : ""}`));
-  }
+  if (hand.feedback) $("drill-feedback").append(feedbackCards(hand.feedback, hand.continuation, hand.big_blind));
+  renderHistory(hand);
   controls();
+}
+
+function renderHistory(hand) {
+  const streets = { 0: "Preflop", 3: "Flop", 4: "Turn", 5: "River" };
+  const current = parseCards(hand.node.board).length;
+  const groups = new Map();
+  for (const item of hand.history.filter((item) => item.actor)) {
+    if (!groups.has(item.street)) groups.set(item.street, []);
+    groups.get(item.street).push(item);
+  }
+  if (!groups.has(current)) groups.set(current, []);
+  if (hand.continuation) groups.get(current).push({ ...hand.continuation, actor: hand.seat, upcoming: true });
+  const previous = el("details", "previous-streets");
+  previous.append(el("summary", "", "Previous streets"));
+  for (const [street, items] of groups) {
+    const section = el("div", "history-street");
+    section.append(el("strong", "", streets[street]));
+    const actions = el("div", "history-actions");
+    for (const item of items) actions.append(el("span", `drill-history-item${item.upcoming ? " upcoming" : ""}`,
+      `${item.upcoming ? "Next · " : ""}${item.actor} ${item.label}${item.amount != null ? " · " + bb(item.amount, hand.big_blind) : ""}`));
+    section.append(actions);
+    if (street === current) $("drill-history").append(section);
+    else previous.append(section);
+  }
+  if (previous.children.length > 1) $("drill-history").prepend(previous);
 }
 
 async function command(action, data = {}) {
@@ -171,10 +196,7 @@ async function start() {
     const config = { source, mode: $("drill-mode").value, seat: $("drill-seat").value,
       node: $("drill-node").value.trim(), batch: $("drill-batch").value,
       format: $("drill-format").value, count: Number($("drill-count").value) };
-    const spot = $("drill-spot").value;
-    if (source === "live") Object.assign(config, drillSettings(), {
-      spot, tree: spot ? (await get("/api/library/get?kind=config&name=" + encodeURIComponent(spot))).content : currentTree(true),
-      boards: $("drill-boards").value });
+    if (source === "live") Object.assign(config, await liveConfig());
     await command("start", config);
     await firstHand();
   } catch (e) { $("drill-error").textContent = e.message; }
@@ -208,6 +230,7 @@ export function showDrill(show) {
   visible = show;
   clearTimeout(timer);
   if (!show) return;
+  refreshNode();
   poll();
   get("/api/jobs/state").then((s) => {
     const value = state?.config?.batch || $("drill-batch").value;
@@ -237,17 +260,22 @@ export function drillHere(node) {
   if (state?.active) return;
   $("drill-source").value = "live";
   $("drill-spot").value = "";
-  $("drill-boards").value = "fixed";
+  selectCurrentBoard();
   $("drill-mode").value = "node";
   $("drill-node").value = node;
   fields();
 }
 
 export function initDrill() {
-  $("drill-source").onchange = fields;
+  $("drill-source").onchange = () => { resetNode(); fields(); };
+  $("drill-boards").onchange = () => { resetNode(); fields(); };
+  $("drill-spot").onchange = resetNode;
+  $("drill-batch").onchange = resetNode;
+  $("drill-sessions").onclick = openSessions;
   $("drill-mode").onchange = fields;
   $("drill-format").onchange = fields;
   $("drill-start").onclick = start;
+  $("drill-submit").onclick = () => command("submit", { choices: state.hand.exercises.map((e, i) => e.chosen || drafts.get(i)) });
   for (const action of ["stop", "next", "continue", "retry"]) $("drill-" + action).onclick = () => command(action);
   fields();
 }

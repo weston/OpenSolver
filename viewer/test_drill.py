@@ -79,7 +79,7 @@ class DrillTest(unittest.TestCase):
         self.fail("simulations did not finish")
 
     def begin(self, **settings):
-        self.request("start", {"source": "current", **settings})
+        self.request("start", {"source": "current", "seat": "OOP", **settings})
         return self.post("next", self.ready())
 
     def finish(self, state):
@@ -171,6 +171,89 @@ class DrillTest(unittest.TestCase):
         oop, ip = [set(drill.cards(self.service.hand.order[i])) for i in self.service.hand.hands]
         self.assertFalse(oop & ip)
         self.assertFalse((oop | ip) & set(drill.cards(state["hand"]["node"]["board"])))
+
+    def test_submit_is_atomic_and_weighted_results_persist_in_session(self):
+        self.solver.cmds(['set_range OOP AA:0.15,KK,QQ:0.5', 'build_tree', 'go 30 steps', 'wait_for_solver'])
+        state = self.begin(format='set', mode='node')
+        hand = state['hand']
+        choices = [[i / 4, 1 - i / 4] for i in range(5)]
+        self.request('submit', {'token': state['token'], 'choices': choices[:-1] + [[0, 0]]}, expected=400)
+        unchanged = self.request()
+        self.assertEqual(unchanged['token'], state['token'])
+        self.assertTrue(all(e['chosen'] is None for e in unchanged['hand']['exercises']))
+        self.assertEqual(unchanged['stats']['decisions'], 0)
+        order = vsrv.hand_order(self.solver)
+        own, other = [vsrv.parse_floats(self.solver.cmd(f'show_range {p} r:0'), 1326) for p in drill.PLAYERS]
+        weights = [own[i] * sum(w for c, w in zip(order, other) if not set(drill.cards(c)) & set(drill.cards(combo)))
+                   for i, combo in enumerate(order)]
+        strategy = [vsrv.parse_floats(row, 1326) for row in self.solver.cmd('show_strategy r:0').splitlines() if row.strip()]
+        state = self.post('submit', state, choices=choices)
+        results = state['hand']['feedback']
+        indices = [order.index(e['combo']) for e in hand['exercises']]
+        mass = sum(weights[i] for i in indices)
+        for a in range(2):
+            self.assertAlmostEqual(results['frequencies']['range'][a], sum(weights[i] * strategy[a][i] / sum(r[i] for r in strategy) for i in range(1326) if weights[i]) / sum(weights))
+            self.assertAlmostEqual(results['frequencies']['dealt_solver'][a], sum(weights[i] * strategy[a][i] / sum(r[i] for r in strategy) for i in indices) / mass)
+            self.assertAlmostEqual(results['frequencies']['dealt_user'][a], sum(weights[i] * c[a] for i, c in zip(indices, choices)) / mass)
+        session = state['token'].split(':')[0]
+        state = self.post('continue', state)
+        self.post('stop', state)
+        from drill_sessions import Sessions
+        persisted = Sessions(os.path.join(self.queue.root, 'drill-sessions.sqlite3'))
+        try:
+            row = next(s for s in persisted.list(0) if s['id'] == session)
+            self.assertEqual((row['hands'], row['decisions']), (1, 5))
+            self.assertIsNotNone(row['ended'])
+            self.assertEqual(persisted.reviews(session, 0)[0]['feedback'], results)
+            self.assertEqual(row['loss'], sum(h['loss_pct'] for h in results['hands']))
+        finally:
+            persisted.db.close()
+
+    def test_board_filters_and_selected_boards_drive_the_live_queue(self):
+        plan = drill.board_plan({'boards': 'filtered', 'board_filters': {'high': 'AK', 'middle': 'QJ', 'low': '23',
+                                 'pairing': 'unpaired', 'suits': ['two-tone']}}, TREE)
+        self.assertTrue(plan['board_pool'])
+        for board in plan['board_pool']:
+            self.assertIn(board[0], 'AK')
+            self.assertIn(board[2], 'QJ')
+            self.assertIn(board[4], '23')
+            self.assertEqual(drill.jobs.texture_suits(board), 'two-tone')
+        paired = drill.board_plan({'boards': 'filtered', 'board_filters': {'high': 'A', 'middle': 'A', 'low': '2',
+                                  'pairing': 'paired', 'suits': ['rainbow']}}, TREE)
+        self.assertEqual(len(paired['board_pool']), 12)
+        self.request('start', {'tree': TREE, 'boards': 'filtered', 'board_filters': {'high': '2', 'middle': 'A'}}, expected=400)
+        boards = ['2c3d4h5s9c', '2c3d4h5sTc']
+        self.request('start', {'tree': TREE, 'boards': 'selected', 'selected_boards': boards, 'ahead': 3, 'seconds': 1})
+        state = self.ready(3)
+        self.assertEqual(state['config']['seat'], 'alternate')
+        self.assertEqual(state['config']['selected_boards'], boards)
+        queued = self.service.q.jobs()
+        self.assertTrue(all(j['board'] in boards for j in queued))
+        state = self.post('next', state)
+        self.assertEqual(state['hand']['seat'], 'OOP')
+        state = self.finish(state)
+        state = self.post('next', state)
+        self.assertEqual(state['hand']['seat'], 'IP')
+
+    def test_node_picker_matches_generated_actions_and_resolves_next_street(self):
+        tree = {**TREE, 'board': '2c3d4h5s', 'turn_bet': '50', 'turn_raise': '50', 'allin_threshold': 100, 'add_allin_limit': 0}
+        config = {'tree': tree, 'boards': 'selected', 'selected_boards': [tree['board']], 'mode': 'node', 'ahead': 1, 'seconds': 1}
+        root = self.request('preview', config)
+        self.assertEqual(root['actor'], 'OOP')
+        self.assertEqual(root['street'], 'Turn')
+        checked = self.request('preview', {**config, 'node': 'r:0:c'})
+        river = next(c for c in checked['choices'] if c['kind'] == 'check')
+        self.assertEqual(river['id'], 'r:0:c:c:?')
+        preview = self.request('preview', {**config, 'node': river['id']})
+        self.assertEqual(preview['street'], 'River')
+        self.request('start', {**config, 'node': river['id']})
+        state = self.post('next', self.ready())
+        self.assertEqual(len(drill.cards(state['hand']['node']['board'])), 5)
+        expected = [(a['kind'], a['amount']) for a in preview['choices']]
+        actual = [(a['kind'], a['amount']) for a in state['hand']['actions']]
+        self.assertCountEqual(expected, actual)
+        self.assertEqual([h['street'] for h in state['hand']['history'] if 'actor' in h], [4, 4])
+        self.assertEqual(state['hand']['big_blind'], 100)
 
     def test_similar_sizes_keep_separated_choices_and_can_be_disabled(self):
         tree = {**TREE, "pot": 1000, "stack": 3000, "river_bet": "50 52 55 60 100", "river_raise": "",
@@ -320,12 +403,16 @@ class DrillTest(unittest.TestCase):
                 self.assertEqual(replay.order[replay.hands[drill.PLAYERS.index(seat)]], combo)
 
     def test_saved_batch_uses_finished_saves_and_leaves_them_intact(self):
-        setup, _ = vsrv.setup_from_body(TREE)
-        job = self.queue.add_batch("saved", setup, [(TREE["board"], 1)], 1, 20, None, "full", None)[0]
+        tree = {**TREE, "board": "2c3d4h5s", "turn_bet": "50"}
+        setup, _ = vsrv.setup_from_body(tree)
+        job = self.queue.add_batch("saved", setup, [(tree["board"], 1)], 1, 20, None, "full", None)[0]
         self.assertEqual(drill.jobs.run_job(self.queue, job, SOLVER, 1, log=lambda _: None), "done")
         with open(job["out"], "rb") as f:
             before = f.read()
-        state = self.begin(source="saved", batch="saved")
+        preview = self.request("preview", {"source": "saved", "batch": "saved", "node": "r:0:c:c:?"})
+        self.assertTrue(all(c["id"].startswith("r:0:c:c:?:") for c in preview["choices"]))
+        state = self.begin(source="saved", batch="saved", mode="node", node="r:0:c:c:?")
+        self.assertEqual(len(drill.cards(state["hand"]["node"]["board"])), 5)
         state = self.finish(state)
         self.post("stop", state)
         with open(job["out"], "rb") as f:

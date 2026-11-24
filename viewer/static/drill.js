@@ -24,7 +24,7 @@ function controls() {
   $("drill-continue").disabled = busy;
   $("drill-continue").textContent = state?.config?.mode === "node" ? "Finish decision" : "Continue";
   $("drill-next").classList.toggle("hidden", !active || (hand && hand.phase !== "complete"));
-  $("drill-next").disabled = busy || !state?.ready;
+  $("drill-next").disabled = busy || !state?.can_deal;
   $("drill-next").textContent = hand ? "Next hand" : "Deal hand";
   $("drill-retry").classList.toggle("hidden", !active || !state?.error);
   $("drill-retry").disabled = busy || state?.preparing;

@@ -9,6 +9,7 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
 import drill
 import server as vsrv
@@ -158,7 +159,7 @@ class DrillTest(unittest.TestCase):
         state = self.post("next", state)
         self.assertEqual(state["hand"]["node"]["board"].replace(" ", ""), TREE["board"])
         state = self.ready(3)
-        self.assertEqual(len(self.service.q.jobs()), 3)
+        self.assertEqual(len(self.service.q.jobs()), 4)
         saves = [j["out"] for j in self.service.q.jobs()]
         self.assertTrue(all(os.path.isfile(p) for p in saves))
         reader = self.service.reader.proc
@@ -168,6 +169,64 @@ class DrillTest(unittest.TestCase):
         self.request("start", {"source": "live", "boards": "fixed", "tree": TREE, "seconds": 1, "ahead": 1})
         self.ready(1)
         self.assertEqual(len(self.service.q.jobs()), 1)
+
+    def test_empty_live_queue_redeals_until_a_fresh_solve_is_ready(self):
+        for seat in (*drill.PLAYERS, "alternate"):
+            with self.subTest(seat=seat):
+                self.service.close()
+                self.request("start", {"source": "live", "boards": "fixed", "tree": TREE,
+                                       "seconds": 1, "ahead": 1, "seat": seat})
+                state = self.ready(1)
+                resume = threading.Event()
+                prepare_one = self.service.prepare_one
+
+                def delayed_prepare():
+                    if not resume.wait(10):
+                        raise TimeoutError("test did not resume preparation")
+                    return prepare_one()
+
+                with patch.object(self.service, "prepare_one", delayed_prepare):
+                    try:
+                        state = self.post("next", state)
+                        used_path = self.service.used_solve["path"]
+                        for _ in range(3):
+                            state = self.finish(state)
+                            previous = state["hand"]
+                            self.assertEqual(state["ready_count"], 0)
+                            self.assertFalse(state["ready"])
+                            self.assertTrue(state["can_deal"])
+                            self.assertTrue(state["preparing"])
+                            state = self.post("next", state)
+                            self.assertEqual(self.service.used_solve["path"], used_path)
+                            self.assertEqual(len(self.service.q.jobs()), 1)
+                            self.assertIsNone(state["hand"]["feedback"])
+                            if seat == "alternate":
+                                self.assertNotEqual(state["hand"]["seat"], previous["seat"])
+                            else:
+                                self.assertEqual(state["hand"]["seat"], seat)
+                                self.assertNotEqual(state["hand"]["hero"], previous["hero"])
+                        state = self.finish(state)
+                    finally:
+                        resume.set()
+                        self.service.worker.join(10)
+
+                state = self.post("next", self.ready(1))
+                self.assertNotEqual(self.service.used_solve["path"], used_path)
+                self.assertFalse(os.path.exists(used_path))
+                state = self.ready(1)
+                self.assertEqual(len(self.service.q.jobs()), 2)
+                state = self.post("stop", state)
+                self.assertFalse(state["can_deal"])
+
+    def test_redeal_with_only_one_compatible_hand_preserves_the_range(self):
+        self.solver.cmds(["set_range OOP AcAd", "set_range IP KcKd", "build_tree",
+                         "go 20 steps", "wait_for_solver"])
+        for seat, combo in (("OOP", "AdAc"), ("IP", "KdKc")):
+            with self.subTest(seat=seat):
+                hand = drill.Hand(self.solver, "r:0", seat, "hand", random.Random(2))
+                index = hand.hands[drill.PLAYERS.index(seat)]
+                replay = drill.Hand(self.solver, "r:0", seat, "hand", random.Random(3), previous_combo=index)
+                self.assertEqual(replay.order[replay.hands[drill.PLAYERS.index(seat)]], combo)
 
     def test_saved_batch_uses_finished_saves_and_leaves_them_intact(self):
         setup, _ = vsrv.setup_from_body(TREE)
@@ -266,7 +325,7 @@ class DrillTest(unittest.TestCase):
         self.post("retry", state)
         state = self.ready(3)
         self.assertIsNone(state["error"])
-        self.assertEqual(len(self.service.q.jobs()), 3)
+        self.assertEqual(len(self.service.q.jobs()), 4)
 
     def test_invalid_settings_and_stale_session_do_not_change_play(self):
         for settings in ({"source": "wrong"}, {"mode": "node", "node": "r:0\nexit"}, {"seat": "both"},

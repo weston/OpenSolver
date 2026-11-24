@@ -98,7 +98,7 @@ def action_info(node, child):
 
 
 class Hand:
-    def __init__(self, solver, node_id, seat, mode, rng, count=1):
+    def __init__(self, solver, node_id, seat, mode, rng, count=1, previous_combo=None):
         self.solver, self.seat, self.mode, self.rng = solver, seat, mode, rng
         self.count = count
         self.order = vsrv.hand_order(solver)
@@ -106,6 +106,11 @@ class Hand:
         if self.node["type"] == "END_NODE":
             raise vsrv.SolverError("the hand has ended at this node")
         ranges = [vsrv.parse_floats(solver.cmd(f"show_range {p} {node_id}"), vsrv.NUM_COMBOS) for p in PLAYERS]
+        if previous_combo is not None:
+            hero = PLAYERS.index(seat)
+            weights = hand_weights(self.order, ranges[hero], ranges[1 - hero], cards(self.node["board"]))
+            if any(w > 0 for i, w in enumerate(weights) if i != previous_combo):
+                ranges[hero][previous_combo] = 0
         self.hands = deal_hands(self.order, ranges, cards(self.node["board"]), rng)
         self.blocked = set(cards(self.order[self.hands[0]]) + cards(self.order[self.hands[1]]))
         self.history = []
@@ -259,6 +264,7 @@ class DrillService:
         self.config = None
         self.hand = None
         self.ready = []
+        self.used_solve = None
         self.preparing = False
         self.error = None
         self.progress = None
@@ -277,6 +283,7 @@ class DrillService:
                                       "boards", "accuracy", "seconds", "batch", "spot") if k in self.config},
                                   "hand": self.hand.view() if self.hand else None, "number": self.number,
                                   "preparing": self.preparing, "ready": bool(self.ready), "ready_count": len(self.ready),
+                                  "can_deal": bool(self.ready or self.used_solve),
                                   "error": self.error, "progress": self.progress,
                                   "stats": {"hands": self.completed, "decisions": self.decisions,
                                             "loss_pct": self.loss_pct / self.decisions if self.decisions else 0}})
@@ -412,26 +419,32 @@ class DrillService:
             raise vsrv.SolverError("finish this hand first")
         with self.prep_lock:
             ready = self.ready[0] if self.ready else None
-        if ready is None:
+        solve = ready or self.used_solve
+        if solve is None:
             raise vsrv.SolverError("the next simulation is still preparing")
         if self.reader is None:
             self.reader = vsrv.Solver(self.solver_exe)
             self.reader.cmd("set_threads 2")
-        path = vsrv.safe_path(ready["path"])
+        path = vsrv.safe_path(solve["path"])
         self.reader.cmd(f'load_tree "{path}" full', timeout=3600)
         seat = self.config["seat"]
         if seat == "alternate":
             seat = PLAYERS[self.number % 2]
-        hand = Hand(self.reader, self.config["node"], seat, self.config["mode"], self.rng, self.config["count"])
+        previous_combo = self.hand.hands[PLAYERS.index(seat)] if ready is None and self.hand and self.hand.seat == seat else None
+        hand = Hand(self.reader, self.config["node"], seat, self.config["mode"], self.rng,
+                    self.config["count"], previous_combo)
+        previous_solve = self.used_solve
+        self.used_solve = solve
         self.hand = hand
         self.number += 1
         self.revision += 1
         if hand.phase == "complete":
             self.completed += 1
-        with self.prep_lock:
-            self.ready.pop(0)
-        if "job" in ready:
-            self.remove_job(ready["job"])
+        if ready is not None:
+            with self.prep_lock:
+                self.ready.pop(0)
+            if previous_solve and "job" in previous_solve:
+                self.remove_job(previous_solve["job"])
         self.prepare()
 
     def close(self):
@@ -450,6 +463,7 @@ class DrillService:
             self.temp.cleanup()
         self.temp = self.reader = self.worker = self.hand = self.config = None
         self.ready = []
+        self.used_solve = None
         self.error = self.progress = None
         self.preparing = False
         self.revision += 1

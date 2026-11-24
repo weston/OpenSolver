@@ -67,6 +67,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	if command -v node >/dev/null; then node viewer/test_sidecache_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_sidecache_js.mjs; else echo "node not found: skipping viewer/test_sidecache_js.mjs"; fi
 	if command -v node >/dev/null; then node viewer/test_runouts_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_runouts_js.mjs; else echo "node not found: skipping viewer/test_runouts_js.mjs"; fi
 	if command -v node >/dev/null; then node viewer/test_preflop_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_preflop_js.mjs; else echo "node not found: skipping viewer/test_preflop_js.mjs"; fi
+	if command -v node >/dev/null; then node viewer/test_build_page_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_build_page_js.mjs; else echo "node not found: skipping viewer/test_build_page_js.mjs"; fi
 	python3 viewer/test_hand_lines.py ./solver
 	python3 viewer/test_preflop_view.py ./solver
 	python3 viewer/test_preflop_build.py ./solver
@@ -98,6 +99,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	if command -v node >/dev/null; then node viewer/test_sidecache_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_sidecache_js.mjs; else echo "node not found: skipping viewer/test_sidecache_js.mjs"; fi
 	if command -v node >/dev/null; then node viewer/test_runouts_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_runouts_js.mjs; else echo "node not found: skipping viewer/test_runouts_js.mjs"; fi
 	if command -v node >/dev/null; then node viewer/test_preflop_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_preflop_js.mjs; else echo "node not found: skipping viewer/test_preflop_js.mjs"; fi
+	if command -v node >/dev/null; then node viewer/test_build_page_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_build_page_js.mjs; else echo "node not found: skipping viewer/test_build_page_js.mjs"; fi
 	python3 viewer/test_hand_lines.py ./solver
 	python3 viewer/test_preflop_view.py ./solver
 	python3 viewer/test_preflop_build.py ./solver

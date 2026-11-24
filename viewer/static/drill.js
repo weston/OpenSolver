@@ -118,11 +118,12 @@ function render(s) {
   $("drill-result").textContent = hand?.result || (hand?.phase === "decision" ? "Your action" : "");
   $("drill-hero-seat").textContent = hand ? `You · ${hand.seat}` : "You";
   $("drill-villain-seat").textContent = hand ? `Solver · ${hand.seat === "OOP" ? "IP" : "OOP"}` : "Solver";
+  $("drill-hero").classList.toggle("hero-hand-set", !!hand && !hand.hero && !hand.continuation);
   if (!hand) return;
   const buttonSeat = $(hand.seat === "IP" ? "drill-hero-seat" : "drill-villain-seat");
   buttonSeat.append(el("span", "dealer-button", "BTN"));
   if (hand.continuation || hand.hero) $("drill-hero").append(comboEl(hand.continuation?.combo || hand.hero, "lg"));
-  else $("drill-hero").append(el("span", "drill-set-count", `${hand.exercises.length} hands`));
+  else for (const exercise of hand.exercises) $("drill-hero").append(comboEl(exercise.combo, ""));
   if (hand.villain) $("drill-villain").append(comboEl(hand.villain, "lg"));
   else for (let i = 0; i < 2; i++) $("drill-villain").append(el("span", "drill-card-back"));
   for (const card of parseCards(hand.node.board)) $("drill-board").append(cardEl(card, "lg"));
@@ -155,8 +156,7 @@ function renderHistory(hand) {
   }
   if (!groups.has(current)) groups.set(current, []);
   if (hand.continuation) groups.get(current).push({ ...hand.continuation, actor: hand.seat, upcoming: true });
-  const previous = el("details", "previous-streets");
-  previous.append(el("summary", "", "Previous streets"));
+  const previous = el("div", "previous-streets");
   for (const [street, items] of groups) {
     const section = el("div", "history-street");
     section.append(el("strong", "", streets[street]));
@@ -167,7 +167,7 @@ function renderHistory(hand) {
     if (street === current) $("drill-history").append(section);
     else previous.append(section);
   }
-  if (previous.children.length > 1) $("drill-history").prepend(previous);
+  if (previous.children.length) $("drill-history").prepend(previous);
 }
 
 async function command(action, data = {}) {

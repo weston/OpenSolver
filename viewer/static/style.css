@@ -1086,8 +1086,9 @@ button.rl-card.end { cursor: default; }
 .drill-status { color: var(--text-2); }
 .drill-error { color: var(--danger); overflow-wrap: anywhere; }
 .drill-table { min-height: 390px; display: flex; flex-direction: column; justify-content: space-between; align-items: center; gap: 20px; padding: 28px; border: 1px solid var(--border-strong); border-radius: 70px; background: radial-gradient(ellipse at center, var(--accent-soft), var(--surface)); }
-.drill-seat { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.drill-seat { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 100%; }
 .drill-cards { display: flex; gap: 5px; min-height: 58px; }
+.drill-cards.hero-hand-set { flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px; max-width: min(480px, 100%); }
 .drill-card-back { display: inline-block; width: 40px; height: 58px; border-radius: 5px; border: 3px solid var(--border-strong); background: repeating-linear-gradient(45deg, var(--accent-soft), var(--accent-soft) 4px, var(--surface-3) 4px, var(--surface-3) 8px); }
 .drill-center { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
 .drill-pot { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; }
@@ -1105,7 +1106,6 @@ button.rl-card.end { cursor: default; }
 .drill-exercise .combo-cards { flex: none; }
 .drill-exercise .drill-action { min-width: 88px; min-height: 55px; flex: 1; font-size: 12px; }
 .drill-action.chosen { background: var(--accent-soft); border-color: var(--accent); opacity: 1; }
-.drill-set-count { align-self: center; font-size: 22px; font-weight: 600; }
 .drill-controls { display: flex; justify-content: center; margin: 16px 0; }
 .drill-history-item { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; font-size: 11px; background: var(--surface); border-radius: var(--radius-sm); }
 .drill-history-item.upcoming { border: 1px dashed var(--accent); background: var(--accent-soft); font-weight: 600; }
@@ -1142,9 +1142,7 @@ button.rl-card.end { cursor: default; }
 .history-street { display: flex; justify-content: center; align-items: baseline; gap: 10px; }
 .history-street > strong { min-width: 42px; color: var(--text-2); }
 .history-actions { display: flex; flex-wrap: wrap; gap: 4px; }
-.previous-streets { color: var(--text-2); }
-.previous-streets summary { cursor: pointer; margin-bottom: 5px; }
-.previous-streets .history-street { margin-bottom: 4px; }
+.previous-streets { display: grid; gap: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--border); color: var(--text-2); }
 .drill-actions.hand-set { display: block; overflow-x: auto; }
 .hand-set .drill-exercise, .drill-action-header { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 14px; min-width: max(360px, calc(96px + var(--action-count) * 76px)); }
 .drill-action-header { align-items: center; margin-bottom: 8px; font-size: 12px; color: var(--text-2); }

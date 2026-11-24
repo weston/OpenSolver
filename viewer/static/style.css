@@ -1062,3 +1062,42 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .rl-card.off .rl-bar { background: none; box-shadow: inset 0 0 0 1px var(--border); }
 button.rl-card:hover .rl-bar { box-shadow: 0 0 0 2px var(--text); }
 button.rl-card.end { cursor: default; }
+.drill-layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 24px; max-width: 1200px; margin: 24px auto; padding: 0 24px; }
+.drill-settings { align-self: start; }
+.drill-play { min-width: 0; }
+.drill-settings fieldset { border: 0; padding: 0; margin: 0 0 18px; min-width: 0; }
+.drill-settings .field { margin-bottom: 14px; }
+.drill-status, .drill-error { font-size: 12px; margin-top: 14px; }
+.drill-status { color: var(--text-2); }
+.drill-error { color: var(--danger); overflow-wrap: anywhere; }
+.drill-table { min-height: 390px; display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 28px; border: 1px solid var(--border-strong); border-radius: 100px; background: radial-gradient(ellipse at center, var(--accent-soft), var(--surface)); }
+.drill-seat { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.drill-cards { display: flex; gap: 5px; min-height: 58px; }
+.drill-card-back { display: inline-block; width: 40px; height: 58px; border-radius: 5px; border: 3px solid var(--border-strong); background: repeating-linear-gradient(45deg, var(--accent-soft), var(--accent-soft) 4px, var(--surface-3) 4px, var(--surface-3) 8px); }
+.drill-center { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.drill-pot { font-size: 16px; font-weight: 600; }
+.drill-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+.drill-action { min-width: 105px; min-height: 64px; display: flex; flex-direction: column; gap: 5px; border-top-width: 3px; }
+.drill-action.bet, .drill-action.raise { border-top-color: #e66f5c; }
+.drill-action.check, .drill-action.call { border-top-color: var(--ok); }
+.drill-action.fold { border-top-color: var(--accent); }
+.drill-actions.hand-set { flex-direction: column; align-items: stretch; }
+.drill-exercise { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding: 5px 0; }
+.drill-exercise .combo-cards { flex: none; margin-right: auto; }
+.drill-exercise .drill-action { min-width: 88px; min-height: 55px; flex: 1; font-size: 12px; }
+.drill-action.chosen { background: var(--accent-soft); border-color: var(--accent); opacity: 1; }
+.drill-set-count { align-self: center; font-size: 22px; font-weight: 600; }
+#drill-feedback { overflow-x: auto; }
+.drill-set-review td, .drill-set-review th { white-space: nowrap; padding: 10px 8px; }
+.drill-set-review td.selected { background: var(--accent-soft); }
+.drill-controls { display: flex; justify-content: center; margin: 16px 0; }
+.drill-review { width: 100%; border-collapse: collapse; }
+.drill-review th, .drill-review td { text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.drill-review th:first-child, .drill-review td:first-child { text-align: left; }
+.drill-review tr.selected { background: var(--accent-soft); }
+.drill-history { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.drill-history-item { display: inline-flex; align-items: center; gap: 3px; padding: 6px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+@media (max-width: 800px) {
+  .drill-layout { grid-template-columns: 1fr; padding: 0 12px; gap: 16px; }
+  .drill-table { border-radius: 40px; padding: 20px 12px; }
+}

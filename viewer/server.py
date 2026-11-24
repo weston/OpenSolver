@@ -501,6 +501,12 @@ def set_nl(service):
 
 
 _jobs = None  # jobs_api.JobsService (#196), set by main()/tests; runs the solve queue
+_drill = None
+
+
+def set_drill(service):
+    global _drill
+    _drill = service
 
 
 def set_jobs(service):
@@ -527,6 +533,10 @@ VARIANT_ENDERS = ("/api/lock", "/api/unlock", "/api/lock/revert", "/api/lock/app
 
 def api(solver, lib, method, path, query, body):
     """Dispatch one API call; returns (status, data)."""
+    if path.startswith("/api/drill/"):
+        if _drill is None:
+            raise SolverError("drilling is not initialized")
+        return _drill.api(method, path, body)
     status, data = _api(solver, lib, method, path, query, body)
     if method == "POST" and path in VARIANT_ENDERS and status == 200 and _resolver is not None:
         _resolver.restore()   # only once it happened: a refused lock (while solving, say) changes nothing
@@ -1675,12 +1685,15 @@ def main(argv=None):
     import jobs_api
     set_jobs(jobs_api.JobsService(args.jobs, os.path.abspath(args.solver),
                                   args.flops_dir if args.flops_dir is not None else jobs_api.default_flops_dir()))
+    import drill
+    set_drill(drill.DrillService(solver, os.path.abspath(args.solver), _jobs.q))
     import refine as vrefine
     set_refiner(vrefine.RefineManager(solver, Solver, os.path.abspath(args.solver)))
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     srv.solver = solver
     srv.library = Library(args.library)
+    srv.library.install_defaults()
     print(f"WSolver viewer: solver {solver.exe!r}, library {srv.library.root!r}, "
           f"UI on http://127.0.0.1:{srv.server_port}", flush=True)
     if args.exit_with_parent is not None:
@@ -1708,11 +1721,15 @@ def main(argv=None):
         pass
     finally:
         srv.server_close()
-        for s in ([solver] + ([_resolver.rsolver] if _resolver else []) + ([_refiner.rsolver] if _refiner else [])):
-            try:
-                s.proc.kill()
-            except Exception:
-                pass
+        try:
+            if _drill:
+                _drill.close()
+        finally:
+            for s in ([solver] + ([_resolver.rsolver] if _resolver else []) + ([_refiner.rsolver] if _refiner else [])):
+                try:
+                    s.proc.kill()
+                except Exception:
+                    pass
     return 0
 
 

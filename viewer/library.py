@@ -49,6 +49,20 @@ class Library:
     def __init__(self, root):
         self.root = os.path.abspath(os.path.expanduser(root))
 
+    def install_defaults(self):
+        marker = os.path.join(self.root, ".defaults-v1")
+        if os.path.exists(marker):
+            return
+        defaults = Library(os.path.join(os.path.dirname(__file__), "defaults"))
+        for kind in KINDS:
+            for entry in defaults.list(kind):
+                name = entry["name"]
+                if not os.path.exists(self._resolve(kind, name)):
+                    self.save(kind, name, defaults.get(kind, name))
+        os.makedirs(self.root, exist_ok=True)
+        with open(marker, "w") as f:
+            f.write("1\n")
+
     # ------------------------------------------------------------- paths
 
     def _section(self, kind):

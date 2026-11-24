@@ -17,6 +17,7 @@
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>WSolver</div>
   <nav class="views" role="tablist">
     <button class="view-tab" data-view="study" role="tab">Study</button>
+    <button class="view-tab" data-view="drill" role="tab">Drill</button>
     <button class="view-tab" data-view="build" role="tab">Build</button>
     <button class="view-tab" data-view="jobs" role="tab">Jobs</button>
   </nav>
@@ -52,6 +53,7 @@
         <button id="btn-further" class="btn small hidden" title="Continue solving the tree from this node down (changes its strategies in memory)">Solve further…</button>
         <span id="lock-tag" class="tag lock hidden" title="This strategy is a lock you set, not a solver output">Locked</span>
         <button id="btn-lock" class="btn small hidden" title="Set this player's strategy here by hand and lock it">Lock…</button>
+        <button id="btn-drill" class="btn small hidden">Drill here</button>
         <button id="btn-report" class="btn small hidden" title="This node on every flop of the save's job batch (aggregate report)">Report…</button>
         <div class="seg" id="view-seg">
           <button data-mode="strategy" class="active">Strategy</button>
@@ -96,6 +98,53 @@
       <div id="side-beta" class="side-page hidden"></div>
     </aside>
   </section>
+</main>
+
+<main id="view-drill" class="view hidden">
+  <div class="drill-layout">
+    <aside class="drill-settings card">
+      <div class="card-head"><h2>Drill</h2><span id="drill-number" class="tag hidden"></span></div>
+      <fieldset id="drill-settings">
+        <label class="field"><span>Simulation</span><select id="drill-source">
+          <option value="current">Open tree</option><option value="saved">Saved batch</option><option value="live">Solve on demand</option>
+        </select></label>
+        <label id="drill-batch-field" class="field hidden"><span>Batch</span><select id="drill-batch"></select></label>
+        <label class="field"><span>Practice</span><select id="drill-mode">
+          <option value="hand">Whole hand</option><option value="node">From a node</option>
+        </select></label>
+        <label id="drill-node-field" class="field hidden"><span>Node</span><input id="drill-node" value="r:0" spellcheck="false"></label>
+        <label class="field"><span>Play as</span><select id="drill-seat">
+          <option value="OOP">OOP</option><option value="IP">IP</option><option value="alternate">Alternating</option>
+        </select></label>
+        <label class="field"><span>Hands</span><select id="drill-format"><option value="single">One hand</option><option value="set">Hand set</option></select></label>
+        <label id="drill-count-field" class="field hidden"><span>Hands per node</span><input id="drill-count" type="number" value="5" min="1" max="20" step="1"></label>
+        <div id="drill-live" class="hidden">
+          <label class="field"><span>Spot</span><select id="drill-spot"><option value="">Build settings</option></select></label>
+          <label class="field"><span>Solves ahead</span><input id="drill-ahead" type="number" value="3" min="1" max="20" step="1"></label>
+          <label class="field"><span>Boards</span><select id="drill-boards"><option value="random">Random flops</option><option value="fixed">Build board</option></select></label>
+          <label class="field"><span>Target exploitability</span><div class="suffix"><input id="drill-accuracy" type="number" value="0.5" min="0.01" max="100" step="0.1"><i>% pot</i></div></label>
+          <label class="field"><span>Solve time limit</span><div class="suffix"><input id="drill-seconds" type="number" value="60" min="1" max="3600"><i>seconds</i></div></label>
+        </div>
+      </fieldset>
+      <button id="drill-start" class="btn primary wide">Start drilling</button>
+      <button id="drill-stop" class="btn wide hidden">End session</button>
+      <div id="drill-stats" class="stats"></div>
+      <div id="drill-preparing" class="drill-status" role="status"></div>
+      <div id="drill-error" class="drill-error" role="alert"></div>
+      <button id="drill-retry" class="btn small hidden">Retry simulation</button>
+    </aside>
+    <section class="drill-play">
+      <div class="drill-table">
+        <div class="drill-seat"><span id="drill-villain-seat" class="badge neutral">Solver</span><div id="drill-villain" class="drill-cards"></div></div>
+        <div class="drill-center"><div id="drill-pot" class="drill-pot"></div><div id="drill-board" class="board"></div><div id="drill-result" role="status"></div></div>
+        <div class="drill-seat"><div id="drill-hero" class="drill-cards"></div><span id="drill-hero-seat" class="badge neutral">You</span></div>
+      </div>
+      <div id="drill-actions" class="drill-actions"></div>
+      <div id="drill-feedback" class="card hidden"></div>
+      <div class="drill-controls"><button id="drill-continue" class="btn primary hidden">Continue</button><button id="drill-next" class="btn primary hidden">Next hand</button></div>
+      <div id="drill-history" class="drill-history"></div>
+    </section>
+  </div>
 </main>
 
 <!-- ============================== BUILD ============================== -->

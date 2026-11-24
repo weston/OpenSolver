@@ -568,6 +568,7 @@ function renderTitle() {
     : "Solve from here with other sizes, or find the best ones";
   syncFurther(dec && !v);
   $("btn-lock").classList.toggle("hidden", !(dec && !v));
+  $("btn-drill").classList.toggle("hidden", !(dec && !v));
   $("btn-report").classList.toggle("hidden", !(reportBatch && isDec(n) && !v));
   const lk = isDec(n) ? lockOf(n) : null;
   $("lock-tag").classList.toggle("hidden", !lk);

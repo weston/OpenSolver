@@ -13,6 +13,7 @@ import { initFurther, pollFurther } from "./further.js";
 import { initLock } from "./lock.js";
 import { initJobs, showJobs, openReport } from "./jobs.js";
 import { initPreview, previewStatus } from "./preview.js";
+import { initDrill, showDrill, drillHere } from "./drill.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,12 +21,13 @@ const app = { view: "study", tree: false, solving: false, rootPot: 0, bb: 0, ser
 
 /* ------------------------------------------------------------------ views */
 
-const VIEWS = ["study", "build", "jobs"];
+const VIEWS = ["study", "build", "jobs", "drill"];
 
 function setView(v) {
   app.view = v;
   for (const name of VIEWS) $("view-" + name).classList.toggle("hidden", name !== v);
   showJobs(v === "jobs");
+  showDrill(v === "drill");
   document.querySelectorAll(".view-tab").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   if (!location.hash.startsWith("#" + v)) history.replaceState(null, "", "#" + v);
   if (v === "study") {
@@ -185,6 +187,8 @@ async function boot() {
   initFurther();
   initLock({ changed: () => study.refresh() });
   initPreview();
+  initDrill();
+  $("btn-drill").onclick = () => { drillHere(study.id); setView("drill"); };
   // Fast preview: the strategy is readable now (the solve carries on). From a Build view left
   // alone since Solve, open the Study view; anywhere else, stay there and say so.
   window.addEventListener("preview-ready", (e) => {
@@ -235,7 +239,7 @@ async function boot() {
   addEventListener("hashchange", () => {
     const [h] = location.hash.slice(1).split("&");
     const [v, id] = h.split("=");
-    if ((v === "build" || v === "jobs") && app.view !== v) setView(v);
+    if ((v === "build" || v === "jobs" || v === "drill") && app.view !== v) setView(v);
     else if (v === "study") {
       if (app.view !== "study") setView("study");
       if (id && app.tree && id !== study.id) gotoNode(id);

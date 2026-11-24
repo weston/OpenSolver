@@ -52,6 +52,22 @@ class LibraryUnitTest(unittest.TestCase):
         self.lib = make_library()
         self.addCleanup(shutil.rmtree, self.lib.root, True)
 
+    def test_bundled_spots_preserve_range_weights_and_user_edits(self):
+        self.lib.save("range", "HUNL SRP IP", "AA:0.25")
+        self.lib.install_defaults()
+        self.assertEqual(len(self.lib.list("config")), 2)
+        self.assertEqual(len(self.lib.list("range")), 4)
+        self.assertEqual(self.lib.get("range", "HUNL SRP IP").strip(), "AA:0.25")
+        for name, prefix in (("HUNL SRP 4", "HUNL SRP"), ("HU3BP", "HUNL 3BP")):
+            config = self.lib.get("config", name)
+            defaults = libm.Library(os.path.join(HERE, "defaults"))
+            for player in ("OOP", "IP"):
+                self.assertEqual(config["range_" + player.lower()], defaults.get("range", prefix + " " + player).strip())
+        self.lib.delete("config", "HU3BP")
+        self.lib.install_defaults()
+        self.assertEqual(len(self.lib.list("config")), 1)
+        self.assertEqual(self.lib.get("range", "HUNL SRP IP").strip(), "AA:0.25")
+
     # ----- ranges -----
     def test_range_crud_nested_folders(self):
         name = "BTN vs BB/SRP/BB call"

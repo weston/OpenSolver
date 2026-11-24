@@ -66,7 +66,7 @@ def test_dist():
     # which `git archive HEAD` correctly omits, so the test failed in any mid-merge or
     # staged-not-yet-committed tree. That is a normal state, not a packaging fault.
     committed = subprocess.run(["git", "ls-tree", "-r", "--name-only", "HEAD"],
-                               cwd=ROOT, capture_output=True, text=True).stdout.split()
+                               cwd=ROOT, capture_output=True, text=True).stdout.splitlines()
 
     # The files a recipient cannot build or evaluate the release without. Judged against HEAD for the
     # same reason: if one of these is not committed yet, that is the commit's problem, not dist's.
@@ -153,7 +153,7 @@ def test_macos_app():
     import ast
     pk = os.path.join(ROOT, "packaging", "macos")
     r = subprocess.run([os.path.join(pk, "build.sh"), "--files"], cwd=ROOT, capture_output=True, text=True)
-    staged = r.stdout.split()
+    staged = r.stdout.splitlines()
     check(r.returncode == 0 and len(staged) > 20, f"build.sh --files lists the app's files ({len(staged)})")
     check(all(os.path.isfile(os.path.join(ROOT, f)) for f in staged), "each of them exists")
     viewer = os.path.join(ROOT, "viewer")
@@ -164,6 +164,8 @@ def test_macos_app():
     want += ["tools/tree_builder.py", "tools/jobs.py", "tools/preflop.py"]
     flop_files = [f"flops/{f}" for f in os.listdir(os.path.join(ROOT, "flops")) if f.endswith(".txt")]
     want += flop_files                                    # the Jobs tab's flop files (jobs_api.default_flops_dir)
+    for directory, _, filenames in os.walk(os.path.join(viewer, "defaults")):
+        want += [os.path.relpath(os.path.join(directory, f), ROOT) for f in filenames]
     missing = sorted(set(want) - set(staged))
     check(not missing and len(flop_files) >= 5,
           f"every viewer module, every file of its page, the three tools and the flop files are in it {missing[:4]}")

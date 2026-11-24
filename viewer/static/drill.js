@@ -1,10 +1,13 @@
-import { get, post, fmt, fmtChips, fmtEvPct } from "./api.js";
+import { get, post, fmt, fmtChips } from "./api.js";
 import { el, cardEl, comboEl, parseCards } from "./cards.js";
 import { currentTree } from "./build.js";
+import { drillSettings } from "./settings.js";
+import { mixEditor, feedbackCards, chipStack } from "./drill_controls.js";
 
 const $ = (id) => document.getElementById(id);
 let state = null, visible = false, busy = false, timer = null, sequence = 0, rendered = null, autoDealToken = null;
-let requestError = "";
+let requestError = "", draftNode = "";
+const drafts = new Map();
 
 function fields() {
   $("drill-batch-field").classList.toggle("hidden", $("drill-source").value !== "saved");
@@ -31,12 +34,45 @@ function controls() {
   document.querySelectorAll("#drill-actions button").forEach((b) => { b.disabled = busy || b.dataset.answered === "yes"; });
 }
 
+function renderPreparation(s) {
+  const progress = s.progress, preparation = s.preparation;
+  const stage = preparation?.stage || (progress ? "solving" : "building");
+  const titles = { building: "Building tree", solving: "Solving simulation", saving: "Saving simulation" };
+  const live = s.config?.source === "live";
+  const title = live ? titles[stage] : "Loading simulation";
+  $("drill-preparing").textContent = !s.active ? "" : s.preparing
+    ? `${s.ready_count} ready · ${title}${preparation ? ` · ${fmt(preparation.elapsed, 0)}s` : "…"}`
+    : s.ready ? `${s.ready_count} simulation${s.ready_count === 1 ? "" : "s"} ready` : "";
+  const waiting = s.active && !s.hand && !s.error && !requestError;
+  $("drill-loading").classList.toggle("hidden", !waiting);
+  $("drill-table").classList.toggle("hidden", waiting);
+  $("drill-play").setAttribute("aria-busy", String(waiting));
+  if (!waiting) return;
+  $("drill-loading-title").textContent = s.ready ? "Dealing hand" : title;
+  const board = s.ready ? "" : preparation?.board || "";
+  $("drill-loading-board").replaceChildren(...parseCards(board).map((card) => cardEl(card, "lg")));
+  $("drill-loading-steps").classList.toggle("hidden", !live);
+  const index = s.ready ? 3 : ["building", "solving", "saving"].indexOf(stage);
+  [...$("drill-loading-steps").children].forEach((step, i) => {
+    step.classList.toggle("active", i === index);
+    step.classList.toggle("done", i < index);
+  });
+  $("drill-loading-stats").replaceChildren();
+  if (s.ready) return;
+  const stats = [];
+  if (preparation) stats.push(["Elapsed", fmt(preparation.elapsed, 0) + "s"]);
+  if (progress) stats.push(["Exploitability", fmt(progress.pct, 2) + "%"]);
+  if (live && stage !== "building") stats.push(["Target", fmt(s.config.accuracy, 2) + "%"]);
+  for (const [label, value] of stats) {
+    const row = el("div", "kv");
+    row.append(el("div", "k", label), el("div", "v num", value));
+    $("drill-loading-stats").append(row);
+  }
+}
+
 function render(s) {
   state = s;
-  const progress = s.progress;
-  $("drill-preparing").textContent = !s.active ? "" : s.preparing
-    ? `${s.ready_count} ready · Solving${progress ? ` · ${fmt(progress.pct, 2)}% · ${fmt(progress.t, 0)}s` : "…"}`
-    : s.ready ? `${s.ready_count} simulation${s.ready_count === 1 ? "" : "s"} ready` : "";
+  renderPreparation(s);
   $("drill-error").textContent = s.error || requestError;
   controls();
   if (rendered === s.token) return;
@@ -45,7 +81,7 @@ function render(s) {
     for (const key of ["source", "mode", "seat", "node", "format"]) $("drill-" + key).value = s.config[key];
     if (s.config.format === "set") $("drill-count").value = s.config.count;
     if (s.config.source === "live") {
-      for (const key of ["ahead", "boards", "accuracy", "seconds", "spot"]) $("drill-" + key).value = s.config[key];
+      for (const key of ["boards", "spot"]) $("drill-" + key).value = s.config[key];
     }
     if (s.config.source === "saved") $("drill-batch").value = s.config.batch;
     fields();
@@ -63,86 +99,48 @@ function render(s) {
   }
   for (const id of ["drill-hero", "drill-villain", "drill-board", "drill-actions", "drill-feedback", "drill-history"]) $(id).replaceChildren();
   $("drill-feedback").classList.toggle("hidden", !hand?.feedback);
-  $("drill-pot").textContent = hand ? `Pot ${fmtChips(hand.node.pot.reduce((a, b) => a + b, 0))}` : "";
+  $("drill-pot").replaceChildren();
+  for (const id of ["drill-hero-wager", "drill-villain-wager"]) $(id).replaceChildren();
+  if (hand) {
+    const pot = hand.node.pot.reduce((a, b) => a + b, 0);
+    $("drill-pot").append(chipStack(pot), el("span", "num", `Pot ${fmtChips(pot)}`));
+    const player = hand.seat === "OOP" ? 0 : 1;
+    for (const [id, wager] of [["drill-hero-wager", hand.wagers[player]], ["drill-villain-wager", hand.wagers[1 - player]]]) {
+      if (wager > 0) $(id).append(chipStack(wager), el("span", "num", fmtChips(wager)));
+    }
+  }
   $("drill-result").textContent = hand?.result || (hand?.phase === "decision" ? "Your action" : "");
   $("drill-hero-seat").textContent = hand ? `You · ${hand.seat}` : "You";
   $("drill-villain-seat").textContent = hand ? `Solver · ${hand.seat === "OOP" ? "IP" : "OOP"}` : "Solver";
   if (!hand) return;
-  if (hand.hero) $("drill-hero").append(comboEl(hand.hero, "lg"));
+  if (hand.continuation || hand.hero) $("drill-hero").append(comboEl(hand.continuation?.combo || hand.hero, "lg"));
   else $("drill-hero").append(el("span", "drill-set-count", `${hand.exercises.length} hands`));
   if (hand.villain) $("drill-villain").append(comboEl(hand.villain, "lg"));
   else for (let i = 0; i < 2; i++) $("drill-villain").append(el("span", "drill-card-back"));
   for (const card of parseCards(hand.node.board)) $("drill-board").append(cardEl(card, "lg"));
-  const multiple = s.config.format === "set";
-  $("drill-actions").classList.toggle("hand-set", multiple);
+  const key = `${s.token.split(":")[0]}:${s.number}:${hand.node.id}`;
+  if (draftNode !== key) { drafts.clear(); draftNode = key; }
+  $("drill-actions").classList.toggle("hand-set", s.config.format === "set");
   for (const [index, exercise] of hand.exercises.entries()) {
     if (!hand.actions.length) break;
-    const row = multiple ? el("div", "drill-exercise") : $("drill-actions");
-    if (multiple) row.append(comboEl(exercise.combo, ""));
-    for (const action of hand.actions) {
-      const b = el("button", `btn drill-action ${action.kind}`);
-      b.classList.toggle("chosen", exercise.chosen === action.id);
-      b.dataset.answered = exercise.chosen ? "yes" : "no";
-      b.append(el("strong", "", action.label));
-      if (action.amount != null) b.append(el("span", "num", fmtChips(action.amount)));
-      b.onclick = () => command("action", { action: action.id, exercise: index });
-      row.append(b);
-    }
-    if (multiple) $("drill-actions").append(row);
+    const row = el("div", "drill-exercise");
+    if (s.config.format === "set") row.append(comboEl(exercise.combo, ""));
+    row.append(mixEditor(hand.actions, exercise.chosen, drafts.get(index),
+      (frequencies) => drafts.set(index, frequencies),
+      (frequencies) => command("action", { frequencies, exercise: index })));
+    $("drill-actions").append(row);
   }
-  if (hand.feedback && multiple) {
-    const table = el("table", "drill-review drill-set-review");
-    const header = el("tr");
-    const subheader = el("tr");
-    const handLabel = el("th", "", "Hand");
-    handLabel.rowSpan = 2;
-    header.append(handLabel);
-    for (const action of hand.feedback.hands[0].actions) {
-      const label = el("th", "", action.label);
-      label.colSpan = 2;
-      header.append(label);
-      subheader.append(el("th", "", "Frequency"), el("th", "", "EV"));
-    }
-    const loss = el("th", "", "EV loss");
-    loss.rowSpan = 2;
-    header.append(loss);
-    table.append(header, subheader);
-    for (const feedback of hand.feedback.hands) {
-      const row = el("tr");
-      const handCell = el("td");
-      handCell.append(comboEl(feedback.combo, ""));
-      row.append(handCell);
-      for (const action of feedback.actions) {
-        const chosen = action.id === feedback.chosen;
-        row.append(el("td", chosen ? "selected num" : "num", (chosen ? "✓ " : "") + fmt(action.frequency * 100, 1) + "%"),
-          el("td", chosen ? "selected num" : "num", fmtEvPct(action.ev, feedback.pot, 2)));
-      }
-      row.append(el("td", "num", fmt(feedback.loss_pct, 2) + "%"));
-      table.append(row);
-    }
-    $("drill-feedback").append(table);
-  } else if (hand.feedback) {
-    for (const f of hand.feedback.hands) {
-      const heading = el("div", "card-head");
-      heading.append(el("h2", "", "Solver feedback"), el("span", "num", `EV loss ${fmt(f.loss_pct, 2)}%`));
-      const table = el("table", "drill-review");
-      const head = el("tr");
-      for (const title of ["Action", "Frequency", "EV"]) head.append(el("th", "", title));
-      table.append(head);
-      for (const action of f.actions) {
-        const row = el("tr", action.id === f.chosen ? "selected" : "");
-        row.append(el("td", "", action.label + (action.id === f.chosen ? " ✓" : "")),
-          el("td", "num", fmt(action.frequency * 100, 1) + "%"), el("td", "num", fmtEvPct(action.ev, f.pot, 2)));
-        table.append(row);
-      }
-      $("drill-feedback").append(heading, table);
-    }
-  }
+  if (hand.feedback) $("drill-feedback").append(feedbackCards(hand.feedback, hand.continuation));
   for (const item of hand.history) {
     const row = el("span", "drill-history-item");
     if (item.board) for (const card of item.board) row.append(cardEl(card, "xs"));
     else row.textContent = `${item.actor} ${item.label}${item.amount != null ? " · " + fmtChips(item.amount) : ""}`;
     $("drill-history").append(row);
+  }
+  if (hand.continuation) {
+    const action = hand.continuation;
+    $("drill-history").append(el("span", "drill-history-item upcoming",
+      `Next · ${hand.seat} ${action.label}${action.amount != null ? " · " + fmtChips(action.amount) : ""}`));
   }
   controls();
 }
@@ -159,6 +157,7 @@ async function command(action, data = {}) {
   } catch (e) {
     requestError = e.message;
     $("drill-error").textContent = requestError;
+    if (state) renderPreparation(state);
   } finally {
     busy = false;
     controls();
@@ -173,8 +172,9 @@ async function start() {
       node: $("drill-node").value.trim(), batch: $("drill-batch").value,
       format: $("drill-format").value, count: Number($("drill-count").value) };
     const spot = $("drill-spot").value;
-    if (source === "live") Object.assign(config, { spot, tree: spot ? (await get("/api/library/get?kind=config&name=" + encodeURIComponent(spot))).content : currentTree(true), boards: $("drill-boards").value,
-      accuracy: Number($("drill-accuracy").value), seconds: Number($("drill-seconds").value), ahead: Number($("drill-ahead").value) });
+    if (source === "live") Object.assign(config, drillSettings(), {
+      spot, tree: spot ? (await get("/api/library/get?kind=config&name=" + encodeURIComponent(spot))).content : currentTree(true),
+      boards: $("drill-boards").value });
     await command("start", config);
     await firstHand();
   } catch (e) { $("drill-error").textContent = e.message; }
@@ -221,7 +221,7 @@ export function showDrill(show) {
   }).catch((e) => { $("drill-error").textContent = e.message; });
   get("/api/library/list?kind=config").then((s) => {
     const value = state?.config?.spot || $("drill-spot").value;
-    const build = el("option", "", "Build settings");
+    const build = el("option", "", "Current tree");
     build.value = "";
     $("drill-spot").replaceChildren(build);
     for (const entry of s.entries) {
@@ -235,7 +235,9 @@ export function showDrill(show) {
 
 export function drillHere(node) {
   if (state?.active) return;
-  $("drill-source").value = "current";
+  $("drill-source").value = "live";
+  $("drill-spot").value = "";
+  $("drill-boards").value = "fixed";
   $("drill-mode").value = "node";
   $("drill-node").value = node;
   fields();

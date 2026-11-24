@@ -116,14 +116,14 @@ class RangeEditor {
     return s / idx.length;
   }
 
-  setText(text, rewrite = true) {
+  setText(text, rewrite = true, notify = true) {
     try {
       this.w = parseRange(text);
       this.text.classList.remove("invalid");
       this.err.textContent = "";
       this.draw();
       if (rewrite) this.text.value = formatRange(this.w);
-      this.onChange();
+      if (notify) this.onChange();
     } catch (e) {
       this.text.classList.add("invalid");
       this.err.textContent = e.message;
@@ -268,8 +268,8 @@ function loadForm() {
 
 /** Put a saved config (or null for the defaults) into the form. */
 function applyForm(f) {
-  editors.OOP.setText(f && f.range_oop != null ? f.range_oop : DEFAULTS.OOP);
-  editors.IP.setText(f && f.range_ip != null ? f.range_ip : DEFAULTS.IP);
+  editors.OOP.setText(f && f.range_oop != null ? f.range_oop : DEFAULTS.OOP, true, false);
+  editors.IP.setText(f && f.range_ip != null ? f.range_ip : DEFAULTS.IP, true, false);
   board = f && typeof f.board === "string" ? cleanBoard(f.board) : [...DEFAULTS.board];
   if (f && f.accuracy != null && Number.isFinite(Number(f.accuracy))) {
     $("f-accuracy").value = f.accuracy;

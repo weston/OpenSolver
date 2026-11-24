@@ -4,6 +4,7 @@ import os
 import random
 import tempfile
 import threading
+import time
 import uuid
 
 import server as vsrv
@@ -51,14 +52,10 @@ def deal_hands(order, ranges, board, rng):
     return [oop, ip]
 
 
-def practice_hands(solver, node, seat, order, hero, count, rng):
+def practice_hands(solver, node, order, hero, count, rng, weights):
     if count == 1:
         return [hero]
     board = set(cards(node["board"]))
-    reach = vsrv.parse_floats(solver.cmd(f"show_range {seat} {node['id']}"), vsrv.NUM_COMBOS)
-    opponent = "IP" if seat == "OOP" else "OOP"
-    other = vsrv.parse_floats(solver.cmd(f"show_range {opponent} {node['id']}"), vsrv.NUM_COMBOS)
-    weights = hand_weights(order, reach, other, board)
     properties = [(vsrv.combo_class(c),) for c in order]
     if len(board) >= 3:
         rows = solver.cmd("show_categories " + "".join(cards(node["board"]))).splitlines()
@@ -78,6 +75,11 @@ def practice_hands(solver, node, seat, order, hero, count, rng):
         selected.append(candidates[pick([weights[i] for i in candidates], rng)])
     rng.shuffle(selected)
     return selected
+
+
+def choose_continuation(exercises, weights, rng):
+    exercise = pick(weights, rng)
+    return exercise, pick(exercises[exercise]["chosen"], rng)
 
 
 def action_info(node, child):
@@ -113,7 +115,7 @@ class Hand:
                 ranges[hero][previous_combo] = 0
         self.hands = deal_hands(self.order, ranges, cards(self.node["board"]), rng)
         self.blocked = set(cards(self.order[self.hands[0]]) + cards(self.order[self.hands[1]]))
-        self.history = []
+        self.history, self.street_start = self.read_line()
         self.feedback = None
         self.phase = "playing"
         self.result = None
@@ -133,6 +135,23 @@ class Hand:
 
     def read_node(self, node_id):
         return vsrv.parse_node_block(self.solver.cmd("show_node " + node_id))
+
+    def read_line(self):
+        history, street_start = [], [0, 0]
+        parts = self.node["id"].split(":")
+        if len(parts) == 2:
+            return history, street_start
+        parent = self.read_node("r:0")
+        for end in range(3, len(parts) + 1):
+            child = self.node if end == len(parts) else self.read_node(":".join(parts[:end]))
+            if parent["type"] == "SPLIT_NODE":
+                street_start = child["pot"][:2]
+                history.append({"board": cards(child["board"]), "node": child["id"]})
+            else:
+                actor = "OOP" if parent["type"] == "OOP_DEC" else "IP"
+                history.append({"actor": actor, **action_info(parent, child), "node": parent["id"]})
+            parent = child
+        return history, street_start
 
     def strategy(self, actor):
         rows = [vsrv.parse_floats(row, vsrv.NUM_COMBOS)
@@ -159,6 +178,7 @@ class Hand:
                     weight = self.flops.get(frozenset(board), 1) if not self.node["board"] else 1
                     weights.append(0 if set(board) & self.blocked else weight)
                 child = self.children[pick(weights, self.rng)]
+                self.street_start = child["pot"][:2]
                 self.history.append({"board": cards(child["board"]), "node": child["id"]})
                 self.node = child
                 continue
@@ -166,8 +186,13 @@ class Hand:
             self.frequencies = self.strategy(actor)
             self.actions = [action_info(self.node, c) for c in self.children]
             if actor == self.seat:
-                hero = self.hands[PLAYERS.index(self.seat)]
-                selected = practice_hands(self.solver, self.node, self.seat, self.order, hero, self.count, self.rng)
+                player = PLAYERS.index(self.seat)
+                hero = self.hands[player]
+                self.decision_ranges = [vsrv.parse_floats(self.solver.cmd(f"show_range {p} {self.node['id']}"), vsrv.NUM_COMBOS)
+                                        for p in PLAYERS]
+                weights = hand_weights(self.order, self.decision_ranges[player], self.decision_ranges[1 - player], cards(self.node["board"]))
+                selected = practice_hands(self.solver, self.node, self.order, hero, self.count, self.rng, weights)
+                self.exercise_weights = [weights[i] for i in selected] if self.count > 1 else [1]
                 self.exercises = [{"combo": self.order[i], "index": i, "chosen": None, "feedback": None} for i in selected]
                 self.action_evs = None
                 self.phase = "decision"
@@ -179,7 +204,7 @@ class Hand:
         self.history.append({"actor": actor, **self.actions[index], "node": self.node["id"]})
         self.node = self.children[index]
 
-    def act(self, action, exercise=0):
+    def act(self, action, exercise=0, frequencies=None):
         if self.phase != "decision":
             raise vsrv.SolverError("there is no decision to play")
         if isinstance(exercise, bool) or not isinstance(exercise, int) or not 0 <= exercise < len(self.exercises):
@@ -187,27 +212,38 @@ class Hand:
         item = self.exercises[exercise]
         if item["chosen"] is not None:
             raise vsrv.SolverError("this hand already has an action")
-        index = next((i for i, a in enumerate(self.actions) if a["id"] == action), None)
-        if index is None:
-            raise vsrv.SolverError("choose an action from this node")
+        if frequencies is None:
+            index = next((i for i, a in enumerate(self.actions) if a["id"] == action), None)
+            if index is None:
+                raise vsrv.SolverError("choose an action from this node")
+            chosen = [float(i == index) for i in range(len(self.actions))]
+        else:
+            if action is not None or not isinstance(frequencies, list) or len(frequencies) != len(self.actions):
+                raise vsrv.SolverError("choose a frequency for each action")
+            if any(isinstance(f, bool) or not isinstance(f, (int, float)) or not math.isfinite(f) or f < 0 for f in frequencies):
+                raise vsrv.SolverError("action frequencies must be nonnegative numbers")
+            total = sum(frequencies)
+            if abs(total - 1) > 1e-6:
+                raise vsrv.SolverError("action frequencies must add up to 100%")
+            chosen = [f / total for f in frequencies]
         if self.action_evs is None:
             self.action_evs = [vsrv.ev_pair(self.solver, self.seat, c["id"])["ev"] for c in self.children]
         evs = [row[item["index"]] for row in self.action_evs]
         if any(ev is None for ev in evs):
             raise vsrv.SolverError("action EV is unavailable for this hand")
         pot = sum(self.node["pot"])
-        loss = max(evs) - evs[index]
+        loss = max(0, max(evs) - sum(ev * f for ev, f in zip(evs, chosen)))
         frequencies = [row[item["index"]] for row in self.strategy_rows]
         total = sum(frequencies)
         if not total > 0:
             raise vsrv.SolverError("no strategy for this practice hand")
-        feedback = {"node": self.node["id"], "combo": item["combo"], "chosen": action, "pot": pot,
+        feedback = {"node": self.node["id"], "combo": item["combo"], "chosen": chosen, "pot": pot,
                     "loss": loss, "loss_pct": 100 * loss / pot if pot else 0,
                     "actions": [{**a, "frequency": f / total, "ev": ev} for a, f, ev in zip(self.actions, frequencies, evs)]}
-        item["chosen"], item["feedback"] = action, feedback
-        if item["index"] == self.hands[PLAYERS.index(self.seat)]:
-            self.pending = index
+        item["chosen"], item["feedback"] = chosen, feedback
         if all(e["chosen"] is not None for e in self.exercises):
+            selected, self.pending = choose_continuation(self.exercises, self.exercise_weights, self.rng)
+            self.pending_hand = self.exercises[selected]["index"]
             self.feedback = {"hands": [e["feedback"] for e in self.exercises]}
             self.phase = "feedback"
         return feedback
@@ -217,6 +253,13 @@ class Hand:
             raise vsrv.SolverError("play a decision first")
         hand = copy.copy(self)
         hand.history = list(self.history)
+        if self.count > 1:
+            player = PLAYERS.index(self.seat)
+            blocked = set(cards(self.node["board"]) + cards(self.order[self.pending_hand]))
+            opponent = pick([w if not set(cards(combo)) & blocked else 0
+                             for combo, w in zip(self.order, self.decision_ranges[1 - player])], self.rng)
+            hand.hands = [self.pending_hand, opponent] if player == 0 else [opponent, self.pending_hand]
+            hand.blocked = set(cards(self.order[hand.hands[0]]) + cards(self.order[hand.hands[1]]))
         hand.take(self.pending, self.seat)
         if self.mode == "node":
             hand.phase = "complete"
@@ -243,10 +286,14 @@ class Hand:
 
     def view(self):
         hero = PLAYERS.index(self.seat)
+        wagers = [0, 0] if self.node["type"] == "END_NODE" else [a - b for a, b in zip(self.node["pot"][:2], self.street_start)]
         return {"phase": self.phase, "seat": self.seat,
                 "hero": self.order[self.hands[hero]] if self.count == 1 or self.phase == "complete" else None,
                 "villain": self.order[self.hands[1 - hero]] if self.phase == "complete" and self.mode == "hand" else None,
                 "node": self.node, "actions": self.actions if self.phase == "decision" else [],
+                "wagers": wagers,
+                "continuation": {"combo": self.order[self.pending_hand], **self.actions[self.pending]}
+                if self.phase == "feedback" else None,
                 "exercises": [{"combo": e["combo"], "chosen": e["chosen"]} for e in self.exercises],
                 "history": self.history, "feedback": self.feedback, "result": self.result}
 
@@ -268,6 +315,8 @@ class DrillService:
         self.preparing = False
         self.error = None
         self.progress = None
+        self.preparation = None
+        self.phase_started = 0
         self.number = self.revision = self.decisions = self.completed = 0
         self.loss_pct = 0
         self.session = ""
@@ -280,18 +329,20 @@ class DrillService:
             return copy.deepcopy({"active": self.config is not None, "token": self.token(),
                                   "config": self.config and {k: self.config[k] for k in (
                                       "source", "mode", "seat", "node", "ahead", "format", "count",
-                                      "boards", "accuracy", "seconds", "batch", "spot") if k in self.config},
+                                      "boards", "accuracy", "seconds", "merge_similar", "batch", "spot") if k in self.config},
                                   "hand": self.hand.view() if self.hand else None, "number": self.number,
                                   "preparing": self.preparing, "ready": bool(self.ready), "ready_count": len(self.ready),
                                   "can_deal": bool(self.ready or self.used_solve),
                                   "error": self.error, "progress": self.progress,
+                                  "preparation": {**self.preparation, "elapsed": time.monotonic() - self.phase_started}
+                                  if self.preparing and self.preparation else None,
                                   "stats": {"hands": self.completed, "decisions": self.decisions,
                                             "loss_pct": self.loss_pct / self.decisions if self.decisions else 0}})
 
     def start(self, body):
         if self.config is not None:
             raise vsrv.SolverError("end the current drill first")
-        source, mode, seat = body.get("source", "current"), body.get("mode", "hand"), body.get("seat", "OOP")
+        source, mode, seat = body.get("source", "live"), body.get("mode", "hand"), body.get("seat", "OOP")
         if source not in ("current", "saved", "live") or mode not in ("node", "hand") or seat not in (*PLAYERS, "alternate"):
             raise vsrv.SolverError("invalid drill settings")
         node = vsrv.node_id_arg({"id": [str(body.get("node", "r:0"))]}) if mode == "node" else "r:0"
@@ -331,7 +382,12 @@ class DrillService:
             if config["boards"] == "fixed" and (len(cards(board)) not in (3, 4, 5) or len(set(cards(board))) != len(cards(board)) or any(c not in DECK for c in cards(board))):
                 raise vsrv.SolverError("choose a board on the Build tab first")
             config["board"] = board
-            config["setup"], _ = vsrv.setup_from_body({**tree, "board": board})
+            config["merge_similar"] = body.get("merge_similar", True)
+            if not isinstance(config["merge_similar"], bool):
+                raise vsrv.SolverError("merge similar sizes must be on or off")
+            extra = vsrv.pio_extra_lines(tree)
+            extra += [f'#MergeSimilarBets#{config["merge_similar"]}', "#MergeSimilarBetsThreshold#5"]
+            config["setup"], _ = vsrv.setup_from_body({**tree, "board": board, "pio_extra": extra})
             for key, default, limit in (("accuracy", 0.5, 100), ("seconds", 60, 3600)):
                 value = body.get(key, default)
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= limit:
@@ -360,7 +416,7 @@ class DrillService:
         with self.prep_lock:
             if self.preparing or len(self.ready) >= self.config["ahead"] or (self.error and not retry):
                 return
-            self.preparing, self.error, self.progress = True, None, None
+            self.preparing, self.error, self.progress, self.preparation = True, None, None, None
         self.worker = threading.Thread(target=self._prepare, daemon=True)
         self.worker.start()
 
@@ -372,6 +428,7 @@ class DrillService:
                         self.preparing = False
                         return
                     self.progress = None
+                    self.preparation = None
                 ready = self.prepare_one()
                 with self.prep_lock:
                     if not self.cancel.is_set():
@@ -396,7 +453,8 @@ class DrillService:
         board = config["board"] or "".join(self.rng.sample(DECK, 3))
         job = self.q.add_batch("next-" + uuid.uuid4().hex, config["setup"], [(board, 1)], config["accuracy"], None,
                                config["seconds"], "full", None)[0]
-        status = jobs.run_job(self.q, job, self.solver_exe, 2, log=lambda _: None, progress=self._progress)
+        status = jobs.run_job(self.q, job, self.solver_exe, 2, log=lambda _: None,
+                              progress=self._progress, phase=self._phase)
         job = self.q.job(job["id"])
         if status != "done":
             raise vsrv.SolverError(job.get("error") or "simulation stopped")
@@ -413,6 +471,11 @@ class DrillService:
     def _progress(self, job, progress):
         with self.prep_lock:
             self.progress = progress
+
+    def _phase(self, job, phase):
+        with self.prep_lock:
+            self.preparation = {"stage": phase, "board": job["board"]}
+            self.phase_started = time.monotonic()
 
     def next(self):
         if self.hand and self.hand.phase != "complete":
@@ -464,7 +527,7 @@ class DrillService:
         self.temp = self.reader = self.worker = self.hand = self.config = None
         self.ready = []
         self.used_solve = None
-        self.error = self.progress = None
+        self.error = self.progress = self.preparation = None
         self.preparing = False
         self.revision += 1
 
@@ -488,7 +551,7 @@ class DrillService:
                 elif self.hand is None:
                     raise vsrv.SolverError("deal a hand first")
                 elif path.endswith("/action"):
-                    self.hand.act(body.get("action"), body.get("exercise", 0))
+                    self.hand.act(body.get("action"), body.get("exercise", 0), body.get("frequencies"))
                     if self.hand.phase == "feedback":
                         results = self.hand.feedback["hands"]
                         self.decisions += len(results)

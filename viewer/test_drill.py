@@ -126,10 +126,65 @@ class DrillTest(unittest.TestCase):
     def test_selected_node_ends_after_one_decision(self):
         state = self.begin(mode="node", node="r:0:b30", seat="IP")
         self.assertEqual(state["hand"]["node"]["id"], "r:0:b30")
+        self.assertEqual(state["hand"]["wagers"], [30, 0])
+        self.assertEqual(state["hand"]["history"][0]["id"], "r:0:b30")
         state = self.post("action", state, action=state["hand"]["actions"][-1]["id"])
         state = self.post("continue", state)
         self.assertEqual((state["hand"]["phase"], state["stats"]["decisions"]), ("complete", 1))
         self.assertIsNone(state["hand"]["villain"])
+
+    def test_selected_river_line_only_shows_current_street_wagers(self):
+        self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 20 20 20 40 40", "build_tree"])
+        state = self.begin(mode="node", node="r:0:b20:c:7c:c:b40", seat="OOP")
+        self.assertEqual(state["hand"]["wagers"], [0, 20])
+        self.assertEqual(len(state["hand"]["history"]), 5)
+        self.assertEqual(state["hand"]["history"][0]["amount"], 20)
+        self.assertEqual(sum(state["hand"]["node"]["pot"]), 100)
+        call = next(a for a in state["hand"]["actions"] if a["kind"] == "call")
+        state = self.post("action", state, action=call["id"])
+        state = self.post("continue", state)
+        self.assertEqual(state["hand"]["wagers"], [0, 0])
+        self.assertEqual(sum(state["hand"]["node"]["pot"]), 120)
+
+    def test_mixed_choices_grade_expected_ev_and_play_the_sampled_hand(self):
+        state = self.begin(format="set", mode="node")
+        order = vsrv.hand_order(self.solver)
+        actions = state["hand"]["actions"]
+        choices = [0.25, 0.75]
+        for bad in ([0, 0], [-0.1, 1.1], [0.5], [True, 0], [0.3, 0.3]):
+            self.request("action", {"token": state["token"], "frequencies": bad}, expected=400)
+        expected = []
+        for i, exercise in enumerate(state["hand"]["exercises"]):
+            values = [vsrv.ev_pair(self.solver, "OOP", a["id"])["ev"][order.index(exercise["combo"])] for a in actions]
+            expected.append(max(values) - sum(v * f for v, f in zip(values, choices)))
+            state = self.post("action", state, frequencies=choices, exercise=i)
+        feedback = state["hand"]["feedback"]["hands"]
+        for entry, loss in zip(feedback, expected):
+            self.assertEqual(entry["chosen"], choices)
+            self.assertAlmostEqual(entry["loss"], loss)
+        continuation = state["hand"]["continuation"]
+        self.assertIn(continuation["combo"], [f["combo"] for f in feedback])
+        self.assertIn(continuation["id"], [a["id"] for a in actions])
+        state = self.post("continue", state)
+        self.assertEqual(state["hand"]["hero"], continuation["combo"])
+        self.assertEqual(state["hand"]["node"]["id"], continuation["id"])
+        oop, ip = [set(drill.cards(self.service.hand.order[i])) for i in self.service.hand.hands]
+        self.assertFalse(oop & ip)
+        self.assertFalse((oop | ip) & set(drill.cards(state["hand"]["node"]["board"])))
+
+    def test_similar_sizes_keep_separated_choices_and_can_be_disabled(self):
+        tree = {**TREE, "pot": 1000, "stack": 3000, "river_bet": "50 52 55 60 100", "river_raise": "",
+                "allin_threshold": 100, "add_allin_limit": 0}
+        for enabled, sizes in ((True, [1000, 600, 520]), (False, [1000, 600, 550, 520, 500])):
+            with self.subTest(merge=enabled):
+                self.service.close()
+                config = {"tree": tree, "boards": "fixed", "ahead": 1, "seconds": 1}
+                if not enabled:
+                    config["merge_similar"] = False
+                self.request("start", config)
+                state = self.post("next", self.ready())
+                self.assertEqual(state["config"]["merge_similar"], enabled)
+                self.assertEqual([a["amount"] for a in state["hand"]["actions"] if a["kind"] == "bet"], sizes)
 
     def test_chance_deals_and_allin_runouts_exclude_both_hands(self):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 60 60", "add_line 0 0 30 60 60", "build_tree"])
@@ -169,6 +224,42 @@ class DrillTest(unittest.TestCase):
         self.request("start", {"source": "live", "boards": "fixed", "tree": TREE, "seconds": 1, "ahead": 1})
         self.ready(1)
         self.assertEqual(len(self.service.q.jobs()), 1)
+
+    def test_on_demand_default_reports_build_solve_and_save_phases(self):
+        observed = []
+        entered = threading.Event()
+        resume = threading.Event()
+        phase = self.service._phase
+
+        def report_phase(job, stage):
+            phase(job, stage)
+            observed.append(stage)
+            entered.set()
+            if not resume.wait(10):
+                raise TimeoutError("test did not resume preparation")
+            resume.clear()
+
+        with patch.object(self.service, "_phase", report_phase):
+            try:
+                state = self.request("start", {"boards": "fixed", "tree": TREE, "seconds": 1, "ahead": 1})
+                self.assertEqual(state["config"]["source"], "live")
+                for stage in ("building", "solving", "saving"):
+                    self.assertTrue(entered.wait(10))
+                    entered.clear()
+                    first = self.request()
+                    second = self.request()
+                    self.assertEqual(first["preparation"]["stage"], stage)
+                    self.assertEqual(first["preparation"]["board"], TREE["board"])
+                    self.assertGreaterEqual(second["preparation"]["elapsed"], first["preparation"]["elapsed"])
+                    self.assertFalse(first["can_deal"])
+                    self.assertTrue(first["preparing"])
+                    resume.set()
+                state = self.ready(1)
+                self.assertIsNone(state["preparation"])
+                self.assertEqual(observed, ["building", "solving", "saving"])
+            finally:
+                resume.set()
+                self.service.worker.join(10)
 
     def test_empty_live_queue_redeals_until_a_fresh_solve_is_ready(self):
         for seat in (*drill.PLAYERS, "alternate"):
@@ -340,6 +431,19 @@ class DrillTest(unittest.TestCase):
 
 
 class DealTest(unittest.TestCase):
+    def test_continuation_weights_reach_card_removal_and_each_submitted_mix(self):
+        order = ["AcAd", "KcKd", "AcQd", "QcQh"]
+        weights = drill.hand_weights(order, [1, 1, 0, 0], [0, 0, 3, 1], [])[:2]
+        exercises = [{"chosen": [0.75, 0.25]}, {"chosen": [0, 1]}]
+        rng = random.Random(7)
+        hands, actions = [0, 0], [0, 0]
+        for _ in range(10000):
+            hand, action = drill.choose_continuation(exercises, weights, rng)
+            hands[hand] += 1
+            actions[action] += 1
+        self.assertAlmostEqual(hands[0] / sum(hands), 0.2, delta=0.015)
+        self.assertAlmostEqual(actions[0] / sum(actions), 0.15, delta=0.015)
+
     def test_joint_range_sampling_accounts_for_opponent_card_removal(self):
         order = ["AcAd", "KcKd", "AcQd", "QcQh"]
         ranges = [[1, 1, 0, 0], [0, 0, 3, 1]]

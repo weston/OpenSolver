@@ -1283,7 +1283,7 @@ class _StopWatch:
         return False
 
 
-def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progress=None) -> str:
+def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progress=None, phase=None) -> str:
     """Solve one job; returns its final status, or "skipped" if it was removed or changed (no
     longer queued) since the caller listed it. Raises KeyboardInterrupt through (job re-queued).
 
@@ -1315,6 +1315,8 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
         log(f"{tag} {why}; back in the queue")
         return "queued"
     try:
+        if phase:
+            phase(job, "building")
         s = vserver.Solver(solver_exe)
         with _StopWatch(q, s) as watch:  # a stop --now during the build ends it; the job is re-queued
             s.cmd(f"set_threads {threads}")
@@ -1329,6 +1331,8 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
             f" {b['max_seconds']:g} seconds" if b.get("max_seconds") else ""
         before = s.state()["events"]
         s.cmd("go" + limit)
+        if phase:
+            phase(job, "solving")
         pot = start_pot(b["setup"]) or 1.0
         last_report = 0.0
         last_events = -1
@@ -1356,6 +1360,8 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
             time.sleep(0.2)
         if stopping:
             return requeue("stopped")
+        if phase:
+            phase(job, "saving")
         # calc_results and the save run to the end, also after a stop --now: the solve is done, and
         # keeping it beats solving it again (the run then stops before the next job)
         res = parse_results(s.cmd("calc_results", timeout=3600))

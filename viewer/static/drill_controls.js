@@ -44,18 +44,19 @@ export function actionColor(action) {
   return `hsl(8 68% ${56 - 30 * fraction / (fraction + 0.75)}%)`;
 }
 
-export function frequencyBar(actions, frequencies, bigBlind) {
+export function frequencyBar(actions, frequencies, bigBlind, label) {
   const bar = el("div", "frequency-bar");
   if (!frequencies) { bar.textContent = "—"; return bar; }
+  const prefix = label ? `${label} · ` : "";
   bar.setAttribute("role", "img");
-  bar.setAttribute("aria-label", actions.map((a, i) => `${a.label} ${fmt(frequencies[i] * 100, 1)}%`).join(", "));
+  bar.setAttribute("aria-label", prefix + actions.map((a, i) => `${a.label} ${fmt(frequencies[i] * 100, 1)}%`).join(", "));
   for (const i of actionOrder(actions)) {
     const action = actions[i];
     const segment = el("span", "frequency-segment", frequencies[i] >= 0.1 ? `${Math.round(frequencies[i] * 100)}%` : "");
     segment.style.width = `${frequencies[i] * 100}%`;
     segment.style.background = actionColor(action);
     const tip = el("div"), frequency = el("div", "r");
-    tip.append(el("div", "t", action.label + (["bet", "raise"].includes(action.kind) ? ` · ${bb(action.amount, bigBlind)}` : "")));
+    tip.append(el("div", "t", prefix + action.label + (["bet", "raise"].includes(action.kind) ? ` · ${bb(action.amount, bigBlind)}` : "")));
     frequency.append(el("span", "", "Frequency"), el("strong", "num", `${fmt(frequencies[i] * 100, 1)}%`));
     tip.append(frequency);
     segment.onmousemove = (event) => showTip(event, tip.outerHTML);
@@ -232,7 +233,7 @@ export function feedbackCards(feedback, bigBlind) {
     comparison.append(el("h3", "", "Strategy Simplification"));
     for (const [label, value] of [["Original range", feedback.original], ["Simplified range", feedback]]) {
       const row = el("div", "feedback-bar-row");
-      row.append(el("span", "", label), frequencyBar(value.hands[0].actions, value.frequencies.range, bigBlind));
+      row.append(el("span", "", label), frequencyBar(value.hands[0].actions, value.frequencies.range, bigBlind, `Solver · ${label}`));
       comparison.append(row);
     }
     const stats = el("div", "simplification-stats");
@@ -251,7 +252,7 @@ export function feedbackCards(feedback, bigBlind) {
   for (const [key, label] of [["range", "Full range · Solver"], ["dealt_solver", "Dealt hands · Solver"], ["dealt_user", "Dealt hands · You"]]) {
     if (key === "range" && feedback.original) continue;
     const row = el("div", "feedback-bar-row");
-    row.append(el("span", "", label), frequencyBar(feedback.hands[0].actions, feedback.frequencies[key], bigBlind));
+    row.append(el("span", "", label), frequencyBar(feedback.hands[0].actions, feedback.frequencies[key], bigBlind, label));
     ranges.append(row);
   }
   result.append(ranges);
@@ -262,9 +263,9 @@ export function feedbackCards(feedback, bigBlind) {
     header.append(comboEl(hand.combo, ""), el("span", `feedback-loss num ${hand.grade}`,
       `${symbol} ${fmt(hand.loss_pct, 2)}% EV loss`));
     card.append(header);
-    for (const [label, frequencies] of [["You", hand.chosen], ["Solver", hand.actions.map((a) => a.frequency)]]) {
+    for (const [label, frequencies] of [["Solver", hand.actions.map((a) => a.frequency)], ["You", hand.chosen]]) {
       const row = el("div", "feedback-bar-row");
-      row.append(el("span", "", label), frequencyBar(hand.actions, frequencies, bigBlind));
+      row.append(el("span", "", label), frequencyBar(hand.actions, frequencies, bigBlind, label));
       card.append(row);
     }
     result.append(card);

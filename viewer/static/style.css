@@ -1264,13 +1264,14 @@ button.rl-card.end { cursor: default; }
 .analysis-volume { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 6px; }
 .analysis-volume-track { height: 14px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
 .analysis-volume-track i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
-.analysis-volume-track:nth-of-type(2) i { background: #42b890; }
+.analysis-volume-track.solver i { background: #42b890; }
 .analysis-volume-delta { text-align: right; color: var(--text-2); margin-top: 7px; }
-.analysis-classes { max-height: 24vh; overflow: auto; }
-.analysis-class { display: grid; grid-template-columns: 40px 1fr 52px; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
-.analysis-class-bars { display: grid; gap: 3px; }
-.analysis-class-bars .frequency-bar { height: 16px; min-height: 16px; }
-.analysis-class-bars .frequency-segment { font-size: 10px; }
+.analysis-categories { max-height: 28vh; overflow: auto; margin-top: 16px; }
+.analysis-categories h4:first-child { margin-top: 0; }
+.analysis-category { display: grid; grid-template-columns: 110px minmax(0, 1fr) 52px; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.analysis-category-bars { display: grid; gap: 3px; }
+.analysis-category-bars .frequency-bar { height: 16px; min-height: 16px; }
+.analysis-category-bars .frequency-segment { font-size: 10px; }
 @media (max-width: 700px) {
   .analysis-layout { grid-template-columns: 1fr; }
   .analysis-tree { max-height: 32vh; }

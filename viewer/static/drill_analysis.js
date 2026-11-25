@@ -1,5 +1,5 @@
-import { post, fmt } from "./api.js";
-import { el, parseCards, cardEl } from "./cards.js";
+import { post, fmt, showTip, hideTip } from "./api.js";
+import { el, parseCards, cardEl, categoryLabel } from "./cards.js";
 import { actionOrder, actionColor, frequencyBar, bb } from "./drill_controls.js";
 
 const signed = (value, digits = 1) => `${value > 0 ? "+" : ""}${fmt(value, digits)}`;
@@ -138,7 +138,7 @@ export function openAnalysis(container) {
         button.classList.add("measured");
         button.append(el("strong", "num", metric.value === "gap" ? `${fmt(value, 1)} pp` : `${signed(value, 2)} BB`));
         const bars = el("span", "analysis-mini-bars");
-        bars.append(frequencyBar(node.stats.actions, node.stats.user, data.big_blind), frequencyBar(node.stats.actions, node.stats.solver, data.big_blind));
+        bars.append(frequencyBar(node.stats.actions, node.stats.solver, data.big_blind, "Solver"), frequencyBar(node.stats.actions, node.stats.user, data.big_blind, "You"));
         button.append(bars);
         button.onclick = () => { selectedNode = node.id; load(); };
       } else { button.append(el("span", "muted", "—")); button.disabled = true; }
@@ -165,7 +165,7 @@ export function openAnalysis(container) {
   function renderDetail(container, stats, node, bigBlind) {
     container.append(el("h3", "", `${node.street} · ${node.seat}`), el("div", "muted", `${stats.samples} dealt hands · ${stats.decisions} nodes`));
     const frequencies = el("div", "analysis-comparison");
-    for (const [label, values] of [["You", stats.user], ["Solver", stats.solver]]) frequencies.append(el("span", "", label), frequencyBar(stats.actions, values, bigBlind));
+    for (const [label, values] of [["Solver", stats.solver], ["You", stats.user]]) frequencies.append(el("span", "", label), frequencyBar(stats.actions, values, bigBlind, label));
     container.append(frequencies);
     const deltas = el("div", "analysis-deltas");
     for (const i of actionOrder(stats.actions)) {
@@ -177,20 +177,28 @@ export function openAnalysis(container) {
     container.append(deltas, el("h4", "", "Betting volume / decision"));
     const volume = el("div", "analysis-volume");
     const max = Math.max(...stats.volume, 0.0001);
-    for (let i = 0; i < 2; i++) {
-      const track = el("div", "analysis-volume-track"), fill = el("i"); fill.style.width = `${100 * stats.volume[i] / max}%`; track.append(fill);
-      volume.append(el("span", "", i === 0 ? "You" : "Solver"), track, el("strong", "num", `${fmt(stats.volume[i], 2)} BB`));
+    for (const i of [1, 0]) {
+      const label = i === 1 ? "Solver" : "You", amount = `${fmt(stats.volume[i], 2)} BB`;
+      const track = el("div", `analysis-volume-track ${i === 1 ? "solver" : "user"}`), fill = el("i");
+      fill.style.width = `${100 * stats.volume[i] / max}%`; track.append(fill);
+      track.onmousemove = event => showTip(event, el("div", "t", `${label} · ${amount}`).outerHTML);
+      track.onmouseleave = hideTip;
+      volume.append(el("span", "", label), track, el("strong", "num", amount));
     }
     container.append(volume, el("div", "analysis-volume-delta num", `${signed(stats.volume[0] - stats.volume[1], 2)} BB · ${signed((stats.pot_volume[0] - stats.pot_volume[1]) * 100)}% pot`));
-    const classes = el("div", "analysis-classes");
-    container.append(el("h4", "", "Dealt hand classes"));
-    for (const group of stats.classes.sort((a, b) => b.gap - a.gap)) {
-      const row = el("div", "analysis-class"), bars = el("div", "analysis-class-bars");
-      bars.append(frequencyBar(group.actions, group.user, bigBlind), frequencyBar(group.actions, group.solver, bigBlind));
-      row.append(el("strong", "", group.name), bars, el("span", "num", `${fmt(group.gap * 100, 1)} pp`));
-      classes.append(row);
+    const categories = el("div", "analysis-categories");
+    for (const [kind, label] of [["made", "Made hands"], ["draws", "Draws"]]) {
+      const groups = stats.categories[kind];
+      if (!groups.length || (kind === "draws" && groups.every(group => group.name === "no_draw"))) continue;
+      categories.append(el("h4", "", label));
+      for (const group of groups.sort((a, b) => b.gap - a.gap)) {
+        const row = el("div", "analysis-category"), bars = el("div", "analysis-category-bars");
+        bars.append(frequencyBar(group.actions, group.solver, bigBlind, "Solver"), frequencyBar(group.actions, group.user, bigBlind, "You"));
+        row.append(el("strong", "", categoryLabel(group.name)), bars, el("span", "num", `${fmt(group.gap * 100, 1)} pp`));
+        categories.append(row);
+      }
     }
-    container.append(classes);
+    container.append(categories);
   }
   loadSessions();
 }

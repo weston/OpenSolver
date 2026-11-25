@@ -35,6 +35,9 @@ check(document.querySelector('.villain-seat .dealer-button')?.textContent === 'B
 $('drill-submit').click();
 await wait(() => !$('drill-continue').classList.contains('hidden'));
 check(document.querySelectorAll('.feedback-hand').length === 5, 'drill results did not render');
+for (const hand of document.querySelectorAll('.feedback-hand')) {
+  check([...hand.querySelectorAll('.feedback-bar-row > span')].map(label => label.textContent).join(',') === 'Solver,You', 'drill comparison order changed');
+}
 $('drill-continue').click();
 await wait(() => (!$('drill-submit').classList.contains('hidden') && !$('drill-submit').disabled)
   || (!$('drill-next').classList.contains('hidden') && !$('drill-next').disabled));
@@ -45,5 +48,20 @@ $('drill-sessions').click();
 await wait(() => document.querySelector('.analysis-detail h3'));
 check(document.querySelectorAll('.analysis-node.measured').length > 0, 'session analysis did not render the drilled tree');
 check(document.querySelector('.analysis-detail').textContent.includes('5 dealt hands'), 'session analysis lost the submitted hands');
+check([...document.querySelectorAll('.analysis-comparison > span')].map(label => label.textContent).join(',') === 'Solver,You', 'analysis comparison order changed');
+check(document.querySelectorAll('.analysis-category').length > 0, 'hand categories did not render');
+for (const pair of document.querySelectorAll('.analysis-mini-bars, .analysis-category-bars')) {
+  check([...pair.children].map(bar => bar.getAttribute('aria-label').split(' · ')[0]).join(',') === 'Solver,You', 'analysis bar identity or order changed');
+}
+const bars = document.querySelector('.analysis-category-bars').children;
+for (let i = 0; i < 2; i++) {
+  const segment = [...bars[i].children].find(segment => segment.getBoundingClientRect().width > 0);
+  segment.dispatchEvent(new MouseEvent('mousemove', {bubbles: true, clientX: 100, clientY: 100}));
+  check($('tip').textContent.includes(i === 0 ? 'Solver' : 'You'), 'category hover does not identify the player');
+  check($('tip').closest('dialog[open]'), 'category tooltip is behind the dialog');
+}
+$('drill-sessions-dialog').close();
+await wait(() => $('tip').parentElement === document.body);
+check($('tip').classList.contains('hidden'), 'closing analysis left its tooltip visible');
 check(testErrors.length === 0, testErrors.join('\n'));
 return 'native window loads Browse, saves settings, submits a five-hand drill, continues to the next hand, and analyzes the session';

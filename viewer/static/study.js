@@ -2,7 +2,7 @@
 // action strip and 13x13 matrix in the middle, details on the right. Navigating only swaps
 // data inside these regions, so nothing moves while you click through a line.
 
-import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy, displayCombo } from "./cards.js";
+import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy, displayCombo, categoryLabel as prettyCat } from "./cards.js";
 import { prepare as prepareBlockers, comboReport, shareChanges, cardEffects } from "./blockers.js";
 import { curves as rangeCurves, at as rangeAt, shareAbove } from "./graphs.js";
 import { sideCache } from "./sidecache.js";
@@ -874,19 +874,11 @@ async function renderHand() {
 
 /* ---- categories tab (#154): made-hand and draw breakdown of the range at hand ---- */
 
-const DRAW_LABEL = {
-  no_draw: "No draw", bdfd_1card: "Backdoor FD (1 card)", bdfd_2card: "Backdoor FD (2 cards)",
-  "4out_straight_draw": "4-out straight draw", "8out_straight_draw": "8-out straight draw",
-  flush_draw: "Flush draw", combo_draw: "Combo draw",
-};
-
 /** Short names for the Cats table (the row's tooltip keeps the full one). */
 const DRAW_SHORT = {
   bdfd_1card: "BDFD (1 card)", bdfd_2card: "BDFD (2 cards)",
   "4out_straight_draw": "4-out straight", "8out_straight_draw": "8-out straight",
 };
-
-const prettyCat = (name) => DRAW_LABEL[name] || name.replace(/[-_]/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 
 /** Apply the category hover/pin highlight to the matrix cells. */
 function markCatHl() {

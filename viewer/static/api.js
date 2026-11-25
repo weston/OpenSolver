@@ -26,6 +26,11 @@ export const fail = (e) => toast(String((e && e.message) || e), "err");
 const tipEl = () => document.getElementById("tip");
 export function showTip(ev, html) {
   const t = tipEl();
+  const dialog = ev.target.closest("dialog[open]"), parent = dialog || document.body;
+  if (t.parentElement !== parent) {
+    parent.append(t);
+    if (dialog) dialog.addEventListener("close", hideTip, { once: true });
+  }
   t.innerHTML = html;
   t.classList.remove("hidden");
   const pad = 14, w = t.offsetWidth, h = t.offsetHeight;
@@ -35,7 +40,11 @@ export function showTip(ev, html) {
   t.style.left = x + "px";
   t.style.top = y + "px";
 }
-export function hideTip() { tipEl().classList.add("hidden"); }
+export function hideTip() {
+  const t = tipEl();
+  t.classList.add("hidden");
+  document.body.append(t);
+}
 
 // Per-browser conveniences only (form state, theme). Never required for correctness.
 export const prefs = {

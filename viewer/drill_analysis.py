@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from functools import lru_cache
 
 import server as vsrv
 from drill_spots import action_info, merge_tree
@@ -50,6 +51,34 @@ def validate(body):
     return list(dict.fromkeys(sessions))
 
 
+def category_reader(solver):
+    @lru_cache(maxsize=128)
+    def read(board):
+        names = [line.split() for line in solver.cmd('show_category_names').splitlines()]
+        rows = [line.split() for line in solver.cmd('show_categories ' + board).splitlines()]
+        if len(rows) != 2 or any(len(row) != vsrv.NUM_COMBOS for row in rows):
+            raise vsrv.SolverError('unexpected show_categories output')
+        categories = {}
+        for i, combo in enumerate(vsrv.hand_order(solver)):
+            key = ''.join(sorted((combo[:2], combo[2:])))
+            categories[key] = [(kind, labels[int(row[i])])
+                               for kind, labels, row in zip(('made', 'draws'), names, rows) if int(row[i]) >= 0]
+        return categories
+    return read
+
+
+def weighted_hands(review, baseline):
+    feedback = review['feedback']
+    expected = feedback.get('original', feedback) if baseline == 'original' else feedback
+    expected_hands = {hand['combo']: hand for hand in expected['hands']}
+    hands = feedback['hands']
+    mass = sum(hand.get('weight', 1) for hand in hands)
+    for hand in hands:
+        weight = hand.get('weight', 1) / mass
+        if weight > 0:
+            yield hand, expected_hands[hand['combo']], weight
+
+
 class Totals:
     def __init__(self):
         self.weight = 0
@@ -60,9 +89,8 @@ class Totals:
         self.solver = defaultdict(float)
         self.volume = [0., 0.]
         self.pot_volume = [0., 0.]
-        self.classes = {}
 
-    def add(self, hand, expected, big_blind, weight, classes=True):
+    def add(self, hand, expected, big_blind, weight):
         self.weight += weight
         self.samples += 1
         for source, frequencies, target, index in ((hand, hand['chosen'], self.user, 0),
@@ -75,12 +103,8 @@ class Totals:
                     amount = weight * frequency * action['amount']
                     self.volume[index] += amount / big_blind
                     self.pot_volume[index] += amount / hand['pot']
-        if classes:
-            name = vsrv.combo_class(hand['combo'])
-            group = self.classes.setdefault(name, Totals())
-            group.add(hand, expected, big_blind, weight, classes=False)
 
-    def view(self, include_classes=False):
+    def view(self):
         keys = sorted(self.actions)
         user = [self.user[key] / self.weight for key in keys]
         solver = [self.solver[key] / self.weight for key in keys]
@@ -89,12 +113,10 @@ class Totals:
                   'gap': sum(abs(a - b) for a, b in zip(user, solver)) / 2,
                   'volume': [v / self.weight for v in self.volume],
                   'pot_volume': [v / self.weight for v in self.pot_volume]}
-        if include_classes:
-            result['classes'] = [{'name': name, **group.view()} for name, group in self.classes.items()]
         return result
 
 
-def report(records, body):
+def report(records, body, read_categories):
     groups, settings_by_tree = {}, {}
     for session, number, settings, review in records():
         tree, simulation, board, street, stack = review_identity(settings, session, review)
@@ -188,21 +210,31 @@ def report(records, body):
         key = canonical(review['node']['id'])
         total = totals.setdefault(key, Totals())
         total.decisions += 1
-        feedback = review['feedback']
-        expected = feedback.get('original', feedback) if baseline == 'original' else feedback
-        expected_hands = {hand['combo']: hand for hand in expected['hands']}
-        hands = feedback['hands']
-        mass = sum(hand.get('weight', 1) for hand in hands)
-        for hand in hands:
-            weight = hand.get('weight', 1) / mass
-            if weight > 0:
-                total.add(hand, expected_hands[hand['combo']], review['big_blind'], weight)
+        for hand, expected, weight in weighted_hands(review, baseline):
+            total.add(hand, expected, review['big_blind'], weight)
     for key, total in totals.items():
         nodes[key]['stats'] = total.view()
     selected_node = body.get('node')
     if selected_node not in totals:
         selected_node = max(totals, key=lambda key: totals[key].view()['gap'], default=None)
-    detail = {'id': selected_node, **totals[selected_node].view(True)} if selected_node else None
+    detail = {'id': selected_node, **totals[selected_node].view()} if selected_node else None
+    if detail:
+        categories = {'made': {}, 'draws': {}}
+        for session, number, settings, review in records():
+            if canonical(review['node']['id']) != selected_node or (seat != 'both' and review['seat'] != seat):
+                continue
+            identity, simulation, _, _, _ = review_identity(settings, session, review)
+            if identity != tree or simulation not in selected_sims or board_street(review) < 3:
+                continue
+            labels = read_categories(''.join(review['node']['board'].split()))
+            for hand, expected, weight in weighted_hands(review, baseline):
+                combo = hand['combo']
+                key = ''.join(sorted((combo[:2], combo[2:])))
+                for kind, name in labels[key]:
+                    category = categories[kind].setdefault(name, Totals())
+                    category.add(hand, expected, review['big_blind'], weight)
+        detail['categories'] = {kind: [{'name': name, **total.view()} for name, total in buckets.items()]
+                                for kind, buckets in categories.items()}
     return {'groups': catalog, 'tree': tree, 'nodes': list(nodes.values()), 'detail': detail,
             'sessions': len(selected_sessions), 'hands': len(selected_hands), 'simulations': len(selected_sims_seen),
             'decisions': sum(total.decisions for total in totals.values()), 'big_blind': group['big_blind']}

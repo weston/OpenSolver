@@ -784,7 +784,7 @@ class DrillService:
         body = vsrv.need_body(body)
         with self.lock:
             if path == "/api/drill/analysis":
-                return 200, self.sessions.analysis(body)
+                return 200, self.sessions.analysis(body, self.main)
             if path in ("/api/drill/sessions", "/api/drill/reviews"):
                 offset = body.get("offset", 0)
                 if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:

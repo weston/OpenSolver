@@ -18,6 +18,16 @@ export function el(tag, cls, text) {
   return e;
 }
 
+const DRAW_LABEL = {
+  no_draw: "No draw", bdfd_1card: "Backdoor FD (1 card)", bdfd_2card: "Backdoor FD (2 cards)",
+  "4out_straight_draw": "4-out straight draw", "8out_straight_draw": "8-out straight draw",
+  flush_draw: "Flush draw", combo_draw: "Combo draw",
+};
+
+export function categoryLabel(name) {
+  return DRAW_LABEL[name] || name.replace(/[-_]/g, " ").replace(/^\w/, c => c.toUpperCase());
+}
+
 export function classAt(row, col) {
   if (row === col) return RANKS[row] + RANKS[col];
   return row < col ? RANKS[row] + RANKS[col] + "s" : RANKS[col] + RANKS[row] + "o";

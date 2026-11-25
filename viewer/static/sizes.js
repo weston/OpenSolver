@@ -83,7 +83,7 @@ export function renderSizes(tbody, streets, values = {}) {
         tr.appendChild(td);
       }
       const donk = el("td");
-      if (pl === "oop") donk.appendChild(sizeInput("donk", valueFor(values, st, "donk", pl)));
+      if (pl === "oop" && st !== "flop") donk.appendChild(sizeInput("donk", valueFor(values, st, "donk", pl)));
       else donk.appendChild(el("span", "na", "—"));
       tr.appendChild(donk);
       if (pl === "oop") {

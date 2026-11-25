@@ -80,9 +80,23 @@ class Sessions:
     def end(self, session):
         with self.db:
             self.db.execute('UPDATE sessions SET ended=? WHERE id=? AND ended IS NULL', (time.time(), session))
+        self.remove_empty()
 
-    def list(self, offset):
-        rows = self.db.execute('SELECT * FROM sessions ORDER BY started DESC LIMIT 50 OFFSET ?', (offset,))
+    def remove_empty(self, active=None):
+        sessions = [row['id'] for row in self.db.execute('SELECT id FROM sessions WHERE hands=0 AND id!=?', (active or '',))]
+        with self.db:
+            for session in sessions:
+                self.db.execute('DELETE FROM reviews WHERE session=?', (session,))
+                self.db.execute('DELETE FROM choices WHERE session=?', (session,))
+                self.db.execute('DELETE FROM sessions WHERE id=?', (session,))
+        for session in sessions:
+            path = os.path.join(self.assets, session + '.cfr')
+            if os.path.isfile(path):
+                os.remove(path)
+
+    def list(self, offset, active=None):
+        self.remove_empty(active)
+        rows = self.db.execute('SELECT * FROM sessions WHERE hands>0 ORDER BY started DESC LIMIT 50 OFFSET ?', (offset,))
         return [{**dict(row), 'settings': json.loads(row['settings'])} for row in rows]
 
     def reviews(self, session, offset):

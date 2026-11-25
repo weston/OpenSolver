@@ -773,7 +773,8 @@ class DrillService:
                 if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
                     raise vsrv.SolverError("invalid page")
                 if path.endswith("/sessions"):
-                    return 200, {"sessions": self.sessions.list(offset), "active": self.session if self.config else None}
+                    active = self.session if self.config else None
+                    return 200, {"sessions": self.sessions.list(offset, active), "active": active}
                 session = str(body.get("session", ""))
                 return 200, {"reviews": self.sessions.reviews(session, offset),
                              "simulations": self.sessions.simulations(session, offset)}

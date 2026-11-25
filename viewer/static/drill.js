@@ -33,7 +33,7 @@ function controls() {
   $("drill-stop").disabled = busy;
   $("drill-continue").classList.toggle("hidden", hand?.phase !== "feedback");
   $("drill-continue").disabled = busy;
-  $("drill-continue").textContent = state?.config?.mode === "node" ? "Finish decision" : "Continue";
+  $("drill-continue").textContent = state?.config?.mode === "node" ? "Next hand" : "Continue";
   $("drill-submit").classList.toggle("hidden", hand?.phase !== "decision");
   const resolving = !!state?.resolution?.busy;
   $("drill-browse").classList.toggle("hidden", !hand);
@@ -238,13 +238,17 @@ async function command(action, data = {}) {
   requestError = "";
   $("drill-error").textContent = "";
   try {
-    const result = await post("/api/drill/" + action, { token: state?.token, ...data });
+    let result = await post("/api/drill/" + action, { token: state?.token, ...data });
+    if (action === "continue" && result.hand?.phase === "complete") {
+      state = result;
+      result = await post("/api/drill/next", { token: result.token });
+    }
     render(result);
     return result;
   } catch (e) {
     requestError = e.message;
     $("drill-error").textContent = requestError;
-    if (state) renderPreparation(state);
+    if (state) render(state);
   } finally {
     busy = false;
     controls();

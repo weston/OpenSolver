@@ -279,6 +279,54 @@ class DrillTest(unittest.TestCase):
         self.assertNotEqual(state["token"], previous["token"])
         self.request("submit", {"token": previous["token"], "choices": []}, expected=400)
 
+    def test_history_removes_zero_hand_sessions_and_keeps_active_session(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        state = self.begin(mode="node")
+        action = state["hand"]["actions"][0]["id"]
+        state = self.post("action", state, action=action)
+        active = state["token"].split(":")[0]
+        sessions = self.service.sessions
+        snapshot = sessions.get(active)["settings"]["path"]
+        saved = os.path.join(self.temp.name, "saved-simulation.cfr")
+        with open(saved, "wb") as file:
+            file.write(b"saved simulation")
+        stale_paths = []
+        for session, ended in (("old-ended", 1), ("old-interrupted", None)):
+            sessions.start(session, {})
+            sessions.record(session, 1, {**state["hand"], "simulation": saved}, (0, 1, 0))
+            with sessions.db:
+                sessions.db.execute('UPDATE sessions SET ended=? WHERE id=?', (ended, session))
+            path = sessions.snapshot_path(session)
+            with open(path, "wb") as file:
+                file.write(b"session snapshot")
+            stale_paths.append(path)
+        history = self.request("sessions", {})
+        self.assertTrue(all(session["hands"] > 0 for session in history["sessions"]))
+        self.assertIsNotNone(sessions.get(active))
+        self.assertTrue(os.path.isfile(snapshot))
+        for session, path in zip(("old-ended", "old-interrupted"), stale_paths):
+            self.assertIsNone(sessions.get(session))
+            self.assertEqual(sessions.reviews(session, 0), [])
+            self.assertEqual(sessions.simulations(session, 0), [])
+            self.assertFalse(os.path.exists(path))
+        self.assertTrue(os.path.isfile(saved))
+        state = self.post("continue", state)
+        self.post("stop", state)
+        history = self.request("sessions", {})
+        self.assertIn(active, [session["id"] for session in history["sessions"]])
+        self.assertTrue(sessions.reviews(active, 0))
+        self.assertTrue(os.path.isfile(snapshot))
+
+    def test_ending_zero_hand_session_removes_its_snapshot(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        state = self.begin(mode="node")
+        session = state["token"].split(":")[0]
+        snapshot = self.service.sessions.get(session)["settings"]["path"]
+        self.assertTrue(os.path.isfile(snapshot))
+        self.post("stop", state)
+        self.assertIsNone(self.service.sessions.get(session))
+        self.assertFalse(os.path.exists(snapshot))
+
     def finish(self, state):
         for _ in range(30):
             hand = state["hand"]

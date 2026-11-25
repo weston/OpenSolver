@@ -32,5 +32,10 @@ check(document.querySelectorAll('#drill-actions .mix-slider').length === 5, 'fiv
 $('drill-submit').click();
 await wait(() => !$('drill-continue').classList.contains('hidden'));
 check(document.querySelectorAll('.feedback-hand').length === 5, 'drill results did not render');
+$('drill-continue').click();
+await wait(() => (!$('drill-submit').classList.contains('hidden') && !$('drill-submit').disabled)
+  || (!$('drill-next').classList.contains('hidden') && !$('drill-next').disabled));
+check($('drill-number').textContent === 'Hand 2', 'continuing results stopped at the hand-complete screen');
+check($('drill-next').classList.contains('hidden'), 'an extra next-hand click is required');
 check(testErrors.length === 0, testErrors.join('\n'));
-return 'native window loads Browse, saves settings, and submits a five-hand drill';
+return 'native window loads Browse, saves settings, submits a five-hand drill, and continues directly to the next hand';

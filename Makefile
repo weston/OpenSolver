@@ -72,6 +72,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 viewer/test_preflop_build.py ./solver
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_drill.py ./solver
+	python3 viewer/test_drill_analysis.py
 	if command -v node >/dev/null; then node viewer/test_drill_controls_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_drill_controls_js.mjs; else echo "node not found: skipping viewer/test_drill_controls_js.mjs"; fi
 	python3 viewer/test_refine.py ./solver
 
@@ -105,6 +106,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	python3 viewer/test_preflop_build.py ./solver
 	python3 viewer/test_jobs_api.py ./solver
 	python3 viewer/test_drill.py ./solver
+	python3 viewer/test_drill_analysis.py
 	if command -v node >/dev/null; then node viewer/test_drill_controls_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_drill_controls_js.mjs; else echo "node not found: skipping viewer/test_drill_controls_js.mjs"; fi
 	python3 viewer/test_refine.py ./solver
 

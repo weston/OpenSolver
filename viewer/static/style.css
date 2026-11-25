@@ -1216,3 +1216,53 @@ button.rl-card.end { cursor: default; }
 .session-review summary { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .session-review summary strong { margin-right: 12px; }
 .session-review .drill-feedback { margin-top: 16px; }
+
+.session-tabs { display: flex; gap: 4px; margin-right: auto; }
+.session-tabs .active { background: var(--accent-soft); border-color: var(--accent); }
+#drill-sessions-dialog:has(.analysis-layout) { width: min(1180px, calc(100vw - 40px)); max-width: none; }
+.analysis-filters { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 12px; align-items: center; }
+.analysis-filters select { min-width: 0; max-width: 100%; font-size: 12px; }
+.analysis-selection { position: relative; font-size: 12px; }
+.analysis-selection summary { cursor: pointer; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.analysis-options { position: absolute; z-index: 5; top: 100%; left: 0; width: 320px; max-width: 70vw; max-height: 300px; overflow: auto; padding: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); box-shadow: var(--shadow); }
+.analysis-option { display: flex; align-items: center; gap: 8px; padding: 6px 2px; cursor: pointer; font-size: 11px; }
+.analysis-option input { flex: none; }
+.analysis-board { display: flex; align-items: center; gap: 3px; }
+.analysis-board .muted { margin-left: 8px; }
+.analysis-summary { margin-bottom: 10px; font-size: 12px; }
+.analysis-layout { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(270px, .9fr); gap: 20px; align-items: start; }
+.analysis-tree { overflow: auto; max-height: 57vh; padding: 4px 8px 8px 0; }
+.analysis-branches { margin-left: 16px; border-left: 1px solid var(--border-strong); padding-left: 7px; }
+.analysis-node-row { display: flex; align-items: center; margin: 4px 0; gap: 3px; }
+.analysis-expand { border: 0; background: transparent; color: var(--text-2); width: 20px; flex: none; padding: 0; cursor: pointer; }
+.analysis-node { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; text-align: left; min-width: 160px; width: 100%; border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; color: var(--text); background: var(--surface); font-size: 11px; cursor: pointer; }
+.analysis-node:disabled { opacity: .55; cursor: default; }
+.analysis-node.measured { border-left: 3px solid color-mix(in srgb, #e26952 calc(var(--deviation) * 100%), #42b890); }
+.analysis-node.selected { outline: 1px solid var(--accent); background: var(--accent-soft); }
+.analysis-line { font-weight: 600; }
+.analysis-node strong { grid-column: 2; grid-row: 2; }
+.analysis-mini-bars { grid-column: 1 / -1; display: grid; gap: 2px; }
+.analysis-mini-bars .frequency-bar { height: 4px; min-height: 4px; border-radius: 2px; }
+.analysis-mini-bars .frequency-segment { font-size: 0; }
+.analysis-detail { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); font-size: 12px; }
+.analysis-detail h3 { margin: 0 0 4px; font-size: 15px; }
+.analysis-detail h4 { margin: 16px 0 8px; font-size: 12px; }
+.analysis-comparison { display: grid; grid-template-columns: 42px 1fr; align-items: center; gap: 5px; margin: 12px 0 8px; }
+.analysis-comparison .frequency-bar { height: 22px; }
+.analysis-deltas { display: flex; gap: 6px; flex-wrap: wrap; }
+.analysis-action-delta { display: flex; gap: 8px; align-items: center; padding: 4px; font-size: 11px; }
+.analysis-action-delta > span { border-left: 3px solid; padding-left: 5px; }
+.analysis-volume { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 6px; }
+.analysis-volume-track { height: 14px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.analysis-volume-track i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.analysis-volume-track:nth-of-type(2) i { background: #42b890; }
+.analysis-volume-delta { text-align: right; color: var(--text-2); margin-top: 7px; }
+.analysis-classes { max-height: 24vh; overflow: auto; }
+.analysis-class { display: grid; grid-template-columns: 40px 1fr 52px; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.analysis-class-bars { display: grid; gap: 3px; }
+.analysis-class-bars .frequency-bar { height: 16px; min-height: 16px; }
+.analysis-class-bars .frequency-segment { font-size: 10px; }
+@media (max-width: 700px) {
+  .analysis-layout { grid-template-columns: 1fr; }
+  .analysis-tree { max-height: 32vh; }
+}

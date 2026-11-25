@@ -1,18 +1,26 @@
 import { post, fmt } from "./api.js";
 import { el, parseCards, cardEl } from "./cards.js";
 import { feedbackCards } from "./drill_controls.js";
+import { openAnalysis } from "./drill_analysis.js";
 
 export function openSessions(onResume, onOpen) {
   const dialog = document.getElementById("drill-sessions-dialog");
   const header = el("div", "card-head"), content = el("div", "sessions-content"), close = el("button", "btn small", "Close");
-  header.append(el("h2", "", "Sessions"), close);
+  const tabs = el("div", "session-tabs"), history = el("button", "btn small active", "History"), analysis = el("button", "btn small", "Analysis");
+  let viewVersion = 0;
+  tabs.append(history, analysis);
+  header.append(el("h2", "", "Sessions"), tabs, close);
+  history.onclick = () => { history.classList.add("active"); analysis.classList.remove("active"); list(); };
+  analysis.onclick = () => { viewVersion++; analysis.classList.add("active"); history.classList.remove("active"); openAnalysis(content); };
   close.onclick = () => dialog.close();
   dialog.replaceChildren(header, content);
   dialog.showModal();
   async function list(offset = 0) {
+    const version = ++viewVersion;
     content.textContent = "Loading…";
     try {
       const result = await post("/api/drill/sessions", { offset });
+      if (version !== viewVersion) return;
       content.replaceChildren();
       if (!result.sessions.length) content.append(el("span", "muted", "No sessions"));
       for (const session of result.sessions) {
@@ -29,7 +37,7 @@ export function openSessions(onResume, onOpen) {
         content.append(entry);
       }
       pagination(offset, result.sessions.length, list);
-    } catch (e) { content.textContent = e.message; }
+    } catch (e) { if (version === viewVersion) content.textContent = e.message; }
   }
   function pagination(offset, count, load) {
     const row = el("div", "session-pagination");
@@ -40,9 +48,11 @@ export function openSessions(onResume, onOpen) {
     content.append(row);
   }
   async function reviews(session, offset) {
+    const version = ++viewVersion;
     content.textContent = "Loading…";
     try {
       const result = await post("/api/drill/reviews", { session: session.id, offset });
+      if (version !== viewVersion) return;
       content.replaceChildren();
       const back = el("button", "btn small", "All sessions"); back.onclick = () => list(); content.append(back);
       for (const simulation of result.simulations) {
@@ -74,7 +84,7 @@ export function openSessions(onResume, onOpen) {
       }
       if (!result.reviews.length) content.append(el("p", "muted", "No submitted decisions"));
       pagination(offset, Math.max(result.reviews.length, result.simulations.length), (page) => reviews(session, page));
-    } catch (e) { content.textContent = e.message; }
+    } catch (e) { if (version === viewVersion) content.textContent = e.message; }
   }
   list();
 }

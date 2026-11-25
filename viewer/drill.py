@@ -11,6 +11,7 @@ import server as vsrv
 from jobs_api import jobs
 from drill_spots import action_info, board_plan, merge_tree, node_preview
 from drill_sessions import Sessions
+from drill_analysis import digest
 from drill_resolve import DrillResolve, Subtree
 from drill_locks import open_locked_simulation
 from drill_grading import DEFAULT_FREQUENCY_TOLERANCE, grade_frequencies
@@ -492,6 +493,7 @@ class DrillService:
                         if self.main.state()["solving"]:
                             raise vsrv.SolverError("finish the current solve first")
                         self.main.cmd(f'dump_tree "{config["path"]}" lossless', timeout=3600)
+                        config["analysis_lines"] = self.main.cmd("show_all_lines").splitlines()
             self.config = config
             self.number = self.revision = self.decisions = self.completed = 0
             self.loss_pct = 0
@@ -503,6 +505,11 @@ class DrillService:
                 settings = {**body, **self.state()["config"]}
                 if source == "current":
                     settings["path"] = config["path"]
+                    settings["analysis_lines"] = config["analysis_lines"]
+                elif source == "saved":
+                    settings["analysis_setup"] = self.saved_queue.batch(config["batch"])["setup"]
+                else:
+                    settings["analysis_setup"] = config["setup"]
                 self.sessions.start(self.session, settings)
             self.cancel.clear()
             self.prepare()
@@ -768,6 +775,8 @@ class DrillService:
         vsrv.require_post(method)
         body = vsrv.need_body(body)
         with self.lock:
+            if path == "/api/drill/analysis":
+                return 200, self.sessions.analysis(body)
             if path in ("/api/drill/sessions", "/api/drill/reviews"):
                 offset = body.get("offset", 0)
                 if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -819,6 +828,7 @@ class DrillService:
                         self.decisions += len(results)
                         self.loss_pct += sum(f["loss_pct"] for f in results)
                         review = self.hand.view()
+                        review["analysis_simulation"] = digest(self.used_solve["path"])
                         if self.config["source"] == "saved":
                             review["simulation"] = self.used_solve["path"]
                         self.sessions.record(self.session, self.number, review, self.session_stats())

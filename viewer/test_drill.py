@@ -262,6 +262,12 @@ class DrillTest(unittest.TestCase):
         state = self.post("submit", state, choices=[choices] * len(state["hand"]["exercises"]))
         state = self.post("continue", state)
         stats = state["stats"]
+        analysis = self.request("analysis", {"sessions": [session]})
+        self.assertEqual(analysis["detail"]["samples"], stats["decisions"])
+        self.assertEqual(analysis["hands"], 1)
+        self.assertEqual(analysis["detail"]["volume"][0], 0)
+        self.assertEqual(self.request()["token"], state["token"])
+        self.request("analysis", {"sessions": "invalid"}, expected=400)
         self.post("stop", state)
         self.solver.cmds(["set_board Kh9h4h2c3d", "build_tree"])
         state = self.request("resume", {"session": session})

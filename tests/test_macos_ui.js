@@ -37,5 +37,10 @@ await wait(() => (!$('drill-submit').classList.contains('hidden') && !$('drill-s
   || (!$('drill-next').classList.contains('hidden') && !$('drill-next').disabled));
 check($('drill-number').textContent === 'Hand 2', 'continuing results stopped at the hand-complete screen');
 check($('drill-next').classList.contains('hidden'), 'an extra next-hand click is required');
+$('drill-sessions').click();
+[...document.querySelectorAll('.session-tabs button')].find(b => b.textContent === 'Analysis').click();
+await wait(() => document.querySelector('.analysis-detail h3'));
+check(document.querySelectorAll('.analysis-node.measured').length > 0, 'session analysis did not render the drilled tree');
+check(document.querySelector('.analysis-detail').textContent.includes('5 dealt hands'), 'session analysis lost the submitted hands');
 check(testErrors.length === 0, testErrors.join('\n'));
-return 'native window loads Browse, saves settings, submits a five-hand drill, and continues directly to the next hand';
+return 'native window loads Browse, saves settings, submits a five-hand drill, continues to the next hand, and analyzes the session';

@@ -4,6 +4,7 @@ import sqlite3
 import time
 import tempfile
 from drill_grading import regrade_feedback
+from drill_analysis import report, validate
 
 
 class Sessions:
@@ -103,6 +104,17 @@ class Sessions:
         rows = self.db.execute('SELECT hand, payload FROM reviews WHERE session=? ORDER BY id LIMIT 50 OFFSET ?',
                                (session, offset))
         return [{'number': row['hand'], **json.loads(row['payload'])} for row in rows]
+
+    def analysis(self, body):
+        selected = validate(body)
+        def records():
+            for session in selected:
+                saved = self.get(session)
+                if saved is None:
+                    continue
+                for row in self.db.execute('SELECT hand, payload FROM reviews WHERE session=? ORDER BY id', (session,)):
+                    yield session, row['hand'], saved['settings'], json.loads(row['payload'])
+        return report(records, body)
 
     def simulations(self, session, offset):
         rows = self.db.execute('''SELECT simulation,

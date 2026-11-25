@@ -4,7 +4,7 @@ import re
 from collections import defaultdict
 
 import server as vsrv
-from drill_spots import action_info, board_plan, merge_tree
+from drill_spots import action_info, merge_tree
 
 
 STREETS = {0: 'Preflop', 3: 'Flop', 4: 'Turn', 5: 'River'}
@@ -19,34 +19,17 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:24]
 
 
-def tree_key(settings, street):
-    setup = settings.get('analysis_setup')
-    if setup is None and settings.get('source') == 'live' and settings.get('tree'):
-        tree = merge_tree(settings['tree'], settings.get('merge_similar', True))
-        board = board_plan(settings, tree)['board']
-        setup, _ = vsrv.setup_from_body({**tree, 'board': board})
-    if setup is not None:
-        structure = [line.strip() for line in setup if line.split() and line.split()[0] in
-                     ('set_pot', 'set_eff_stack', 'clear_lines', 'add_line', 'remove_line', 'force_line', 'set_rake')]
-    else:
-        structure = settings.get('analysis_lines') or settings.get('path') or ['batch', settings.get('batch')]
-    return digest([street, structure])
-
-
 def board_street(review):
     return len(''.join(review['node']['board'].split())) // 2
 
 
-def review_identity(settings, session, review, key_cache):
+def review_identity(settings, session, review):
     node = canonical(review['node']['id'])
     street = board_street(review) - node.split(':').count('?')
-    key = (session, street)
-    if key not in key_cache:
-        key_cache[key] = tree_key(settings, street)
     board = ''.join(review['node']['board'].split())[:street * 2]
     simulation = review.get('analysis_simulation') or digest(review.get('simulation') or settings.get('path') or [session, board])
     stack = max(a + b for a, b in zip(review['stacks'], review['node']['pot']))
-    tree = digest([key_cache[key], review['node']['pot'][2], stack, review['big_blind']])
+    tree = digest([street, float(review['node']['pot'][2]), float(stack), float(review['big_blind'])])
     return tree, simulation, board, street, stack
 
 
@@ -112,9 +95,9 @@ class Totals:
 
 
 def report(records, body):
-    cache, groups, settings_by_tree = {}, {}, {}
+    groups, settings_by_tree = {}, {}
     for session, number, settings, review in records():
-        tree, simulation, board, street, stack = review_identity(settings, session, review, cache)
+        tree, simulation, board, street, stack = review_identity(settings, session, review)
         group = groups.setdefault(tree, {'id': tree, 'name': settings.get('spot') or settings.get('batch') or 'Current tree',
                                         'street': street, 'pot': review['node']['pot'][2], 'stack': stack,
                                         'big_blind': review['big_blind'], 'simulations': {}, 'sessions': set(), 'decisions': 0})
@@ -122,7 +105,7 @@ def report(records, body):
         group['decisions'] += 1
         sim = group['simulations'].setdefault(simulation, {'id': simulation, 'board': board, 'decisions': 0})
         sim['decisions'] += 1
-        settings_by_tree[tree] = settings
+        settings_by_tree.setdefault(tree, {})[session] = settings
     catalog = [{**g, 'sessions': len(g['sessions']), 'simulations': list(g['simulations'].values())} for g in groups.values()]
     tree = body.get('tree') or (catalog[0]['id'] if catalog else None)
     if tree not in groups:
@@ -157,34 +140,41 @@ def report(records, body):
                                    'seat': ('OOP', 'IP')[actor], 'incoming': incoming, 'chance': token == '?'})
             parent = key
 
-    settings = settings_by_tree[tree]
-    if settings.get('analysis_lines'):
-        for path in settings['analysis_lines']:
-            if path.startswith('r:0'):
+    seen_shapes = set()
+    for settings in settings_by_tree[tree].values():
+        sizes = {key: value for key, value in (settings.get('tree') or {}).items()
+                 if key not in ('board', 'range_oop', 'range_ip')}
+        shape = digest([settings.get('analysis_lines'), sizes, settings.get('merge_similar', True)])
+        if shape in seen_shapes:
+            continue
+        seen_shapes.add(shape)
+        if settings.get('analysis_lines'):
+            for path in settings['analysis_lines']:
+                if path.startswith('r:0'):
+                    add_path(path)
+        elif settings.get('source') == 'live' and settings.get('tree'):
+            cfg = vsrv.tree_config_from_body(merge_tree(settings['tree'], settings.get('merge_similar', True)))
+            tb = vsrv.load_tree_builder()
+            root = tb.Node(group['street'] - 3, (0, 0), tb.OOP, False, None,
+                           removed=tuple(cfg.removed_lines), extra=tuple(cfg.extra_lines))
+            pending = [('r:0', root)]
+            while pending:
+                path, current = pending.pop()
                 add_path(path)
-    elif settings.get('source') == 'live' and settings.get('tree'):
-        cfg = vsrv.tree_config_from_body(merge_tree(settings['tree'], settings.get('merge_similar', True)))
-        tb = vsrv.load_tree_builder()
-        root = tb.Node(group['street'] - 3, (0, 0), tb.OOP, False, None,
-                       removed=tuple(cfg.removed_lines), extra=tuple(cfg.extra_lines))
-        pending = [('r:0', root)]
-        while pending:
-            path, current = pending.pop()
-            add_path(path)
-            if len(nodes) > tb.MAX_TREE_ACTIONS:
-                raise vsrv.SolverError('tree is too large to analyze')
-            if current.inv[current.to_act] < max(current.inv):
-                add_path(path + ':f')
-            for amount, child, aggressive in tb._children(cfg, current):
-                target = path + (':b' + str(amount) if aggressive else ':c')
-                if child and child.street > current.street:
-                    target += ':?'
-                add_path(target)
-                if child:
-                    pending.append((target, child))
+                if len(nodes) > tb.MAX_TREE_ACTIONS:
+                    raise vsrv.SolverError('tree is too large to analyze')
+                if current.inv[current.to_act] < max(current.inv):
+                    add_path(path + ':f')
+                for amount, child, aggressive in tb._children(cfg, current):
+                    target = path + (':b' + str(amount) if aggressive else ':c')
+                    if child and child.street > current.street:
+                        target += ':?'
+                    add_path(target)
+                    if child:
+                        pending.append((target, child))
 
     for session, number, settings, review in records():
-        identity, simulation, _, _, _ = review_identity(settings, session, review, cache)
+        identity, simulation, _, _, _ = review_identity(settings, session, review)
         if identity != tree or simulation not in selected_sims:
             continue
         add_path(review['node']['id'])

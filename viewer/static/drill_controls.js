@@ -219,6 +219,7 @@ export function feedbackCards(feedback, bigBlind) {
   const legend = el("div", "feedback-legend");
   for (const index of actionOrder(feedback.hands[0].actions)) {
     const action = feedback.hands[0].actions[index];
+    if (feedback.merged?.includes(action.id)) continue;
     const label = el("span");
     const dot = el("i");
     dot.style.background = actionColor(action);

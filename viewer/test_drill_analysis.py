@@ -48,7 +48,9 @@ class AnalysisTest(unittest.TestCase):
         other = self.review('TcJdQhKsAc', simulation='two')
         other['seat'] = 'IP'
         self.save('second', other)
-        self.save('third', self.review(), {**self.settings, 'analysis_lines': [*self.settings['analysis_lines'], 'r:0:b200']})
+        deeper = self.review()
+        deeper['stacks'] = [600, 600]
+        self.save('third', deeper)
         report = self.sessions.analysis({'sessions': ['first', 'second', 'third']})
         self.assertEqual(len(report['groups']), 2)
         self.assertEqual(report['simulations'], 2)
@@ -57,6 +59,24 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(report['detail']['samples'], 2)
         self.assertEqual(report['sessions'], 1)
         self.assertEqual(self.sessions.analysis({'sessions': []})['nodes'], [])
+
+    def test_sessions_with_different_sizes_pool_each_hands_own_solver_baseline(self):
+        self.save('live', self.review(), {**self.settings, 'source': 'live'})
+        other = self.review('TcJdQhKsAc', simulation='two')
+        other['node']['pot'][2] = 200.0
+        for hand in other['feedback']['hands']:
+            for action in hand['actions']:
+                if action['kind'] == 'bet':
+                    action.update(id='r:0:b200', amount=200, fraction=1, label='Bet 100%')
+        self.save('saved', other, {'source': 'saved', 'batch': 'prior-sims'})
+        report = self.sessions.analysis({'sessions': ['live', 'saved']})
+        self.assertEqual(len(report['groups']), 1)
+        self.assertEqual(report['sessions'], 2)
+        self.assertEqual(report['detail']['samples'], 4)
+        self.assertEqual([a['id'] for a in report['detail']['actions']], ['r:0:b100', 'r:0:b200', 'r:0:c'])
+        self.assertEqual(report['detail']['user'], [.375, .375, .25])
+        self.assertAlmostEqual(report['detail']['volume'][0], 1.125)
+        self.assertAlmostEqual(report['detail']['volume'][1], .525)
 
     def test_original_baseline_includes_removed_size_and_same_user_distribution(self):
         review = self.review()

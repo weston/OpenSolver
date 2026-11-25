@@ -1234,6 +1234,8 @@ button.rl-card.end { cursor: default; }
 .analysis-options { position: absolute; z-index: 5; top: 100%; left: 0; width: 320px; max-width: 70vw; max-height: 300px; overflow: auto; padding: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); box-shadow: var(--shadow); }
 .analysis-option { display: flex; align-items: center; gap: 8px; padding: 6px 2px; cursor: pointer; font-size: 11px; }
 .analysis-option input { flex: none; }
+.analysis-sessions { flex-basis: 100%; }
+.analysis-sessions .analysis-options { position: static; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 12px; width: auto; max-width: none; max-height: 130px; margin-top: 4px; box-shadow: none; }
 .analysis-board { display: flex; align-items: center; gap: 3px; }
 .analysis-board .muted { margin-left: 8px; }
 .analysis-summary { margin-bottom: 10px; font-size: 12px; }

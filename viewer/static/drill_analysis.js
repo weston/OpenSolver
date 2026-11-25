@@ -6,7 +6,8 @@ const signed = (value, digits = 1) => `${value > 0 ? "+" : ""}${fmt(value, digit
 
 export function openAnalysis(container) {
   const filters = el("div", "analysis-filters"), result = el("div", "analysis-result");
-  const sessionMenu = el("details", "analysis-selection"), sessionTitle = el("summary", "", "Sessions");
+  const sessionMenu = el("details", "analysis-selection analysis-sessions"), sessionTitle = el("summary", "", "Sessions");
+  sessionMenu.open = true;
   const sessionList = el("div", "analysis-options");
   sessionMenu.append(sessionTitle, sessionList);
   const tree = el("select"), seat = el("select"), baseline = el("select"), metric = el("select");
@@ -75,7 +76,7 @@ export function openAnalysis(container) {
       }
       tree.value = data.tree || "";
       if (previous !== tree.value) { simulations = null; expanded.clear(); expandedInitialized = false; }
-      sessionTitle.textContent = `Sessions · ${sessions.size}`;
+      sessionTitle.textContent = `Sessions · ${sessions.size} selected`;
       simList.replaceChildren();
       const group = data.groups.find(group => group.id === data.tree);
       if (group) {

@@ -141,7 +141,7 @@ function render(s) {
   const heroIndex = hand?.seat === "OOP" ? 0 : 1;
   for (const id of ["drill-hero-wager", "drill-villain-wager"]) $(id).replaceChildren();
   if (hand) {
-    const pot = hand.node.pot.reduce((a, b) => a + b, 0);
+    const pot = hand.node.pot.reduce((a, b) => a + b, 0) - hand.wagers.reduce((a, b) => a + b, 0);
     $("drill-pot").append(chipStack(pot), el("span", "num", `Pot ${bb(pot, hand.big_blind)}`));
     for (const [id, wager] of [["drill-hero-wager", hand.wagers[heroIndex]], ["drill-villain-wager", hand.wagers[1 - heroIndex]]]) {
       if (wager > 0) $(id).append(chipStack(wager), el("span", "num", bb(wager, hand.big_blind)));
@@ -162,12 +162,13 @@ function render(s) {
   for (const card of parseCards(hand.node.board)) $("drill-board").append(cardEl(card, "lg"));
   const key = `${s.token.split(":")[0]}:${s.token.split(":")[3]}:${s.number}:${hand.node.id}`;
   if (draftNode !== key) { drafts.clear(); fullDrafts.clear(); draftNode = key; sizeDraft = null; clearTimeout(sizeTimer); }
-  const sizes = hand.actions.filter((a) => ["bet", "raise"].includes(a.kind));
+  const visibleActions = hand.actions.filter((a) => !hand.merged?.includes(a.id));
+  const sizes = visibleActions.filter((a) => ["bet", "raise"].includes(a.kind));
   const toggles = sizes.length > 1 && parseCards(hand.node.board).length >= 3;
   const disabled = sizeDraft || s.resolution?.disabled || hand.disabled;
   $("drill-actions").classList.add("hand-set");
-  $("drill-actions").style.setProperty("--action-count", hand.actions.length);
-  if (hand.actions.length) $("drill-actions").append(actionHeader(hand.actions, hand.big_blind, disabled, toggles ? toggleSize : null));
+  $("drill-actions").style.setProperty("--action-count", visibleActions.length);
+  if (visibleActions.length) $("drill-actions").append(actionHeader(visibleActions, hand.big_blind, disabled, toggles ? toggleSize : null));
   for (const [index, exercise] of hand.exercises.entries()) {
     if (!hand.actions.length) break;
     if (!exercise.chosen && !drafts.has(index)) drafts.set(index, initialFrequencies(hand.actions, disabled));

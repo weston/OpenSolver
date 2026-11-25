@@ -630,6 +630,63 @@ class DrillTest(unittest.TestCase):
                 self.assertEqual(state["config"]["merge_similar"], enabled)
                 self.assertEqual([a["amount"] for a in state["hand"]["actions"] if a["kind"] == "bet"], sizes)
 
+    def test_saved_and_current_drills_merge_close_river_sizes_without_changing_the_save(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        tree = {**TREE, "pot": 8000, "stack": 6000, "river_bet": "25 29.0625 a", "river_raise": "",
+                "allin_threshold": 100, "add_allin_limit": 0}
+        setup, _ = vsrv.setup_from_body(tree)
+        job = self.queue.add_batch("close-river", setup, [(tree["board"], 1)], 1, 20, None, "full", None)[0]
+        self.assertEqual(drill.jobs.run_job(self.queue, job, SOLVER, 1, log=lambda _: None), "done")
+        with open(job["out"], "rb") as file:
+            saved = file.read()
+        for source, enabled in (("saved", True), ("saved", False), ("current", True)):
+            with self.subTest(source=source, merge=enabled):
+                self.service.close()
+                self.solver.cmd(f'load_tree "{job["out"]}" full')
+                state = self.begin(source=source, batch="close-river", mode="node", format="set", merge_similar=enabled, seconds=1)
+                self.assertEqual(state["config"]["merge_similar"], enabled)
+                state = self.resolved() if enabled else state
+                merged = state["hand"]["merged"]
+                self.assertEqual(merged, ["r:0:b2000"] if enabled else [])
+                sizes = [a["amount"] for a in state["hand"]["actions"] if a["kind"] == "bet" and a["id"] not in merged]
+                self.assertEqual(sizes, [6000, 2325] if enabled else [6000, 2325, 2000])
+                if enabled:
+                    self.assertNotIn("r:0:b2000", self.service.hand.solver.cmd("show_children r:0"))
+                    self.post("sizes", state, disabled=[])
+                    state = self.resolved()
+                    self.assertEqual(state["hand"]["disabled"], merged)
+                    choices = [float(a["kind"] == "check") for a in state["hand"]["actions"]]
+                    state = self.post("submit", state, choices=[choices] * len(state["hand"]["exercises"]))
+                    feedback = state["hand"]["feedback"]
+                    self.assertEqual(feedback["merged"], merged)
+                    self.assertIn("original", feedback)
+                    self.assertGreater(feedback["removed_frequency"], 0)
+                    self.post("continue", state)
+                self.service.close()
+        with open(job["out"], "rb") as file:
+            self.assertEqual(file.read(), saved)
+
+    def test_whole_hands_merge_again_when_reaching_the_next_street(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        tree = {**TREE, "board": "2c3d4h5s", "pot": 1000, "stack": 3000, "turn_bet": "50 52",
+                "turn_raise": "", "river_bet": "25 29", "river_donk": "25 29", "river_raise": "",
+                "allin_threshold": 100, "add_allin_limit": 0}
+        setup, _ = vsrv.setup_from_body(tree)
+        self.solver.cmds([*setup, "build_tree"])
+        state = self.begin(format="set", seconds=1)
+        state = self.resolved()
+        self.assertEqual(state["hand"]["merged"], ["r:0:b500"])
+        for _ in range(3):
+            if len(drill.cards(state["hand"]["node"]["board"])) == 5:
+                break
+            choices = [float(a["kind"] in ("check", "call")) for a in state["hand"]["actions"]]
+            state = self.post("submit", state, choices=[choices] * len(state["hand"]["exercises"]))
+            state = self.post("continue", state)
+            state = self.resolved() if state["resolution"] else state
+        self.assertEqual(len(drill.cards(state["hand"]["node"]["board"])), 5)
+        self.assertEqual(len(state["hand"]["merged"]), 1)
+        self.assertNotIn(state["hand"]["merged"][0], self.service.hand.solver.cmd("show_children " + state["hand"]["node"]["id"]))
+
     def test_chance_deals_and_allin_runouts_exclude_both_hands(self):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 60 60", "add_line 0 0 30 60 60", "build_tree"])
         self.solver.cmd("set_strategy r:0 " + " ".join(["0"] * 1326 + ["1"] * 1326))

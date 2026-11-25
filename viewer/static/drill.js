@@ -174,7 +174,7 @@ function render(s) {
       (frequencies) => { drafts.set(index, frequencies); controls(); }, hand.big_blind, shared, disabled));
     $("drill-actions").append(row);
   }
-  if (hand.feedback) $("drill-feedback").append(feedbackCards(hand.feedback, hand.continuation, hand.big_blind));
+  if (hand.feedback) $("drill-feedback").append(feedbackCards(hand.feedback, hand.big_blind));
   renderHistory(hand);
   controls();
 }

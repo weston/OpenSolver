@@ -13,6 +13,7 @@ from drill_spots import action_info, board_plan, merge_tree, node_preview
 from drill_sessions import Sessions
 from drill_resolve import DrillResolve, Subtree
 from drill_locks import open_locked_simulation
+from drill_grading import grade_frequencies
 
 
 PLAYERS = ("OOP", "IP")
@@ -257,6 +258,9 @@ class Hand:
             if self.original:
                 self.feedback["original"] = self.original.summarize([
                     self.original.grade(e, e["chosen"]) for e in self.exercises])
+                self.feedback["removed_frequency"] = sum(
+                    f for a, f in zip(self.original.actions, self.original.range_frequencies)
+                    if a["id"] in self.disabled) if self.disabled else None
             self.phase = "feedback"
         return feedback
 
@@ -268,21 +272,25 @@ class Hand:
         if any(ev is None and a["id"] not in self.disabled for ev, a in zip(evs, self.actions)):
             raise vsrv.SolverError("action EV is unavailable for this hand")
         pot = sum(self.node["pot"])
-        loss = max(0, max(ev for ev in evs if ev is not None) - sum(ev * f for ev, f in zip(evs, chosen) if ev is not None))
         frequencies = [row[item["index"]] for row in self.strategy_rows]
         total = sum(frequencies)
         if not total > 0:
             raise vsrv.SolverError("no strategy for this practice hand")
+        frequencies = [f / total for f in frequencies]
+        grade = grade_frequencies(chosen, frequencies, evs)
         return {"node": self.node["id"], "combo": item["combo"], "chosen": chosen, "pot": pot,
-                    "loss": loss, "loss_pct": 100 * loss / pot if pot else 0,
-                    "actions": [{**a, "frequency": f / total, "ev": ev} for a, f, ev in zip(self.actions, frequencies, evs)]}
+                    **grade, "loss_pct": 100 * grade["loss"] / pot if pot else 0,
+                    "actions": [{**a, "frequency": f, "ev": ev} for a, f, ev in zip(self.actions, frequencies, evs)]}
 
     def summarize(self, hands):
         theoretical = list(zip(*[[a["frequency"] for a in f["actions"]] for f in hands]))
         choices = list(zip(*[h["chosen"] for h in hands]))
         for hand, weight in zip(hands, self.exercise_weights):
             hand["weight"] = weight / sum(self.exercise_weights)
-        return {"hands": hands, "frequencies": {
+        values = vsrv.ev_pair(self.solver, self.seat, self.node["id"])
+        pairs = [(ev, w) for ev, w in zip(values["ev"], values["matchups"]) if ev is not None and w and w > 0]
+        range_ev = sum(ev * w for ev, w in pairs) / sum(w for _, w in pairs)
+        return {"hands": hands, "range_ev": range_ev, "frequencies": {
             "range": self.range_frequencies,
             "dealt_solver": weighted_frequencies(theoretical, self.exercise_weights),
             "dealt_user": weighted_frequencies(choices, self.exercise_weights)}}
@@ -661,13 +669,16 @@ class DrillService:
         node = self.hand.node["id"]
         if self.hand.feedback:
             node = self.hand.feedback["hands"][0]["node"]
+        if source is self.reader:
+            vsrv.open_drill_snapshot(self.main, self.used_solve["path"])
+            return node
         if isinstance(source, Subtree):
             node = source.sub_root + node[len(source.root):]
             source = source.solver
         with tempfile.TemporaryDirectory(prefix="wsolver-drill-browse-") as temp:
             path = os.path.join(temp, "spot.cfr")
-            source.cmd(f'dump_tree "{path}" lossless', timeout=3600)
-            vsrv.open_drill_variant(self.main, path, dict(source.locks), None)
+            source.cmd(f'dump_tree "{path}" lossless no_compress', timeout=3600)
+            vsrv.open_drill_snapshot(self.main, path)
         return node
 
     def close(self):

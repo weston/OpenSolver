@@ -12,6 +12,7 @@ from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 import drill
+from drill_grading import grade_frequencies
 import server as vsrv
 from library import Library
 
@@ -99,6 +100,8 @@ class DrillTest(unittest.TestCase):
         strategy = self.service.hand.solver.cmd("show_strategy " + node)
         self.solver.cmds(["clear_lines", "add_line 10 10", "build_tree"])
         opened = self.post("browse", state)
+        self.assertTrue(self.solver.loaded_file)
+        snapshot = self.solver.loaded_path
         self.assertEqual(opened["browse_node"], node)
         self.assertEqual(self.solver.cmd("show_strategy " + node), strategy)
         self.assertEqual(opened["hand"], state["hand"])
@@ -108,6 +111,9 @@ class DrillTest(unittest.TestCase):
         self.finish(state)
         self.service.close()
         self.assertEqual(vsrv.parse_node_block(self.solver.cmd("show_node " + node))["type"], "IP_DEC")
+        self.assertTrue(os.path.isfile(snapshot))
+        self.solver.restart()
+        self.assertFalse(os.path.exists(snapshot))
 
     def test_browse_resolved_ip_spot_maps_node_and_preserves_feedback(self):
         self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
@@ -157,6 +163,12 @@ class DrillTest(unittest.TestCase):
         removed = next(i for i, a in enumerate(feedback["hands"][0]["actions"]) if a["id"] in disabled)
         self.assertEqual(feedback["frequencies"]["range"][removed], 0)
         self.assertGreater(feedback["original"]["frequencies"]["range"][removed], 0)
+        self.assertEqual(feedback["removed_frequency"], feedback["original"]["frequencies"]["range"][removed])
+        for result, solver in ((feedback, self.service.hand.solver), (feedback["original"], self.solver)):
+            evs = vsrv.ev_pair(solver, "OOP", "r:0")
+            mass = sum(w for w in evs["matchups"] if w)
+            expected_ev = sum(ev * w for ev, w in zip(evs["ev"], evs["matchups"]) if ev is not None and w) / mass
+            self.assertAlmostEqual(result["range_ev"], expected_ev)
         for actual, baseline in zip(feedback["hands"], feedback["original"]["hands"]):
             self.assertEqual(actual["chosen"], baseline["chosen"])
             combo = vsrv.hand_order(self.solver).index(actual["combo"])
@@ -323,6 +335,34 @@ class DrillTest(unittest.TestCase):
         self.assertEqual((state["hand"]["phase"], state["stats"]["decisions"]), ("complete", 1))
         self.assertIsNone(state["hand"]["villain"])
 
+    def test_alternating_position_stays_fixed_across_streets_and_resolves(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 10 10 20 20",
+                         "add_line 20 20 40 40", "add_line 0 0 10 10", "add_line 0 0 20 20",
+                         "build_tree", "go 40 steps", "wait_for_solver"])
+        self.solver.cmd("set_strategy r:0 " + " ".join(["0"] * (2 * vsrv.NUM_COMBOS) + ["1"] * vsrv.NUM_COMBOS))
+        state = self.begin(seat="alternate", format="set")
+        self.post("sizes", state, disabled=["r:0:b20"])
+        state = self.resolved()
+        for number, seat in ((1, "OOP"), (2, "IP")):
+            decisions = 0
+            for _ in range(20):
+                if state["hand"]["phase"] == "complete":
+                    break
+                self.assertEqual((state["number"], state["hand"]["seat"]), (number, seat))
+                if state["hand"]["phase"] == "decision":
+                    self.assertEqual(state["hand"]["node"]["type"], seat + "_DEC")
+                    choices = [float(a["kind"] in ("check", "call")) for a in state["hand"]["actions"]]
+                    state = self.post("submit", state, choices=[choices] * len(state["hand"]["exercises"]))
+                    decisions += 1
+                else:
+                    state = self.post("continue", state)
+            self.assertEqual(state["hand"]["seat"], seat)
+            self.assertEqual(state["hand"]["phase"], "complete")
+            self.assertGreaterEqual(decisions, 2)
+            if number == 1:
+                state = self.post("next", self.ready())
+
     def test_selected_river_line_only_shows_current_street_wagers(self):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 20 20 20 40 40", "build_tree"])
         state = self.begin(mode="node", node="r:0:b20:c:7c:c:b40", seat="OOP")
@@ -338,22 +378,17 @@ class DrillTest(unittest.TestCase):
         self.assertEqual(sum(state["hand"]["node"]["pot"]), 120)
         self.assertEqual(state["hand"]["stacks"], [20, 20])
 
-    def test_mixed_choices_grade_expected_ev_and_play_the_sampled_hand(self):
+    def test_mixed_choices_preserve_frequencies_and_play_the_sampled_hand(self):
         state = self.begin(format="set", mode="node")
-        order = vsrv.hand_order(self.solver)
         actions = state["hand"]["actions"]
         choices = [0.25, 0.75]
         for bad in ([0, 0], [-0.1, 1.1], [0.5], [True, 0], [0.3, 0.3]):
             self.request("action", {"token": state["token"], "frequencies": bad}, expected=400)
-        expected = []
         for i, exercise in enumerate(state["hand"]["exercises"]):
-            values = [vsrv.ev_pair(self.solver, "OOP", a["id"])["ev"][order.index(exercise["combo"])] for a in actions]
-            expected.append(max(values) - sum(v * f for v, f in zip(values, choices)))
             state = self.post("action", state, frequencies=choices, exercise=i)
         feedback = state["hand"]["feedback"]["hands"]
-        for entry, loss in zip(feedback, expected):
+        for entry in feedback:
             self.assertEqual(entry["chosen"], choices)
-            self.assertAlmostEqual(entry["loss"], loss)
         continuation = state["hand"]["continuation"]
         self.assertIn(continuation["combo"], [f["combo"] for f in feedback])
         self.assertIn(continuation["id"], [a["id"] for a in actions])
@@ -457,6 +492,19 @@ class DrillTest(unittest.TestCase):
             self.assertTrue(all(0 < a["frequency"] < 1 for a in result["actions"]))
             self.assertEqual([a["ev"] for a in result["actions"]], [40, 40])
             self.assertEqual(result["loss"], 0)
+
+    def test_mixed_actions_ignore_ev_noise_in_feedback_and_session_totals(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        self.solver.cmd("set_strategy r:0 " + " ".join(["0.4"] * 1326 + ["0.6"] * 1326))
+        state = self.begin(format="set", mode="node")
+        state = self.post("submit", state, choices=[[1, 0]] * len(state["hand"]["exercises"]))
+        results = state["hand"]["feedback"]["hands"]
+        self.assertTrue(any(abs(h["actions"][0]["ev"] - h["actions"][1]["ev"]) > 0.001 for h in results))
+        self.assertTrue(all(h["loss"] == 0 and h["grade"] == "frequency" for h in results))
+        self.assertEqual(state["stats"]["loss_pct"], 0)
+        session = state["token"].split(":")[0]
+        self.assertEqual(self.service.sessions.get(session)["loss"], 0)
+        self.assertEqual(self.service.sessions.reviews(session, 0)[0]["feedback"]["hands"], results)
 
     def test_similar_sizes_keep_separated_choices_and_can_be_disabled(self):
         tree = {**TREE, "pot": 1000, "stack": 3000, "river_bet": "50 52 55 60 100", "river_raise": "",
@@ -813,6 +861,42 @@ class DrillTest(unittest.TestCase):
         self.request("action", {"token": state["token"], "action": "r:0:fake"}, expected=400)
         self.assertEqual(self.request()["hand"], state["hand"])
         self.request("start", {}, expected=400)
+
+
+class GradingTest(unittest.TestCase):
+    def test_frequency_errors_are_free_and_wrong_actions_keep_their_cost(self):
+        for choices, grade, loss in (([0.4, 0.6, 0], "correct", 0),
+                                     ([0.45, 0.55, 0], "correct", 0),
+                                     ([1, 0, 0], "frequency", 0),
+                                     ([0, 1, 0], "frequency", 0),
+                                     ([0.2, 0.3, 0.5], "mistake", 5),
+                                     ([0, 0, 1], "mistake", 10)):
+            with self.subTest(choices=choices):
+                self.assertEqual(grade_frequencies(choices, [0.4, 0.6, 0], [10, 9, 0]),
+                                 {"grade": grade, "loss": loss})
+        self.assertEqual(grade_frequencies([1, 0], [1, 0], [10, None]), {"grade": "correct", "loss": 0})
+        self.assertEqual(grade_frequencies([0.999, 0.001], [0.999, 0.001], [10, 0]), {"grade": "correct", "loss": 0})
+        self.assertEqual(grade_frequencies([0, 1], [0.999, 0.001], [10, 0]), {"grade": "mistake", "loss": 9.99})
+
+    def test_existing_session_results_and_totals_are_regraded_together(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "sessions.sqlite3")
+            sessions = drill.Sessions(path)
+            sessions.start("session", {})
+            hand = {"pot": 100, "chosen": [1, 0], "loss": 1, "loss_pct": 1,
+                    "actions": [{"frequency": 0.4, "ev": 9}, {"frequency": 0.6, "ev": 10}]}
+            sessions.record("session", 1, {"feedback": {"hands": [hand], "original": {"hands": [hand]}}}, (0, 1, 1))
+            sessions.db.close()
+            sessions = drill.Sessions(path)
+            self.assertEqual(sessions.get("session")["loss"], 0)
+            feedback = sessions.reviews("session", 0)[0]["feedback"]
+            for result in (feedback["hands"][0], feedback["original"]["hands"][0]):
+                self.assertEqual((result["loss"], result["loss_pct"], result["grade"]), (0, 0, "frequency"))
+            sessions.db.close()
+            sessions = drill.Sessions(path)
+            self.assertEqual(sessions.reviews("session", 0)[0]["feedback"], feedback)
+            self.assertEqual(sessions.get("session")["loss"], 0)
+            sessions.db.close()
 
 
 class DealTest(unittest.TestCase):

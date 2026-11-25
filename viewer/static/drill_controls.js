@@ -223,16 +223,7 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
   return editor;
 }
 
-export function feedbackCards(feedback, continuation, bigBlind) {
-  if (feedback.original) {
-    const result = feedbackCards({ ...feedback, original: null }, continuation, bigBlind);
-    const original = el("details", "feedback-original");
-    const contents = el("div", "drill-feedback");
-    contents.append(feedbackCards(feedback.original, continuation, bigBlind));
-    original.append(el("summary", "", "Original strategy"), contents);
-    result.append(original);
-    return result;
-  }
+export function feedbackCards(feedback, bigBlind) {
   const result = document.createDocumentFragment();
   const legend = el("div", "feedback-legend");
   for (const index of actionOrder(feedback.hands[0].actions)) {
@@ -244,20 +235,40 @@ export function feedbackCards(feedback, continuation, bigBlind) {
     legend.append(label);
   }
   result.append(legend);
+  if (feedback.original) {
+    const comparison = el("div", "card feedback-ranges feedback-simplification");
+    comparison.append(el("h3", "", "Range simplification"));
+    for (const [label, value] of [["Original range", feedback.original], ["Simplified range", feedback]]) {
+      const row = el("div", "feedback-bar-row");
+      row.append(el("span", "", label), frequencyBar(value.hands[0].actions, value.frequencies.range, bigBlind));
+      comparison.append(row);
+    }
+    const stats = el("div", "simplification-stats");
+    if (feedback.removed_frequency != null) stats.append(el("span", "", `Removed sizes used ${fmt(feedback.removed_frequency * 100, 1)}%`));
+    if (feedback.range_ev != null && feedback.original.range_ev != null) {
+      const pot = feedback.hands[0].pot;
+      const original = 100 * feedback.original.range_ev / pot, simplified = 100 * feedback.range_ev / pot;
+      const change = simplified - original;
+      stats.append(el("span", "num", `Range EV ${fmt(original, 2)}% → ${fmt(simplified, 2)}% pot`),
+        el("strong", "num", `${change > 0 ? "+" : ""}${fmt(change, 2)}% pot`));
+    }
+    comparison.append(stats);
+    result.append(comparison);
+  }
   const ranges = el("div", "card feedback-ranges");
   for (const [key, label] of [["range", "Full range · Solver"], ["dealt_solver", "Dealt hands · Solver"], ["dealt_user", "Dealt hands · You"]]) {
+    if (key === "range" && feedback.original) continue;
     const row = el("div", "feedback-bar-row");
     row.append(el("span", "", label), frequencyBar(feedback.hands[0].actions, feedback.frequencies[key], bigBlind));
     ranges.append(row);
   }
   result.append(ranges);
   for (const hand of feedback.hands) {
-    const card = el("div", "card feedback-hand");
-    card.classList.toggle("continuing", hand.combo === continuation?.combo);
+    const card = el("div", `card feedback-hand ${hand.grade}`);
     const header = el("div", "feedback-hand-head");
-    const matched = hand.loss_pct < 0.005;
-    header.append(comboEl(hand.combo, ""), el("span", `feedback-loss num ${matched ? "matched" : "cost"}`,
-      `${matched ? "✓" : "↓"} ${fmt(hand.loss_pct, 2)}% EV loss`));
+    const symbol = hand.grade === "correct" ? "✓" : hand.grade === "frequency" ? "≈" : "↓";
+    header.append(comboEl(hand.combo, ""), el("span", `feedback-loss num ${hand.grade}`,
+      `${symbol} ${fmt(hand.loss_pct, 2)}% EV loss`));
     card.append(header);
     for (const [label, frequencies] of [["You", hand.chosen], ["Solver", hand.actions.map((a) => a.frequency)]]) {
       const row = el("div", "feedback-bar-row");

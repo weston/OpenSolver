@@ -3,6 +3,7 @@ import os
 import sqlite3
 import time
 import tempfile
+from drill_grading import regrade_feedback
 
 
 class Sessions:
@@ -28,6 +29,18 @@ class Sessions:
                     node TEXT NOT NULL, combo TEXT NOT NULL, payload TEXT NOT NULL,
                     PRIMARY KEY(session, simulation, seat, node, combo));
             ''')
+            changed = set()
+            for row in self.db.execute('SELECT id, session, payload FROM reviews'):
+                hand = json.loads(row['payload'])
+                if all('grade' in h for h in hand['feedback']['hands']):
+                    continue
+                regrade_feedback(hand['feedback'])
+                self.db.execute('UPDATE reviews SET payload=? WHERE id=?', (json.dumps(hand), row['id']))
+                changed.add(row['session'])
+            for session in changed:
+                loss = sum(h['loss_pct'] for row in self.db.execute('SELECT payload FROM reviews WHERE session=?', (session,))
+                           for h in json.loads(row['payload'])['feedback']['hands'])
+                self.db.execute('UPDATE sessions SET loss=? WHERE id=?', (loss, session))
 
     def start(self, session, settings):
         with self.db:

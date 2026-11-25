@@ -23,9 +23,11 @@ import math
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -85,6 +87,7 @@ class Solver:
         self.partial = None      # live/last subtree solve (#153): {node, pot, accuracy, done, ...}
         self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
         self.loaded_path = None   # ... from this file (meaningful while loaded_file; the Study report button)
+        self.drill_snapshot = None
         # The Build form the current tree's lines came from (op_generate): street refines rebuild
         # their subgames with these sizes, not with whatever the form holds by the time you browse.
         self.built_sizes = None
@@ -371,6 +374,9 @@ class Solver:
         """A new tree (generate / build / load / restart): drop the lock list and the undo copy."""
         self.locks = {}
         self.drill_variant = None
+        if self.drill_snapshot:
+            self.drill_snapshot.cleanup()
+            self.drill_snapshot = None
         if self.undo:
             try:
                 os.remove(self.undo["path"])
@@ -838,6 +844,19 @@ def _api_main(solver, lib, method, path, query, body):
         return 200, {"ok": True}
 
     return 404, {"error": "unknown endpoint"}
+
+
+def open_drill_snapshot(solver, path):
+    snapshot = tempfile.TemporaryDirectory(prefix="wsolver-browse-")
+    target = os.path.join(snapshot.name, "spot.cfr")
+    try:
+        shutil.copyfile(path, target)
+        with solver.cmd_lock:
+            api(solver, None, "POST", "/api/load", {}, {"path": target})
+            solver.drill_snapshot = snapshot
+    except Exception:
+        snapshot.cleanup()
+        raise
 
 
 def open_drill_variant(solver, path, locks, variant):

@@ -69,7 +69,7 @@ export function openSessions(onResume, onOpen) {
         const review = el("details", "session-review"), summary = el("summary");
         summary.append(el("strong", "", `Hand ${hand.number} · ${hand.seat}`), ...parseCards(hand.node.board).map((c) => cardEl(c, "xs")));
         const feedback = el("div", "drill-feedback");
-        feedback.append(feedbackCards(hand.feedback, hand.continuation, hand.big_blind));
+        feedback.append(feedbackCards(hand.feedback, hand.big_blind));
         review.append(summary, feedback); content.append(review);
       }
       if (!result.reviews.length) content.append(el("p", "muted", "No submitted decisions"));

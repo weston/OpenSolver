@@ -796,17 +796,23 @@ function renderBetaPanel() {
   });
 }
 
-function renderHand() {
+async function renderHand() {
   const box = $("side-hand");
-  box.textContent = "";
   const cls = S.pinned || S.hover;
   const d = S.dec;
   if (!cls || !d || !d.freq) {
+    box.textContent = "";
     box.appendChild(el("div", "side-empty", "Hover a hand in the matrix to see its combos.\nClick to pin it."));
     return;
   }
   const pi = S.path.findIndex((p) => p.id === S.decId);
   const acts = actionsOf(d, pi);
+  const seq = S.seq, key = `${S.base}|${S.decId}`;
+  const evs = await Promise.all(acts.map((a, i) => sideData(`hand-ev-${i}`, key,
+    `${S.base}/ev?id=${q(a.id)}&player=${d.actor}`, (data) => ({ data }))));
+  if (seq !== S.seq || S.side !== "hand" || cls !== (S.pinned || S.hover)) return;
+  box.textContent = "";
+  const handPot = potOf(d.node);
   const blocked = blockedBy(boardOf(d.node));
   const cw = classWeight(d.reach, cls, blocked);
   const head = el("div", "hand-head");
@@ -819,12 +825,20 @@ function renderHand() {
   if (cw.combos > 0) {
     box.appendChild(el("h3", null, "Strategy"));
     const mix = el("div", "mix");
-    acts.forEach((a) => {
-      let s = 0;
-      for (const i of H.byClass[cls]) s += (d.reach[i] || 0) * (d.freq[a.k][i] || 0);
+    const columns = el("div", "mix-row hand-mix-head");
+    columns.append(el("span"), el("span"), el("span", "", "Frequency"), el("span", "", "EV (% pot)"));
+    mix.appendChild(columns);
+    acts.forEach((a, index) => {
+      let s = 0, ev = 0, mass = 0;
+      for (const i of H.byClass[cls]) {
+        s += (d.reach[i] || 0) * (d.freq[a.k][i] || 0);
+        const value = evs[index]?.data.ev[i], weight = d.ev?.matchups?.[i] || 0;
+        if (value != null && weight > 0) { ev += value * weight; mass += weight; }
+      }
       const r = el("div", "mix-row");
       const sw = el("span", "sw"); sw.style.background = a.color;
-      r.append(sw, el("span", null, `${a.label} ${a.sub}`.trim()), el("span", "v num", fmt((s / cw.combos) * 100) + "%"));
+      r.append(sw, el("span", null, a.label), el("span", "v num", fmt((s / cw.combos) * 100) + "%"),
+        el("span", "hand-action-ev num", mass > 0 ? fmtEvPct(ev / mass, handPot, 1) : "—"));
       mix.appendChild(r);
     });
     box.appendChild(mix);
@@ -833,7 +847,6 @@ function renderHand() {
   box.appendChild(el("h3", null, "Combos"));
   const t = el("table", "combos");
   t.insertAdjacentHTML("beforeend", '<tr><th></th><th class="w">Weight</th><th></th><th class="ev" title="% of the pot">EV</th></tr>');
-  const handPot = potOf(d.node);
   for (const i of H.byClass[cls]) {
     const combo = H.order[i];
     if (blocked(combo)) continue;
@@ -845,7 +858,7 @@ function renderHand() {
     const mb = el("div", "mini-bar");
     if (w > 0) acts.forEach((a) => { const sp = el("span"); sp.style.background = a.color; sp.style.width = ((d.freq[a.k][i] || 0) * 100).toFixed(1) + "%"; mb.appendChild(sp); });
     c3.appendChild(mb);
-    c3.onmousemove = (ev) => showTip(ev, `<div class="t">${combo}</div>` + acts.map((a) => `<div class="r"><span>${a.label} ${a.sub}</span><b>${fmt((d.freq[a.k][i] || 0) * 100)}%</b></div>`).join(""));
+    c3.onmousemove = (ev) => showTip(ev, `<div class="t">${combo}</div>` + acts.map((a, index) => `<div class="r"><span>${a.label}</span><b>${fmt((d.freq[a.k][i] || 0) * 100)}% · EV ${fmtEvPct(evs[index]?.data.ev[i], handPot, 1)} pot</b></div>`).join(""));
     c3.onmouseleave = hideTip;
     const ev = d.ev && d.ev.ev ? d.ev.ev[i] : null;
     const c4 = el("td", "ev num", w > 0 && ev != null ? fmtEvPct(ev, handPot, 0) : "—");

@@ -282,15 +282,23 @@ build/macos/solver: $(MACOS_OBJ)
 	$(CXX) $(MACOS_CXXFLAGS) $^ -o $@ $(LDLIBS)
 
 ifeq ($(shell uname -sm),Darwin arm64)
+macos-app: build/macos/solver
+	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
+	VERSION=$(VERSION) MACOS_MIN=$(MACOS_MIN) SOLVER=build/macos/solver packaging/macos/build.sh --app
+
 macos-pkg: build/macos/solver
 	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
 	VERSION=$(VERSION) MACOS_MIN=$(MACOS_MIN) SOLVER=build/macos/solver packaging/macos/build.sh
+
+test-macos-app: macos-app
+	clang -fobjc-arc -O2 -Wall -Wextra -Werror -framework Cocoa -framework WebKit tests/test_macos_app.m -o build/macos/test_app
+	build/macos/stage/WSolver.app/Contents/Resources/python/bin/python3 -B -E -s packaging/macos/smoke.py build/macos/stage/WSolver.app $(VERSION) build/macos/test_app
 else
-macos-pkg:
+macos-app macos-pkg test-macos-app:
 	@echo "the macOS package is built on an Apple Silicon Mac"; exit 1
 endif
 
 clean:
 	rm -rf build solver solver-release dist
 
-.PHONY: all test test-big flop-subsets windows bench release install uninstall dist macos-pkg clean
+.PHONY: all test test-big flop-subsets windows bench release install uninstall dist macos-app macos-pkg test-macos-app clean

@@ -1,14 +1,5 @@
-// The executable of WSolver.app (#479): it starts the viewer that is inside the bundle
-// (Resources/python/bin/python3 Resources/viewer/server.py --solver Resources/solver), opens it in
-// the browser, and stops it when the app quits. The viewer itself is the web page; this is only
-// what a terminal was for: a place the viewer runs in, and a way to stop it.
-//
-// The viewer runs in a process group of its own, so that quitting takes its solvers with it. It
-// gets the usual port when that is free (bookmarks and the page's settings go by the address), any
-// free one otherwise; the port is read from the line the viewer prints when it is up. What the
-// viewer prints is kept in ~/Library/Logs/WSolver/viewer.log.
-
 #import <Cocoa/Cocoa.h>
+#import <WebKit/WebKit.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -54,7 +45,7 @@ static NSDictionary *getJSON(NSString *url) {
   return out;
 }
 
-@interface App : NSObject <NSApplicationDelegate>
+@interface App : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate>
 @end
 
 @implementation App {
@@ -66,8 +57,9 @@ static NSDictionary *getJSON(NSString *url) {
   NSString *_url;        // nil until the viewer is up
   NSString *_logPath;
   NSWindow *_win;
+  WKWebView *_web;
   NSTextField *_status;
-  NSButton *_open;
+  NSProgressIndicator *_spinner;
   id _activity;
 }
 
@@ -85,27 +77,36 @@ static NSDictionary *getJSON(NSString *url) {
 }
 
 - (void)buildWindow {
-  _win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 132)
-                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+  NSRect screen = [NSScreen mainScreen].visibleFrame;
+  NSRect frame = NSMakeRect(0, 0, MIN(1280, screen.size.width), MIN(860, screen.size.height - 40));
+  _win = [[NSWindow alloc] initWithContentRect:frame
+                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                               NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                                        backing:NSBackingStoreBuffered
                                          defer:NO];
   _win.title = @"WSolver";
   _win.releasedWhenClosed = NO;
+  _win.minSize = NSMakeSize(800, 600);
+  [_win center];
+  [_win setFrameAutosaveName:@"WSolverWindow"];
   NSView *v = _win.contentView;
-  [v addSubview:[self label:@"WSolver" font:[NSFont boldSystemFontOfSize:15] frame:NSMakeRect(20, 92, 380, 20)]];
-  _status = [self label:@"Starting…" font:[NSFont systemFontOfSize:13] frame:NSMakeRect(20, 66, 380, 18)];
-  _status.selectable = YES;
+  _web = [[WKWebView alloc] initWithFrame:v.bounds configuration:[WKWebViewConfiguration new]];
+  _web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  _web.navigationDelegate = self;
+  _web.UIDelegate = self;
+  _web.hidden = YES;
+  [v addSubview:_web];
+  CGFloat x = NSMidX(v.bounds), y = NSMidY(v.bounds);
+  _spinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(x - 16, y, 32, 32)];
+  _spinner.style = NSProgressIndicatorStyleSpinning;
+  _spinner.autoresizingMask = NSViewMinXMargin | NSViewMaxXMargin | NSViewMinYMargin | NSViewMaxYMargin;
+  [_spinner startAnimation:nil];
+  [v addSubview:_spinner];
+  _status = [self label:@"Starting…" font:[NSFont systemFontOfSize:13] frame:NSMakeRect(x - 190, y - 30, 380, 20)];
+  _status.autoresizingMask = _spinner.autoresizingMask;
+  _status.alignment = NSTextAlignmentCenter;
   _status.textColor = [NSColor secondaryLabelColor];
   [v addSubview:_status];
-  NSButton *quit = [NSButton buttonWithTitle:@"Quit" target:NSApp action:@selector(terminate:)];
-  quit.frame = NSMakeRect(166, 14, 84, 32);
-  [v addSubview:quit];
-  _open = [NSButton buttonWithTitle:@"Open in Browser" target:self action:@selector(openInBrowser:)];
-  _open.frame = NSMakeRect(256, 14, 150, 32);
-  _open.keyEquivalent = @"\r";
-  _open.enabled = NO;
-  [v addSubview:_open];
-  [_win center];
   [_win makeKeyAndOrderFront:nil];
 }
 
@@ -122,27 +123,45 @@ static NSDictionary *getJSON(NSString *url) {
 
   NSMenuItem *fileItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
   NSMenu *file = [[NSMenu alloc] initWithTitle:@"File"];
-  [[file addItemWithTitle:@"Open in Browser" action:@selector(openInBrowser:) keyEquivalent:@"o"] setTarget:self];
   [[file addItemWithTitle:@"Show Log" action:@selector(showLog:) keyEquivalent:@"l"] setTarget:self];
   [file addItem:[NSMenuItem separatorItem]];
   [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
   fileItem.submenu = file;
 
   NSMenuItem *editItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
-  NSMenu *edit = [[NSMenu alloc] initWithTitle:@"Edit"];   // the address in the window can be copied
+  NSMenu *edit = [[NSMenu alloc] initWithTitle:@"Edit"];
+  [edit addItemWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
+  [edit addItemWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"Z"];
+  [edit addItem:[NSMenuItem separatorItem]];
+  [edit addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
   [edit addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+  [edit addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
   [edit addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
   editItem.submenu = edit;
+
+  NSMenuItem *viewItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
+  NSMenu *view = [[NSMenu alloc] initWithTitle:@"View"];
+  [[view addItemWithTitle:@"Reload" action:@selector(reload:) keyEquivalent:@"r"] setTarget:self];
+  [view addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"]
+      .keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+  viewItem.submenu = view;
+
+  NSMenuItem *windowItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
+  NSMenu *window = [[NSMenu alloc] initWithTitle:@"Window"];
+  [window addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+  [window addItemWithTitle:@"Zoom" action:@selector(performZoom:) keyEquivalent:@""];
+  windowItem.submenu = window;
+  NSApp.windowsMenu = window;
   NSApp.mainMenu = bar;
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
-  return item.action == @selector(openInBrowser:) ? _url != nil : YES;
+  return item.action == @selector(reload:) ? _url != nil : YES;
 }
 
-- (void)openInBrowser:(id)sender {
+- (void)reload:(id)sender {
   (void)sender;
-  if (_url) [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:_url]];
+  [_web reload];
 }
 
 - (void)showLog:(id)sender {
@@ -156,7 +175,9 @@ static NSDictionary *getJSON(NSString *url) {
 - (int)spawnViewer {
   NSString *res = [NSBundle mainBundle].resourcePath;
   NSString *python = [res stringByAppendingPathComponent:@"python/bin/python3"];
-  NSString *port = [NSString stringWithFormat:@"%d", portIsFree(kPort) ? kPort : 0];
+  int preferredPort = (int)[[NSUserDefaults standardUserDefaults] integerForKey:@"ViewerPort"];
+  if (!preferredPort) preferredPort = kPort;
+  NSString *port = [NSString stringWithFormat:@"%d", portIsFree(preferredPort) ? preferredPort : 0];
   // -u: the lines as they are printed; -B: nothing written into the bundle; -E -s: this Python and
   // its own library only, whatever the environment says
   NSArray<NSString *> *args = @[python, @"-u", @"-B", @"-E", @"-s",
@@ -260,9 +281,69 @@ static NSDictionary *getJSON(NSString *url) {
 
 - (void)ready:(NSString *)url {
   _url = [url stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-  _status.stringValue = [@"Running at " stringByAppendingString:_url];
-  _open.enabled = YES;
-  if (!getenv("WSOLVER_NO_BROWSER")) [self openInBrowser:nil];   // (for testing the app without a page opening each time)
+  [[NSUserDefaults standardUserDefaults] setInteger:[NSURL URLWithString:_url].port.integerValue forKey:@"ViewerPort"];
+  [_web loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:_url]]];
+}
+
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+  (void)navigation;
+  [_spinner stopAnimation:nil];
+  _spinner.hidden = YES;
+  _status.hidden = YES;
+  webView.hidden = NO;
+  [_win makeFirstResponder:webView];
+}
+
+- (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action
+    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+  NSURL *url = action.request.URL;
+  NSURL *local = [NSURL URLWithString:_url];
+  BOOL sameOrigin = [url.scheme isEqualToString:local.scheme] && [url.host isEqualToString:local.host] &&
+                    [url.port isEqual:local.port];
+  if (sameOrigin && action.targetFrame) {
+    decisionHandler(WKNavigationActionPolicyAllow);
+    return;
+  }
+  decisionHandler(WKNavigationActionPolicyCancel);
+  if (sameOrigin) [webView loadRequest:action.request];
+  else if (action.navigationType == WKNavigationTypeLinkActivated &&
+           ([@"https" isEqualToString:url.scheme] || [@"http" isEqualToString:url.scheme]))
+    [[NSWorkspace sharedWorkspace] openURL:url];
+}
+
+- (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+  (void)webView;
+  (void)navigation;
+  if (error.code != NSURLErrorCancelled) [self failed:error.localizedDescription];
+}
+
+- (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+  [self webView:webView didFailProvisionalNavigation:navigation withError:error];
+}
+
+- (void)webView:(WKWebView *)webView runJavaScriptConfirmPanelWithMessage:(NSString *)message
+    initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(BOOL))completionHandler {
+  (void)webView;
+  (void)frame;
+  NSAlert *alert = [NSAlert new];
+  alert.messageText = message;
+  [alert addButtonWithTitle:@"OK"];
+  [alert addButtonWithTitle:@"Cancel"];
+  [alert beginSheetModalForWindow:_win completionHandler:^(NSModalResponse response) {
+    completionHandler(response == NSAlertFirstButtonReturn);
+  }];
+}
+
+- (void)webView:(WKWebView *)webView runOpenPanelWithParameters:(WKOpenPanelParameters *)parameters
+    initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(NSArray<NSURL *> *))completionHandler {
+  (void)webView;
+  (void)frame;
+  NSOpenPanel *panel = [NSOpenPanel openPanel];
+  panel.canChooseDirectories = parameters.allowsDirectories;
+  panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
+  [panel beginSheetModalForWindow:_win completionHandler:^(NSModalResponse response) {
+    completionHandler(response == NSModalResponseOK ? panel.URLs : nil);
+  }];
 }
 
 - (void)viewerEnded {
@@ -273,7 +354,6 @@ static NSDictionary *getJSON(NSString *url) {
 - (void)failed:(NSString *)what {
   _failed = YES;
   _url = nil;
-  _open.enabled = NO;
   _status.stringValue = what;
   NSString *tail = @"";
   NSString *all = [NSString stringWithContentsOfFile:_logPath encoding:NSUTF8StringEncoding error:nil];
@@ -317,14 +397,15 @@ static NSDictionary *getJSON(NSString *url) {
 /** Opened again (a click in the Dock, a second launch): back to the page if the window was put away. */
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
   (void)app;
+  (void)visible;
+  [_win deminiaturize:nil];
   [_win makeKeyAndOrderFront:nil];
-  if (!visible) [self openInBrowser:nil];
   return NO;
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app {
   (void)app;
-  return NO;   // the viewer is the page in the browser: the window is only its switch
+  return NO;
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {

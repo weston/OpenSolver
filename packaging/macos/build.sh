@@ -43,8 +43,8 @@ if [ "${1:-}" = "--files" ]; then
   exit 0
 fi
 
-: "${VERSION:?run this through make macos-pkg}"
-: "${MACOS_MIN:?run this through make macos-pkg}"
+: "${VERSION:?run this through make macos-app or macos-pkg}"
+: "${MACOS_MIN:?run this through make macos-app or macos-pkg}"
 SOLVER="${SOLVER:-build/macos/solver}"
 [ "$(uname -s)" = Darwin ] || { echo "the macOS package is built on macOS"; exit 1; }
 [ "$(uname -m)" = arm64 ] || { echo "the macOS package is built on an Apple Silicon Mac"; exit 1; }
@@ -81,9 +81,11 @@ rm -rf "$STAGE"
 mkdir -p "$APP/Contents/MacOS" "$RES"
 
 clang -fobjc-arc -O2 -Wall -Wextra -arch arm64 -mmacosx-version-min="$MACOS_MIN" \
-  -framework Cocoa "$HERE/launcher.m" -o "$APP/Contents/MacOS/WSolver"
+  -framework Cocoa -framework WebKit "$HERE/launcher.m" -o "$APP/Contents/MacOS/WSolver"
 
+REVISION=$(git rev-parse HEAD 2>/dev/null || true)
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@MACOS_MIN@/$MACOS_MIN/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" \
+  -e "s/@REVISION@/$REVISION/g" \
   "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
@@ -123,6 +125,11 @@ codesign --verify --deep --strict "$APP"
 # ----- does it run? ------------------------------------------------------------------------------
 # With the app's own Python, in an empty environment, as it will on a Mac that has nothing else.
 env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" "$PY/bin/python3" -B -E -s "$HERE/smoke.py" "$APP" "$VERSION"
+
+if [ "${1:-}" = "--app" ]; then
+  echo "$APP"
+  exit 0
+fi
 
 # ----- the package -------------------------------------------------------------------------------
 mkdir -p dist "$OUT/pkg"

@@ -105,6 +105,12 @@ def main():
         node = req("/api/node?id=r:0")
         check(len(node.get("children", [])) >= 2, "and browsed")
 
+        if len(sys.argv) > 3:
+            test = os.path.abspath(sys.argv[3])
+            script = os.path.join(os.path.dirname(__file__), "..", "..", "tests", "test_macos_ui.js")
+            native = subprocess.run([test, base, script, test + ".png"], timeout=100)
+            check(native.returncode == 0, "the native window runs the drilling interface")
+
         kids = children(srv.pid)
         check(len(kids) >= 1, f"the viewer runs its solvers as children ({len(kids)})")
         os.killpg(srv.pid, signal.SIGINT)   # what quitting the app sends: an interrupt to the whole group

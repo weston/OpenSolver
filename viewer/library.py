@@ -50,7 +50,7 @@ class Library:
         self.root = os.path.abspath(os.path.expanduser(root))
 
     def install_defaults(self):
-        marker = os.path.join(self.root, ".defaults-v1")
+        marker = os.path.join(self.root, ".defaults-v2")
         if os.path.exists(marker):
             return
         defaults = Library(os.path.join(os.path.dirname(__file__), "defaults"))
@@ -61,7 +61,7 @@ class Library:
                     self.save(kind, name, defaults.get(kind, name))
         os.makedirs(self.root, exist_ok=True)
         with open(marker, "w") as f:
-            f.write("1\n")
+            f.write("2\n")
 
     # ------------------------------------------------------------- paths
 

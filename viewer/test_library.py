@@ -55,18 +55,33 @@ class LibraryUnitTest(unittest.TestCase):
     def test_bundled_spots_preserve_range_weights_and_user_edits(self):
         self.lib.save("range", "HUNL SRP IP", "AA:0.25")
         self.lib.install_defaults()
-        self.assertEqual(len(self.lib.list("config")), 2)
-        self.assertEqual(len(self.lib.list("range")), 4)
+        self.assertEqual([e["name"] for e in self.lib.list("config")], ["HUNL 3BP", "HUNL 4BP", "HUNL SRP"])
+        self.assertEqual(len(self.lib.list("range")), 6)
         self.assertEqual(self.lib.get("range", "HUNL SRP IP").strip(), "AA:0.25")
-        for name, prefix in (("HUNL SRP 4", "HUNL SRP"), ("HU3BP", "HUNL 3BP")):
+        for name in ("HUNL SRP", "HUNL 3BP", "HUNL 4BP"):
             config = self.lib.get("config", name)
             defaults = libm.Library(os.path.join(HERE, "defaults"))
             for player in ("OOP", "IP"):
-                self.assertEqual(config["range_" + player.lower()], defaults.get("range", prefix + " " + player).strip())
-        self.lib.delete("config", "HU3BP")
+                self.assertEqual(config["range_" + player.lower()], defaults.get("range", name + " " + player).strip())
+        self.lib.delete("config", "HUNL 3BP")
         self.lib.install_defaults()
-        self.assertEqual(len(self.lib.list("config")), 1)
+        self.assertEqual(len(self.lib.list("config")), 2)
         self.assertEqual(self.lib.get("range", "HUNL SRP IP").strip(), "AA:0.25")
+
+    def test_updated_defaults_install_once_and_preserve_saved_spots(self):
+        with open(os.path.join(self.lib.root, ".defaults-v1"), "w") as f:
+            f.write("1\n")
+        self.lib.save("config", "HUNL 3BP", CONFIG)
+        self.lib.save("config", "My spot", CONFIG)
+        self.lib.install_defaults()
+        self.assertEqual([e["name"] for e in self.lib.list("config")],
+                         ["HUNL 3BP", "HUNL 4BP", "HUNL SRP", "My spot"])
+        self.assertEqual(self.lib.get("config", "HUNL 3BP"), CONFIG)
+        self.assertEqual(self.lib.get("config", "My spot"), CONFIG)
+        self.lib.delete("config", "HUNL 4BP")
+        self.lib.install_defaults()
+        self.assertEqual([e["name"] for e in self.lib.list("config")],
+                         ["HUNL 3BP", "HUNL SRP", "My spot"])
 
     # ----- ranges -----
     def test_range_crud_nested_folders(self):

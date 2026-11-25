@@ -26,7 +26,7 @@ export function initSessions(container, { onResume, onOpen, onAnalyze }) {
   const head = el("thead"), heading = el("tr"), selectPage = el("input"); selectPage.type = "checkbox";
   selectPage.setAttribute("aria-label", "Select this page");
   const selectionCell = el("th"); selectionCell.append(selectPage); heading.append(selectionCell);
-  for (const label of ["Started", "Spot", "Source", "Hands", ""]) heading.append(el("th", "", label));
+  for (const label of ["Started", "Spot", "Source", "Mode", "Hands", ""]) heading.append(el("th", "", label));
   head.append(heading);
   const rows = el("tbody"); table.append(head, rows); tableWrap.append(table);
   const pager = el("div", "session-pagination"), previous = el("button", "btn small", "Previous"), next = el("button", "btn small", "Next"), pageCount = el("span", "muted");
@@ -83,14 +83,15 @@ export function initSessions(container, { onResume, onOpen, onAnalyze }) {
         const date = new Date(session.started * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
         input.setAttribute("aria-label", `Select ${sessionName(session)} · ${date}`);
         input.onchange = () => { input.checked ? selected.add(session.id) : selected.delete(session.id); selectionChanged(); };
-        cell.append(input); row.append(cell, el("td", "session-started", date), el("td", "", sessionName(session)), el("td", "muted", SOURCE_NAMES[session.settings.source]), el("td", "num", session.hands));
+        cell.append(input); row.append(cell, el("td", "session-started", date), el("td", "", sessionName(session)),
+          el("td", "muted", SOURCE_NAMES[session.settings.source]), el("td", "muted", session.settings.answer_mode === "play" ? "Normal play" : "Frequencies"), el("td", "num", session.hands));
         const actions = el("td", "session-row-actions"), review = el("button", "btn small", "Review"), resume = el("button", "btn small", session.id === data.active ? "Active" : "Resume");
         review.onclick = () => reviews(session, 0);
         resume.disabled = session.id === data.active || !(session.settings.tree || session.settings.source === "saved" || session.settings.path);
         resume.onclick = () => onResume(session.id);
         actions.append(review, resume); row.append(actions); rows.append(row);
       }
-      if (!data.sessions.length) { const row = el("tr"), cell = el("td", "muted", "No sessions"); cell.colSpan = 6; row.append(cell); rows.append(row); }
+      if (!data.sessions.length) { const row = el("tr"), cell = el("td", "muted", "No sessions"); cell.colSpan = 7; row.append(cell); rows.append(row); }
       pageCount.textContent = data.total ? `${offset + 1}–${offset + data.sessions.length} of ${data.total}` : "0 sessions";
       previous.disabled = offset === 0; next.disabled = offset + data.sessions.length >= data.total;
     } catch (e) { if (version === request) error.textContent = e.message; }

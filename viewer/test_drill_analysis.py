@@ -53,6 +53,63 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(report['decisions'], 1)
         self.assertIsNone(next(n for n in report['nodes'] if n['id'] == 'r:0:b100:f').get('stats'))
 
+    def test_frequency_answers_and_played_actions_are_analyzed_separately(self):
+        frequency = self.review()
+        frequency['feedback']['hands'] = frequency['feedback']['hands'][:1]
+        frequency['feedback']['hands'][0]['chosen'] = [.5, .5]
+        self.save('mix', frequency)
+        play = copy.deepcopy(frequency)
+        play['answer_mode'] = 'play'
+        play['simulation'] = '/unused/simulation.cfr'
+        play['feedback']['hands'][0]['chosen'] = [1, 0]
+        self.save('play', play, {**self.settings, 'answer_mode': 'play'})
+        self.assertEqual(self.sessions.simulations('play', 0), [])
+        body = {'sessions': ['mix', 'play'], 'category': 'made:straight'}
+        for mode, expected, session in [('frequencies', .5, 'mix'), ('play', 1, 'play')]:
+            report = self.analyze({**body, 'answer_mode': mode})
+            self.assertEqual(report['answer_modes'], {'frequencies': 1, 'play': 1})
+            self.assertEqual(report['sessions'], 1)
+            self.assertEqual(report['hands'], 1)
+            self.assertEqual(report['decisions'], 1)
+            detail = report['detail']
+            bet = next(i for i, a in enumerate(detail['actions']) if a['kind'] == 'bet')
+            self.assertEqual(detail['user'][bet], expected)
+            self.assertEqual(detail['solver'][bet], .2)
+            self.assertEqual(detail['volume'][0], expected)
+            self.assertEqual(detail['volume'][1], .2)
+            self.assertEqual(detail['samples'], 1)
+            category, = detail['categories']['made']
+            self.assertEqual(category['user'][bet], expected)
+            example, = detail['examples']['hands']
+            self.assertEqual(example['session'], session)
+            self.assertEqual(example['user'][bet], expected)
+            measured, = [node for node in report['nodes'] if 'stats' in node]
+            self.assertEqual(measured['stats']['user'][bet], expected)
+        self.assertEqual(self.analyze(body)['answer_mode'], 'frequencies')
+        self.assertEqual(self.analyze({'sessions': ['play']})['answer_mode'], 'play')
+        self.assertIsNone(self.analyze({'sessions': ['mix'], 'answer_mode': 'play'})['detail'])
+        with self.assertRaises(vsrv.SolverError):
+            self.analyze({**body, 'answer_mode': 'both'})
+
+    def test_normal_play_rates_count_each_action_and_preserve_the_dealt_solver_mix(self):
+        review = self.review()
+        review['feedback']['hands'] = review['feedback']['hands'][:1]
+        settings = {**self.settings, 'answer_mode': 'play'}
+        self.save('play', review, settings)
+        for choice, solver in [([0, 1], .3), ([0, 1], .4)]:
+            review = copy.deepcopy(review)
+            hand = review['feedback']['hands'][0]
+            hand['chosen'] = choice
+            hand['actions'][0]['frequency'] = solver
+            hand['actions'][1]['frequency'] = 1 - solver
+            self.sessions.record('play', 1, review, (1, 3, 0))
+        report = self.analyze({'sessions': ['play']})
+        detail = report['detail']
+        bet = next(i for i, a in enumerate(detail['actions']) if a['kind'] == 'bet')
+        self.assertEqual(report['answer_modes']['play'], 3)
+        self.assertAlmostEqual(detail['user'][bet], 1 / 3)
+        self.assertAlmostEqual(detail['solver'][bet], .3)
+
     def test_made_hands_and_draws_keep_their_own_weighted_comparisons(self):
         review = self.review('Qh7h2h')
         top_pair, overpair = review['feedback']['hands']

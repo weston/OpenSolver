@@ -8,6 +8,13 @@ const signed = (value, digits = 1) => `${value > 0 ? "+" : ""}${fmt(value, digit
 export function initAnalysis(container, onSelectSessions) {
   const filters = el("div", "analysis-filters"), result = el("div", "analysis-result");
   const sessionButton = el("button", "btn small", "Choose sessions"); sessionButton.onclick = onSelectSessions;
+  const modes = el("div", "analysis-modes"); modes.setAttribute("role", "group"); modes.setAttribute("aria-label", "Practice mode");
+  let answerMode = null;
+  for (const [value, label] of [["frequencies", "Frequencies"], ["play", "Normal play"]]) {
+    const button = el("button", "btn small", label); button.dataset.mode = value;
+    button.onclick = () => { answerMode = value; selectedNode = null; schedule(); };
+    modes.append(button);
+  }
   const positions = el("div", "analysis-positions"); positions.setAttribute("role", "group"); positions.setAttribute("aria-label", "Analysis position");
   let seat = "OOP";
   for (const position of ["OOP", "IP"]) {
@@ -40,7 +47,7 @@ export function initAnalysis(container, onSelectSessions) {
   resetTextures.onclick = () => changeTextures(defaultBoardFilters());
   renderBoardFilters(textureFields, boardFilters, changeTextures);
   textureOptions.append(textureFields, resetTextures); textureMenu.append(textureTitle, textureOptions);
-  filters.append(sessionButton, positions, tree, simMenu, textureMenu, baseline, metric);
+  filters.append(sessionButton, modes, positions, tree, simMenu, textureMenu, baseline, metric);
   container.replaceChildren(filters, result);
   let sessions = [], simulations = null, selectedNode = null, request = 0, timer, latest;
   const expanded = new Set();
@@ -53,12 +60,13 @@ export function initAnalysis(container, onSelectSessions) {
   };
   function selection() {
     const body = { sessions, seat, baseline: baseline.value, board_filters: boardFilters };
+    if (answerMode) body.answer_mode = answerMode;
     if (tree.value) body.tree = tree.value;
     if (simulations) body.simulations = [...simulations];
     if (selectedNode) body.node = selectedNode;
     return body;
   }
-  tree.onchange = () => { simulations = null; selectedNode = null; expanded.clear(); expandedInitialized = false; load(); };
+  tree.onchange = () => { simulations = null; selectedNode = null; answerMode = null; expanded.clear(); expandedInitialized = false; load(); };
   baseline.onchange = schedule;
   metric.onchange = () => latest && render(latest);
 
@@ -74,6 +82,13 @@ export function initAnalysis(container, onSelectSessions) {
         data = await post("/api/drill/analysis", body);
       }
       if (version !== request || !filters.isConnected) return;
+      answerMode = data.answer_mode || answerMode;
+      for (const button of modes.children) {
+        const count = data.answer_modes?.[button.dataset.mode] || 0;
+        button.textContent = `${button.dataset.mode === "play" ? "Normal play" : "Frequencies"} · ${count}`;
+        button.setAttribute("aria-pressed", String(button.dataset.mode === answerMode));
+        button.disabled = count === 0;
+      }
       const previous = tree.value;
       tree.replaceChildren();
       for (const group of data.groups) {
@@ -161,7 +176,7 @@ export function initAnalysis(container, onSelectSessions) {
     }
     graph.append(...(children.get(null) || []).map(branch));
     if (data.detail) renderDetail(detail, data.detail, byId.get(data.detail.id), data.big_blind);
-    else detail.append(el("p", "muted", "No decisions for this position"));
+    else detail.append(el("p", "muted", "No decisions for this selection"));
     layout.append(graph, detail); result.append(layout);
     const selected = graph.querySelector(".analysis-node.selected");
     if (selected) graph.scrollTop += selected.getBoundingClientRect().top - graph.getBoundingClientRect().top - graph.clientHeight / 3;
@@ -169,7 +184,8 @@ export function initAnalysis(container, onSelectSessions) {
 
   function renderDetail(container, stats, node, bigBlind) {
     const selected = { ...selection(), node: stats.id }, version = request;
-    container.append(el("h3", "", `${node.street} · ${node.seat}`), el("div", "muted", `${stats.samples} dealt hands · ${stats.decisions} nodes`));
+    const samples = answerMode === "play" ? `${stats.samples} ${stats.samples === 1 ? "action" : "actions"}` : `${stats.samples} dealt hands`;
+    container.append(el("h3", "", `${node.street} · ${node.seat}`), el("div", "muted", `${samples} · ${stats.decisions} nodes`));
     const frequencies = el("div", "analysis-comparison");
     for (const [label, values] of [["Solver", stats.solver], ["You", stats.user]]) frequencies.append(el("span", "", label), frequencyBar(stats.actions, values, bigBlind, label));
     container.append(frequencies);
@@ -240,7 +256,7 @@ export function initAnalysis(container, onSelectSessions) {
   }
   return { show(selected) {
     if (JSON.stringify(sessions) !== JSON.stringify(selected)) {
-      sessions = selected; simulations = null; selectedNode = null; expanded.clear(); expandedInitialized = false;
+      sessions = selected; simulations = null; selectedNode = null; answerMode = null; expanded.clear(); expandedInitialized = false;
     }
     sessionButton.textContent = sessions.length ? `${sessions.length} sessions · Change` : "Choose sessions";
     load();

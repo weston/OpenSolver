@@ -68,7 +68,7 @@ class Sessions:
             self.db.execute('INSERT INTO reviews(session, hand, payload) VALUES (?, ?, ?)',
                             (session, number, json.dumps(hand)))
             self.update(session, stats)
-            if hand.get('simulation'):
+            if hand.get('simulation') and hand.get('answer_mode', 'frequencies') == 'frequencies':
                 for result in hand['feedback']['hands']:
                     mix = {a['id']: f for a, f in zip(result['actions'], result['chosen'])}
                     self.db.execute('INSERT OR REPLACE INTO choices VALUES (?, ?, ?, ?, ?, ?)',
@@ -142,6 +142,7 @@ class Sessions:
                     continue
                 for row in self.db.execute('SELECT hand, payload FROM reviews WHERE session=? ORDER BY id', (session,)):
                     review = json.loads(row['payload'])
+                    review.setdefault('answer_mode', saved['settings'].get('answer_mode', 'frequencies'))
                     if board_filters is None or matches_board_filters(review['node']['board'], board_filters):
                         yield session, row['hand'], saved['settings'], review
         return report(records, body, category_reader(solver))

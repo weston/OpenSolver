@@ -119,5 +119,37 @@ check($('tip').classList.contains('hidden'), 'switching sections left its toolti
 await wait(() => document.querySelector('.session-table tbody input')?.checked);
 $('drill-practice-tab').click();
 check(!$('drill-practice-panel').classList.contains('hidden') && $('drill-number').textContent === 'Hand 2', 'switching sections changed the active hand');
+$('drill-stop').click();
+await wait(() => !$('drill-start').classList.contains('hidden') && !$('drill-start').disabled);
+$('drill-answer_mode').value = 'play';
+$('drill-answer_mode').dispatchEvent(new Event('change'));
+check($('drill-frequency-options').classList.contains('hidden'), 'normal play still asks for hands per node');
+await post('/api/drill/start', {source: 'current', mode: 'hand', answer_mode: 'play', seat: 'OOP', format: 'set', count: 5, merge_similar: false});
+await wait(() => document.querySelector('.drill-play-action:not(:disabled)'));
+check(!document.querySelector('#drill-actions .mix-slider'), 'normal play has frequency sliders');
+check($('drill-submit').classList.contains('hidden'), 'normal play requires Submit');
+const playHero = [...$('drill-hero').querySelectorAll('.pc')].map(card => card.title).sort().join('');
+check(playHero.length === 4, 'normal play does not show the hero hand');
+let played = 0;
+for (; played < 12 && $('drill-next').classList.contains('hidden'); played++) {
+  const button = [...document.querySelectorAll('.drill-play-action')].find(button => /^(Check|Call)$/.test(button.querySelector('strong').textContent));
+  check(button && !button.disabled, 'no playable action');
+  const action = button.dataset.action;
+  button.click();
+  await wait(() => !document.querySelector('.drill-play-action:disabled')
+    && (!document.querySelector('.drill-play-action') || document.querySelector('.drill-play-action').dataset.action !== action));
+  check($('drill-continue').classList.contains('hidden') && $('drill-feedback').classList.contains('hidden'), 'normal play stopped at frequency feedback');
+  check([...$('drill-hero').querySelectorAll('.pc')].map(card => card.title).sort().join('') === playHero, 'normal play changed the hero cards');
+}
+check(played > 0 && !$('drill-next').classList.contains('hidden'), 'normal play did not finish the hand');
+$('drill-sessions').click();
+await wait(() => [...document.querySelectorAll('.session-table tbody tr')].some(row => row.textContent.includes('Normal play')));
+[...document.querySelectorAll('.session-toolbar button')].find(button => button.textContent === 'Select matching').click();
+document.querySelector('.session-toolbar .primary').click();
+await wait(() => document.querySelector('.analysis-modes [data-mode=play]:not(:disabled)'));
+document.querySelector('.analysis-modes [data-mode=play]').click();
+await wait(() => document.querySelector('.analysis-modes [data-mode=play]').getAttribute('aria-pressed') === 'true'
+  && /\d+ actions?\b/.test(document.querySelector('.analysis-detail')?.textContent));
+check(!document.querySelector('.analysis-modes [data-mode=frequencies]').disabled, 'frequency sessions were lost from analysis');
 check(testErrors.length === 0, testErrors.join('\n'));
-return 'native window loads Browse, saves settings, submits a five-hand drill, continues to the next hand, and analyzes the session';
+return 'native window runs frequency drills and normal play, preserves hero cards, and analyzes the modes separately';

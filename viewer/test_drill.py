@@ -518,6 +518,50 @@ class DrillTest(unittest.TestCase):
             if number == 1:
                 state = self.post("next", self.ready())
 
+    def test_normal_play_advances_records_actions_and_resumes_its_mode(self):
+        self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 10 10 20 20",
+                         "add_line 20 20 40 40", "add_line 0 0 10 10", "add_line 0 0 20 20",
+                         "build_tree", "set_equal_strats"])
+        state = self.begin(answer_mode="play", seat="alternate", format="set", count=5, merge_similar=False)
+        session = self.service.session
+        self.assertEqual(state["config"]["count"], 1)
+        self.assertEqual(state["config"]["format"], "single")
+        hero = state["hand"]["hero"]
+        self.assertEqual(len(state["hand"]["exercises"]), 1)
+        self.request("submit", {"token": state["token"], "choices": [[0, 0, 1]]}, expected=400)
+        self.assertEqual(self.request()["hand"], state["hand"])
+        for street in (4, 5):
+            self.assertEqual(state["hand"]["phase"], "decision")
+            self.assertEqual(state["hand"]["hero"], hero)
+            self.assertEqual(state["hand"]["seat"], "OOP")
+            self.assertEqual(len(drill.cards(state["hand"]["node"]["board"])), street)
+            action = next(a for a in state["hand"]["actions"] if a["kind"] == "check")
+            token = state["token"]
+            state = self.post("action", state, action=action["id"])
+            self.assertNotEqual(state["hand"]["phase"], "feedback")
+            self.request("action", {"token": token, "action": action["id"]}, expected=400)
+        self.assertEqual(state["hand"]["phase"], "complete")
+        self.assertEqual(state["hand"]["hero"], hero)
+        self.assertIsNotNone(state["hand"]["villain"])
+        self.assertEqual(state["stats"], {"hands": 1, "decisions": 2, "loss_pct": 0})
+        reviews = self.service.sessions.reviews(session, 0)
+        self.assertEqual(len(reviews), 2)
+        for review in reviews:
+            self.assertEqual(review["answer_mode"], "play")
+            hand, = review["feedback"]["hands"]
+            self.assertEqual(hand["combo"], hero)
+            self.assertEqual(hand["grade"], "correct")
+            self.assertEqual(hand["chosen"], [float(a["kind"] == "check") for a in hand["actions"]])
+        analysis = self.request("analysis", {"sessions": [session]})
+        self.assertEqual(analysis["answer_mode"], "play")
+        self.assertEqual(analysis["answer_modes"], {"play": 2, "frequencies": 0})
+        self.post("stop", state)
+        self.request("resume", {"session": session})
+        state = self.post("next", self.ready())
+        self.assertEqual(state["config"]["answer_mode"], "play")
+        self.assertEqual(state["hand"]["seat"], "IP")
+        self.assertEqual(state["number"], 2)
+
     def test_selected_river_line_only_shows_current_street_wagers(self):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 20 20 20 40 40", "build_tree"])
         state = self.begin(mode="node", node="r:0:b20:c:7c:c:b40", seat="OOP")
@@ -1080,7 +1124,7 @@ class DrillTest(unittest.TestCase):
         self.assertEqual(len(self.service.q.jobs()), 4)
 
     def test_invalid_settings_and_stale_session_do_not_change_play(self):
-        for settings in ({"source": "wrong"}, {"mode": "node", "node": "r:0\nexit"}, {"seat": "both"},
+        for settings in ({"source": "wrong"}, {"mode": "node", "node": "r:0\nexit"}, {"seat": "both"}, {"answer_mode": "unknown"},
                          {"source": "live", "ahead": 0}, {"source": "live", "ahead": 2.5},
                          {"source": "live", "ahead": True}, {"source": "live", "ahead": 21},
                          *({"frequency_tolerance": value} for value in (-1, 101, True, "10", None, float("nan"), float("inf")))):

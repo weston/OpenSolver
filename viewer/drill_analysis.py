@@ -45,6 +45,8 @@ def validate(body):
             raise vsrv.SolverError('invalid analysis selection')
     if body.get('seat', 'both') not in ('both', 'OOP', 'IP') or body.get('baseline', 'played') not in ('played', 'original'):
         raise vsrv.SolverError('invalid analysis filter')
+    if 'answer_mode' in body and body['answer_mode'] not in ('frequencies', 'play'):
+        raise vsrv.SolverError('invalid analysis mode')
     for field in ('tree', 'node', 'category'):
         if field in body and (not isinstance(body[field], str) or len(body[field]) > 1024):
             raise vsrv.SolverError('invalid analysis selection')
@@ -125,17 +127,21 @@ def report(records, body, read_categories):
         tree, simulation, board, street, stack = review_identity(settings, session, review)
         group = groups.setdefault(tree, {'id': tree, 'name': settings.get('spot') or settings.get('batch') or 'Current tree',
                                         'street': street, 'pot': review['node']['pot'][2], 'stack': stack,
-                                        'big_blind': review['big_blind'], 'simulations': {}, 'sessions': set(), 'decisions': 0})
+                                        'big_blind': review['big_blind'], 'simulations': {}, 'sessions': set(), 'decisions': 0,
+                                        'answer_modes': {'frequencies': 0, 'play': 0}})
         group['sessions'].add(session)
         group['decisions'] += 1
         sim = group['simulations'].setdefault(simulation, {'id': simulation, 'board': board, 'decisions': 0})
         sim['decisions'] += 1
+        if body.get('seat', 'both') in ('both', review['seat']) and ('simulations' not in body or simulation in body['simulations']):
+            group['answer_modes'][review['answer_mode']] += len(review['feedback']['hands'])
         settings_by_tree.setdefault(tree, {})[session] = settings
     catalog = [{**g, 'sessions': len(g['sessions']), 'simulations': list(g['simulations'].values())} for g in groups.values()]
     tree = body.get('tree') or (catalog[0]['id'] if catalog else None)
     if tree not in groups:
         return {'groups': catalog, 'tree': None, 'nodes': [], 'detail': None}
     group = groups[tree]
+    answer_mode = body.get('answer_mode') or ('frequencies' if group['answer_modes']['frequencies'] else 'play')
     selected_sims = set(body.get('simulations', group['simulations']))
     nodes, totals = {}, {}
     selected_sessions, selected_hands, selected_sims_seen = set(), set(), set()
@@ -205,7 +211,7 @@ def report(records, body, read_categories):
         add_path(review['node']['id'])
         for action in review['feedback'].get('original', review['feedback'])['hands'][0]['actions']:
             add_path(action['id'])
-        if seat != 'both' and review['seat'] != seat:
+        if (seat != 'both' and review['seat'] != seat) or review['answer_mode'] != answer_mode:
             continue
         selected_sessions.add(session)
         selected_hands.add((session, number))
@@ -226,6 +232,8 @@ def report(records, body, read_categories):
         examples, example_count = [], 0
         offset = body.get('offset', 0)
         for session, number, settings, review in records():
+            if review['answer_mode'] != answer_mode:
+                continue
             if canonical(review['node']['id']) != selected_node or (seat != 'both' and review['seat'] != seat):
                 continue
             identity, simulation, _, _, _ = review_identity(settings, session, review)
@@ -250,5 +258,6 @@ def report(records, body, read_categories):
         if 'category' in body:
             detail['examples'] = {'hands': examples, 'total': example_count, 'offset': offset}
     return {'groups': catalog, 'tree': tree, 'nodes': list(nodes.values()), 'detail': detail,
+            'answer_mode': answer_mode, 'answer_modes': group['answer_modes'],
             'sessions': len(selected_sessions), 'hands': len(selected_hands), 'simulations': len(selected_sims_seen),
             'decisions': sum(total.decisions for total in totals.values()), 'big_blind': group['big_blind']}

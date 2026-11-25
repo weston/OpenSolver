@@ -44,6 +44,23 @@ export function actionColor(action) {
   return `hsl(8 68% ${56 - 30 * fraction / (fraction + 0.75)}%)`;
 }
 
+export function playActions(actions, bigBlind, disabled, onAction) {
+  const buttons = el("div", "play-action-buttons");
+  for (const index of actionOrder(actions)) {
+    const action = actions[index];
+    if (disabled.includes(action.id)) continue;
+    const button = el("button", "drill-play-action");
+    button.type = "button";
+    button.dataset.action = action.id;
+    button.style.background = actionColor(action);
+    button.append(el("strong", "", action.label));
+    if (["bet", "raise"].includes(action.kind)) button.append(el("span", "num", bb(action.amount, bigBlind)));
+    button.onclick = () => onAction(action.id);
+    buttons.append(button);
+  }
+  return buttons;
+}
+
 export function frequencyBar(actions, frequencies, bigBlind, label) {
   const bar = el("div", "frequency-bar");
   if (!frequencies) { bar.textContent = "—"; return bar; }

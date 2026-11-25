@@ -121,6 +121,14 @@
       <summary id="drill-setup-summary" class="hidden">Session setup</summary>
       <fieldset id="drill-settings">
         <div class="drill-option">
+          <label class="field"><span>Mode</span><select id="drill-answer_mode">
+            <option value="frequencies">Frequencies</option><option value="play">Normal play</option>
+          </select></label>
+          <div id="drill-frequency-options" class="sub-settings">
+            <label class="field"><span>Hands per node</span><input id="drill-count" type="number" value="5" min="1" max="20" step="1" required></label>
+          </div>
+        </div>
+        <div class="drill-option">
           <label class="field"><span>Simulation</span><select id="drill-source">
             <option value="live">Solve on demand</option><option value="saved">Saved batch</option>
           </select></label>
@@ -144,7 +152,6 @@
         <label class="field"><span>Play as</span><select id="drill-seat">
           <option value="alternate">Alternating</option><option value="OOP">OOP</option><option value="IP">IP</option>
         </select></label>
-        <label class="field"><span>Hands per node</span><input id="drill-count" type="number" value="5" min="1" max="20" step="1" required></label>
       </fieldset>
       </details>
       <button id="drill-start" class="btn primary wide">Start drilling</button>

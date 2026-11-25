@@ -106,8 +106,9 @@ def weighted_frequencies(strategies, weights):
 
 class Hand:
     def __init__(self, solver, node_id, seat, mode, rng, count=1, previous_combo=None,
-                 frequency_tolerance=DEFAULT_FREQUENCY_TOLERANCE):
+                 frequency_tolerance=DEFAULT_FREQUENCY_TOLERANCE, answer_mode="frequencies"):
         self.solver, self.seat, self.mode, self.rng = solver, seat, mode, rng
+        self.answer_mode = answer_mode
         self.reference = solver
         self.count = count
         self.frequency_tolerance = frequency_tolerance
@@ -234,6 +235,8 @@ class Hand:
     def act(self, action, exercise=0, frequencies=None):
         if self.phase != "decision":
             raise vsrv.SolverError("there is no decision to play")
+        if self.answer_mode == "play" and frequencies is not None:
+            raise vsrv.SolverError("choose an action in normal play")
         if isinstance(exercise, bool) or not isinstance(exercise, int) or not 0 <= exercise < len(self.exercises):
             raise vsrv.SolverError("choose a hand from this node")
         item = self.exercises[exercise]
@@ -287,6 +290,8 @@ class Hand:
             raise vsrv.SolverError("no strategy for this practice hand")
         frequencies = [f / total for f in frequencies]
         grade = grade_frequencies(chosen, frequencies, evs, self.frequency_tolerance)
+        if self.answer_mode == "play" and grade["grade"] == "frequency":
+            grade["grade"] = "correct"
         return {"node": self.node["id"], "combo": item["combo"], "chosen": chosen, "pot": pot,
                     **grade, "loss_pct": 100 * grade["loss"] / pot if pot else 0,
                     "actions": [{**a, "frequency": f, "ev": ev} for a, f, ev in zip(self.actions, frequencies, evs)]}
@@ -371,9 +376,10 @@ class Hand:
     def view(self):
         hero = PLAYERS.index(self.seat)
         wagers = [0, 0] if self.node["type"] == "END_NODE" else [a - b for a, b in zip(self.node["pot"][:2], self.street_start)]
-        return {"phase": self.phase, "seat": self.seat,
+        return {"phase": self.phase, "seat": self.seat, "answer_mode": self.answer_mode,
                 "hero": self.order[self.hands[hero]] if self.count == 1 or self.phase == "complete" else None,
-                "villain": self.order[self.hands[1 - hero]] if self.phase == "complete" and self.mode == "hand" else None,
+                "villain": self.order[self.hands[1 - hero]] if self.phase == "complete" and self.mode == "hand"
+                and not (self.answer_mode == "play" and self.node["id"].endswith(":f")) else None,
                 "node": self.node, "actions": self.actions if self.phase == "decision" else [],
                 "disabled": self.disabled, "merged": self.merged,
                 "wagers": wagers, "big_blind": self.big_blind,
@@ -425,7 +431,7 @@ class DrillService:
                 resolution = {"busy": status["busy"], "error": status["error"], "disabled": self.resolver.disabled}
             return copy.deepcopy({"active": self.config is not None, "token": self.token(),
                                   "config": self.config and {k: self.config[k] for k in (
-                                      "source", "mode", "seat", "node", "ahead", "format", "count",
+                                      "source", "mode", "answer_mode", "seat", "node", "ahead", "format", "count",
                                       "boards", "selected_boards", "board_filters", "accuracy", "seconds", "frequency_tolerance",
                                       "merge_similar", "batch", "spot") if k in self.config},
                                   "hand": self.hand.view() if self.hand else None, "number": self.number,
@@ -444,6 +450,9 @@ class DrillService:
         source, mode, seat = body.get("source", "live"), body.get("mode", "hand"), body.get("seat", "alternate")
         if source not in ("current", "saved", "live") or mode not in ("node", "hand") or seat not in (*PLAYERS, "alternate"):
             raise vsrv.SolverError("invalid drill settings")
+        answer_mode = body.get("answer_mode", "frequencies")
+        if answer_mode not in ("frequencies", "play"):
+            raise vsrv.SolverError("invalid drill mode")
         merge_similar = body.get("merge_similar", True)
         if not isinstance(merge_similar, bool):
             raise vsrv.SolverError("merge similar sizes must be on or off")
@@ -457,10 +466,12 @@ class DrillService:
         count = body.get("count", 5) if hand_format == "set" else 1
         if hand_format not in ("single", "set") or isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 20:
             raise vsrv.SolverError("hands per node must be a whole number from 1 to 20")
+        if answer_mode == "play":
+            hand_format, count = "single", 1
         tolerance = body.get("frequency_tolerance", DEFAULT_FREQUENCY_TOLERANCE)
         if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)) or not math.isfinite(tolerance) or not 0 <= tolerance <= 100:
             raise vsrv.SolverError("frequency tolerance must be from 0 to 100")
-        config = {"source": source, "mode": mode, "seat": seat, "node": node, "ahead": ahead,
+        config = {"source": source, "mode": mode, "answer_mode": answer_mode, "seat": seat, "node": node, "ahead": ahead,
                   "format": hand_format, "count": count, "frequency_tolerance": tolerance, "merge_similar": merge_similar}
         if source == "current":
             if resume and not os.path.isfile(body.get("path", "")):
@@ -620,7 +631,7 @@ class DrillService:
         previous_combo = self.hand.hands[PLAYERS.index(seat)] if ready is None and self.hand and self.hand.seat == seat else None
         node = self.resolve_node(self.reader, self.config["node"])
         hand = Hand(self.reader, node, seat, self.config["mode"], self.rng,
-                    self.config["count"], previous_combo, self.config["frequency_tolerance"])
+                    self.config["count"], previous_combo, self.config["frequency_tolerance"], self.config["answer_mode"])
         previous_solve = self.used_solve
         self.used_solve = solve
         self.hand = hand
@@ -653,6 +664,19 @@ class DrillService:
             return
         self.resolve_applied = True
         self.revision += 1
+
+    def continue_hand(self):
+        self.hand = self.hand.proceed()
+        if self.resolver:
+            if self.playing_solver:
+                jobs.close_solver(self.playing_solver)
+            self.playing_solver = self.resolver.rsolver
+            self.clear_resolve(keep=True)
+        self.revision += 1
+        if self.hand.phase == "complete":
+            self.completed += 1
+            self.sessions.finish_hand(self.session, self.session_stats())
+        self.merge_sizes()
 
     def clear_resolve(self, keep=False):
         if self.resolver:
@@ -852,18 +876,10 @@ class DrillService:
                             review["simulation"] = self.used_solve["path"]
                         self.sessions.record(self.session, self.number, review, self.session_stats())
                     self.revision += 1
+                    if self.config["answer_mode"] == "play":
+                        self.continue_hand()
                 else:
-                    self.hand = self.hand.proceed()
-                    if self.resolver:
-                        if self.playing_solver:
-                            jobs.close_solver(self.playing_solver)
-                        self.playing_solver = self.resolver.rsolver
-                        self.clear_resolve(keep=True)
-                    self.revision += 1
-                    if self.hand.phase == "complete":
-                        self.completed += 1
-                        self.sessions.finish_hand(self.session, self.session_stats())
-                    self.merge_sizes()
+                    self.continue_hand()
             else:
                 return 404, {"error": "unknown drill endpoint"}
             return 200, self.state()

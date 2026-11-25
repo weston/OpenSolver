@@ -247,6 +247,13 @@ class ViewerTest(unittest.TestCase):
         st, s = self.req("/api/strategy?id=r:0")
         self.assertEqual(st, 200, s)
         tot = sum(w or 0 for w in s["reach"])
+        for group in (d["made"], d["draws"]):
+            indices = [i for c in group for i in c["indices"]]
+            self.assertEqual(sorted(indices), [i for i, w in enumerate(s["reach"]) if w and w > 0])
+            for c in group:
+                self.assertAlmostEqual(sum(s["reach"][i] for i in c["indices"]), c["combos"], places=3)
+        order = vsrv.hand_order(self.solver)
+        self.assertEqual({order[i] for i in by_name["quads"]["indices"]}, {"QsQd"})
         for j, row in enumerate(s["freq"]):
             overall = sum((f or 0) * (w or 0) for f, w in zip(row, s["reach"])) / tot
             from_cats = sum(c["combos"] * c["strategy"][j] for c in d["made"]) / d["total"]

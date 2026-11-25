@@ -32,7 +32,7 @@ const S = {
   hover: null,
   catsPlayer: null,  // OOP/IP override in that tab; null = the actor
   catHl: null,       // Set of classes highlighted by a hovered category row
-  catPin: null,      // {name, classes} pinned by clicking a category row
+  catSelected: new Map(),
   blkMetric: null,   // what the card ranking sorts by
   blkNoBoardRanks: prefs.get("blk-no-board-ranks", false),  // card grid: leave out cards that pair the board
   blkView: prefs.get("blk-view", "made"),  // range shift by "made" category, "draw" or hand "classes"
@@ -201,7 +201,7 @@ export async function gotoNode(id) {
     if (S.pinned && !Object.prototype.hasOwnProperty.call(H.byClass, S.pinned)) S.pinned = null;
     if (S.handCombo && blockedBy(boardOf(dec?.node || node))(S.handCombo)) S.handCombo = null;
     // a pinned/hovered category is board-dependent: it does not survive navigation
-    S.catPin = null; S.catHl = null;
+    clearCategorySelection();
     if (S.mode !== "strategy") await loadModeData();
     await whenReleased();   // never rebuild the cards under a press (preview.js)
     if (seq !== S.seq) return;
@@ -886,12 +886,33 @@ const DRAW_SHORT = {
   "4out_straight_draw": "4-out straight", "8out_straight_draw": "8-out straight",
 };
 
-/** Apply the category hover/pin highlight to the matrix cells. */
+function selectedCategoryClasses(selection) {
+  if (!selection.size) return null;
+  const groups = new Map();
+  for (const { group, indices } of selection.values()) {
+    if (!groups.has(group)) groups.set(group, new Set());
+    for (const i of indices) groups.get(group).add(i);
+  }
+  const [first, ...rest] = [...groups.values()];
+  return new Set([...first].filter((i) => rest.every((group) => group.has(i))).map((i) => comboClass(H.order[i])));
+}
+
+function clearCategorySelection() {
+  S.catSelected.clear();
+  S.catHl = null;
+  markCatHl();
+}
+
 function markCatHl() {
   if (!cells) return;
-  const set = S.catPin ? S.catPin.classes : S.catHl;
+  const set = selectedCategoryClasses(S.catSelected) || S.catHl;
   for (const x of cells) x.c.classList.toggle("cat-hl", !!(set && set.has(x.cls)));
-  $("matrix").classList.toggle("catmode", !!S.catPin);
+  $("matrix").classList.toggle("catmode", S.catSelected.size > 0);
+  $("side-cats").querySelectorAll(".cat-row").forEach((row) => {
+    const selected = S.catSelected.has(row.dataset.catKey);
+    row.classList.toggle("sel", selected);
+    row.setAttribute("aria-selected", String(selected));
+  });
 }
 
 async function renderCatsPanel() {
@@ -920,7 +941,12 @@ async function renderCatsPanel() {
   const seg = el("div", "seg small");
   for (const p of ["OOP", "IP"]) {
     const b = el("button", p === pl ? "active" : "", p);
-    b.onclick = () => { S.catsPlayer = p; renderCatsPanel(); };
+    b.onclick = () => {
+      if (pl === p) return;
+      S.catsPlayer = p;
+      clearCategorySelection();
+      renderCatsPanel();
+    };
     seg.appendChild(b);
   }
   head.appendChild(seg);
@@ -956,30 +982,33 @@ async function renderCatsPanel() {
   thead.appendChild(hr);
   t.appendChild(thead);
   const ncol = 4 + (strat ? acts.length : 0);
-  const section = (title, rows) => {
+  const section = (group, title, rows) => {
     const tb = el("tbody");
     const sr = el("tr", "sec");
     const sc = el("td", null, title);
     sc.colSpan = ncol;
     sr.appendChild(sc);
     tb.appendChild(sr);
-    rows.forEach((c) => tb.appendChild(catRow(c, strat ? acts : [], box, pot)));
+    rows.forEach((c) => tb.appendChild(catRow(c, group, strat ? acts : [], pot)));
     t.appendChild(tb);
   };
-  section("Made hands", data.made);
+  section("made", "Made hands", data.made);
   const draws = data.draws.filter((c) => c.name !== "no_draw" || data.draws.length > 1);
-  if (draws.length) section("Draws", draws);
+  if (draws.length) section("draws", "Draws", draws);
   const wrap = el("div", "cats-wrap");
   wrap.appendChild(t);
   box.appendChild(wrap);
-  box.appendChild(el("div", "hint cats-note", "Hover a row to light up its hands in the matrix; click to pin."));
 }
 
 /** One category: combos, share of the range, EV (% of pot), then how often it takes each action. */
-function catRow(c, acts, box, pot) {
+function catRow(c, group, acts, pot) {
   const row = el("tr", "cat-row");
   row.dataset.cat = c.name;
-  if (S.catPin && S.catPin.name === c.name) row.classList.add("sel");
+  const key = `${group}:${c.name}`;
+  row.dataset.catKey = key;
+  row.tabIndex = 0;
+  row.setAttribute("aria-selected", String(S.catSelected.has(key)));
+  if (S.catSelected.has(key)) row.classList.add("sel");
   const name = prettyCat(c.name);
   const short = DRAW_SHORT[c.name] || name;
   const share = fmt(c.pct * 100, c.pct < 0.1 ? 1 : 0) + "%";
@@ -1004,12 +1033,17 @@ function catRow(c, acts, box, pot) {
     }
   }
   row.onmousemove = (ev) => showTip(ev, tip);
-  row.onmouseenter = () => { S.catHl = new Set(c.classes); if (!S.catPin) markCatHl(); };
-  row.onmouseleave = () => { S.catHl = null; hideTip(); if (!S.catPin) markCatHl(); };
+  row.onmouseenter = () => { S.catHl = new Set(c.classes); if (!S.catSelected.size) markCatHl(); };
+  row.onmouseleave = () => { S.catHl = null; hideTip(); if (!S.catSelected.size) markCatHl(); };
   row.onclick = () => {
-    S.catPin = S.catPin && S.catPin.name === c.name ? null : { name: c.name, classes: new Set(c.classes) };
+    if (S.catSelected.has(key)) S.catSelected.delete(key);
+    else S.catSelected.set(key, { group, indices: c.indices });
     markCatHl();
-    box.querySelectorAll(".cat-row").forEach((r) => r.classList.toggle("sel", !!S.catPin && S.catPin.name === r.dataset.cat));
+  };
+  row.onkeydown = (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    row.click();
   };
   return row;
 }
@@ -1212,7 +1246,7 @@ function renderResponses(box, data, P, rep, acts, pi, selection) {
     const head = el("thead"), header = el("tr");
     const holding = el("th", "blk-response-hand");
     holding.append(el("span", "", "Holding"), selection.length === 4 ? comboEl(selection, "xs") : el("b", "", selection));
-    header.append(el("th", "", "Action"), el("th", "", "Full range"), holding);
+    header.append(el("th", "", "Action"), el("th", "", "Full range"), holding, el("th", "blk-response-delta", "Δ pp"));
     for (const th of header.children) th.scope = "col";
     head.appendChild(header);
     const body = el("tbody");
@@ -1222,8 +1256,9 @@ function renderResponses(box, data, P, rep, acts, pi, selection) {
       const label = el("th", "", va.label);
       label.scope = "row";
       row.appendChild(label);
-      for (const [range, report] of [["full", rep.before], ["hand", rep.after]]) {
-        const frequency = report.responses[k].freq[va.k];
+      const fullFrequency = rep.before.responses[k].freq[va.k];
+      const handFrequency = rep.after.responses[k].freq[va.k];
+      for (const [range, frequency] of [["full", fullFrequency], ["hand", handFrequency]]) {
         const cell = el("td", "blk-response-frequency " + range);
         const bar = el("div", "blk-response-bar"), fill = el("i");
         fill.style.width = (frequency * 100).toFixed(2) + "%";
@@ -1232,6 +1267,9 @@ function renderResponses(box, data, P, rep, acts, pi, selection) {
         cell.append(el("b", "num", pctOf(frequency)), bar);
         row.appendChild(cell);
       }
+      const delta = el("td", "blk-response-delta");
+      delta.appendChild(deltaEl(handFrequency - fullFrequency));
+      row.appendChild(delta);
       body.appendChild(row);
     }
     table.append(caption, head, body);
@@ -1622,8 +1660,8 @@ export function initStudy() {
       e.preventDefault();
       goUp();
     } else if (e.key === "Escape") {
-      S.pinned = null; S.handCombo = null; S.catPin = null; S.catHl = null;
-      markSel(); markCatHl(); renderSide();
+      S.pinned = null; S.handCombo = null; clearCategorySelection();
+      markSel(); renderSide();
     }
   });
 }

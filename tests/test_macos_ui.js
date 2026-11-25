@@ -32,6 +32,11 @@ const response = document.querySelector('#side-hand .blk-response');
 check(response?.querySelector('thead th:nth-child(2)').textContent === 'Full range', 'opponent responses lost the full-range label');
 check(response.querySelector('thead th:nth-child(3)').textContent.startsWith('Holding') && response.querySelectorAll('thead .pc').length === 2, 'opponent responses do not identify the held cards');
 check(response.querySelectorAll('tbody tr:first-child .blk-response-bar').length === 2, 'opponent frequencies are not shown as separate comparisons');
+for (const row of response.querySelectorAll('tbody tr')) {
+  const frequencies = [...row.querySelectorAll('.blk-response-bar i')].map(bar => parseFloat(bar.style.width));
+  const delta = Number(row.querySelector('.blk-response-delta').textContent.replace('−', '-'));
+  check(Math.abs(delta - (frequencies[1] - frequencies[0])) < 0.51, 'opponent frequency delta does not match Holding minus Full range');
+}
 document.querySelector('.side-tabs [data-side=blockers]').click();
 await wait(() => document.querySelector('#side-blockers .blk-cards'));
 check(!document.querySelector('#side-blockers .blk-sum, #side-blockers .hand-combos, #side-blockers .blk-removed'), 'range blockers includes specific-hand details');
@@ -40,6 +45,21 @@ await wait(() => document.querySelector('#side-hand .hand-blockers[aria-busy=fal
 document.querySelector('.side-tabs [data-side=cats]').click();
 await wait(() => document.querySelector('#side-cats .cats-share'));
 check(document.querySelector('#side-cats thead').textContent.includes('Range %'), 'categories are missing the range percentage');
+const category = name => document.querySelector(`#side-cats .cat-row[data-cat="${name}"]`);
+const highlightedClasses = () => [...document.querySelectorAll('#matrix .cat-hl .lbl')].map(label => label.textContent).sort().join(',');
+category('overpair').click();
+category('ace_high').click();
+check(highlightedClasses() === 'AA,AKo,AKs,KK', 'made categories do not combine with OR');
+category('flush_draw').click();
+check(highlightedClasses() === 'AKs', 'made categories and draws do not combine with AND');
+category('no_draw').click();
+check(highlightedClasses() === 'AA,AKo,AKs,KK', 'draw categories do not combine with OR');
+category('no_draw').click();
+category('ace_high').click();
+check(highlightedClasses() === '' && $('matrix').classList.contains('catmode'), 'empty category intersections do not clear highlights');
+$('matrix').dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+check(!document.querySelector('#side-cats .cat-row.sel') && !$('matrix').classList.contains('catmode'), 'Escape does not clear category selections');
+document.querySelector('#matrix .cell').click();
 document.querySelector('.side-tabs [data-side=graphs]').click();
 await wait(() => document.querySelector('#side-graphs svg'));
 const chart = document.querySelector('#side-graphs svg');
@@ -112,7 +132,11 @@ for (let i = 0; i < 2; i++) {
 }
 document.querySelector('.analysis-category summary').click();
 await wait(() => document.querySelector('.category-example'));
-check(document.querySelectorAll('.category-example-cards .pc').length >= 7, 'category expansion lost the hole cards or board');
+const playedBoard = resultState.hand.node.board.match(/[2-9TJQKA][shdc]/g).sort().join('');
+for (const cards of document.querySelectorAll('.category-example-cards')) {
+  const board = [...cards.querySelectorAll('.board .pc')].map(card => card.title).sort().join('');
+  check(cards.querySelectorAll('.combo-cards .pc').length === 2 && board === playedBoard, 'category expansion lost the hole cards or board');
+}
 check([...document.querySelectorAll('.category-example .analysis-comparison > span')].slice(0, 2).map(label => label.textContent).join(',') === 'Solver,You', 'expanded hand comparison lost player order');
 $('drill-sessions').click();
 check($('tip').classList.contains('hidden'), 'switching sections left its tooltip visible');

@@ -945,7 +945,7 @@ def categories_at(solver, node_id, player):
     def new_acc(cid):
         return {"id": cid, "combos": 0.0,
                 "strat": [0.0] * len(strat_rows) if strat_rows else None,
-                "ev_num": 0.0, "ev_den": 0.0, "classes": set()}
+                "ev_num": 0.0, "ev_den": 0.0, "classes": set(), "indices": []}
 
     accs = {}
     for i in range(NUM_COMBOS):
@@ -968,6 +968,7 @@ def categories_at(solver, node_id, player):
                 acc["ev_num"] += mu * evs[i]
                 acc["ev_den"] += mu
             acc["classes"].add(cls)
+            acc["indices"].append(i)
 
     total = sum(w for w in reach if w)
 
@@ -980,7 +981,7 @@ def categories_at(solver, node_id, player):
                          if acc["strat"] is not None else None,
              "ev": round(acc["ev_num"] / acc["ev_den"], 4) if acc["ev_den"] > 0 else None,
              "matchups": round(acc["ev_den"], 6),  # the EV's weight: sum of reach * opponent mass
-             "classes": sorted(acc["classes"], key=class_sort_key)}
+             "classes": sorted(acc["classes"], key=class_sort_key), "indices": acc["indices"]}
         return r
 
     made = [row(k, made_names) for k in sorted(accs) if k[0] == "m" and accs[k]["combos"] > 0]

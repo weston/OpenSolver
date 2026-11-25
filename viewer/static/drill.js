@@ -40,7 +40,7 @@ function controls() {
   $("drill-next").textContent = hand ? "Next hand" : "Deal hand";
   $("drill-retry").classList.toggle("hidden", !active || !state?.error);
   $("drill-retry").disabled = busy || state?.preparing;
-  document.querySelectorAll("#drill-actions button").forEach((b) => {
+  document.querySelectorAll("#drill-actions button, #drill-actions .mix-slider").forEach((b) => {
     b.disabled = busy || b.dataset.unavailable === "yes" || b.dataset.answered === "yes" || b.dataset.empty === "yes";
   });
 }

@@ -645,10 +645,10 @@ export function treeLoadedElsewhere() { builtSig = null; markDirty(); }
 
 // The Build form as a tree config for the job queue (#196): everything but the board, which each job sets.
 export function currentTree(withBoard = false) {
-  if (!validateSizes()) throw new Error("Fix the highlighted sizes on the Build tab first.");
+  if (!validateSizes()) throw new Error("Fix the highlighted sizes on the Tree tab first.");
   const bad = badNumbers(["f-pot", "f-stack", "f-allin-threshold", "f-allin-limit"]);
-  if (bad.length) throw new Error(`Fix ${bad.join(", ")} on the Build tab first.`);
+  if (bad.length) throw new Error(`Fix ${bad.join(", ")} on the Tree tab first.`);
   const f = readForm();
-  if (!f.range_oop || !f.range_ip) throw new Error("Set both ranges on the Build tab first.");
+  if (!f.range_oop || !f.range_ip) throw new Error("Set both ranges on the Tree tab first.");
   return { ...f, board: withBoard ? f.board : "" };
 }

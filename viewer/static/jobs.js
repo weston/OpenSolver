@@ -102,7 +102,7 @@ function render(st) {
     tr.appendChild(el("td", "num", fmtEvPct(r.ev_oop, pot)));   // the EVs add up to the pot
     tr.appendChild(el("td", "num", r.seconds != null ? fmt(r.seconds, 1) + "s" : "—"));
     const act = el("td", "jobs-actions");
-    if (j.status === "done") act.appendChild(btn("Open", "", "Open the save in Study", async () => {
+    if (j.status === "done") act.appendChild(btn("Open", "", "Open the save in Browse", async () => {
       await post("/api/jobs/open", { id: j.id });
       toast(`Opened ${j.board} (${j.batch})`);
       await onOpened();

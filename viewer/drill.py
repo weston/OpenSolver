@@ -455,7 +455,7 @@ class DrillService:
         else:
             tree = body.get("tree")
             if not isinstance(tree, dict):
-                raise vsrv.SolverError("choose a tree on the Build tab first")
+                raise vsrv.SolverError("choose a tree on the Tree tab first")
             config["spot"] = str(body.get("spot", ""))
             config.update(board_plan(body, tree))
             config["merge_similar"] = body.get("merge_similar", True)

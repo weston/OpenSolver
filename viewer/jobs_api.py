@@ -166,7 +166,7 @@ class JobsService:
         name = vsrv.no_newlines(str(b.get("name", "")).strip(), "name")
         tree = b.get("tree")
         if not isinstance(tree, dict):
-            raise vsrv.SolverError("tree: the Build form is required")
+            raise vsrv.SolverError("tree: the Tree form is required")
         tree = dict(tree, board="")  # the queue sets each job's board
         setup, _ = vsrv.setup_from_body(tree)
         text = self._flop_file_text(b["flops_file"]) if b.get("flops_file") else str(b.get("flops", ""))
@@ -175,7 +175,7 @@ class JobsService:
         except jobs.JobError as e:
             raise vsrv.SolverError(str(e))
         if any(len(board) != 6 for board, _ in flops):
-            raise vsrv.SolverError("the Build form's sizes describe a flop tree: use 3-card boards")
+            raise vsrv.SolverError("the Tree form's sizes describe a flop tree: use 3-card boards")
 
         def num(key, kind, lo):
             v = b.get(key)
@@ -194,7 +194,7 @@ class JobsService:
         try:
             est = jobs.check_tree(self.solver_exe, setup, flops[0][0])
             added = self.q.add_batch(name, setup, flops, accuracy, max_iters, None, save, None,
-                                     source="viewer Build form")
+                                     source="viewer Tree form")
         except jobs.JobError as e:
             raise vsrv.SolverError(str(e))
         return {"added": len(added), "estimate": est.splitlines()}

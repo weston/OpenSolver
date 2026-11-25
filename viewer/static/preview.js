@@ -59,7 +59,7 @@ function drawWait() {
   bar.firstChild.style.width = f == null ? "" : `${Math.round(f * 100)}%`;
   const secs = fmt((performance.now() - P.t0) / 1000, 0);
   text.textContent = pg.explo != null && pg.preview_at && potNow()
-    ? `Now ${pctOfPot(pg.explo)} of the pot · Study opens at ${pctOfPot(pg.preview_at)} · ${secs} s`
+    ? `Now ${pctOfPot(pg.explo)} of the pot · Browse opens at ${pctOfPot(pg.preview_at)} · ${secs} s`
     : `Starting · ${secs} s`;
 }
 

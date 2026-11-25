@@ -16,9 +16,9 @@
 <header class="topbar">
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>WSolver</div>
   <nav class="views" role="tablist">
-    <button class="view-tab" data-view="study" role="tab">Study</button>
+    <button class="view-tab" data-view="build" role="tab">Tree</button>
+    <button class="view-tab" data-view="study" role="tab">Browse</button>
     <button class="view-tab" data-view="drill" role="tab">Drill</button>
-    <button class="view-tab" data-view="build" role="tab">Build</button>
     <button class="view-tab" data-view="jobs" role="tab">Jobs</button>
     <button class="view-tab" data-view="settings" role="tab">Settings</button>
   </nav>
@@ -34,7 +34,7 @@
   </button>
 </header>
 
-<!-- ============================== STUDY ============================== -->
+<!-- ============================== BROWSE ============================== -->
 <main id="view-study" class="view">
   <section class="linebar">
     <div id="board" class="board"></div>
@@ -330,7 +330,7 @@
             <button id="btn-solve" class="btn primary" title="Rebuild the tree from the form, then solve it">Build &amp; solve</button>
             <button id="btn-stop" class="btn danger hidden">Stop</button>
           </div>
-          <label class="check postflop-only" title="Open the Study view as soon as the flop strategy is readable (if you left this page alone), keep solving in the background, and re-solve each later street from its first decision when you look at it"><input id="f-preview" type="checkbox" checked> Fast preview</label>
+          <label class="check postflop-only" title="Open the Browse view as soon as the flop strategy is readable (if you left this page alone), keep solving in the background, and re-solve each later street from its first decision when you look at it"><input id="f-preview" type="checkbox" checked> Fast preview</label>
           <div id="preview-info" class="build-info muted postflop-only"></div>
           <div id="build-info" class="build-info"></div>
         </div>
@@ -339,7 +339,7 @@
           <svg id="chart" class="chart" viewBox="0 0 360 200"></svg>
         </div>
         <div id="solve-stats" class="stats"></div>
-        <button class="btn wide" data-goto="study" id="btn-to-study">Study this tree →</button>
+        <button class="btn wide" data-goto="study" id="btn-to-study">Browse this tree →</button>
       </section>
     </aside>
   </div>
@@ -444,7 +444,7 @@
       <section class="card sticky">
         <div class="card-head"><h2>New batch</h2></div>
         <div class="solve-form">
-          <p class="hint">The tree is the one on the <a href="#build" data-goto="build">Build</a> tab: its ranges, pot, stack and sizes.
+          <p class="hint">The tree is the one on the <a href="#build" data-goto="build">Tree</a> tab: its ranges, pot, stack and sizes.
             Every flop gets its own solve and its own save.</p>
           <label class="field"><span>Name</span><input id="jb-name" placeholder="SRP BTN vs BB" spellcheck="false"></label>
           <label class="field"><span>Flops</span><select id="jb-file"></select></label>
@@ -481,7 +481,7 @@
   </div>
   <div class="jr-head jr-line-row">
     <input id="jr-line" type="text" spellcheck="false" placeholder="Line, e.g. r:0:b198:c:2d:c:b447 (empty: the first decision)"
-      title="A node id from Study. A card (or *) means every card dealt there, like PioViewer's turn report">
+      title="A node id from Browse. A card (or *) means every card dealt there, like PioViewer's turn report">
     <button class="btn small" id="jr-line-go">Report at line</button>
     <label id="jr-cards-wrap" class="hidden"><input type="checkbox" id="jr-cards"> Show each card</label>
   </div>

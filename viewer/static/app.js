@@ -22,7 +22,7 @@ const app = { view: "study", tree: false, solving: false, rootPot: 0, bb: 0, ser
 
 /* ------------------------------------------------------------------ views */
 
-const VIEWS = ["study", "build", "jobs", "drill", "settings"];
+const VIEWS = ["build", "study", "drill", "jobs", "settings"];
 
 function setView(v) {
   app.view = v;
@@ -224,7 +224,7 @@ async function boot() {
       setView("study");
       study.reset();
     } else if (d.solving) {
-      toast(`Readable after ${fmt(d.secs, 1)} s · open Study any time`);
+      toast(`Readable after ${fmt(d.secs, 1)} s · open Browse any time`);
     }
   });
   $("btn-resolve").onclick = () => openSizes(study.id);

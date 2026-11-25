@@ -66,6 +66,20 @@ export function setActionFrequency(values, index, frequency, enabled) {
     : (1 - frequency) * (remaining > 0 ? value / remaining : 1 / others.length));
 }
 
+export function moveMixBoundary(values, boundary, frequency, enabled) {
+  let total = 0;
+  const bounds = enabled.slice(0, -1).map((i) => total += values[i]);
+  frequency = Math.max(0, Math.min(1, frequency));
+  bounds.forEach((value, i) => {
+    bounds[i] = i < boundary ? Math.min(value, frequency) : i > boundary ? Math.max(value, frequency) : frequency;
+  });
+  const edges = [0, ...bounds, 1], result = values.map(() => 0);
+  enabled.forEach((index, i) => { result[index] = edges[i + 1] - edges[i]; });
+  return result;
+}
+
+const MIX_PADDING = 0.07;
+
 export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHeader = false, disabled = []) {
   const order = actionOrder(canonical), actions = order.map((i) => canonical[i]);
   chosen = chosen && order.map((i) => chosen[i]);
@@ -77,9 +91,16 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
   });
   let selected = !!(chosen || draft);
   const editor = el("div", "mix-editor"), buttons = el("div", "mix-actions");
-  const mixing = el("div", "mix-controls"), labels = [], actionButtons = [];
-  function choose(index, frequency) {
-    values = setActionFrequency(values, index, frequency, enabled);
+  const slider = el("fieldset", "mix-slider"), labels = [], actionButtons = [], segments = [], handles = [];
+  slider.setAttribute("aria-label", "Action frequencies");
+  slider.dataset.answered = chosen ? "yes" : "no";
+  slider.dataset.unavailable = enabled.length < 2 ? "yes" : "no";
+  const scale = 1 + enabled.length * MIX_PADDING;
+  function visualBoundary(index) {
+    return (enabled.slice(0, index + 1).reduce((sum, i) => sum + values[i], 0) + (index + 1) * MIX_PADDING) / scale;
+  }
+  function change(next) {
+    values = next;
     selected = true;
     draw();
     const result = Array(values.length);
@@ -87,64 +108,106 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
     onChange(result);
   }
   for (const [i, action] of actions.entries()) {
-    const cell = el("div", "mix-action-cell"), button = el("button", `btn drill-action ${action.kind}`);
+    const button = el("button", `btn drill-action ${action.kind}`), label = el("span", "mix-percent num");
+    button.type = "button";
     button.style.borderTopColor = actionColor(action);
     button.setAttribute("aria-label", action.label);
     button.dataset.unavailable = disabled.includes(action.id) ? "yes" : "no";
-    const name = sharedHeader ? action.allin ? "All-in" : action.kind[0].toUpperCase() + action.kind.slice(1) : action.label;
-    button.append(el("strong", "", name));
-    if (!sharedHeader && action.amount != null) button.append(el("span", "num", bb(action.amount, bigBlind)));
-    button.onclick = () => choose(i, 1);
-    actionButtons.push(button);
-    const picker = el("button", "btn mix-frequency"), label = el("span", "mix-percent num");
-    picker.setAttribute("aria-label", `${action.label} frequency`);
-    picker.setAttribute("aria-haspopup", "dialog");
-    picker.setAttribute("aria-expanded", "false");
-    picker.dataset.unavailable = disabled.includes(action.id) || enabled.length < 2 ? "yes" : "no";
-    const arrow = el("span", "", "▾"); arrow.setAttribute("aria-hidden", "true");
-    picker.append(label, arrow);
-    labels.push(label);
-    const menu = el("div", "frequency-picker");
-    menu.setAttribute("popover", "auto");
-    menu.setAttribute("role", "dialog");
-    menu.setAttribute("aria-label", `${action.label} frequency`);
-    menu.style.borderTopColor = actionColor(action);
-    menu.append(el("strong", "", action.label));
-    const grid = el("div", "frequency-presets");
-    for (let percent = 0; percent <= 100; percent += 5) {
-      const preset = el("button", "btn small num", `${percent}%`);
-      preset.onclick = () => { choose(i, percent / 100); menu.hidePopover(); picker.focus(); };
-      grid.append(preset);
+    if (!sharedHeader) {
+      button.append(el("strong", "", action.label));
+      if (action.amount != null) button.append(el("span", "num", bb(action.amount, bigBlind)));
     }
-    menu.append(grid);
-    menu.addEventListener("toggle", () => {
-      const open = menu.matches(":popover-open");
-      picker.setAttribute("aria-expanded", String(open));
-      cell.classList.toggle("picking", open);
-    });
-    picker.onclick = () => {
-      if (menu.matches(":popover-open")) { menu.hidePopover(); return; }
-      [...grid.children].forEach((preset, index) => {
-        const active = Math.abs(values[i] * 100 - index * 5) < 0.01;
-        preset.classList.toggle("active", active);
-        preset.setAttribute("aria-pressed", String(active));
-      });
-      menu.showPopover();
-      const anchor = picker.getBoundingClientRect(), bounds = menu.getBoundingClientRect();
-      menu.style.left = `${Math.max(8, Math.min(innerWidth - bounds.width - 8, anchor.left + anchor.width / 2 - bounds.width / 2))}px`;
-      menu.style.top = `${Math.max(8, Math.min(innerHeight - bounds.height - 8, anchor.bottom + 6))}px`;
-    };
-    cell.append(button, picker, menu);
-    buttons.append(cell);
+    button.append(label);
+    button.onclick = () => change(setActionFrequency(values, i, 1, enabled));
+    actionButtons.push(button);
+    labels.push(label);
+    buttons.append(button);
   }
+  for (const i of enabled) {
+    const segment = el("span", "mix-segment");
+    segment.style.background = actionColor(actions[i]);
+    segment.dataset.index = i;
+    slider.append(segment);
+    segments.push(segment);
+  }
+  for (let i = 0; i < enabled.length - 1; i++) {
+    const handle = el("button", "mix-handle");
+    handle.type = "button";
+    handle.setAttribute("role", "slider");
+    handle.setAttribute("aria-label", `${actions[enabled[i]].label} / ${actions[enabled[i + 1]].label} divider`);
+    handle.setAttribute("aria-valuemin", "0");
+    handle.setAttribute("aria-valuemax", "100");
+    handle.onkeydown = (event) => {
+      const delta = { ArrowLeft: -0.05, ArrowDown: -0.05, ArrowRight: 0.05, ArrowUp: 0.05 }[event.key];
+      if (delta === undefined && event.key !== "Home" && event.key !== "End") return;
+      event.preventDefault();
+      const current = enabled.slice(0, i + 1).reduce((sum, index) => sum + values[index], 0);
+      const target = event.key === "Home" ? 0 : event.key === "End" ? 1 : Math.round((current + delta) * 20) / 20;
+      change(moveMixBoundary(values, i, target, enabled));
+    };
+    slider.append(handle);
+    handles.push(handle);
+  }
+  let drag = null, lastTap = null;
+  slider.onpointerdown = (event) => {
+    if (event.button !== 0 || slider.disabled || chosen) return;
+    event.preventDefault();
+    const rect = slider.getBoundingClientRect(), position = (event.clientX - rect.left) / rect.width;
+    const boundary = handles.reduce((nearest, _, i) =>
+      Math.abs(visualBoundary(i) - position) < Math.abs(visualBoundary(nearest) - position) ? i : nearest, 0);
+    drag = { boundary, rect, start: event.clientX, moved: false, index: event.target.dataset.index };
+    handles[boundary].focus({ preventScroll: true });
+    slider.setPointerCapture(event.pointerId);
+  };
+  slider.onpointermove = (event) => {
+    if (!drag || slider.disabled || chosen) return;
+    if (!drag.moved && Math.abs(event.clientX - drag.start) < 6) return;
+    drag.moved = true;
+    let frequency = (event.clientX - drag.rect.left) / drag.rect.width * scale - (drag.boundary + 1) * MIX_PADDING;
+    const snapped = Math.round(frequency * 20) / 20;
+    if (Math.abs(frequency - snapped) < 0.012) frequency = snapped;
+    change(moveMixBoundary(values, drag.boundary, frequency, enabled));
+  };
+  slider.onpointerup = (event) => {
+    if (!drag) return;
+    if (!drag.moved && !slider.disabled && !chosen && drag.index !== undefined) {
+      const now = Date.now(), index = Number(drag.index);
+      if (lastTap && lastTap.index === index && now - lastTap.time < 350) {
+        change(setActionFrequency(values, index, 1, enabled));
+        lastTap = null;
+      } else {
+        lastTap = { index, time: now };
+        change(values);
+      }
+    } else lastTap = null;
+    drag = null;
+    slider.releasePointerCapture(event.pointerId);
+  };
+  slider.onlostpointercapture = slider.onpointercancel = () => { drag = null; };
+  slider.oncontextmenu = (event) => {
+    if (slider.disabled || chosen || event.target.dataset.index === undefined) return;
+    event.preventDefault();
+    drag = lastTap = null;
+    change(setActionFrequency(values, Number(event.target.dataset.index), 0, enabled));
+  };
   function draw() {
-    mixing.replaceChildren(frequencyBar(actions, values));
     labels.forEach((label, i) => {
       label.textContent = `${Math.round(values[i] * 100)}%`;
       actionButtons[i].classList.toggle("chosen", selected && values[i] > 0);
     });
+    segments.forEach((segment, index) => {
+      const frequency = values[enabled[index]], width = (frequency + MIX_PADDING) / scale;
+      segment.style.width = `${width * 100}%`;
+      segment.classList.toggle("zero", frequency < 0.001);
+      segment.textContent = width > 0.08 ? `${Math.round(frequency * 100)}%` : "";
+    });
+    handles.forEach((handle, index) => {
+      const cumulative = enabled.slice(0, index + 1).reduce((sum, i) => sum + values[i], 0);
+      handle.style.left = `${visualBoundary(index) * 100}%`;
+      handle.setAttribute("aria-valuenow", String(Math.round(cumulative * 100)));
+    });
   }
-  editor.append(buttons, mixing);
+  editor.append(buttons, slider);
   draw();
   editor.querySelectorAll("button").forEach((button) => { button.dataset.answered = chosen ? "yes" : "no"; });
   return editor;

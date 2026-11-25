@@ -113,7 +113,7 @@ function draw() {
   sfx.append(acc, el("i", null, "% pot"));
   accRow.append(field("field", "Accuracy", sfx),
                 el("p", "hint", ctx.built ? "The tree's own sizes, as it was built. Your sizes above replace "
-                  + `${ctx.actor}'s ${raising ? "raises" : "bets"} on this street.` : "From the Build form (this tree was loaded "
+                  + `${ctx.actor}'s ${raising ? "raises" : "bets"} on this street.` : "From the Tree form (this tree was loaded "
                   + `from a file). Your sizes above replace ${ctx.actor}'s ${raising ? "raises" : "bets"} on this street.`));
   more.append(t, accRow);
   pop.appendChild(more);

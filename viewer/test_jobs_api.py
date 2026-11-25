@@ -113,7 +113,7 @@ class JobsApiTest(unittest.TestCase):
             ({"name": "x", "tree": TREE, "flops_file": "../three_flops.txt"}, "pick a flop file"),
             ({"name": "x", "tree": TREE, "flops": "Kh9h4h2c"}, "3-card boards"),
             ({"name": "x", "tree": dict(TREE, flop_bet="zz"), "flops": "Kh9h4h"}, "bad sizes in flop_bet"),
-            ({"name": "x", "flops": "Kh9h4h"}, "Build form"),
+            ({"name": "x", "flops": "Kh9h4h"}, "Tree form"),
             ({"name": "x", "tree": TREE, "flops": "Kh9h4h", "accuracy": -1}, "accuracy"),
             ({"name": "../x", "tree": TREE, "flops": "Kh9h4h"}, "batch names"),
         ]

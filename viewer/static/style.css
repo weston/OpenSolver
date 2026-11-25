@@ -1115,16 +1115,15 @@ button.rl-card.end { cursor: default; }
 .drill-history-item.upcoming { border: 1px dashed var(--accent); background: var(--accent-soft); font-weight: 600; }
 .mix-editor { flex: 1; min-width: 0; }
 .mix-actions { display: flex; gap: 6px; overflow-x: auto; }
-.mix-action-cell { flex: 1; min-width: 88px; display: flex; flex-direction: column; gap: 4px; }
-.mix-frequency { display: flex; justify-content: center; gap: 6px; width: 100%; padding: 6px; }
-.mix-action-cell.picking .mix-frequency { border-color: var(--accent); background: var(--accent-soft); }
-.frequency-picker { position: fixed; inset: auto; margin: 0; width: min(330px, calc(100vw - 16px)); padding: 12px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-top: 3px solid; border-radius: var(--radius-sm); box-shadow: 0 8px 30px #0003; }
-.frequency-picker > strong { display: block; margin-bottom: 10px; font-size: 13px; }
-.frequency-presets { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
-.frequency-presets .btn { padding: 8px 0; height: 36px; }
-.frequency-presets .active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .mix-percent { color: var(--text-2); }
-.mix-controls { display: flex; align-items: center; gap: 16px; margin-top: 14px; }
+.mix-slider { position: relative; display: flex; height: 42px; min-width: 0; margin: 8px 0 0; padding: 0; border: 0; border-radius: 6px; overflow: hidden; user-select: none; touch-action: none; cursor: ew-resize; }
+.mix-segment { display: grid; place-items: center; height: 100%; min-width: 0; color: white; font-size: 12px; font-weight: 600; overflow: hidden; }
+.mix-segment.zero { filter: saturate(.35) brightness(.6); }
+.mix-handle { position: absolute; top: 0; width: 24px; height: 100%; margin-left: -12px; padding: 0; border: 0; border-radius: 0; background: transparent; cursor: ew-resize; display: grid; place-items: center; }
+.mix-handle::after { content: ""; width: 4px; height: 100%; border-radius: 2px; background: white; box-shadow: 0 0 4px #0008; }
+.mix-handle:focus-visible::after { width: 7px; }
+.mix-slider:disabled, .mix-handle:disabled { cursor: default; }
+@media (pointer: coarse) { .mix-slider { height: 54px; } .mix-handle { width: 32px; margin-left: -16px; } }
 .frequency-bar { display: flex; height: 28px; border-radius: 6px; overflow: hidden; width: 100%; background: var(--surface-3); }
 .frequency-segment { display: grid; place-items: center; min-width: 0; overflow: hidden; white-space: nowrap; color: #fff; font-size: 11px; font-weight: 600; }
 .drill-feedback { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
@@ -1163,7 +1162,7 @@ button.rl-card.end { cursor: default; }
 .size-toggle::before { content: ""; display: block; width: 13px; height: 13px; border-radius: 50%; background: white; transition: transform .15s; }
 .size-toggle[aria-checked="true"] { background: var(--accent); }
 .size-toggle[aria-checked="true"]::before { transform: translateX(13px); }
-.drill-action[data-unavailable="yes"], .mix-frequency[data-unavailable="yes"] { opacity: .25; }
+.drill-action[data-unavailable="yes"] { opacity: .25; }
 .feedback-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .session-row { display: flex; align-items: center; gap: 12px; }
 .session-row .session-entry { flex: 1; }
@@ -1172,9 +1171,7 @@ button.rl-card.end { cursor: default; }
 .hand-set .drill-exercise { border-top: 1px solid var(--border); padding: 12px 0; }
 .hand-set .drill-action { min-width: 0; min-height: 36px; padding: 8px 3px; flex: 1; border-top-width: 1px; }
 .hand-set .mix-actions { overflow: visible; }
-.hand-set .mix-action-cell { min-width: 0; }
 .hand-set .mix-percent { font-size: 14px; }
-.hand-set .mix-controls { margin-top: 8px; }
 .hand-set .frequency-bar { height: 18px; }
 .hand-set .frequency-segment { font-size: 10px; }
 #drill-sessions { margin-top: 10px; }

@@ -105,6 +105,11 @@
   <div class="drill-layout">
     <aside class="drill-settings card">
       <div class="card-head"><h2>Drill</h2><span id="drill-number" class="tag hidden"></span></div>
+      <div id="drill-convergence" class="chart-box hidden">
+        <div class="chart-head"><span>Convergence</span><span id="drill-chart-status"></span></div>
+        <div class="drill-chart-summary"><div id="drill-chart-board" class="board"></div><span id="drill-chart-value" class="num"></span></div>
+        <svg id="drill-chart" class="chart" viewBox="0 0 360 200" role="img" aria-label="Drill solve convergence"></svg>
+      </div>
       <fieldset id="drill-settings">
         <div class="drill-option">
           <label class="field"><span>Simulation</span><select id="drill-source">

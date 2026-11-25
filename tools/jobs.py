@@ -1335,22 +1335,23 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
             phase(job, "solving")
         pot = start_pot(b["setup"]) or 1.0
         last_report = 0.0
-        last_events = -1
+        last_point = 0
         stopping = False
         while True:
             st = s.state()
             if st["dead"]:
                 raise vserver.SolverError("solver exited")
+            if progress:
+                with s.state_lock:
+                    points = s.series[last_point:]
+                    last_point = len(s.series)
+                for pt in points:
+                    progress(job, dict(pt, pct=100 * pt["explo"] / pot))
             if st["events"] > before and st["solver_status"].startswith("stopped") and not st["solving"]:
                 break
             if not stopping and _stop_request(q) == "now":
                 s.send_raw("stop")
                 stopping = True
-            if progress and st["events"] != last_events and st["progress"]:
-                last_events = st["events"]
-                pt = vserver.parse_progress_point(st["progress"])
-                if pt:
-                    progress(job, dict(pt, pct=100 * pt["explo"] / pot))
             if time.time() - last_report > 5 and st["progress"]:
                 pt = vserver.parse_progress_point(st["progress"])
                 if pt:

@@ -4,6 +4,7 @@ import { mixEditor, feedbackCards, chipStack, actionHeader, bb } from "./drill_c
 
 import { liveConfig, renderBoardOptions, restoreSelection, refreshNode, resetNode, selectCurrentBoard } from "./drill_setup.js";
 import { openSessions } from "./drill_sessions.js";
+import { drawChart } from "./chart.js";
 
 const $ = (id) => document.getElementById(id);
 let state = null, visible = false, busy = false, timer = null, sequence = 0, rendered = null, autoDealToken = null;
@@ -52,6 +53,7 @@ function renderPreparation(s) {
   $("drill-loading").classList.toggle("hidden", !waiting);
   $("drill-table").classList.toggle("hidden", waiting);
   $("drill-play").setAttribute("aria-busy", String(waiting));
+  renderConvergence(s, waiting);
   if (!waiting) return;
   $("drill-loading-title").textContent = s.ready ? "Dealing hand" : title;
   const board = s.ready ? "" : preparation?.board || "";
@@ -73,6 +75,26 @@ function renderPreparation(s) {
     row.append(el("div", "k", label), el("div", "v num", value));
     $("drill-loading-stats").append(row);
   }
+}
+
+function renderConvergence(s, waiting) {
+  const chart = $("drill-convergence"), convergence = s.convergence;
+  chart.classList.toggle("hidden", !convergence);
+  if (!convergence) return;
+  if (waiting) {
+    if (chart.parentElement !== $("drill-loading")) $("drill-loading").append(chart);
+  } else if (chart.parentElement !== $("drill-settings").parentElement) {
+    $("drill-settings").before(chart);
+  }
+  $("drill-chart-status").textContent = s.preparation
+    ? { building: "Building", solving: "Solving", saving: "Saving" }[s.preparation.stage]
+    : s.error ? "Stopped" : "Ready";
+  $("drill-chart-board").classList.toggle("hidden", waiting);
+  $("drill-chart-board").replaceChildren(...parseCards(convergence.board).map((card) => cardEl(card, "xs")));
+  const last = convergence.points.at(-1);
+  $("drill-chart-value").textContent = last ? `${fmt(100 * last.explo / convergence.pot, 2)}%` : "";
+  $("drill-chart").classList.toggle("hidden", !last);
+  drawChart($("drill-chart"), convergence.points, convergence.pot, convergence.target);
 }
 
 function render(s) {
@@ -118,12 +140,11 @@ function render(s) {
   $("drill-result").textContent = hand?.result || (hand?.phase === "decision" ? "Your action" : "");
   $("drill-hero-seat").textContent = hand ? `You · ${hand.seat}` : "You";
   $("drill-villain-seat").textContent = hand ? `Solver · ${hand.seat === "OOP" ? "IP" : "OOP"}` : "Solver";
-  $("drill-hero").classList.toggle("hero-hand-set", !!hand && !hand.hero && !hand.continuation);
   if (!hand) return;
   const buttonSeat = $(hand.seat === "IP" ? "drill-hero-seat" : "drill-villain-seat");
   buttonSeat.append(el("span", "dealer-button", "BTN"));
   if (hand.continuation || hand.hero) $("drill-hero").append(comboEl(hand.continuation?.combo || hand.hero, "lg"));
-  else for (const exercise of hand.exercises) $("drill-hero").append(comboEl(exercise.combo, ""));
+  else for (let i = 0; i < 2; i++) $("drill-hero").append(el("span", "drill-card-back"));
   if (hand.villain) $("drill-villain").append(comboEl(hand.villain, "lg"));
   else for (let i = 0; i < 2; i++) $("drill-villain").append(el("span", "drill-card-back"));
   for (const card of parseCards(hand.node.board)) $("drill-board").append(cardEl(card, "lg"));

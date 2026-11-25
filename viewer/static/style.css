@@ -554,7 +554,6 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
 .chart .grid line { stroke: var(--border); stroke-width: 1; }
 .chart .axis text { fill: var(--text-3); font-size: 10px; font-family: var(--font); }
 .chart .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-.chart .area { fill: url(#chart-grad); }
 .chart .target { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 4 4; }
 .chart .target-lbl { fill: var(--ok); font-size: 10px; font-weight: 600; }
 .chart .head { fill: var(--accent); }
@@ -1083,12 +1082,15 @@ button.rl-card.end { cursor: default; }
 .drill-loading-steps li.active::before { background: var(--accent); border-color: var(--accent); color: #fff; }
 .drill-loading-steps li.done::before { content: "✓"; background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .drill-status, .drill-error { font-size: 12px; margin-top: 14px; }
+#drill-convergence { width: 100%; max-width: 460px; align-self: center; margin: 0 0 16px; box-sizing: border-box; }
+.drill-loading #drill-convergence { margin: 0; }
+.drill-chart-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 4px; font-size: 12px; }
+.drill-chart-summary .board { min-width: 0; }
 .drill-status { color: var(--text-2); }
 .drill-error { color: var(--danger); overflow-wrap: anywhere; }
 .drill-table { min-height: 390px; display: flex; flex-direction: column; justify-content: space-between; align-items: center; gap: 20px; padding: 28px; border: 1px solid var(--border-strong); border-radius: 70px; background: radial-gradient(ellipse at center, var(--accent-soft), var(--surface)); }
-.drill-seat { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 100%; }
+.drill-seat { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .drill-cards { display: flex; gap: 5px; min-height: 58px; }
-.drill-cards.hero-hand-set { flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px; max-width: min(480px, 100%); }
 .drill-card-back { display: inline-block; width: 40px; height: 58px; border-radius: 5px; border: 3px solid var(--border-strong); background: repeating-linear-gradient(45deg, var(--accent-soft), var(--accent-soft) 4px, var(--surface-3) 4px, var(--surface-3) 8px); }
 .drill-center { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
 .drill-pot { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; }

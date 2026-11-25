@@ -255,6 +255,17 @@ class DrillTest(unittest.TestCase):
         self.assertEqual([h['street'] for h in state['hand']['history'] if 'actor' in h], [4, 4])
         self.assertEqual(state['hand']['big_blind'], 100)
 
+    def test_indifferent_actions_have_zero_loss_for_different_frequencies(self):
+        self.solver.cmds(["set_range OOP AdAc", "set_range IP KdKc", "set_board 2h3s4d5h9c",
+                         "clear_lines", "add_line 30 30", "add_line 0 30 30", "build_tree",
+                         "set_accuracy 0.000001", "go 2000 steps", "wait_for_solver"])
+        for choices in ([1, 0], [0, 1], [0.25, 0.75]):
+            hand = drill.Hand(self.solver, "r:0", "OOP", "node", random.Random(1)).submit([choices])
+            result = hand.feedback["hands"][0]
+            self.assertTrue(all(0 < a["frequency"] < 1 for a in result["actions"]))
+            self.assertEqual([a["ev"] for a in result["actions"]], [40, 40])
+            self.assertEqual(result["loss"], 0)
+
     def test_similar_sizes_keep_separated_choices_and_can_be_disabled(self):
         tree = {**TREE, "pot": 1000, "stack": 3000, "river_bet": "50 52 55 60 100", "river_raise": "",
                 "allin_threshold": 100, "add_allin_limit": 0}
@@ -318,7 +329,7 @@ class DrillTest(unittest.TestCase):
             phase(job, stage)
             observed.append(stage)
             entered.set()
-            if not resume.wait(10):
+            if not self.service.cancel.is_set() and not resume.wait(10):
                 raise TimeoutError("test did not resume preparation")
             resume.clear()
 
@@ -336,10 +347,36 @@ class DrillTest(unittest.TestCase):
                     self.assertGreaterEqual(second["preparation"]["elapsed"], first["preparation"]["elapsed"])
                     self.assertFalse(first["can_deal"])
                     self.assertTrue(first["preparing"])
+                    curve = first["convergence"]
+                    self.assertEqual(curve["board"], TREE["board"])
+                    self.assertEqual(curve["pot"], TREE["pot"])
+                    self.assertEqual(curve["target"], 0.5)
+                    if stage == "building":
+                        self.assertEqual(curve["points"], [])
+                    if stage == "saving":
+                        self.assertTrue(curve["points"])
+                        self.assertEqual(curve["points"][-1]["explo"], first["progress"]["explo"])
                     resume.set()
                 state = self.ready(1)
                 self.assertIsNone(state["preparation"])
                 self.assertEqual(observed, ["building", "solving", "saving"])
+                curve = state["convergence"]
+                self.assertEqual(curve["points"][-1]["explo"], self.service.q.job(curve["job"])["result"]["exploitability"])
+                first_point = curve["points"][0]
+                for i in range(1200):
+                    self.service._progress({"id": curve["job"]}, {"t": 10 + i, "explo": 0.1, "pct": 0.25})
+                retained = self.request()["convergence"]["points"]
+                self.assertLessEqual(len(retained), 600)
+                self.assertEqual(retained[0], first_point)
+                self.assertEqual(retained[-1]["t"], 1209)
+                self.post("next", state)
+                self.assertTrue(entered.wait(10))
+                entered.clear()
+                fresh = self.request()
+                self.assertIsNotNone(fresh["hand"])
+                self.assertNotEqual(fresh["convergence"]["job"], curve["job"])
+                self.assertEqual(fresh["convergence"]["points"], [])
+                self.service.cancel.set()
             finally:
                 resume.set()
                 self.service.worker.join(10)

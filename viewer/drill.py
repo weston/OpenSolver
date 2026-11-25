@@ -337,6 +337,7 @@ class DrillService:
         self.preparing = False
         self.error = None
         self.progress = None
+        self.convergence = None
         self.preparation = None
         self.phase_started = 0
         self.number = self.revision = self.decisions = self.completed = 0
@@ -355,7 +356,7 @@ class DrillService:
                                   "hand": self.hand.view() if self.hand else None, "number": self.number,
                                   "preparing": self.preparing, "ready": bool(self.ready), "ready_count": len(self.ready),
                                   "can_deal": bool(self.ready or self.used_solve),
-                                  "error": self.error, "progress": self.progress,
+                                  "error": self.error, "progress": self.progress, "convergence": self.convergence,
                                   "preparation": {**self.preparation, "elapsed": time.monotonic() - self.phase_started}
                                   if self.preparing and self.preparation else None,
                                   "stats": {"hands": self.completed, "decisions": self.decisions,
@@ -467,7 +468,7 @@ class DrillService:
         board = self.rng.choice(config["board_pool"]) if config["board_pool"] else "".join(self.rng.sample(DECK, 3))
         job = self.q.add_batch("next-" + uuid.uuid4().hex, config["setup"], [(board, 1)], config["accuracy"], None,
                                config["seconds"], "full", None)[0]
-        status = jobs.run_job(self.q, job, self.solver_exe, 2, log=lambda _: None,
+        status = jobs.run_job(self.q, job, self.solver_exe, 0, log=lambda _: None,
                               progress=self._progress, phase=self._phase)
         job = self.q.job(job["id"])
         if status != "done":
@@ -485,9 +486,20 @@ class DrillService:
     def _progress(self, job, progress):
         with self.prep_lock:
             self.progress = progress
+            points = self.convergence["points"]
+            point = {"t": progress["t"], "explo": progress["explo"]}
+            if points and points[-1]["t"] == point["t"]:
+                points[-1] = point
+            else:
+                points.append(point)
+            if len(points) > 600:
+                points[:] = points[::2]
 
     def _phase(self, job, phase):
         with self.prep_lock:
+            if phase == "building":
+                self.convergence = {"job": job["id"], "board": job["board"], "points": [],
+                                    "pot": jobs.start_pot(self.config["setup"]), "target": self.config["accuracy"]}
             self.preparation = {"stage": phase, "board": job["board"]}
             self.phase_started = time.monotonic()
 
@@ -546,6 +558,7 @@ class DrillService:
         self.ready = []
         self.used_solve = None
         self.error = self.progress = self.preparation = None
+        self.convergence = None
         self.preparing = False
         self.revision += 1
 

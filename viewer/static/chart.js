@@ -34,11 +34,12 @@ export function drawChart(svg, points, pot, target, unit = null) {
   const W = 360, Hh = 200, L = 40, R = 10, T = 10, B = 24;
   svg.textContent = "";
   const defs = mk("defs", {}, svg);
-  const g = mk("linearGradient", { id: "chart-grad", x1: 0, y1: 0, x2: 0, y2: 1 }, defs);
+  const gradient = `${svg.id || "chart"}-grad`;
+  const g = mk("linearGradient", { id: gradient, x1: 0, y1: 0, x2: 0, y2: 1 }, defs);
   mk("stop", { offset: "0%", style: "stop-color:var(--accent);stop-opacity:.28" }, g);
   mk("stop", { offset: "100%", style: "stop-color:var(--accent);stop-opacity:0" }, g);
 
-  const pts = (points || []).filter((p) => p.explo != null && p.explo > 0 && pot > 0)
+  const pts = (points || []).filter((p) => p.explo != null && p.explo >= 0 && pot > 0)
     .map((p) => ({ t: p.t, y: (p.explo / pot) * 100 }));
   if (pts.length < 1) {
     const t = mk("text", { x: W / 2, y: Hh / 2, "text-anchor": "middle", class: "empty" }, svg);
@@ -46,7 +47,7 @@ export function drawChart(svg, points, pot, target, unit = null) {
     return;
   }
   const tMax = Math.max(pts[pts.length - 1].t, 0.5);
-  const yTop = Math.max(...pts.map((p) => p.y), target > 0 ? target : 0);
+  const yTop = Math.max(...pts.map((p) => p.y), target > 0 ? target : 0, 0.01);
   const step = niceStep(yTop);
   const yMax = Math.ceil(yTop / step - 1e-9) * step;
   const x = (t) => L + (t / tMax) * (W - L - R);
@@ -71,7 +72,7 @@ export function drawChart(svg, points, pot, target, unit = null) {
     t.textContent = "target " + pctLabel(target, target >= 1 ? 1 : target >= 0.1 ? 0.1 : 0.01, unit ? ` ${unit}` : "%");
   }
   const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.y).toFixed(1)}`).join("");
-  mk("path", { d: `${d}L${x(pts[pts.length - 1].t).toFixed(1)},${Hh - B}L${x(pts[0].t).toFixed(1)},${Hh - B}Z`, class: "area" }, svg);
+  mk("path", { d: `${d}L${x(pts[pts.length - 1].t).toFixed(1)},${Hh - B}L${x(pts[0].t).toFixed(1)},${Hh - B}Z`, class: "area", fill: `url(#${gradient})` }, svg);
   mk("path", { d, class: "line" }, svg);
   const last = pts[pts.length - 1];
   mk("circle", { cx: x(last.t), cy: y(last.y), r: 3.5, class: "head" }, svg);

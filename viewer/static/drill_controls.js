@@ -95,6 +95,17 @@ export function initialFrequencies(actions, disabled = []) {
   return values;
 }
 
+export function restrictFrequencies(actions, values, disabled) {
+  const available = values.map((value, i) => disabled.includes(actions[i].id) ? 0 : value);
+  const total = available.reduce((sum, value) => sum + value, 0);
+  return total > 0 ? available.map((value) => value / total) : initialFrequencies(actions, disabled);
+}
+
+export function rememberFrequencies(actions, remembered, values, disabled) {
+  const available = remembered.reduce((sum, value, i) => sum + (disabled.includes(actions[i].id) ? 0 : value), 0);
+  return remembered.map((value, i) => disabled.includes(actions[i].id) ? value : values[i] * available);
+}
+
 export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHeader = false, disabled = []) {
   const order = actionOrder(canonical), actions = order.map((i) => canonical[i]);
   chosen = chosen && order.map((i) => chosen[i]);

@@ -1,4 +1,7 @@
-def grade_frequencies(chosen, frequencies, evs):
+DEFAULT_FREQUENCY_TOLERANCE = 10
+
+
+def grade_frequencies(chosen, frequencies, evs, tolerance=DEFAULT_FREQUENCY_TOLERANCE):
     best = max(ev for ev in evs if ev is not None)
     mistakes = [max(0, choice - frequency) if frequency < 0.01 else 0
                 for choice, frequency in zip(chosen, frequencies)]
@@ -6,7 +9,7 @@ def grade_frequencies(chosen, frequencies, evs):
         loss = sum(weight * max(0, best - ev) for weight, ev in zip(mistakes, evs) if ev is not None)
         return {"loss": loss, "grade": "mistake"}
     distance = sum(abs(choice - frequency) for choice, frequency in zip(chosen, frequencies)) / 2
-    return {"loss": 0, "grade": "correct" if distance <= 0.05 + 1e-9 else "frequency"}
+    return {"loss": 0, "grade": "correct" if distance <= tolerance / 100 + 1e-9 else "frequency"}
 
 
 def regrade_feedback(feedback):

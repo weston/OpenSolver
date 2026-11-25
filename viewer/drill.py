@@ -13,7 +13,7 @@ from drill_spots import action_info, board_plan, merge_tree, node_preview
 from drill_sessions import Sessions
 from drill_resolve import DrillResolve, Subtree
 from drill_locks import open_locked_simulation
-from drill_grading import grade_frequencies
+from drill_grading import DEFAULT_FREQUENCY_TOLERANCE, grade_frequencies
 
 
 PLAYERS = ("OOP", "IP")
@@ -104,10 +104,12 @@ def weighted_frequencies(strategies, weights):
 
 
 class Hand:
-    def __init__(self, solver, node_id, seat, mode, rng, count=1, previous_combo=None):
+    def __init__(self, solver, node_id, seat, mode, rng, count=1, previous_combo=None,
+                 frequency_tolerance=DEFAULT_FREQUENCY_TOLERANCE):
         self.solver, self.seat, self.mode, self.rng = solver, seat, mode, rng
         self.reference = solver
         self.count = count
+        self.frequency_tolerance = frequency_tolerance
         self.order = vsrv.hand_order(solver)
         self.node = self.read_node(node_id)
         root = self.read_node("r:0")
@@ -277,7 +279,7 @@ class Hand:
         if not total > 0:
             raise vsrv.SolverError("no strategy for this practice hand")
         frequencies = [f / total for f in frequencies]
-        grade = grade_frequencies(chosen, frequencies, evs)
+        grade = grade_frequencies(chosen, frequencies, evs, self.frequency_tolerance)
         return {"node": self.node["id"], "combo": item["combo"], "chosen": chosen, "pot": pot,
                     **grade, "loss_pct": 100 * grade["loss"] / pot if pot else 0,
                     "actions": [{**a, "frequency": f, "ev": ev} for a, f, ev in zip(self.actions, frequencies, evs)]}
@@ -416,7 +418,8 @@ class DrillService:
             return copy.deepcopy({"active": self.config is not None, "token": self.token(),
                                   "config": self.config and {k: self.config[k] for k in (
                                       "source", "mode", "seat", "node", "ahead", "format", "count",
-                                      "boards", "selected_boards", "board_filters", "accuracy", "seconds", "merge_similar", "batch", "spot") if k in self.config},
+                                      "boards", "selected_boards", "board_filters", "accuracy", "seconds", "frequency_tolerance",
+                                      "merge_similar", "batch", "spot") if k in self.config},
                                   "hand": self.hand.view() if self.hand else None, "number": self.number,
                                   "preparing": self.preparing, "ready": bool(self.ready), "ready_count": len(self.ready),
                                   "can_deal": bool(self.ready or self.used_solve),
@@ -443,8 +446,11 @@ class DrillService:
         count = body.get("count", 5) if hand_format == "set" else 1
         if hand_format not in ("single", "set") or isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 20:
             raise vsrv.SolverError("hands per node must be a whole number from 1 to 20")
+        tolerance = body.get("frequency_tolerance", DEFAULT_FREQUENCY_TOLERANCE)
+        if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)) or not math.isfinite(tolerance) or not 0 <= tolerance <= 100:
+            raise vsrv.SolverError("frequency tolerance must be from 0 to 100")
         config = {"source": source, "mode": mode, "seat": seat, "node": node, "ahead": ahead,
-                  "format": hand_format, "count": count}
+                  "format": hand_format, "count": count, "frequency_tolerance": tolerance}
         if source == "current":
             if resume and not os.path.isfile(body.get("path", "")):
                 raise vsrv.SolverError("this session's saved tree is unavailable")
@@ -602,7 +608,7 @@ class DrillService:
         previous_combo = self.hand.hands[PLAYERS.index(seat)] if ready is None and self.hand and self.hand.seat == seat else None
         node = self.resolve_node(self.reader, self.config["node"])
         hand = Hand(self.reader, node, seat, self.config["mode"], self.rng,
-                    self.config["count"], previous_combo)
+                    self.config["count"], previous_combo, self.config["frequency_tolerance"])
         previous_solve = self.used_solve
         self.used_solve = solve
         self.hand = hand

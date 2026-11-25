@@ -1,6 +1,6 @@
 import { prefs } from "./api.js";
 
-const fields = ["ahead", "accuracy", "seconds"];
+const fields = ["ahead", "accuracy", "seconds", "frequency_tolerance"];
 const input = (key) => document.getElementById("drill-" + key);
 
 export function drillSettings() {

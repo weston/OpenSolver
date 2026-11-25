@@ -1,6 +1,6 @@
 import { get, post, fmt } from "./api.js";
 import { el, cardEl, comboEl, parseCards } from "./cards.js";
-import { mixEditor, initialFrequencies, feedbackCards, chipStack, actionHeader, bb } from "./drill_controls.js";
+import { mixEditor, initialFrequencies, restrictFrequencies, rememberFrequencies, feedbackCards, chipStack, actionHeader, bb } from "./drill_controls.js";
 
 import { liveConfig, renderBoardOptions, restoreSelection, refreshNode, resetNode, selectCurrentBoard } from "./drill_setup.js";
 import { openSessions } from "./drill_sessions.js";
@@ -11,6 +11,7 @@ const $ = (id) => document.getElementById(id);
 let state = null, visible = false, busy = false, timer = null, sequence = 0, rendered = null, autoDealToken = null;
 let requestError = "", draftNode = "";
 const drafts = new Map();
+const fullDrafts = new Map();
 let sizeDraft = null, sizeTimer = null;
 
 function fields() {
@@ -23,6 +24,8 @@ function fields() {
 
 function controls() {
   const active = !!state?.active, hand = state?.hand;
+  $("drill-setup-summary").classList.toggle("hidden", !active);
+  document.querySelector(".drill-settings").classList.toggle("active", active);
   $("drill-settings").disabled = busy || active;
   $("drill-start").classList.toggle("hidden", active);
   $("drill-start").disabled = busy;
@@ -89,8 +92,8 @@ function renderConvergence(s, waiting) {
   if (!convergence) return;
   if (waiting) {
     if (chart.parentElement !== $("drill-loading")) $("drill-loading").append(chart);
-  } else if (chart.parentElement !== $("drill-settings").parentElement) {
-    $("drill-settings").before(chart);
+  } else if (chart.parentElement !== $("drill-setup").parentElement) {
+    $("drill-setup").before(chart);
   }
   $("drill-chart-status").textContent = s.preparation
     ? { building: "Building", solving: "Solving", saving: "Saving" }[s.preparation.stage]
@@ -104,6 +107,7 @@ function renderConvergence(s, waiting) {
 }
 
 function render(s) {
+  if (!!state?.active !== s.active) $("drill-setup").open = !s.active;
   state = s;
   renderPreparation(s);
   $("drill-error").textContent = s.resolution?.error || s.error || requestError;
@@ -142,7 +146,7 @@ function render(s) {
       if (wager > 0) $(id).append(chipStack(wager), el("span", "num", bb(wager, hand.big_blind)));
     }
   }
-  $("drill-result").textContent = hand?.result || (hand?.phase === "decision" ? "Your action" : "");
+  $("drill-result").textContent = hand?.result || "";
   $("drill-hero-seat").textContent = hand ? `Hero · ${hand.seat}` : "Hero";
   $("drill-villain-seat").textContent = hand ? `Villain · ${hand.seat === "OOP" ? "IP" : "OOP"}` : "Villain";
   $("drill-hero-stack").textContent = hand ? bb(hand.stacks[heroIndex], hand.big_blind) : "";
@@ -156,7 +160,7 @@ function render(s) {
   else for (let i = 0; i < 2; i++) $("drill-villain").append(el("span", "drill-card-back"));
   for (const card of parseCards(hand.node.board)) $("drill-board").append(cardEl(card, "lg"));
   const key = `${s.token.split(":")[0]}:${s.token.split(":")[3]}:${s.number}:${hand.node.id}`;
-  if (draftNode !== key) { drafts.clear(); draftNode = key; sizeDraft = null; clearTimeout(sizeTimer); }
+  if (draftNode !== key) { drafts.clear(); fullDrafts.clear(); draftNode = key; sizeDraft = null; clearTimeout(sizeTimer); }
   const set = s.config.count > 1;
   const sizes = hand.actions.filter((a) => ["bet", "raise"].includes(a.kind));
   const toggles = sizes.length > 1 && parseCards(hand.node.board).length >= 3;
@@ -171,7 +175,11 @@ function render(s) {
     const row = el("div", "drill-exercise");
     if (shared) row.append(comboEl(exercise.combo, ""));
     row.append(mixEditor(hand.actions, exercise.chosen, drafts.get(index),
-      (frequencies) => { drafts.set(index, frequencies); controls(); }, hand.big_blind, shared, disabled));
+      (frequencies) => {
+        drafts.set(index, frequencies);
+        if (fullDrafts.has(index)) fullDrafts.set(index, rememberFrequencies(hand.actions, fullDrafts.get(index), frequencies, disabled));
+        controls();
+      }, hand.big_blind, shared, disabled));
     $("drill-actions").append(row);
   }
   if (hand.feedback) $("drill-feedback").append(feedbackCards(hand.feedback, hand.big_blind));
@@ -184,9 +192,8 @@ function toggleSize(id) {
   if (disabled.has(id)) disabled.delete(id); else disabled.add(id);
   sizeDraft = [...disabled];
   for (const [index, values] of drafts) {
-    const next = values.map((v, i) => disabled.has(state.hand.actions[i].id) ? 0 : v);
-    const total = next.reduce((a, b) => a + b, 0);
-    if (total > 0) drafts.set(index, next.map((v) => v / total)); else drafts.delete(index);
+    if (!fullDrafts.has(index)) fullDrafts.set(index, values);
+    drafts.set(index, restrictFrequencies(state.hand.actions, fullDrafts.get(index), sizeDraft));
   }
   clearTimeout(sizeTimer);
   sizeTimer = setTimeout(() => {

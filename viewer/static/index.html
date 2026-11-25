@@ -112,6 +112,8 @@
         <div class="drill-chart-summary"><div id="drill-chart-board" class="board"></div><span id="drill-chart-value" class="num"></span></div>
         <svg id="drill-chart" class="chart" viewBox="0 0 360 200" role="img" aria-label="Drill solve convergence"></svg>
       </div>
+      <details id="drill-setup" open>
+      <summary id="drill-setup-summary" class="hidden">Session setup</summary>
       <fieldset id="drill-settings">
         <div class="drill-option">
           <label class="field"><span>Simulation</span><select id="drill-source">
@@ -139,6 +141,7 @@
         </select></label>
         <label class="field"><span>Hands per node</span><input id="drill-count" type="number" value="5" min="1" max="20" step="1" required></label>
       </fieldset>
+      </details>
       <button id="drill-start" class="btn primary wide">Start drilling</button>
       <button id="drill-stop" class="btn wide hidden">End session</button>
       <button id="drill-sessions" class="btn wide">Sessions</button>
@@ -178,6 +181,7 @@
         <label class="field"><span>Solves ahead</span><input id="drill-ahead" type="number" value="3" min="1" max="20" step="1" required></label>
         <label class="field"><span>Target exploitability</span><div class="suffix"><input id="drill-accuracy" type="number" value="0.5" min="0.01" max="100" step="0.01" required><i>% pot</i></div></label>
         <label class="field"><span>Solve time limit</span><div class="suffix"><input id="drill-seconds" type="number" value="60" min="1" max="3600" step="1" required><i>seconds</i></div></label>
+        <label class="field"><span>Frequency tolerance</span><div class="suffix"><input id="drill-frequency_tolerance" type="number" value="10" min="0" max="100" step="1" required><i>%</i></div></label>
         <label class="check"><input id="drill-merge-similar" type="checkbox" checked>Merge similar bet sizes</label>
       </div>
     </section>
@@ -205,22 +209,32 @@
             </div>
           </div>
         </div>
-        <div class="editors">
-          <div class="editor" data-player="OOP"></div>
-          <div class="editor" data-player="IP"></div>
-        </div>
-      </section>
-
-      <section class="card tree-board">
-        <h2>Board</h2>
-        <div id="board-slots" class="board-slots"></div>
-        <div class="card-tools">
-          <button class="btn small" id="board-select" aria-haspopup="dialog" aria-expanded="false" aria-controls="tree-board-picker">Select board</button>
-          <button class="btn small" id="board-random">Random flop</button>
-          <button class="btn small ghost" id="board-clear">Clear</button>
-        </div>
-        <div id="tree-board-picker" popover="auto" role="dialog" aria-label="Select board">
-          <div id="deck" class="deck"></div>
+        <div class="range-setup">
+          <div class="editors">
+            <div class="editor" data-player="OOP"></div>
+            <div class="editor" data-player="IP"></div>
+          </div>
+          <div class="tree-basics">
+            <section class="tree-board">
+              <h2>Board</h2>
+              <div id="board-slots" class="board-slots"></div>
+              <div class="card-tools">
+                <button class="btn small" id="board-select" aria-haspopup="dialog" aria-expanded="false" aria-controls="tree-board-picker">Select board</button>
+                <button class="btn small" id="board-random">Random flop</button>
+                <button class="btn small ghost" id="board-clear">Clear</button>
+              </div>
+              <div id="tree-board-picker" popover="auto" role="dialog" aria-label="Select board">
+                <div id="deck" class="deck"></div>
+              </div>
+            </section>
+            <div class="money">
+              <label class="field"><span>Pot</span><input id="f-pot" type="number" min="1" value="40"></label>
+              <label class="field"><span>Effective stack</span><input id="f-stack" type="number" min="1" value="230"></label>
+              <div class="field readonly"><span>SPR</span><output id="f-spr">5.75</output></div>
+              <label class="field"><span>All-in threshold</span><div class="suffix"><input id="f-allin-threshold" type="number" value="67"><i>% stack</i></div></label>
+              <label class="field"><span>Add all-in below</span><div class="suffix"><input id="f-allin-limit" type="number" value="300"><i>% pot</i></div></label>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -230,13 +244,6 @@
           <div class="hint"><code>33</code> % pot · <code>2e</code> geometric over 2 streets · <code>3x</code> raise to 3× · <code>a</code> all-in</div>
         </div>
         <div class="tree-form">
-          <div class="money">
-            <label class="field"><span>Pot</span><input id="f-pot" type="number" min="1" value="40"></label>
-            <label class="field"><span>Effective stack</span><input id="f-stack" type="number" min="1" value="230"></label>
-            <div class="field readonly"><span>SPR</span><output id="f-spr">5.75</output></div>
-            <label class="field"><span>All-in threshold</span><div class="suffix"><input id="f-allin-threshold" type="number" value="67"><i>% stack</i></div></label>
-            <label class="field"><span>Add all-in below</span><div class="suffix"><input id="f-allin-limit" type="number" value="300"><i>% pot</i></div></label>
-          </div>
           <table class="sizes">
             <thead><tr><th></th><th></th><th>Bet</th><th>Raise</th><th>Donk <small>(OOP lead)</small></th><th title="Maximum bets + raises on the street">Cap</th><th>All-in</th></tr></thead>
             <tbody id="sizes-body"></tbody>

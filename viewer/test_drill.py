@@ -256,7 +256,7 @@ class DrillTest(unittest.TestCase):
         self.assertEqual(state["hand"]["stacks"], [70, 70])
 
     def test_resume_restores_setup_statistics_and_alternating_position(self):
-        state = self.begin(mode="node", format="set", seat="alternate")
+        state = self.begin(mode="node", format="set", seat="alternate", frequency_tolerance=7)
         session = state["token"].split(":")[0]
         choices = [float(a["kind"] == "check") for a in state["hand"]["actions"]]
         state = self.post("submit", state, choices=[choices] * len(state["hand"]["exercises"]))
@@ -265,6 +265,7 @@ class DrillTest(unittest.TestCase):
         self.post("stop", state)
         self.solver.cmds(["set_board Kh9h4h2c3d", "build_tree"])
         state = self.request("resume", {"session": session})
+        self.assertEqual(state["config"]["frequency_tolerance"], 7)
         self.assertEqual(state["stats"], stats)
         self.assertEqual(state["token"].split(":")[0], session)
         state = self.post("next", self.ready())
@@ -545,6 +546,21 @@ class DrillTest(unittest.TestCase):
         session = state["token"].split(":")[0]
         self.assertEqual(self.service.sessions.get(session)["loss"], 0)
         self.assertEqual(self.service.sessions.reviews(session, 0)[0]["feedback"]["hands"], results)
+
+    def test_frequency_tolerance_controls_submitted_and_saved_feedback(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        self.solver.cmd("set_strategy r:0 " + " ".join(["0.4"] * 1326 + ["0.6"] * 1326))
+        for tolerance, grade in ((None, "correct"), (5, "frequency"), (0, "frequency"), (100, "correct")):
+            with self.subTest(tolerance=tolerance):
+                settings = {} if tolerance is None else {"frequency_tolerance": tolerance}
+                state = self.begin(format="set", mode="node", **settings)
+                self.assertEqual(state["config"]["frequency_tolerance"], 10 if tolerance is None else tolerance)
+                state = self.post("submit", state, choices=[[0.5, 0.5]] * len(state["hand"]["exercises"]))
+                results = state["hand"]["feedback"]["hands"]
+                self.assertTrue(all(h["grade"] == grade and h["loss"] == 0 for h in results), results)
+                session = state["token"].split(":")[0]
+                self.assertEqual(self.service.sessions.reviews(session, 0)[0]["feedback"]["hands"], results)
+                self.post("stop", state)
 
     def test_similar_sizes_keep_separated_choices_and_can_be_disabled(self):
         tree = {**TREE, "pot": 1000, "stack": 3000, "river_bet": "50 52 55 60 100", "river_raise": "",
@@ -895,7 +911,8 @@ class DrillTest(unittest.TestCase):
     def test_invalid_settings_and_stale_session_do_not_change_play(self):
         for settings in ({"source": "wrong"}, {"mode": "node", "node": "r:0\nexit"}, {"seat": "both"},
                          {"source": "live", "ahead": 0}, {"source": "live", "ahead": 2.5},
-                         {"source": "live", "ahead": True}, {"source": "live", "ahead": 21}):
+                         {"source": "live", "ahead": True}, {"source": "live", "ahead": 21},
+                         *({"frequency_tolerance": value} for value in (-1, 101, True, "10", None, float("nan"), float("inf")))):
             self.request("start", settings, expected=400)
         state = self.begin()
         self.request("stop", {"token": "old"}, expected=400)
@@ -908,6 +925,8 @@ class GradingTest(unittest.TestCase):
     def test_frequency_errors_are_free_and_wrong_actions_keep_their_cost(self):
         for choices, grade, loss in (([0.4, 0.6, 0], "correct", 0),
                                      ([0.45, 0.55, 0], "correct", 0),
+                                     ([0.5, 0.5, 0], "correct", 0),
+                                     ([0.51, 0.49, 0], "frequency", 0),
                                      ([1, 0, 0], "frequency", 0),
                                      ([0, 1, 0], "frequency", 0),
                                      ([0.2, 0.3, 0.5], "mistake", 5),
@@ -918,6 +937,7 @@ class GradingTest(unittest.TestCase):
         self.assertEqual(grade_frequencies([1, 0], [1, 0], [10, None]), {"grade": "correct", "loss": 0})
         self.assertEqual(grade_frequencies([0.999, 0.001], [0.999, 0.001], [10, 0]), {"grade": "correct", "loss": 0})
         self.assertEqual(grade_frequencies([0, 1], [0.999, 0.001], [10, 0]), {"grade": "mistake", "loss": 9.99})
+        self.assertEqual(grade_frequencies([0.9, 0.1], [1, 0], [10, 0]), {"grade": "mistake", "loss": 1})
 
     def test_existing_session_results_and_totals_are_regraded_together(self):
         with tempfile.TemporaryDirectory() as root:

@@ -248,7 +248,7 @@ export function feedbackCards(feedback, bigBlind) {
   result.append(legend);
   if (feedback.original) {
     const comparison = el("div", "card feedback-ranges feedback-simplification");
-    comparison.append(el("h3", "", "Range simplification"));
+    comparison.append(el("h3", "", "Strategy Simplification"));
     for (const [label, value] of [["Original range", feedback.original], ["Simplified range", feedback]]) {
       const row = el("div", "feedback-bar-row");
       row.append(el("span", "", label), frequencyBar(value.hands[0].actions, value.frequencies.range, bigBlind));

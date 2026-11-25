@@ -41,7 +41,7 @@ function controls() {
   $("drill-retry").classList.toggle("hidden", !active || !state?.error);
   $("drill-retry").disabled = busy || state?.preparing;
   document.querySelectorAll("#drill-actions button").forEach((b) => {
-    b.disabled = busy || (resolving && !b.classList.contains("size-toggle")) || b.dataset.unavailable === "yes" || b.dataset.answered === "yes" || b.dataset.empty === "yes";
+    b.disabled = busy || b.dataset.unavailable === "yes" || b.dataset.answered === "yes" || b.dataset.empty === "yes";
   });
 }
 
@@ -83,7 +83,7 @@ function renderPreparation(s) {
 }
 
 function renderConvergence(s, waiting) {
-  const chart = $("drill-convergence"), convergence = s.resolution?.convergence || s.convergence;
+  const chart = $("drill-convergence"), convergence = s.convergence;
   chart.classList.toggle("hidden", !convergence);
   if (!convergence) return;
   if (waiting) {
@@ -91,7 +91,7 @@ function renderConvergence(s, waiting) {
   } else if (chart.parentElement !== $("drill-settings").parentElement) {
     $("drill-settings").before(chart);
   }
-  $("drill-chart-status").textContent = s.resolution ? (s.resolution.busy ? "Re-solving" : s.resolution.error ? "Stopped" : "Re-solved") : s.preparation
+  $("drill-chart-status").textContent = s.preparation
     ? { building: "Building", solving: "Solving", saving: "Saving" }[s.preparation.stage]
     : s.error ? "Stopped" : "Ready";
   $("drill-chart-board").classList.toggle("hidden", waiting);

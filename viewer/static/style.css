@@ -1115,14 +1115,18 @@ button.rl-card.end { cursor: default; }
 .drill-history-item.upcoming { border: 1px dashed var(--accent); background: var(--accent-soft); font-weight: 600; }
 .mix-editor { flex: 1; min-width: 0; }
 .mix-actions { display: flex; gap: 6px; overflow-x: auto; }
+.mix-action-cell { flex: 1; min-width: 88px; display: flex; flex-direction: column; gap: 4px; }
+.mix-frequency { display: flex; justify-content: center; gap: 6px; width: 100%; padding: 6px; }
+.mix-action-cell.picking .mix-frequency { border-color: var(--accent); background: var(--accent-soft); }
+.frequency-picker { position: fixed; inset: auto; margin: 0; width: min(330px, calc(100vw - 16px)); padding: 12px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-top: 3px solid; border-radius: var(--radius-sm); box-shadow: 0 8px 30px #0003; }
+.frequency-picker > strong { display: block; margin-bottom: 10px; font-size: 13px; }
+.frequency-presets { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.frequency-presets .btn { padding: 8px 0; height: 36px; }
+.frequency-presets .active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .mix-percent { color: var(--text-2); }
 .mix-controls { display: flex; align-items: center; gap: 16px; margin-top: 14px; }
-.mix-slider { flex: 1; position: relative; min-width: 0; }
 .frequency-bar { display: flex; height: 28px; border-radius: 6px; overflow: hidden; width: 100%; background: var(--surface-3); }
 .frequency-segment { display: grid; place-items: center; min-width: 0; overflow: hidden; white-space: nowrap; color: #fff; font-size: 11px; font-weight: 600; }
-.mix-handle { position: absolute; top: -4px; bottom: -4px; width: 14px; transform: translateX(-50%); border: 2px solid var(--surface); border-radius: 5px; background: var(--text); cursor: col-resize; padding: 0; touch-action: none; }
-.mix-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.mix-controls > .btn { flex: none; }
 .drill-feedback { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
 .feedback-legend { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; }
 .feedback-legend span { display: inline-flex; align-items: center; gap: 5px; }
@@ -1151,12 +1155,15 @@ button.rl-card.end { cursor: default; }
 .hand-set .drill-exercise, .drill-action-header { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 14px; min-width: max(360px, calc(96px + var(--action-count) * 76px)); }
 .drill-action-header { align-items: center; margin-bottom: 8px; font-size: 12px; color: var(--text-2); }
 .drill-action-header .mix-actions { overflow: visible; }
+.drill-action-header.range-options { padding: 12px 0; border-block: 1px solid var(--border-strong); background: var(--accent-soft); }
+.range-options-heading { display: flex; flex-direction: column; gap: 5px; padding-left: 8px; }
+.range-options-heading > span { font-size: 10px; color: var(--text-3); }
 .action-heading { flex: 1; min-width: 0; text-align: center; border-top: 3px solid; padding: 8px 3px 0; display: flex; flex-direction: column; gap: 4px; }
 .size-toggle { width: 30px; height: 17px; border: 0; border-radius: 20px; padding: 2px; margin: 3px auto; background: var(--text-3); cursor: pointer; }
 .size-toggle::before { content: ""; display: block; width: 13px; height: 13px; border-radius: 50%; background: white; transition: transform .15s; }
 .size-toggle[aria-checked="true"] { background: var(--accent); }
 .size-toggle[aria-checked="true"]::before { transform: translateX(13px); }
-.drill-action[data-unavailable="yes"] { opacity: .25; }
+.drill-action[data-unavailable="yes"], .mix-frequency[data-unavailable="yes"] { opacity: .25; }
 .feedback-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .session-row { display: flex; align-items: center; gap: 12px; }
 .session-row .session-entry { flex: 1; }
@@ -1165,10 +1172,10 @@ button.rl-card.end { cursor: default; }
 .hand-set .drill-exercise { border-top: 1px solid var(--border); padding: 12px 0; }
 .hand-set .drill-action { min-width: 0; min-height: 36px; padding: 8px 3px; flex: 1; border-top-width: 1px; }
 .hand-set .mix-actions { overflow: visible; }
+.hand-set .mix-action-cell { min-width: 0; }
 .hand-set .mix-percent { font-size: 14px; }
 .hand-set .mix-controls { margin-top: 8px; }
 .hand-set .frequency-bar { height: 18px; }
-.hand-set .mix-handle { top: -3px; bottom: -3px; width: 12px; }
 .hand-set .frequency-segment { font-size: 10px; }
 #drill-sessions { margin-top: 10px; }
 .board-filter { display: grid; gap: 7px; font-size: 12px; margin-bottom: 14px; }
@@ -1197,5 +1204,3 @@ button.rl-card.end { cursor: default; }
 .session-review summary { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .session-review summary strong { margin-right: 12px; }
 .session-review .drill-feedback { margin-top: 16px; }
-
-.mix-handle:disabled { visibility: hidden; }

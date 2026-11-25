@@ -404,11 +404,7 @@ class DrillService:
             resolution = None
             if self.resolver:
                 status = self.resolver.status()
-                with self.resolver.rsolver.state_lock:
-                    points = list(self.resolver.rsolver.series)
-                resolution = {"busy": status["busy"], "error": status["error"], "disabled": self.resolver.disabled,
-                              "convergence": {"points": points[-600:], "pot": sum(self.hand.node["pot"]),
-                                              "board": self.hand.node["board"], "target": self.config.get("accuracy", 0.5)}}
+                resolution = {"busy": status["busy"], "error": status["error"], "disabled": self.resolver.disabled}
             return copy.deepcopy({"active": self.config is not None, "token": self.token(),
                                   "config": self.config and {k: self.config[k] for k in (
                                       "source", "mode", "seat", "node", "ahead", "format", "count",

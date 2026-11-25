@@ -475,7 +475,7 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
 .editor-tools { display: flex; gap: 2px; margin-left: -10px; }
 .editor-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: -4px; }
 .rgrid {
-  display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px; aspect-ratio: 1;
+  display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px; aspect-ratio: 4 / 3;
   user-select: none; touch-action: none; cursor: crosshair;
 }
 .rgrid .cell { cursor: crosshair; }

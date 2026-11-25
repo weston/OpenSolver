@@ -18,6 +18,18 @@ check(localStorage.getItem('ws-drill-ahead') === '4', 'settings could not be sto
 tab('study');
 await wait(() => !$('btn-drill').classList.contains('hidden'));
 check($('matrix').children.length === 169, 'the solved tree did not load into Browse');
+document.querySelector('#matrix .cell').click();
+await wait(() => document.querySelector('#side-hand tr.pick'));
+document.querySelector('#side-hand tr.pick').click();
+await wait(() => document.querySelector('#side-hand .hand-blockers[aria-busy=false]'));
+check(document.querySelector('.side-tabs .active').dataset.side === 'hand', 'selecting a combo left the Hand tab');
+check(document.querySelectorAll('#side-hand .blk-stat').length === 3, 'the selected hand has no blocker summary');
+check(document.querySelectorAll('#side-hand .hand-combo[aria-pressed=true]').length === 1, 'the selected combo is not highlighted');
+document.querySelector('.side-tabs [data-side=blockers]').click();
+await wait(() => document.querySelector('#side-blockers .blk-cards'));
+check(!document.querySelector('#side-blockers .blk-sum, #side-blockers .hand-combos, #side-blockers .blk-removed'), 'range blockers includes specific-hand details');
+document.querySelector('.side-tabs [data-side=hand]').click();
+await wait(() => document.querySelector('#side-hand .hand-blockers[aria-busy=false]'));
 
 const post = async (path, body) => {
   const response = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
@@ -43,10 +55,10 @@ check(document.querySelectorAll('#drill-feedback .feedback-browse').length === 5
 for (const index of [0, 1]) {
   const combo = resultState.hand.feedback.hands[index].combo;
   document.querySelectorAll('#drill-feedback .feedback-browse')[index].click();
-  await wait(() => !$('view-study').classList.contains('hidden') && document.querySelector('#side-hand tr.selected'));
-  const selected = [...document.querySelectorAll('#side-hand tr.selected .pc')].map(card => card.title).sort().join('');
+  await wait(() => !$('view-study').classList.contains('hidden') && document.querySelector('#side-hand .hand-blockers[aria-busy=false]'));
+  const selected = [...document.querySelectorAll('#side-hand .hand-combo[aria-pressed=true] .pc')].map(card => card.title).sort().join('');
   check(selected === [combo.slice(0, 2), combo.slice(2)].sort().join(''), `Browse selected ${selected} instead of ${combo} for result ${index}`);
-  check(document.querySelectorAll('#side-hand tr.selected').length === 1, 'Browse selected more than one combo');
+  check(document.querySelectorAll('#side-hand .hand-combo[aria-pressed=true]').length === 1, 'Browse selected more than one combo');
   check(document.querySelectorAll('#side-hand .hand-head .pc').length === 2, 'Browse is missing the exact hand');
   check(document.querySelectorAll('#side-hand .hand-action-ev').length > 0, 'Browse is missing action EVs');
   tab('drill');

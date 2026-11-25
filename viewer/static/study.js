@@ -33,8 +33,6 @@ const S = {
   catsPlayer: null,  // OOP/IP override in that tab; null = the actor
   catHl: null,       // Set of classes highlighted by a hovered category row
   catPin: null,      // {name, classes} pinned by clicking a category row
-  blkCombo: null,    // the hand the Blockers tab shows ("AsKd"), or null
-  blkFor: null,      // the player it was picked for (it only applies at that player's decisions)
   blkMetric: null,   // what the card ranking sorts by
   blkNoBoardRanks: prefs.get("blk-no-board-ranks", false),  // card grid: leave out cards that pair the board
   blkView: prefs.get("blk-view", "made"),  // range shift by "made" category, "draw" or hand "classes"
@@ -861,16 +859,22 @@ async function renderHand() {
   }
 
   box.appendChild(el("h3", null, "Combos"));
+  if (selectedCombo) {
+    box.appendChild(handComboPicker(d, selectedCombo));
+    const blockers = el("section", "hand-blockers");
+    blockers.dataset.combo = selectedCombo;
+    blockers.setAttribute("aria-busy", "true");
+    blockers.appendChild(el("h3", null, "Blockers"));
+    box.appendChild(blockers);
+    renderHandBlockers(blockers, selectedCombo);
+    return;
+  }
   const t = el("table", "combos");
   t.insertAdjacentHTML("beforeend", '<tr><th></th><th class="w">Weight</th><th></th><th class="ev" title="% of the pot">EV</th></tr>');
   for (const i of H.byClass[cls]) {
     const combo = H.order[i];
     if (blocked(combo)) continue;
     const tr = el("tr");
-    if (selectedCombo && H.index.get(selectedCombo) === i) {
-      tr.classList.add("selected");
-      tr.setAttribute("aria-selected", "true");
-    }
     const c1 = el("td"); c1.appendChild(comboEl(combo, "xs"));
     const w = d.reach[i] || 0;
     const c2 = el("td", "w num", fmt(w * 100, 0) + "%");
@@ -885,8 +889,7 @@ async function renderHand() {
     tr.append(c1, c2, c3, c4);
     if (w <= 0) tr.style.opacity = ".4";
     tr.classList.add("pick");
-    tr.title = "Click: what this hand blocks (Blockers tab)";
-    tr.onclick = () => selectBlockerCombo(combo, d.actor);
+    tr.onclick = () => selectHandCombo(combo);
     t.appendChild(tr);
   }
   box.appendChild(t);
@@ -1040,15 +1043,6 @@ function deltaTint(x, scale) {
   return x >= 0 ? `rgba(76,195,138,${a.toFixed(3)})` : `rgba(232,83,74,${a.toFixed(3)})`;
 }
 
-/** The combo the Blockers tab shows, if it is the current actor's (a combo picked for OOP does not
- *  carry over to an IP decision) and a real combo. */
-function blockerHero(data) {
-  if (S.blkCombo && S.blkFor == null) S.blkFor = data.actor;   // from a link: the actor it was shared at
-  if (!S.blkCombo || S.blkFor !== data.actor) return null;
-  const i = H.index.get(S.blkCombo);
-  return i == null ? null : i;
-}
-
 /** Villain's actions after one actor action, labelled like the strip (the child is one step past
  *  the decision at path index pi). */
 function responseActs(r, pi) {
@@ -1086,36 +1080,40 @@ async function renderBlockersPanel() {
     box.appendChild(el("div", "side-empty", "Blockers need a decision node — pick one in the action line."));
     return;
   }
-  const key = `${S.base}|${S.decId}`;
-  const ent = await sideData("blk", key, `${S.base}/blockers?id=${q(S.decId)}`,
-                            (data) => ({ key, data, P: prepareBlockers(data, H.order) }));
+  const ent = await loadBlockers();
   if (!ent) return;
   if (seq !== S.seq || S.side !== "blockers") return;
-  const { data, P } = ent;
+  const { key, data, P } = ent;
   const pi = S.path.findIndex((p) => p.id === S.decId);
   const acts = actionsOf(d, pi);
   const metrics = blockerMetrics(P, acts, pi, data);
   if (!metrics.some((m) => m.key === S.blkMetric)) S.blkMetric = defaultMetric(metrics);
-  const hero = blockerHero(data);
   // renderSide runs on every matrix hover: rebuild only when what is shown changes (keeps the scroll)
-  const vkey = `${key}|${hero}|${S.blkMetric}|${S.pinned || ""}|${S.blkNoBoardRanks}|${S.blkView}`;
+  const vkey = `${key}|${S.blkMetric}|${S.blkNoBoardRanks}`;
   if (box.dataset.key === vkey) return;
   box.dataset.key = vkey;
   box.textContent = "";
 
-  box.appendChild(blockerPicker(data, P, hero));
-  if (hero != null) {
-    const rep = comboReport(P, hero);
-    if (rep.blockedByBoard) {
-      box.appendChild(el("div", "side-empty", `${displayCombo(H.order[hero])} uses a board card.`));
-    } else {
-      renderBlockerSummary(box, data, hero, rep);
-      renderResponses(box, data, P, rep, acts, pi);
-      renderRangeShift(box, data, rep);
-      renderRemoved(box, data, rep);
-    }
-  }
-  renderCardEffects(box, P, metrics, hero);
+  renderCardEffects(box, P, metrics);
+}
+
+function loadBlockers() {
+  return sideData("blk", `${S.base}|${S.decId}`, `${S.base}/blockers?id=${q(S.decId)}`,
+    (data) => ({ data, P: prepareBlockers(data, H.order) }));
+}
+
+async function renderHandBlockers(box, combo) {
+  const seq = S.seq, d = S.dec;
+  const ent = await loadBlockers();
+  if (!ent || seq !== S.seq || S.side !== "hand" || S.handCombo !== combo || !box.isConnected) return;
+  const { data, P } = ent;
+  const hero = H.index.get(combo), rep = comboReport(P, hero);
+  const pi = S.path.findIndex((p) => p.id === S.decId);
+  renderBlockerSummary(box, data, hero, rep);
+  renderResponses(box, data, P, rep, actionsOf(d, pi), pi);
+  renderRangeShift(box, data, rep);
+  renderRemoved(box, data, rep);
+  box.setAttribute("aria-busy", "false");
 }
 
 /** A player's name in their colour, so every line says who acts without "you" / "villain". */
@@ -1128,62 +1126,32 @@ function deltaEl(x, cls = "blk-d") {
   return e;
 }
 
-/** Pick the hand: type it, or click one of the pinned class's combos. */
-function blockerPicker(data, P, hero) {
-  const wrap = el("div", "blk-pick");
-  const field = el("label", "blk-field");
-  const inp = el("input");
-  inp.type = "text";
-  inp.placeholder = hero == null ? "Pick a hand, e.g. AsKd" : "";
-  inp.value = hero != null ? displayCombo(H.order[hero]) : "";
-  inp.spellcheck = false;
-  inp.autocomplete = "off";
-  const apply = (loud) => {
-    const t = parseCards(inp.value);
-    const i = t.length === 2 ? H.index.get(t[0] + t[1]) : undefined;
-    if (i == null) { if (loud) toast("Type two cards, e.g. AsKd", "err"); return; }
-    if (i !== hero) selectBlockerCombo(H.order[i], data.actor);
-  };
-  inp.onkeydown = (e) => {
-    if (e.key === "Enter") apply(true);
-    if (e.key === "Escape") { inp.value = hero != null ? displayCombo(H.order[hero]) : ""; inp.blur(); }
-  };
-  inp.onchange = () => apply(false);
-  field.append(el("span", `badge ${data.actor.toLowerCase()}`, data.actor), inp);
-  if (hero != null) {
-    const clr = el("button", "blk-x", "×");
-    clr.title = "Clear the hand";
-    clr.onclick = (e) => { e.preventDefault(); S.blkCombo = null; renderSide(); syncUrl(); };
-    field.appendChild(clr);
+function handComboPicker(data, selected) {
+  const blocked = blockedBy(boardOf(data.node));
+  const list = el("div", "blk-combos hand-combos");
+  for (const i of H.byClass[comboClass(selected)]) {
+    const combo = H.order[i];
+    if (blocked(combo)) continue;
+    const b = el("button", "blk-combo hand-combo");
+    b.type = "button";
+    b.setAttribute("aria-label", displayCombo(combo));
+    b.setAttribute("aria-pressed", combo === selected ? "true" : "false");
+    b.appendChild(comboEl(combo, "xs"));
+    const w = data.reach[i] || 0;
+    if (w <= 0) b.classList.add("out");
+    else if (w < 0.995) b.appendChild(el("span", "w", fmt(w * 100, 0) + "%"));
+    b.onclick = () => selectHandCombo(combo);
+    list.appendChild(b);
   }
-  wrap.appendChild(field);
-  const cls = S.pinned;
-  if (cls) {
-    const blocked = blockedBy(boardOf(data.node));
-    const list = el("div", "blk-combos");
-    for (const i of H.byClass[cls]) {
-      const combo = H.order[i];
-      if (blocked(combo)) continue;
-      const b = el("button", "blk-combo" + (i === hero ? " sel" : ""));
-      b.appendChild(comboEl(combo, "xs"));
-      const w = data.hero_reach[i] || 0;
-      if (w <= 0) b.classList.add("out");
-      else if (w < 0.995) b.appendChild(el("span", "w", fmt(w * 100, 0) + "%"));
-      b.title = `${displayCombo(combo)}: ${fmt(w * 100, 0)}% in ${data.actor}'s range`;
-      b.onclick = () => selectBlockerCombo(combo, data.actor);
-      list.appendChild(b);
-    }
-    wrap.appendChild(list);
-  } else if (hero == null) {
-    wrap.appendChild(el("div", "hint", "Or pin a class in the matrix, or click a combo in the Hand tab."));
-  }
-  return wrap;
+  return list;
 }
 
-function selectBlockerCombo(combo, actor) {
-  S.blkCombo = displayCombo(combo);
-  S.blkFor = actor;
-  S.side = "blockers";
+function selectHandCombo(combo) {
+  S.handCombo = H.order[H.index.get(combo)];
+  S.pinned = comboClass(S.handCombo);
+  S.side = "hand";
+  hideTip();
+  markSel();
   renderSide();
   syncUrl();
 }
@@ -1221,13 +1189,10 @@ function renderBlockerSummary(box, data, hero, rep) {
 function renderResponses(box, data, P, rep, acts, pi) {
   const vil = data.villain;
   const shown = P.responses.filter((r) => acts.some((a) => a.id === r.id));
+  if (!shown.length) return;
   const h = el("h3", "blk-h");
   h.append(who(vil), document.createTextNode(" responds"));
   box.appendChild(h);
-  if (!shown.length) {
-    box.appendChild(el("div", "hint", `${vil} does not act right after any action here (a fold, a showdown or a new card comes first).`));
-    return;
-  }
   const list = el("div", "blk-resps");
   for (const r of shown) {
     const k = P.responses.indexOf(r);
@@ -1354,7 +1319,7 @@ function renderRemoved(box, data, rep) {
 }
 
 /** Every single card, shaded by how much holding it moves the chosen number. */
-function renderCardEffects(box, P, metrics, hero) {
+function renderCardEffects(box, P, metrics) {
   const m = metrics.find((x) => x.key === S.blkMetric) || metrics[0];
   box.appendChild(el("h3", "blk-h", "Single cards"));
   const tools = el("div", "blk-tools");
@@ -1380,7 +1345,6 @@ function renderCardEffects(box, P, metrics, hero) {
   const excluded = (card) => S.blkNoBoardRanks && boardRanks.has(card[0]);
   const rows = cardEffects(P, m.get).filter((r) => !excluded(r.card));
   const ranks = [...RANKS].filter((rk) => !(S.blkNoBoardRanks && boardRanks.has(rk)));
-  const held = hero != null ? P.cards[hero] : [];
   const scale = Math.max(1e-9, ...rows.map((r) => Math.abs(r.delta ?? 0)));
   const byCard = new Map(rows.map((r) => [r.card, r]));
   const tip = (r) => `<div class="t">${r.card}</div><div class="r"><span>${m.label}</span><b>${pctOf(r.before)} → ${pctOf(r.after)}</b></div>` +
@@ -1391,7 +1355,7 @@ function renderCardEffects(box, P, metrics, hero) {
     for (const rk of ranks) {
       const card = rk + s;
       const r = byCard.get(card);
-      const c = el("div", "blk-card" + (held.includes(card) ? " held" : ""));
+      const c = el("div", "blk-card");
       if (!r) { c.classList.add("on-board"); c.title = `${card} is on the board`; c.appendChild(cardEl(card, "xs")); grid.appendChild(c); continue; }
       c.style.background = deltaTint(r.delta, scale);
       c.appendChild(cardEl(card, "xs"));
@@ -1669,7 +1633,6 @@ function urlState() {
   if (S.side !== "hand") s += "&side=" + S.side;
   if (S.pinned) s += "&pin=" + S.pinned;
   if (S.handCombo) s += "&hand=" + S.handCombo;
-  if (S.blkCombo) s += "&blk=" + S.blkCombo;
   return s;
 }
 
@@ -1677,7 +1640,6 @@ export function applyUrlState(params) {
   if (["strategy", "range", "ev"].includes(params.mode)) S.mode = params.mode;
   if (["OOP", "IP"].includes(params.player)) S.player = params.player;
   if (SIDES.includes(params.side)) S.side = params.side;
-  if (params.blk && H.index.has(params.blk)) { S.blkCombo = displayCombo(H.order[H.index.get(params.blk)]); S.blkFor = null; }
   if (params.pin && Object.prototype.hasOwnProperty.call(H.byClass, params.pin)) S.pinned = params.pin;
   if (params.hand && H.index.has(params.hand)) {
     S.handCombo = H.order[H.index.get(params.hand)];

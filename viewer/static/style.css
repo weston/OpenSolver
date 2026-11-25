@@ -397,6 +397,7 @@ input.flop-filter { width: 100%; margin-top: 5px; height: 22px; padding: 0 6px; 
 #side-hand .mix-row { grid-template-columns: 10px minmax(0, 1fr) auto auto; }
 .hand-mix-head { font-size: 10px; color: var(--text-3); text-align: right; }
 .hand-action-ev { min-width: 58px; text-align: right; }
+.hand-blockers { margin-top: 12px; }
 .combos { width: 100%; border-collapse: collapse; }
 .combos td { padding: 5px 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .combos tr:last-child td { border-bottom: 0; }
@@ -824,23 +825,13 @@ label.check input { accent-color: var(--accent); }
 .side-tabs button { padding: 0 7px; font-size: 12.5px; }
 .combos tr.pick { cursor: pointer; }
 .combos tr.pick:hover td { background: var(--surface-2); }
-.combos tr.selected td { background: var(--accent-soft); }
-.combos tr.selected td:first-child { box-shadow: inset 3px 0 var(--accent); padding-left: 5px; }
 .who { font-weight: 700; }
 .who.oop { color: var(--oop); }
 .who.ip { color: var(--ip); }
-.blk-pick { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 14px; }
-.blk-field { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 5px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); cursor: text; transition: border-color .15s; }
-.blk-field:focus-within { border-color: var(--accent); }
-.blk-field .badge { flex: none; padding: 3px 6px; }
-.blk-field input { flex: 1; min-width: 0; height: 100%; border: 0; background: none; padding: 0; font: 600 14px var(--mono); letter-spacing: .04em; color: var(--text); outline: none; box-shadow: none; }
-.blk-field input::placeholder { font: 400 13px var(--font); letter-spacing: 0; color: var(--text-3); }
-.blk-x { flex: none; width: 22px; height: 22px; border: 0; border-radius: 50%; background: none; color: var(--text-3); font-size: 16px; line-height: 1; cursor: pointer; }
-.blk-x:hover { background: var(--hover); color: var(--text); }
 .blk-combos { display: flex; flex-wrap: wrap; gap: 4px; }
 .blk-combo { display: inline-flex; align-items: center; gap: 4px; padding: 3px; border: 1px solid transparent; border-radius: 6px; background: none; font-size: 10px; color: var(--text-3); cursor: pointer; transition: background .12s, border-color .12s; }
 .blk-combo:hover { background: var(--surface-2); }
-.blk-combo.sel { border-color: var(--accent); background: var(--accent-soft); }
+.blk-combo.sel, .blk-combo[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .blk-combo.out { opacity: .35; }
 .blk-combo .w { padding-right: 2px; }
 .blk-sum { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0 0 4px; padding: 10px 0; border-block: 1px solid var(--border); }
@@ -896,7 +887,6 @@ label.check input { accent-color: var(--accent); }
 .blk-toggle { flex: none; display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); cursor: pointer; white-space: nowrap; }
 .blk-cards { display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px; margin-bottom: 6px; }
 .blk-card { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 2px 0; border-radius: 4px; font-size: 9px; border: 1px solid transparent; }
-.blk-card.held { border-color: var(--accent); }
 .blk-card.on-board { opacity: .3; }
 .blk-card .pc.xs { transform: scale(.85); }
 

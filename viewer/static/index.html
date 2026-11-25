@@ -127,6 +127,11 @@
           <div id="drill-frequency-options" class="sub-settings">
             <label class="field"><span>Hands per node</span><input id="drill-count" type="number" value="5" min="1" max="20" step="1" required></label>
           </div>
+          <div id="drill-play-options" class="sub-settings hidden">
+            <label class="field"><span>Feedback</span><select id="drill-feedback_timing">
+              <option value="action">After each action</option><option value="hand">After the hand</option><option value="none" selected>None</option>
+            </select></label>
+          </div>
         </div>
         <div class="drill-option">
           <label class="field"><span>Simulation</span><select id="drill-source">
@@ -181,7 +186,7 @@
       </div>
       <div id="drill-actions" class="drill-actions"></div>
       <div id="drill-feedback" class="drill-feedback hidden"></div>
-      <div class="drill-controls"><button id="drill-submit" class="btn primary hidden">Submit</button><button id="drill-continue" class="btn primary hidden">Continue</button><button id="drill-next" class="btn primary hidden">Next hand</button><button id="drill-browse" class="btn hidden">Browse spot</button></div>
+      <div class="drill-controls"><button id="drill-submit" class="btn primary hidden">Submit</button><button id="drill-continue" class="btn primary hidden">Continue</button><button id="drill-next" class="btn primary hidden">Next hand</button><button id="drill-rng" class="btn small hidden" type="button">RNG <output id="drill-roll" class="num">—</output></button><button id="drill-browse" class="btn hidden">Browse spot</button></div>
     </section>
   </div>
   <section id="drill-sessions-panel" class="drill-section hidden" role="tabpanel" aria-labelledby="drill-sessions"></section>

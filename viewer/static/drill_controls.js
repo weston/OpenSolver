@@ -269,29 +269,31 @@ export function feedbackCards(feedback, bigBlind, onBrowse) {
     ranges.append(row);
   }
   result.append(ranges);
-  for (const hand of feedback.hands) {
-    const card = el("div", `card feedback-hand ${hand.grade}`);
-    const header = el("div", "feedback-hand-head");
-    const symbol = hand.grade === "correct" ? "✓" : hand.grade === "frequency" ? "≈" : "↓";
-    header.append(comboEl(hand.combo, ""), el("span", `feedback-loss num ${hand.grade}`,
-      `${symbol} ${fmt(hand.loss_pct, 2)}% EV loss`));
-    if (onBrowse) {
-      const browse = el("button", "icon-btn feedback-browse");
-      browse.type = "button";
-      browse.setAttribute("aria-label", `Browse ${hand.combo}`);
-      browse.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
-      browse.onclick = () => onBrowse(hand.combo);
-      header.append(browse);
-    }
-    card.append(header);
-    for (const [label, frequencies] of [["Solver", hand.actions.map((a) => a.frequency)], ["You", hand.chosen]]) {
-      const row = el("div", "feedback-bar-row");
-      row.append(el("span", "", label), frequencyBar(hand.actions, frequencies, bigBlind, label));
-      card.append(row);
-    }
-    result.append(card);
-  }
+  for (const hand of feedback.hands) result.append(feedbackHand(hand, bigBlind, onBrowse));
   return result;
+}
+
+export function feedbackHand(hand, bigBlind, onBrowse) {
+  const card = el("div", `card feedback-hand ${hand.grade}`);
+  const header = el("div", "feedback-hand-head");
+  const symbol = hand.grade === "correct" ? "✓" : hand.grade === "frequency" ? "≈" : "↓";
+  header.append(comboEl(hand.combo, ""), el("span", `feedback-loss num ${hand.grade}`,
+    `${symbol} ${fmt(hand.loss_pct, 2)}% EV loss`));
+  if (onBrowse) {
+    const browse = el("button", "icon-btn feedback-browse");
+    browse.type = "button";
+    browse.setAttribute("aria-label", `Browse ${hand.combo}`);
+    browse.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
+    browse.onclick = () => onBrowse(hand.combo);
+    header.append(browse);
+  }
+  card.append(header);
+  for (const [label, frequencies] of [["Solver", hand.actions.map((a) => a.frequency)], ["You", hand.chosen]]) {
+    const row = el("div", "feedback-bar-row");
+    row.append(el("span", "", label), frequencyBar(hand.actions, frequencies, bigBlind, label));
+    card.append(row);
+  }
+  return card;
 }
 
 export function chipStack(amount) {

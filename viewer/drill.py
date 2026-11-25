@@ -431,10 +431,13 @@ class DrillService:
                 resolution = {"busy": status["busy"], "error": status["error"], "disabled": self.resolver.disabled}
             return copy.deepcopy({"active": self.config is not None, "token": self.token(),
                                   "config": self.config and {k: self.config[k] for k in (
-                                      "source", "mode", "answer_mode", "seat", "node", "ahead", "format", "count",
+                                      "source", "mode", "answer_mode", "feedback_timing", "seat", "node", "ahead", "format", "count",
                                       "boards", "selected_boards", "board_filters", "accuracy", "seconds", "frequency_tolerance",
                                       "merge_similar", "batch", "spot") if k in self.config},
                                   "hand": self.hand.view() if self.hand else None, "number": self.number,
+                                  "reviews": self.sessions.hand_reviews(self.session, self.number)
+                                  if self.hand and self.hand.phase == "complete" and self.config["answer_mode"] == "play"
+                                  and self.config["feedback_timing"] == "hand" else [],
                                   "preparing": self.preparing, "ready": bool(self.ready), "ready_count": len(self.ready),
                                   "can_deal": bool(self.ready or self.used_solve),
                                   "error": self.error, "progress": self.progress, "convergence": self.convergence,
@@ -453,6 +456,9 @@ class DrillService:
         answer_mode = body.get("answer_mode", "frequencies")
         if answer_mode not in ("frequencies", "play"):
             raise vsrv.SolverError("invalid drill mode")
+        feedback_timing = body.get("feedback_timing", "none")
+        if feedback_timing not in ("action", "hand", "none"):
+            raise vsrv.SolverError("invalid feedback timing")
         merge_similar = body.get("merge_similar", True)
         if not isinstance(merge_similar, bool):
             raise vsrv.SolverError("merge similar sizes must be on or off")
@@ -471,7 +477,8 @@ class DrillService:
         tolerance = body.get("frequency_tolerance", DEFAULT_FREQUENCY_TOLERANCE)
         if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)) or not math.isfinite(tolerance) or not 0 <= tolerance <= 100:
             raise vsrv.SolverError("frequency tolerance must be from 0 to 100")
-        config = {"source": source, "mode": mode, "answer_mode": answer_mode, "seat": seat, "node": node, "ahead": ahead,
+        config = {"source": source, "mode": mode, "answer_mode": answer_mode, "feedback_timing": feedback_timing,
+                  "seat": seat, "node": node, "ahead": ahead,
                   "format": hand_format, "count": count, "frequency_tolerance": tolerance, "merge_similar": merge_similar}
         if source == "current":
             if resume and not os.path.isfile(body.get("path", "")):
@@ -876,7 +883,7 @@ class DrillService:
                             review["simulation"] = self.used_solve["path"]
                         self.sessions.record(self.session, self.number, review, self.session_stats())
                     self.revision += 1
-                    if self.config["answer_mode"] == "play":
+                    if self.config["answer_mode"] == "play" and self.config["feedback_timing"] != "action":
                         self.continue_hand()
                 else:
                     self.continue_hand()

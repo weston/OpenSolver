@@ -1119,25 +1119,11 @@ function handComboPicker(data, cls, selected, acts, evs, equity) {
   const list = el("div", "hand-combos");
   list.setAttribute("role", "group");
   list.setAttribute("aria-label", cls + " combinations");
-  const board = new Set(boardOf(data.node));
-  for (const [index, suit] of [...SUITS].entries()) {
-    for (const axis of [0, 1]) {
-      const card = cls[axis] + suit;
-      const label = el("span", "hand-combo-axis");
-      label.style.gridRow = axis === 0 ? index + 2 : 1;
-      label.style.gridColumn = axis === 0 ? 1 : index + 2;
-      if (board.has(card)) label.classList.add("blocked");
-      label.appendChild(cardEl(card, "sm"));
-      list.appendChild(label);
-    }
-  }
   for (const i of H.byClass[cls]) {
     const combo = H.order[i];
     if (blocked(combo)) continue;
     const shown = displayCombo(combo);
     const b = el("button", "blk-combo hand-combo");
-    b.style.gridRow = SUITS.indexOf(shown[1]) + 2;
-    b.style.gridColumn = SUITS.indexOf(shown[3]) + 2;
     b.type = "button";
     b.setAttribute("aria-label", displayCombo(combo));
     b.setAttribute("aria-pressed", !selected || combo === selected ? "true" : "false");

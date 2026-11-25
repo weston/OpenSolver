@@ -562,6 +562,45 @@ class DrillTest(unittest.TestCase):
         self.assertEqual(state["hand"]["seat"], "IP")
         self.assertEqual(state["number"], 2)
 
+    def test_normal_play_feedback_timing_preserves_every_decision_and_resumes(self):
+        self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 10 10 20 20",
+                         "add_line 20 20 40 40", "add_line 0 0 10 10", "add_line 0 0 20 20",
+                         "build_tree", "set_equal_strats"])
+        for timing in ("action", "hand", "none"):
+            with self.subTest(timing=timing):
+                state = self.begin(answer_mode="play", feedback_timing=timing, merge_similar=False)
+                session = self.service.session
+                self.assertEqual(state["reviews"], [])
+                for street in (4, 5):
+                    self.assertEqual(state["hand"]["phase"], "decision")
+                    self.assertEqual(len(drill.cards(state["hand"]["node"]["board"])), street)
+                    self.assertEqual(state["reviews"], [])
+                    action = next(a for a in state["hand"]["actions"] if a["kind"] == "check")
+                    state = self.post("action", state, action=action["id"])
+                    if timing == "action":
+                        self.assertEqual(state["hand"]["phase"], "feedback")
+                        self.assertEqual(state["hand"]["feedback"]["hands"][0]["grade"], "correct")
+                        self.assertEqual(state["stats"]["hands"], 0)
+                        state = self.post("continue", state)
+                    else:
+                        self.assertNotEqual(state["hand"]["phase"], "feedback")
+                self.assertEqual(state["hand"]["phase"], "complete")
+                self.assertEqual(state["stats"]["hands"], 1)
+                self.assertEqual(state["stats"]["decisions"], 2)
+                if timing == "hand":
+                    self.assertEqual([len(drill.cards(r["node"]["board"])) for r in state["reviews"]], [4, 5])
+                    self.assertTrue(all(r["feedback"]["hands"][0]["grade"] == "correct" for r in state["reviews"]))
+                else:
+                    self.assertEqual(state["reviews"], [])
+                self.assertEqual(len(self.service.sessions.reviews(session, 0)), 2)
+                state = self.post("next", self.ready())
+                self.assertEqual(state["reviews"], [])
+                self.post("stop", state)
+                self.request("resume", {"session": session})
+                state = self.ready()
+                self.assertEqual(state["config"]["feedback_timing"], timing)
+                self.post("stop", state)
+
     def test_selected_river_line_only_shows_current_street_wagers(self):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 20 20 20 40 40", "build_tree"])
         state = self.begin(mode="node", node="r:0:b20:c:7c:c:b40", seat="OOP")
@@ -1125,6 +1164,7 @@ class DrillTest(unittest.TestCase):
 
     def test_invalid_settings_and_stale_session_do_not_change_play(self):
         for settings in ({"source": "wrong"}, {"mode": "node", "node": "r:0\nexit"}, {"seat": "both"}, {"answer_mode": "unknown"},
+                         {"feedback_timing": "wrong"}, {"feedback_timing": None},
                          {"source": "live", "ahead": 0}, {"source": "live", "ahead": 2.5},
                          {"source": "live", "ahead": True}, {"source": "live", "ahead": 21},
                          *({"frequency_tolerance": value} for value in (-1, 101, True, "10", None, float("nan"), float("inf")))):

@@ -402,21 +402,14 @@ input.flop-filter { width: 100%; margin-top: 5px; height: 22px; padding: 0 6px; 
 .hand-combos-head h3 { margin: 0; }
 .hand-all { padding: 2px 10px; min-height: 22px; }
 .hand-all[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
-.hand-combos { display: grid; grid-template-columns: 22px repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(5, auto); gap: 4px; container: combos / inline-size; }
-.hand-combo-axis { display: flex; align-items: center; justify-content: center; }
-.hand-combo-axis.blocked { opacity: .3; }
-.hand-combo-axis .pc .s { display: block; }
+.hand-combos { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 5px; }
 .hand-combos .hand-combo { display: flex; flex-direction: column; align-items: stretch; gap: 5px; background: var(--surface-2); border-color: var(--border); padding: 5px 3px; min-width: 0; }
 .hand-combos .hand-combo[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .hand-combo-cards { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 2px; }
-.hand-combo-values { display: grid; gap: 3px; font-size: 9px; }
+.hand-combo-values { display: grid; gap: 3px; font-size: 10px; }
 .hand-combo-values > span { display: flex; justify-content: space-between; gap: 2px; }
 .hand-combo-values b { color: var(--text); font-weight: 600; }
 .hand-combo .mini-bar { width: 100%; height: 6px; }
-@container combos (min-width: 560px) {
-  .hand-combo-values { grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px; }
-  .hand-combos .hand-combo { padding: 6px; }
-}
 .mini-bar { height: 8px; border-radius: 4px; overflow: hidden; display: flex; background: var(--surface-3); }
 .mini-bar span { height: 100%; }
 .side-empty { color: var(--text-3); padding: 24px 4px; text-align: center; line-height: 1.6; }
@@ -1146,6 +1139,10 @@ button.rl-card.end { cursor: default; }
 .drill-exercise { display: flex; align-items: center; gap: 14px; padding: 12px 0; width: 100%; }
 .drill-exercise .combo-cards { flex: none; }
 .drill-controls { display: flex; justify-content: center; gap: 8px; margin: 8px 0 0; padding: 8px 0; position: sticky; bottom: 0; z-index: 2; background: var(--bg); }
+#drill-rng { display: inline-flex; align-items: center; gap: 8px; }
+#drill-roll { min-width: 3ch; text-align: right; }
+.play-feedback-decision { min-width: 0; }
+.play-feedback-decision h3 { margin: 0 0 6px; font-size: 12px; }
 .drill-history-item { display: inline-flex; align-items: center; gap: 6px; padding: 2px 7px; font-size: 12px; color: var(--text); background: color-mix(in srgb, var(--action-color) 15%, var(--surface)); border: 1px solid color-mix(in srgb, var(--action-color) 55%, var(--border)); border-left: 3px solid var(--action-color); border-radius: 5px; }
 .drill-history-item .num { font-size: 11px; color: var(--text-2); }
 .drill-history-item.upcoming { border: 1px dashed var(--accent); background: var(--accent-soft); font-weight: 600; }
@@ -1162,7 +1159,7 @@ button.rl-card.end { cursor: default; }
 .frequency-bar { display: flex; height: 28px; border-radius: 6px; overflow: hidden; width: 100%; background: var(--surface-3); }
 .frequency-segment { display: grid; place-items: center; min-width: 0; overflow: hidden; white-space: nowrap; color: #fff; font-size: 11px; font-weight: 600; }
 .drill-feedback { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; }
-.drill-feedback > .card { padding: 10px 12px; }
+.drill-feedback > .card, .play-feedback-decision > .card { padding: 10px 12px; }
 .feedback-legend { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; }
 .feedback-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .feedback-legend i { width: 10px; height: 10px; border-radius: 3px; }

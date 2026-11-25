@@ -132,6 +132,11 @@ class Sessions:
                                (session, offset))
         return [{'number': row['hand'], **json.loads(row['payload'])} for row in rows]
 
+    def hand_reviews(self, session, number):
+        rows = self.db.execute('SELECT payload FROM reviews WHERE session=? AND hand=? ORDER BY id', (session, number))
+        reviews = [json.loads(row['payload']) for row in rows]
+        return [{'node': review['node'], 'feedback': review['feedback']} for review in reviews]
+
     def analysis(self, body, solver):
         selected = validate(body)
         board_filters = normalize_board_filters(body['board_filters']) if 'board_filters' in body else None

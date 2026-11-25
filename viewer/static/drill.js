@@ -1,6 +1,6 @@
 import { get, post, fmt, hideTip } from "./api.js";
 import { el, cardEl, comboEl, parseCards } from "./cards.js";
-import { mixEditor, initialFrequencies, restrictFrequencies, rememberFrequencies, feedbackCards, chipStack, actionHeader, actionColor, playActions, bb } from "./drill_controls.js";
+import { mixEditor, initialFrequencies, restrictFrequencies, rememberFrequencies, feedbackCards, feedbackHand, chipStack, actionHeader, actionColor, playActions, bb } from "./drill_controls.js";
 
 import { liveConfig, renderBoardOptions, restoreSelection, refreshNode, resetNode, selectCurrentBoard } from "./drill_setup.js";
 import { initSessions } from "./drill_sessions.js";
@@ -18,6 +18,7 @@ let selectSection, browseSpot;
 
 function fields() {
   $("drill-frequency-options").classList.toggle("hidden", $("drill-answer_mode").value === "play");
+  $("drill-play-options").classList.toggle("hidden", $("drill-answer_mode").value !== "play");
   $("drill-batch-field").classList.toggle("hidden", $("drill-source").value !== "saved");
   $("drill-live").classList.toggle("hidden", $("drill-source").value !== "live");
   $("drill-node-field").classList.toggle("hidden", $("drill-mode").value !== "node");
@@ -39,6 +40,8 @@ function controls() {
   $("drill-continue").disabled = busy;
   $("drill-continue").textContent = state?.config?.mode === "node" ? "Next hand" : "Continue";
   $("drill-submit").classList.toggle("hidden", play || hand?.phase !== "decision");
+  $("drill-rng").classList.toggle("hidden", !play || hand?.phase !== "decision");
+  $("drill-rng").disabled = busy;
   const resolving = !!state?.resolution?.busy;
   $("drill-browse").classList.toggle("hidden", !hand);
   $("drill-browse").disabled = busy || resolving || !!state?.resolution?.error || sizeDraft !== null;
@@ -121,7 +124,7 @@ function render(s) {
   if (rendered === s.token) return;
   rendered = s.token;
   if (s.config) {
-    for (const key of ["source", "mode", "answer_mode", "seat", "node"]) $("drill-" + key).value = s.config[key];
+    for (const key of ["source", "mode", "answer_mode", "feedback_timing", "seat", "node"]) $("drill-" + key).value = s.config[key];
     if (s.config.answer_mode !== "play") $("drill-count").value = s.config.count;
     if (s.config.source === "live") {
       for (const key of ["boards", "spot"]) $("drill-" + key).value = s.config[key];
@@ -132,19 +135,22 @@ function render(s) {
   }
   const hand = s.hand;
   const play = s.config?.answer_mode === "play";
+  const reviews = play && s.config.feedback_timing === "action" && hand?.phase === "feedback" ? [hand] : s.reviews || [];
   $("drill-table").classList.toggle("hero-acting", hand?.phase === "decision");
   $("drill-number").textContent = `Hand ${s.number}`;
   $("drill-number").classList.toggle("hidden", !hand);
   $("drill-stats").replaceChildren();
   if (s.active) {
-    for (const [label, value] of [["Hands", s.stats.hands], ["Decisions", s.stats.decisions], ["Average EV loss", fmt(s.stats.loss_pct, 2) + "%"]]) {
+    const stats = [["Hands", s.stats.hands], ["Decisions", s.stats.decisions]];
+    if (!play || s.config.feedback_timing === "action" || reviews.length) stats.push(["Average EV loss", fmt(s.stats.loss_pct, 2) + "%"]);
+    for (const [label, value] of stats) {
       const row = el("div", "kv");
       row.append(el("div", "k", label), el("div", "v num", value));
       $("drill-stats").append(row);
     }
   }
   for (const id of ["drill-hero", "drill-villain", "drill-board", "drill-actions", "drill-feedback", "drill-history"]) $(id).replaceChildren();
-  $("drill-feedback").classList.toggle("hidden", play || !hand?.feedback);
+  $("drill-feedback").classList.toggle("hidden", play ? !reviews.length : !hand?.feedback);
   $("drill-pot").replaceChildren();
   const heroIndex = hand?.seat === "OOP" ? 0 : 1;
   for (const id of ["drill-hero-wager", "drill-villain-wager"]) $(id).replaceChildren();
@@ -169,7 +175,10 @@ function render(s) {
   else for (let i = 0; i < 2; i++) $("drill-villain").append(el("span", "drill-card-back"));
   for (const card of parseCards(hand.node.board)) $("drill-board").append(cardEl(card, "lg"));
   const key = `${s.token.split(":")[0]}:${s.token.split(":")[3]}:${s.number}:${hand.node.id}`;
-  if (draftNode !== key) { drafts.clear(); fullDrafts.clear(); draftNode = key; sizeDraft = null; clearTimeout(sizeTimer); }
+  if (draftNode !== key) {
+    drafts.clear(); fullDrafts.clear(); draftNode = key; sizeDraft = null; clearTimeout(sizeTimer);
+    $("drill-roll").textContent = "—";
+  }
   const visibleActions = hand.actions.filter((a) => !hand.merged?.includes(a.id));
   const sizes = visibleActions.filter((a) => ["bet", "raise"].includes(a.kind));
   const toggles = sizes.length > 1 && parseCards(hand.node.board).length >= 3;
@@ -195,6 +204,15 @@ function render(s) {
     $("drill-actions").append(row);
   }
   if (hand.feedback && !play) $("drill-feedback").append(feedbackCards(hand.feedback, hand.big_blind, browseSpot));
+  for (const review of reviews) {
+    const result = review.feedback.hands[0];
+    const action = result.actions[result.chosen.findIndex(frequency => frequency > 0)];
+    const street = ["Preflop", "", "", "Flop", "Turn", "River"][parseCards(review.node.board).length];
+    const section = el("section", "play-feedback-decision");
+    section.append(el("h3", "", `${street} · ${action.label}${["bet", "raise"].includes(action.kind) ? ` · ${bb(action.amount, hand.big_blind)}` : ""}`),
+      feedbackHand(result, hand.big_blind, hand.phase === "feedback" ? browseSpot : null));
+    $("drill-feedback").append(section);
+  }
   renderHistory(hand);
   controls();
 }
@@ -256,7 +274,8 @@ async function command(action, data = {}) {
   $("drill-error").textContent = "";
   try {
     let result = await post("/api/drill/" + action, { token: state?.token, ...data });
-    if (action === "continue" && result.hand?.phase === "complete") {
+    if (action === "continue" && result.hand?.phase === "complete"
+      && (result.config.answer_mode !== "play" || result.config.mode === "node")) {
       state = result;
       result = await post("/api/drill/next", { token: result.token });
     }
@@ -278,7 +297,8 @@ async function start() {
   if (answer_mode !== "play" && !$("drill-count").reportValidity()) return;
   try {
     const source = $("drill-source").value, count = answer_mode === "play" ? 1 : Number($("drill-count").value);
-    const config = { ...drillSettings(), source, answer_mode, mode: $("drill-mode").value, seat: $("drill-seat").value,
+    const config = { ...drillSettings(), source, answer_mode, feedback_timing: $("drill-feedback_timing").value,
+      mode: $("drill-mode").value, seat: $("drill-seat").value,
       node: $("drill-node").value.trim(), batch: $("drill-batch").value,
       format: count > 1 ? "set" : "single", count };
     if (source === "live") Object.assign(config, await liveConfig());
@@ -384,6 +404,11 @@ export function initDrill({ opened } = {}) {
   $("drill-mode").onchange = fields;
   $("drill-answer_mode").onchange = fields;
   $("drill-start").onclick = start;
+  $("drill-rng").onclick = () => {
+    const roll = new Uint8Array(1);
+    do { crypto.getRandomValues(roll); } while (roll[0] >= 200);
+    $("drill-roll").textContent = roll[0] % 100 + 1;
+  };
   browseSpot = async (combo) => {
     const result = await command("browse");
     if (result) await opened(result.browse_node, combo);

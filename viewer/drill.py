@@ -196,7 +196,7 @@ class Hand:
             actor = "OOP" if self.node["type"] == "OOP_DEC" else "IP"
             self.frequencies = self.strategy(actor)
             self.actions = [action_info(self.node, c, self.effective_stack) for c in self.children]
-            if actor == self.seat:
+            if actor == self.seat and len(self.children) > 1:
                 player = PLAYERS.index(self.seat)
                 hero = self.hands[player]
                 self.decision_ranges = [vsrv.parse_floats(self.solver.cmd(f"show_range {p} {self.node['id']}"), vsrv.NUM_COMBOS)

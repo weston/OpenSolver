@@ -34,25 +34,13 @@ static NSString *baseURL, *scriptPath, *snapshotPath;
   exit(1);
 }
 
-- (void)testFilePanel:(WKWebView *)webView {
-  NSWindow *window = [self valueForKey:@"win"];
-  [webView evaluateJavaScript:@"document.getElementById('pio-import-file').click()" completionHandler:^(id result, NSError *error) {
-    (void)result;
-    if (error) [self failed:error.description];
-  }];
-  [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer *timer) {
-    if (!window.attachedSheet) return;
-    [timer invalidate];
-    if (![window.attachedSheet isKindOfClass:NSOpenPanel.class]) [self failed:@"file input did not open a native file chooser"];
-    [(NSOpenPanel *)window.attachedSheet cancel:nil];
-    printf("  ok: file import opens the native file chooser\n");
-    [webView takeSnapshotWithConfiguration:nil completionHandler:^(NSImage *image, NSError *snapshotError) {
-      if (snapshotError) [self failed:snapshotError.description];
-      NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:image.TIFFRepresentation];
-      if (![[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:snapshotPath atomically:YES])
-        [self failed:@"could not save the app snapshot"];
-      [NSApp terminate:nil];
-    }];
+- (void)saveSnapshotAndQuit:(WKWebView *)webView {
+  [webView takeSnapshotWithConfiguration:nil completionHandler:^(NSImage *image, NSError *snapshotError) {
+    if (snapshotError) [self failed:snapshotError.description];
+    NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:image.TIFFRepresentation];
+    if (![[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:snapshotPath atomically:YES])
+      [self failed:@"could not save the app snapshot"];
+    [NSApp terminate:nil];
   }];
 }
 
@@ -114,7 +102,7 @@ static NSString *baseURL, *scriptPath, *snapshotPath;
         if ([accepted boolValue]) [self failed:@"Cancel confirmed the action"];
         printf("  ok: JavaScript confirmation returns Cancel\n");
         dispatch_async(dispatch_get_main_queue(), ^{
-          [self testFilePanel:webView];
+          [self saveSnapshotAndQuit:webView];
         });
       }];
       [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer *timer) {

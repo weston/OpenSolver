@@ -335,6 +335,43 @@ class DrillTest(unittest.TestCase):
         self.assertEqual((state["hand"]["phase"], state["stats"]["decisions"]), ("complete", 1))
         self.assertIsNone(state["hand"]["villain"])
 
+    def test_forced_actions_advance_without_becoming_drill_decisions(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 0 20 20", "force_line 0 20", "build_tree"])
+        self.solver.cmd("set_strategy r:0:c:b20 " + " ".join(["1"] * vsrv.NUM_COMBOS + ["0"] * vsrv.NUM_COMBOS))
+        for mode, count in (("hand", 1), ("hand", 5), ("node", 5)):
+            with self.subTest(mode=mode, count=count):
+                self.service.close()
+                state = self.begin(mode=mode, format="set", count=count)
+                hand = state["hand"]
+                self.assertEqual((hand["phase"], hand["node"]["id"]), ("decision", "r:0:c:b20"))
+                self.assertEqual([a["kind"] for a in hand["history"]], ["check", "bet"])
+                self.assertEqual({a["kind"] for a in hand["actions"]}, {"call", "fold"})
+                self.assertEqual(state["stats"]["decisions"], 0)
+                call = [float(a["kind"] == "call") for a in hand["actions"]]
+                state = self.post("submit", state, choices=[call] * count)
+                state = self.post("continue", state)
+                self.assertEqual(state["hand"]["phase"], "complete")
+                self.assertEqual(state["stats"]["decisions"], count)
+                self.assertEqual(self.service.sessions.get(self.service.session)["decisions"], count)
+                self.assertEqual(len(self.service.sessions.reviews(self.service.session, 0)), 1)
+                if mode == "hand":
+                    river_actions = [a["kind"] for a in state["hand"]["history"] if a.get("street") == 5]
+                    self.assertEqual(river_actions, ["check", "check"])
+
+    def test_forced_checkdown_finishes_without_exercises_or_scoring(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        self.solver.cmds(["set_board 2c3d4h", "clear_lines", "add_line 0 0 0 0 0 0", "build_tree"])
+        for seat in ("OOP", "IP"):
+            with self.subTest(seat=seat):
+                self.service.close()
+                state = self.begin(seat=seat, format="set")
+                self.assertEqual(state["hand"]["phase"], "complete")
+                self.assertEqual(state["hand"]["exercises"], [])
+                self.assertEqual(state["stats"], {"hands": 1, "decisions": 0, "loss_pct": 0})
+                self.assertEqual([a["kind"] for a in state["hand"]["history"] if "kind" in a], ["check"] * 6)
+                self.assertEqual(self.service.sessions.reviews(self.service.session, 0), [])
+
     def test_alternating_position_stays_fixed_across_streets_and_resolves(self):
         self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 10 10 20 20",
@@ -359,7 +396,10 @@ class DrillTest(unittest.TestCase):
                     state = self.post("continue", state)
             self.assertEqual(state["hand"]["seat"], seat)
             self.assertEqual(state["hand"]["phase"], "complete")
-            self.assertGreaterEqual(decisions, 2)
+            if seat == "OOP":
+                self.assertGreaterEqual(decisions, 2)
+            else:
+                self.assertEqual(decisions, 0)
             if number == 1:
                 state = self.post("next", self.ready())
 
@@ -524,8 +564,7 @@ class DrillTest(unittest.TestCase):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 60 60", "add_line 0 0 30 60 60", "build_tree"])
         self.solver.cmd("set_strategy r:0 " + " ".join(["0"] * 1326 + ["1"] * 1326))
         state = self.begin(seat="IP")
-        self.assertEqual(state["hand"]["node"]["id"], "r:0:c")
-        state = self.post("action", state, action="r:0:c:c")
+        self.assertEqual([a["kind"] for a in state["hand"]["history"][:2]], ["check", "check"])
         state = self.finish(state)
         self.assertTrue(any("board" in h for h in state["hand"]["history"]))
         all_cards = drill.cards(state["hand"]["node"]["board"]) + drill.cards(state["hand"]["hero"]) + drill.cards(state["hand"]["villain"])
@@ -538,7 +577,9 @@ class DrillTest(unittest.TestCase):
         state = self.post("action", state, action="r:0:b60:c")
         state = self.finish(state)
         self.assertEqual(len(drill.cards(state["hand"]["node"]["board"])), 5)
-        self.assertIn("wins", state["hand"]["result"])
+        self.assertIn(state["hand"]["result"], ("OOP wins", "IP wins", "Split pot"))
+        all_cards = drill.cards(state["hand"]["node"]["board"]) + drill.cards(state["hand"]["hero"]) + drill.cards(state["hand"]["villain"])
+        self.assertEqual(len(set(all_cards)), 9)
 
     def test_live_buffer_defaults_to_three_and_refills_with_one_runner(self):
         state = self.request("start", {"source": "live", "boards": "fixed", "tree": TREE, "seconds": 1})

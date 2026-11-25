@@ -117,12 +117,12 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
     order.forEach((index, i) => { result[index] = values[i]; });
     onChange(result);
   }
-  for (const [i, action] of actions.entries()) {
+  for (const i of enabled) {
+    const action = actions[i];
     const button = el("button", `btn drill-action ${action.kind}`), label = el("span", "mix-percent num");
     button.type = "button";
     button.style.borderTopColor = actionColor(action);
     button.setAttribute("aria-label", action.label);
-    button.dataset.unavailable = disabled.includes(action.id) ? "yes" : "no";
     if (!sharedHeader) {
       button.append(el("strong", "", action.label));
       if (action.amount != null) button.append(el("span", "num", bb(action.amount, bigBlind)));
@@ -202,8 +202,8 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
   };
   function draw() {
     labels.forEach((label, i) => {
-      label.textContent = `${Math.round(values[i] * 100)}%`;
-      actionButtons[i].classList.toggle("chosen", values[i] > 0);
+      label.textContent = `${Math.round(values[enabled[i]] * 100)}%`;
+      actionButtons[i].classList.toggle("chosen", values[enabled[i]] > 0);
     });
     segments.forEach((segment, index) => {
       const frequency = values[enabled[index]], width = (frequency + MIX_PADDING) / scale;

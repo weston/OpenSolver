@@ -334,18 +334,6 @@ static NSDictionary *getJSON(NSString *url) {
   }];
 }
 
-- (void)webView:(WKWebView *)webView runOpenPanelWithParameters:(WKOpenPanelParameters *)parameters
-    initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(NSArray<NSURL *> *))completionHandler {
-  (void)webView;
-  (void)frame;
-  NSOpenPanel *panel = [NSOpenPanel openPanel];
-  panel.canChooseDirectories = parameters.allowsDirectories;
-  panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
-  [panel beginSheetModalForWindow:_win completionHandler:^(NSModalResponse response) {
-    completionHandler(response == NSModalResponseOK ? panel.URLs : nil);
-  }];
-}
-
 - (void)viewerEnded {
   if (_quitting || _asking || _failed) return;   // asking: said when that alert is answered, not on top of it
   [self failed:_url ? @"The viewer stopped unexpectedly." : @"The viewer did not start."];

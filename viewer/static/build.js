@@ -234,18 +234,6 @@ function renderPioExtra() {
   $("pio-extra-text").textContent = pioExtra.length ? `Also from PioViewer: ${describePioExtra(pioExtra)}.` : "";
 }
 
-async function importPio(file) {
-  try {
-    const text = await file.text();
-    const r = await post("/api/pio_import", { text });
-    applyForm(r.form);
-    saveForm();
-    const how = r.matches ? `the same ${r.file_lines} lines PioViewer generated`
-      : r.file_lines ? `${r.lines} lines (the file has ${r.file_lines}: not an exact match)` : `${r.lines} lines`;
-    toast(`Imported ${file.name}: builds ${how}.`);
-  } catch (e) { fail(e); }
-}
-
 function saveForm() {
   const f = readForm();
   prefs.set("build", f);
@@ -563,8 +551,6 @@ export function initBuild({ built }) {
 
   $("spot-open").onclick = openSpot;
   $("spot-save").onclick = saveSpot;
-  $("pio-import").onclick = () => $("pio-import-file").click();
-  $("pio-import-file").onchange = (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) importPio(f); };
   $("pio-extra-clear").onclick = () => { pioExtra = []; renderPioExtra(); saveForm(); };
   $("btn-build").onclick = () => { if (!busy) build(); };
   $("btn-solve").onclick = () => { if (!busy) buildAndSolve(); };

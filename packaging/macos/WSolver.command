@@ -3,7 +3,7 @@ set -e
 
 REPO_URL="git@github.com:weston/WSolver.git"
 APP_DIR="$HOME/.wsolver/app"
-BRANCH="issue-529-drilling"
+BRANCH="main"
 INSTALLED_APP="/Applications/WSolver.app"
 
 if [ ! -d "$APP_DIR/.git" ]; then
@@ -15,7 +15,7 @@ fi
 cd "$APP_DIR"
 echo "Downloading the latest version ..."
 git fetch origin "$BRANCH"
-git reset --hard "origin/$BRANCH"
+git switch -C "$BRANCH" "origin/$BRANCH"
 REVISION=$(git rev-parse HEAD)
 INSTALLED_REVISION=$(/usr/libexec/PlistBuddy -c 'Print :WSolverSourceRevision' \
   "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || true)

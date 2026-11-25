@@ -151,5 +151,22 @@ document.querySelector('.analysis-modes [data-mode=play]').click();
 await wait(() => document.querySelector('.analysis-modes [data-mode=play]').getAttribute('aria-pressed') === 'true'
   && /\d+ actions?\b/.test(document.querySelector('.analysis-detail')?.textContent));
 check(!document.querySelector('.analysis-modes [data-mode=frequencies]').disabled, 'frequency sessions were lost from analysis');
+$('drill-practice-tab').click();
+$('drill-stop').click();
+await wait(() => !$('drill-start').classList.contains('hidden') && !$('drill-start').disabled);
+await post('/api/drill/start', {source: 'current', mode: 'hand', answer_mode: 'play', feedback_timing: 'action', seat: 'OOP', merge_similar: false});
+await wait(() => document.querySelector('.drill-play-action:not(:disabled)'));
+for (let decision = 0; decision < 12 && $('drill-number').textContent === 'Hand 1'; decision++) {
+  const button = [...document.querySelectorAll('.drill-play-action')].find(button => /^(Check|Call)$/.test(button.querySelector('strong').textContent));
+  check(button && !button.disabled, 'no playable action with feedback');
+  button.click();
+  await wait(() => !$('drill-continue').classList.contains('hidden') && !$('drill-continue').disabled);
+  check(!$('drill-feedback').classList.contains('hidden'), 'action feedback did not appear');
+  $('drill-continue').click();
+  await wait(() => $('drill-continue').classList.contains('hidden')
+    && (document.querySelector('.drill-play-action:not(:disabled)') || !$('drill-next').classList.contains('hidden')));
+  check($('drill-next').classList.contains('hidden'), 'finishing action feedback requires a second Next hand click');
+}
+check($('drill-number').textContent === 'Hand 2', 'one Continue click did not start the next hand');
 check(testErrors.length === 0, testErrors.join('\n'));
 return 'native window runs frequency drills and normal play, preserves hero cards, and analyzes the modes separately';

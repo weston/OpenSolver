@@ -274,8 +274,7 @@ async function command(action, data = {}) {
   $("drill-error").textContent = "";
   try {
     let result = await post("/api/drill/" + action, { token: state?.token, ...data });
-    if (action === "continue" && result.hand?.phase === "complete"
-      && (result.config.answer_mode !== "play" || result.config.mode === "node")) {
+    if (action === "continue" && result.hand?.phase === "complete") {
       state = result;
       result = await post("/api/drill/next", { token: result.token });
     }

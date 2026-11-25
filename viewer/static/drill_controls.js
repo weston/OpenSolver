@@ -228,29 +228,25 @@ export function feedbackCards(feedback, bigBlind, onBrowse) {
     legend.append(label);
   }
   result.append(legend);
-  if (feedback.original) {
+  if (feedback.simplification) {
+    const simplification = feedback.simplification;
     const comparison = el("div", "card feedback-ranges feedback-simplification");
     comparison.append(el("h3", "", "Strategy Simplification"));
-    for (const [label, value] of [["Original range", feedback.original], ["Simplified range", feedback]]) {
+    for (const [label, frequencies] of [["Original range", simplification.frequencies], ["Simplified range", feedback.frequencies.range]]) {
       const row = el("div", "feedback-bar-row");
-      row.append(el("span", "", label), frequencyBar(value.hands[0].actions, value.frequencies.range, bigBlind, `Solver · ${label}`));
+      row.append(el("span", "", label), frequencyBar(feedback.hands[0].actions, frequencies, bigBlind, `Solver · ${label}`));
       comparison.append(row);
     }
     const stats = el("div", "simplification-stats");
     if (feedback.removed_frequency != null) stats.append(el("span", "", `Removed sizes used ${fmt(feedback.removed_frequency * 100, 1)}%`));
-    if (feedback.range_ev != null && feedback.original.range_ev != null) {
-      const pot = feedback.hands[0].pot;
-      const original = 100 * feedback.original.range_ev / pot, simplified = 100 * feedback.range_ev / pot;
-      const change = simplified - original;
-      stats.append(el("span", "num", `Range EV ${fmt(original, 2)}% → ${fmt(simplified, 2)}% pot`),
-        el("strong", "num", `${change > 0 ? "+" : ""}${fmt(change, 2)}% pot`));
-    }
+    const cost = simplification.cost.map((value) => fmt(100 * value / feedback.hands[0].pot, 2));
+    stats.append(el("strong", "num", `EV cost ${cost[0] === cost[1] ? cost[0] : cost.join("–")}% pot`));
     comparison.append(stats);
     result.append(comparison);
   }
   const ranges = el("div", "card feedback-ranges");
   for (const [key, label] of [["range", "Full range · Solver"], ["dealt_solver", "Dealt hands · Solver"], ["dealt_user", "Dealt hands · You"]]) {
-    if (key === "range" && feedback.original) continue;
+    if (key === "range" && feedback.simplification) continue;
     const row = el("div", "feedback-bar-row");
     row.append(el("span", "", label), frequencyBar(feedback.hands[0].actions, feedback.frequencies[key], bigBlind, label));
     ranges.append(row);

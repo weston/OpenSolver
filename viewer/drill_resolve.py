@@ -1,6 +1,8 @@
 import re
 
 import resolve
+import server as vsrv
+from jobs_api import jobs
 
 
 class Subtree:
@@ -43,16 +45,36 @@ def remaining_lines(source, ctx, disabled):
 
 
 class DrillResolve(resolve.ResolveManager):
-    def start(self, node, disabled, accuracy, seconds):
+    def start(self, node, disabled, accuracy, seconds, baseline=None):
         ctx = resolve.read_context(self.main, node, with_ranges=True)
         lines = remaining_lines(self.main, ctx, disabled)
         self.view = Subtree(self.rsolver, node, ctx["subgame_root"])
         self.disabled = disabled
+        self.baseline = baseline
+        self.comparison = None
         acc = sum(ctx["pot"].values()) * accuracy / 100
 
         def job():
             self.rsolver.cmds(["set_threads 0", "set_info_freq 0"])
+            if self.baseline is None:
+                full_lines = remaining_lines(self.main, ctx, [])
+                self._build_and_solve(ctx, {}, acc, lines=full_lines, seconds=seconds)
+                rows = [vsrv.parse_floats(row, vsrv.NUM_COMBOS) for row in
+                        self.view.cmd("show_strategy " + node).splitlines() if row.strip()]
+                self.baseline = {"rows": rows, **self.evaluation(ctx)}
             self._build_and_solve(ctx, {}, acc, lines=lines, seconds=seconds)
             self._finish(ctx, acc, lines)
+            restricted = self.evaluation(ctx, self.result["calc_results"])
+            self.comparison = {"original": self.baseline, "simplified": restricted,
+                               "cost": [max(0, self.baseline["lower"] - restricted["upper"]),
+                                        max(0, self.baseline["upper"] - restricted["lower"])]}
 
         self._launch("resolve", node, job)
+
+    def evaluation(self, ctx, calc=None):
+        result = jobs.parse_results(calc or self.rsolver.cmd("calc_results"))
+        player = ctx["actor"].lower()
+        opponent = "ip" if player == "oop" else "oop"
+        return {"ev": result["ev_" + player],
+                "lower": ctx["pot"]["dead"] - result["mes_" + opponent],
+                "upper": result["mes_" + player]}

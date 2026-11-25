@@ -185,12 +185,13 @@ class DrillTest(unittest.TestCase):
         removed = next(i for i, a in enumerate(feedback["hands"][0]["actions"]) if a["id"] in disabled)
         self.assertEqual(feedback["frequencies"]["range"][removed], 0)
         self.assertGreater(feedback["original"]["frequencies"]["range"][removed], 0)
-        self.assertEqual(feedback["removed_frequency"], feedback["original"]["frequencies"]["range"][removed])
-        for result, solver in ((feedback, self.service.hand.solver), (feedback["original"], self.solver)):
-            evs = vsrv.ev_pair(solver, "OOP", "r:0")
-            mass = sum(w for w in evs["matchups"] if w)
-            expected_ev = sum(ev * w for ev, w in zip(evs["ev"], evs["matchups"]) if ev is not None and w) / mass
-            self.assertAlmostEqual(result["range_ev"], expected_ev)
+        self.assertEqual(feedback["removed_frequency"], feedback["simplification"]["frequencies"][removed])
+        comparison = feedback["simplification"]
+        evs = vsrv.ev_pair(self.service.hand.solver, "OOP", "r:0")
+        mass = sum(w for w in evs["matchups"] if w)
+        expected_ev = sum(ev * w for ev, w in zip(evs["ev"], evs["matchups"]) if ev is not None and w) / mass
+        self.assertAlmostEqual(comparison["simplified"]["ev"], expected_ev, delta=0.002)
+        self.assertLessEqual(comparison["simplified"]["lower"], comparison["original"]["upper"] + 0.003)
         for actual, baseline in zip(feedback["hands"], feedback["original"]["hands"]):
             self.assertEqual(actual["chosen"], baseline["chosen"])
             combo = vsrv.hand_order(self.solver).index(actual["combo"])
@@ -200,6 +201,43 @@ class DrillTest(unittest.TestCase):
         self.post("continue", state)
         self.assertIs(self.service.playing_solver, resolved_solver)
         self.assertEqual(self.solver.cmd("show_strategy r:0"), original)
+
+    def test_simplification_compares_complete_games_from_a_truncated_save(self):
+        self.solver.cmds(["set_board 2c3d4h5s", "set_range IP AA,KK,QQ,JJ,TT",
+                         "clear_lines", "add_line 10 10 10 30 60 60", "add_line 10 10 10 40 60 60",
+                         "add_line 10 30 30 30 50 60 60", "add_line 10 40 40 40 60 60",
+                         "build_tree", "go 2000 steps", "wait_for_solver"])
+        node = "r:0:b10"
+        values = vsrv.ev_pair(self.solver, "IP", node)
+        mass = sum(w for w in values["matchups"] if w)
+        full_ev = sum(e * w for e, w in zip(values["ev"], values["matchups"]) if e is not None and w) / mass
+        path = os.path.join(self.temp.name, "comparison-no-rivers.cfr")
+        self.solver.cmd(f'dump_tree "{path}" no_rivers')
+        self.solver.cmd(f'load_tree "{path}" full')
+        values = vsrv.ev_pair(self.solver, "IP", node)
+        truncated_ev = sum(e * w for e, w in zip(values["ev"], values["matchups"]) if e is not None and w) / mass
+        self.assertGreater(abs(full_ev - truncated_ev), 0.1)
+        state = self.begin(seat="IP", mode="node", node=node, accuracy=0.001, merge_similar=False)
+        source_lines = set(self.service.reader.cmd("show_all_lines").splitlines())
+        disabled = node + ":b40"
+        self.post("sizes", state, disabled=[disabled])
+        state = self.resolved()
+        remaining = {p for p in self.service.hand.solver.cmd("show_all_lines").splitlines() if p.startswith(node + ":")}
+        expected = {p for p in source_lines if p.startswith(node + ":") and p != disabled and not p.startswith(disabled + ":")}
+        self.assertEqual(remaining, expected)
+        call = [float(a["kind"] == "call") for a in state["hand"]["actions"]]
+        baseline = self.service.hand.unrestricted.simplification_baseline
+        state = self.post("sizes", state, disabled=[node + ":b30"])
+        state = self.resolved()
+        self.assertIs(self.service.resolver.baseline, baseline)
+        state = self.post("submit", state, choices=[call])
+        feedback = state["hand"]["feedback"]
+        comparison = feedback["simplification"]
+        self.assertAlmostEqual(comparison["original"]["ev"], full_ev, delta=0.02)
+        self.assertLessEqual(comparison["simplified"]["lower"], comparison["original"]["upper"] + 0.003)
+        self.assertLessEqual(comparison["cost"][0], comparison["cost"][1])
+        self.assertAlmostEqual(comparison["cost"][1],
+                               comparison["original"]["upper"] - comparison["simplified"]["lower"], delta=0.003)
 
     def test_size_toggles_preserve_ip_line_and_can_restore_all_sizes(self):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 20 20 20 30 30",

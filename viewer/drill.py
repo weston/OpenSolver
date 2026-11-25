@@ -179,6 +179,8 @@ class Hand:
         self.feedback = None
         self.original = None
         self.unrestricted = None
+        self.simplification_baseline = None
+        self.simplification = None
         self.disabled = []
         self.merged = []
         for _ in range(128):
@@ -260,11 +262,13 @@ class Hand:
             self.pending_hand = self.exercises[selected]["index"]
             self.feedback = self.summarize([e["feedback"] for e in self.exercises])
             self.feedback["merged"] = self.merged
+            self.feedback["simplification"] = self.simplification
             if self.original:
                 self.feedback["original"] = self.original.summarize([
                     self.original.grade(e, e["chosen"]) for e in self.exercises])
+                original_frequencies = self.simplification["frequencies"] if self.simplification else self.original.range_frequencies
                 self.feedback["removed_frequency"] = sum(
-                    f for a, f in zip(self.original.actions, self.original.range_frequencies)
+                    f for a, f in zip(self.original.actions, original_frequencies)
                     if a["id"] in self.disabled) if self.disabled else None
             self.phase = "feedback"
         return feedback
@@ -292,15 +296,12 @@ class Hand:
         choices = list(zip(*[h["chosen"] for h in hands]))
         for hand, weight in zip(hands, self.exercise_weights):
             hand["weight"] = weight / sum(self.exercise_weights)
-        values = vsrv.ev_pair(self.solver, self.seat, self.node["id"])
-        pairs = [(ev, w) for ev, w in zip(values["ev"], values["matchups"]) if ev is not None and w and w > 0]
-        range_ev = sum(ev * w for ev, w in pairs) / sum(w for _, w in pairs)
-        return {"hands": hands, "range_ev": range_ev, "frequencies": {
+        return {"hands": hands, "frequencies": {
             "range": self.range_frequencies,
             "dealt_solver": weighted_frequencies(theoretical, self.exercise_weights),
             "dealt_user": weighted_frequencies(choices, self.exercise_weights)}}
 
-    def resolved(self, solver, disabled):
+    def resolved(self, solver, disabled, comparison):
         hand = copy.copy(self.unrestricted or self)
         hand.original = self.original or self
         hand.unrestricted = self.unrestricted or self
@@ -314,6 +315,10 @@ class Hand:
         player = PLAYERS.index(hand.seat)
         weights = hand_weights(hand.order, hand.decision_ranges[player], hand.decision_ranges[1 - player], cards(hand.node["board"]))
         hand.range_frequencies = weighted_frequencies(hand.strategy_rows, weights) if sum(weights) else None
+        baseline = comparison["original"]
+        hand.simplification = {"original": {k: v for k, v in baseline.items() if k != "rows"},
+                               "simplified": comparison["simplified"], "cost": comparison["cost"],
+                               "frequencies": weighted_frequencies(baseline["rows"], weights)}
         hand.action_evs = None
         hand.exercises = [{**e, "chosen": None, "feedback": None} for e in hand.exercises]
         return hand
@@ -639,7 +644,9 @@ class DrillService:
         if status["busy"] or status["error"] or not status["tree"]:
             return
         try:
-            self.hand = self.hand.resolved(self.resolver.view, self.resolver.disabled)
+            base = self.hand.unrestricted or self.hand
+            base.simplification_baseline = self.resolver.baseline
+            self.hand = self.hand.resolved(self.resolver.view, self.resolver.disabled, self.resolver.comparison)
         except vsrv.SolverError as e:
             with self.resolver.mu:
                 self.resolver.error = str(e)
@@ -679,7 +686,8 @@ class DrillService:
         if disabled:
             self.resolver = DrillResolve(base.solver, vsrv.Solver, self.solver_exe)
             try:
-                self.resolver.start(base.node["id"], disabled, self.config.get("accuracy", 0.5), self.config.get("seconds", 60))
+                self.resolver.start(base.node["id"], disabled, self.config.get("accuracy", 0.5),
+                                    self.config.get("seconds", 60), base.simplification_baseline)
             except Exception:
                 self.clear_resolve()
                 raise

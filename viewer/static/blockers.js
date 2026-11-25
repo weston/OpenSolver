@@ -41,7 +41,7 @@ export function prepare(data, order) {
  * Returns mass (weighted combos), average equity (matchup-weighted, over combos with an equity),
  * per-class and per-category masses, and per response the action frequencies.
  */
-export function summarize(P, keep = () => true) {
+export function summarize(P, keep = () => 1) {
   const { data } = P;
   const w = data.villain_reach, eq = data.villain_eq, mu = data.villain_matchups;
   let mass = 0, eqNum = 0, eqDen = 0;
@@ -49,11 +49,12 @@ export function summarize(P, keep = () => true) {
   const made = new Map(), draw = new Map();
   const resp = P.responses.map((r) => ({ id: r.id, num: r.freq.map(() => 0), den: 0 }));
   for (const i of P.live) {
-    const r = w[i] || 0;
-    if (r <= 0 || !keep(i)) continue;
+    const fraction = Number(keep(i));
+    const r = (w[i] || 0) * fraction;
+    if (r <= 0) continue;
     mass += r;
     // matchup-weighted, like Pio's range equity (reach-weighted if the answer has no matchups)
-    const m = mu ? mu[i] || 0 : r;
+    const m = mu ? (mu[i] || 0) * fraction : r;
     if (eq[i] != null && m > 0) { eqNum += m * eq[i]; eqDen += m; }
     classes.set(P.cls[i], (classes.get(P.cls[i]) || 0) + r);
     if (data.cats) {
@@ -97,6 +98,30 @@ export function comboReport(P, hero) {
     heroReach: P.data.hero_reach[hero] || 0,
     heroEq: P.data.hero_eq[hero],
     blockedByBoard: held.some((c) => P.board.has(c)),
+  };
+}
+
+export function classReport(P, heroes) {
+  const reach = heroes.reduce((sum, h) => sum + (P.data.hero_reach[h] || 0), 0);
+  const remaining = new Float64Array(P.order.length);
+  let equity = 0, matchups = 0;
+  for (const h of heroes) {
+    const weight = P.data.hero_reach[h] || 0;
+    if (weight <= 0) continue;
+    let compatible = 0;
+    for (const i of P.live) {
+      if (touches(P, i, P.cards[h])) continue;
+      remaining[i] += weight / reach;
+      compatible += P.data.villain_reach[i] || 0;
+    }
+    if (P.data.hero_eq[h] != null) {
+      equity += weight * compatible * P.data.hero_eq[h];
+      matchups += weight * compatible;
+    }
+  }
+  return {
+    before: summarize(P), after: summarize(P, (i) => remaining[i]),
+    heroReach: reach, heroEq: matchups > 0 ? equity / matchups : null,
   };
 }
 

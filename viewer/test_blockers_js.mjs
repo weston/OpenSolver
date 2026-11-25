@@ -1,6 +1,6 @@
 // Unit test for the Blockers tab's arithmetic (viewer/static/blockers.js).
 // usage: node viewer/test_blockers_js.mjs
-import { prepare, summarize, comboReport, shareChanges, cardEffects, DECK } from "./static/blockers.js";
+import { prepare, summarize, comboReport, classReport, shareChanges, cardEffects, DECK } from "./static/blockers.js";
 import { comboClass } from "./static/cards.js";
 
 let fails = 0;
@@ -76,6 +76,22 @@ check(rows[0].card[0] === "A" || rows[0].card[0] === "Q" || rows[0].card[0] === 
 // a hand that uses a board card
 const onBoard = order.findIndex((c) => c.includes("Td") && c.includes("As"));
 check(comboReport(P, onBoard).blockedByBoard, "a hand with a board card is flagged");
+
+const selected = prepare({
+  board: "2c3d4h", hero_reach: [1, 0.5, 0, 0, 0], hero_eq: [0.2, 0.8, null, null, null],
+  villain_reach: [0, 0, 2, 1, 1], villain_eq: [null, null, 0.8, 0.4, 0.5],
+  villain_matchups: [0, 0, 4, 2, 3], cats: null,
+  responses: [{ id: "bet", freq: [[0, 0, 1, 0, 0], [0, 0, 0, 1, 1]] }],
+}, ["AsKd", "AhKc", "AsQs", "AhQh", "QcQd"]);
+const allCombos = classReport(selected, [0, 1]);
+check(near(allCombos.after.mass, 7 / 3), "All accounts for each combo's reach and compatible opponent hands");
+check(near(allCombos.after.responses[0].freq[0], 2 / 7), "All response frequencies use the weighted compatible range");
+check(near(allCombos.heroEq, 16 / 35), "All equity is weighted by reach and compatible opponent mass");
+check(near(allCombos.after.eq, 93 / 170), "All preserves matchup weights when conditioning opponent equity");
+const oneCombo = classReport(selected, [0]);
+const exactCombo = comboReport(selected, 0);
+check(near(oneCombo.after.mass, exactCombo.after.mass) && near(oneCombo.after.responses[0].freq[0], exactCombo.after.responses[0].freq[0])
+  && near(oneCombo.heroEq, exactCombo.heroEq), "a one-combo selection agrees with the exact hand report");
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log("ALL PASSED");

@@ -80,8 +80,6 @@ export function preflopRaise(pot, own, facing, amt) {
   };
 }
 
-/* ---- the Build tab's Preflop form (#492): a heads-up preflop tree, set up in big blinds ---- */
-
 /** Chips in a big blind of the tree whose root this is: a preflop tree's root has no board and the
  *  big blind's whole blind as its first pot entry. 0 for a postflop tree (its root has a board). */
 export function bigBlindOf(root) {
@@ -90,98 +88,7 @@ export function bigBlindOf(root) {
   return Number.isFinite(bb) && bb > 0 ? bb : 0;
 }
 
-/** A target in bb/100 as the solver's accuracy, in chips: both are a win rate per hand, so 0.5
- *  bb/100 of a 100-chip big blind is 0.5 chips. */
-export function bb100ToChips(bb100, chips) {
-  return (bb100 / 100) * chips;
-}
-
 /** An exploitability in chips as bb/100, or null without a big blind. */
 export function chipsToBb100(explo, chips) {
   return chips > 0 && Number.isFinite(explo) ? (explo / chips) * 100 : null;
-}
-
-/** Megabytes in words: "396 MB", "2.8 GB". */
-export function fmtMemory(mb) {
-  if (!Number.isFinite(mb) || mb < 0) return "—";
-  return mb < 1000 ? `${Math.round(mb)} MB` : `${(mb / 1024).toFixed(1)} GB`;
-}
-
-/** A tree's two sizes in one: the smallest tree, to the tree with the tables that make a solve faster
- *  ("802–888 MB"); one figure where there is one (no bets on the turn, or the two print the same). */
-export function fmtMemoryRange(mb, mbTables) {
-  const a = fmtMemory(mb), b = fmtMemory(mbTables);
-  if (!(mbTables > mb) || a === b) return a;
-  const [n, unit] = a.split(" ");
-  return b.endsWith(` ${unit}`) ? `${n}–${b}` : `${a} – ${b}`;
-}
-
-/** What a memory estimate says. mb is the smallest tree; mbTables, when larger, the tree with the tables
- *  the solver adds when they fit in nine tenths of the memory that is free as it builds (#504: either
- *  can be what a build takes); one figure where the two print the same.
- *  fits is false when even the smallest tree is larger than all of the machine's memory (the one case
- *  that is certain; below it the solver decides when it builds). */
-export function memoryNote(mb, machineMb, flops, mbTables) {
-  const fits = !(machineMb > 0) || mb <= machineMb;
-  const size = mbTables > mb && fmtMemory(mbTables) !== fmtMemory(mb)
-    ? `about ${fmtMemory(mb)}, or ${fmtMemory(mbTables)} with the tables that make a solve faster (built when they fit in nine tenths of the memory that is free)`
-    : `about ${fmtMemory(mb)}`;
-  const parts = [`${Number(flops).toLocaleString("en-US")} flop${flops === 1 ? "" : "s"}`, size];
-  if (machineMb > 0) parts.push(fits ? `this machine has ${fmtMemory(machineMb)}` : `more than this machine's ${fmtMemory(machineMb)}`);
-  return { text: parts.join(" · "), fits };
-}
-
-/** The size in the line after a build ({mb, mb_tables, built_mb} of the server's answer): what the
- *  solver counted for the tree it built, and which of the two trees that is when there are two. */
-export function builtSize(b) {
-  const built = Number.isFinite(b.built_mb) ? b.built_mb : b.mb;
-  if (!(b.mb_tables > b.mb) || !Number.isFinite(b.built_mb)) return `about ${fmtMemory(built)}`;
-  return `about ${fmtMemory(built)}, ${built > b.mb ? "with the tables that make a solve faster"
-    : "without the tables that make a solve faster (they did not fit in nine tenths of the memory that was free)"}`;
-}
-
-/** The line after a build, from the server's answer ({node_count, flops, mb, mb_tables, built_mb}). */
-export function builtLine(b) {
-  const total = /TOTAL\D*(\d+)/.exec(b.node_count);
-  return `Built: ${total ? Number(total[1]).toLocaleString("en-US") + " nodes" : "ok"} · ${Number(b.flops).toLocaleString("en-US")} flops · ${builtSize(b)}`;
-}
-
-/** What the form keeps of an estimate the server gave ({mb, mb_tables, flops}: Build answers with one
- *  too), under the names `memoryNote` and `fmtMemoryRange` take. */
-export function estimateCell(e) {
-  return { mb: e.mb, mbTables: e.mb_tables, flops: e.flops };
-}
-
-/** The streets a tree bets on when its betting goes through `depth` (none, flop, turn or river):
- *  the size fields of the other streets are not used. */
-export function streetsBet(depth) {
-  const n = ["none", "flop", "turn", "river"].indexOf(depth);
-  return { flop: n >= 1, turn: n >= 2, river: n >= 3 };
-}
-
-/** A choice of flops in words: a shipped subset by its count, or every flop. */
-export function flopsLabel(choice) {
-  return choice === "all" ? "All 1,755 flops" : `${choice} flops`;
-}
-
-/** How many flops a choice deals. */
-export function flopsCount(choice) { return choice === "all" ? 1755 : Number(choice); }
-
-/** Which number of flops to ask the solver's memory estimate for next, or null when the row is done.
- *  The chosen one first, then the others from few to many ("all" only when it is the chosen one: it
- *  takes a minute to answer). cells: what is known, choice -> MB. More flops take more memory, so
- *  nothing above a number that is already over the machine's memory is asked. */
-export function nextEstimate(choices, chosen, cells, machineMb) {
-  const over = choices.filter((c) => cells[c] != null && machineMb > 0 && cells[c] > machineMb).map(flopsCount);
-  const least = over.length ? Math.min(...over) : Infinity;
-  const order = [chosen, ...choices.filter((c) => c !== chosen && c !== "all")].filter((c) => choices.includes(c));
-  for (const c of order) if (cells[c] == null && flopsCount(c) < least) return c;
-  return null;
-}
-
-/** One line over the tree in words. */
-export function treeSummary(d) {
-  const n = d.rows.length, x = d.exits;
-  return `${n} node${n === 1 ? "" : "s"} before the flop · ${x === 0 ? "no way" : x === 1 ? "1 way" : `${x} ways`} to a flop`
-    + ` · ${Number(d.flops).toLocaleString("en-US")} flop${d.flops === 1 ? "" : "s"}`;
 }

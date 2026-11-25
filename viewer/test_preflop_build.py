@@ -501,35 +501,17 @@ class PreflopBuildTest(unittest.TestCase):
         self.assertEqual(d["built_mb"], d["mb_tables"])
         self.assertIn(f"Memory needed: {d['built_mb']} MB; available: 8192 MB", self.v.solver.cmd("estimate_rebuild_tree"))
 
-    def test_13_the_page_reads_the_sizes_through_the_tested_functions(self):
-        # The page's code that touches the document runs in no test. What it does with the two sizes is in
-        # functions of preflop.js that viewer/test_preflop_js.mjs runs, and this holds the page to them:
-        # every name a module takes from preflop.js is one it gives, the line after Build is builtLine's,
-        # and an estimate is kept by estimateCell and read as the note and the row read it.
+    def test_13_frontend_modules_link(self):
         import re
         static = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
         src = {n: open(os.path.join(static, n)).read() for n in os.listdir(static) if n.endswith(".js")}
         given = {name: set(re.findall(r"^export (?:async )?(?:function\*?|const|let|class) (\w+)", text, re.M))
                  | {n.split(" as ")[-1].strip() for names in re.findall(r"^export \{([^}]*)\}", text, re.M) for n in names.split(",") if n.strip()}
                  for name, text in src.items()}
-        users, others = 0, 0
         for name, text in src.items():   # a name no module gives stops the whole page: its modules do not link
             for names, source in re.findall(r'import \{([^}]*)\} from "\./(\w+\.js)"', text):
-                users += source == "preflop.js"
-                others += source != "preflop.js"
                 for taken in (n.split(" as ")[0].strip() for n in names.split(",") if n.strip()):
                     self.assertIn(taken, given[source], f"{name} imports {taken} from {source}")
-        self.assertGreaterEqual(users, 4)
-        self.assertGreaterEqual(others, 20)
-        build, form = src["build.js"], src["preflop_build.js"]
-        self.assertIn("info(builtLine(b));", build)
-        for other in ("builtSize", "mb_tables", "built_mb", "fmtMemory"):
-            self.assertNotIn(other, build, "the line after Build is made in one place")
-        code = "\n".join(line for line in form.splitlines() if not line.lstrip().startswith(("/**", "*", "//")))
-        self.assertEqual(code.count("= estimateCell(e);"), 2)
-        self.assertNotIn("mb_tables", code)
-        self.assertIn("memoryNote(own.mb, mem.machine, own.flops, own.mbTables)", code)
-        self.assertIn("fmtMemoryRange(e.mb, e.mbTables)", code)
 
 
 if __name__ == "__main__":

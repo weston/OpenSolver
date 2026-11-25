@@ -191,17 +191,9 @@
 
 <!-- ============================== BUILD ============================== -->
 <main id="view-build" class="view hidden">
-  <div class="build" data-mode="postflop">
+  <div class="build">
     <div class="build-main">
-      <div class="build-mode">
-        <div class="seg" id="build-mode">
-          <button data-mode="postflop" class="active" title="One board: ranges, pot and stack at the flop, turn or river">Postflop</button>
-          <button data-mode="preflop" title="Heads up from the blinds, on a set of flops">Preflop</button>
-        </div>
-        <span class="hint postflop-only">One spot: two ranges on a board, from there to the river.</span>
-        <span class="hint preflop-only">Heads up from the blinds. The small blind has the button: first to act before the flop, in position after it.</span>
-      </div>
-      <div class="spotbar postflop-only">
+      <div class="spotbar">
         <div class="spot-name"><span class="muted">Spot</span> <b id="spot-name">Unsaved</b> <span id="spot-dirty" class="tag hidden">edited</span></div>
         <button class="btn small" id="spot-open">Open spot…</button>
         <button class="btn small" id="spot-save">Save spot…</button>
@@ -220,69 +212,13 @@
             </div>
           </div>
         </div>
-        <div class="editors postflop-only">
+        <div class="editors">
           <div class="editor" data-player="OOP"></div>
           <div class="editor" data-player="IP"></div>
         </div>
-        <div class="editors preflop-only">
-          <div class="editor" data-seat="BB"></div>
-          <div class="editor" data-seat="SB"></div>
-        </div>
       </section>
 
-      <section class="card preflop-only">
-        <div class="card-head">
-          <h2>Preflop tree</h2>
-          <div class="hint"><code>2.5</code> raise to 2.5 bb · <code>4x</code> four times the bet faced · <code>allin</code> · several: <code>2.5, 3</code></div>
-        </div>
-        <div class="tree-form" id="pf-form">
-          <div class="money">
-            <label class="field"><span>Stack</span><div class="suffix"><input id="pf-stack" type="text" inputmode="decimal" autocomplete="off"><i>bb</i></div></label>
-            <label class="field"><span>Ante</span><div class="suffix"><input id="pf-ante" type="text" inputmode="decimal" autocomplete="off"><i>bb</i></div></label>
-            <label class="field" title="A raise to more than this share of the stack is all-in instead"><span>All-in threshold</span><div class="suffix"><input id="pf-allin-threshold" type="text" inputmode="decimal" autocomplete="off"><i>% stack</i></div></label>
-            <label class="check pf-limp" title="Whether the small blind may call the big blind instead of raising or folding"><input type="checkbox" id="pf-limp"> The small blind can limp</label>
-          </div>
-          <div class="pf-sizes">
-            <label class="field" title="The small blind's first raise. Empty: no raise (a limp-or-fold tree)"><span>Open</span><input id="pf-open" type="text" autocomplete="off" spellcheck="false"></label>
-            <label class="field" title="The big blind's raise over a limp. Empty: the big blind checks"><span>Raise over a limp</span><input id="pf-iso" type="text" autocomplete="off" spellcheck="false"></label>
-            <label class="field" title="The big blind's raise over an open. Empty: call or fold"><span>3-bet</span><input id="pf-threebet" type="text" autocomplete="off" spellcheck="false"></label>
-            <label class="field" title="The small blind's raise after limping and being raised. Empty: the 3-bet sizes; none: call or fold"><span>Limp-raise</span><input id="pf-limp-raise" type="text" autocomplete="off" spellcheck="false" placeholder="as the 3-bet"></label>
-            <label class="field" title="The raise over a 3-bet. Empty: call or fold"><span>4-bet</span><input id="pf-fourbet" type="text" autocomplete="off" spellcheck="false"></label>
-            <label class="field" title="The raise over a 4-bet. Empty: call or fold"><span>5-bet</span><input id="pf-fivebet" type="text" autocomplete="off" spellcheck="false"></label>
-          </div>
-          <div id="pf-tree" class="pf-tree"></div>
-        </div>
-      </section>
-
-      <section class="card preflop-only">
-        <div class="card-head">
-          <h2>After the flop</h2>
-          <div class="hint">One postflop tree on every flop: <code>33</code> % pot · <code>2e</code> geometric · <code>3x</code> raise to 3× · <code>a</code> all-in</div>
-        </div>
-        <div class="tree-form" id="pf-post">
-          <div class="money">
-            <label class="field" title="The flops the tree is solved on: a weighted subset stands for all 1,755, more flops are more exact and take more memory"><span>Flops</span><select id="pf-flops"></select></label>
-            <label class="field" title="The last street with betting. Later streets are checked down: far less memory, a rougher answer"><span>Betting through</span><select id="pf-depth"></select></label>
-            <label class="field" title="Maximum bets + raises on a street"><span>Cap</span><input id="pf-cap" type="number" min="1" max="99" step="1"></label>
-            <label class="field" title="A bet or raise to more than this share of the stack is all-in instead"><span>All-in threshold</span><div class="suffix"><input id="pf-post-threshold" type="text" inputmode="decimal" autocomplete="off"><i>% stack</i></div></label>
-            <label class="field" title="An all-in is offered when the stack left is under this share of the pot"><span>Add all-in below</span><div class="suffix"><input id="pf-post-allin" type="text" inputmode="decimal" autocomplete="off"><i>% pot</i></div></label>
-          </div>
-          <div class="money">
-            <label class="field"><span>Flop bet</span><input id="pf-flop-bet" type="text" autocomplete="off" spellcheck="false"></label>
-            <label class="field"><span>Turn bet</span><input id="pf-turn-bet" type="text" autocomplete="off" spellcheck="false"></label>
-            <label class="field"><span>River bet</span><input id="pf-river-bet" type="text" autocomplete="off" spellcheck="false"></label>
-            <label class="field"><span>Raise</span><input id="pf-raise" type="text" autocomplete="off" spellcheck="false"></label>
-            <label class="field" title="The big blind's lead into the player who bet or raised last. Empty: no lead"><span>Donk <small>(OOP lead)</small></span><input id="pf-donk" type="text" autocomplete="off" spellcheck="false"></label>
-          </div>
-          <div class="pf-mem">
-            <button class="btn small" id="pf-estimate" title="Ask the solver how much memory this tree takes, without building it">Estimate memory</button>
-            <span id="pf-mem-text" class="hint"></span>
-          </div>
-          <div id="pf-mem-row" class="pf-mem-row"></div>
-        </div>
-      </section>
-
-      <section class="card postflop-only">
+      <section class="card">
         <div class="card-head">
           <h2>Board</h2>
           <div class="card-tools">
@@ -296,7 +232,7 @@
         </div>
       </section>
 
-      <section class="card postflop-only">
+      <section class="card">
         <div class="card-head">
           <h2>Tree</h2>
           <div class="hint"><code>33</code> % pot · <code>2e</code> geometric over 2 streets · <code>3x</code> raise to 3× · <code>a</code> all-in</div>
@@ -322,16 +258,15 @@
       <section class="card sticky">
         <div class="card-head"><h2>Solve</h2><span id="build-state" class="tag">not built</span></div>
         <div class="solve-form">
-          <label class="field postflop-only"><span>Target exploitability</span><div class="suffix"><input id="f-accuracy" type="number" step="0.05" min="0.01" value="0.3"><i>% pot</i></div></label>
-          <label class="field preflop-only" title="How much a perfect opponent could win from the strategy, in big blinds per 100 hands"><span>Target exploitability</span><div class="suffix"><input id="pf-accuracy" type="number" step="0.1" min="0.01" value="0.5"><i>bb/100</i></div></label>
+          <label class="field"><span>Target exploitability</span><div class="suffix"><input id="f-accuracy" type="number" step="0.05" min="0.01" value="0.3"><i>% pot</i></div></label>
           <div class="btn-row">
             <button id="btn-build" class="btn" title="Build the tree from the form, without solving">Build</button>
             <button id="btn-resume" class="btn" title="Solve the current tree, continuing from where it stopped" disabled>Solve</button>
             <button id="btn-solve" class="btn primary" title="Rebuild the tree from the form, then solve it">Build &amp; solve</button>
             <button id="btn-stop" class="btn danger hidden">Stop</button>
           </div>
-          <label class="check postflop-only" title="Open the Browse view as soon as the flop strategy is readable (if you left this page alone), keep solving in the background, and re-solve each later street from its first decision when you look at it"><input id="f-preview" type="checkbox" checked> Fast preview</label>
-          <div id="preview-info" class="build-info muted postflop-only"></div>
+          <label class="check" title="Open the Browse view as soon as the flop strategy is readable (if you left this page alone), keep solving in the background, and re-solve each later street from its first decision when you look at it"><input id="f-preview" type="checkbox" checked> Fast preview</label>
+          <div id="preview-info" class="build-info muted"></div>
           <div id="build-info" class="build-info"></div>
         </div>
         <div class="chart-box">

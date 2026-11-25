@@ -234,8 +234,7 @@ async function boot() {
     setView("jobs");
     try { await openReport(app.loadedBatch, line); } catch (e) { fail(e); }
   };
-  // info.bb: a preflop tree was built (its big blind in chips), known before the root is asked for
-  initBuild({ built: async (info) => { app.tree = true; app.bb = (info && info.bb) || 0; freshTree(); await refreshRootPot(); study.reset(); } });
+  initBuild({ built: async () => { app.tree = true; app.bb = 0; freshTree(); await refreshRootPot(); study.reset(); } });
   initJobs({ opened: async () => {
     app.tree = true;
     freshTree();

@@ -1,4 +1,4 @@
-import { fmt } from "./api.js";
+import { fmt, showTip, hideTip } from "./api.js";
 import { el, comboEl } from "./cards.js";
 
 export function bb(amount, bigBlind = 100) { return `${fmt(amount / bigBlind, 2)} BB`; }
@@ -44,7 +44,7 @@ export function actionColor(action) {
   return `hsl(8 68% ${56 - 30 * fraction / (fraction + 0.75)}%)`;
 }
 
-export function frequencyBar(actions, frequencies) {
+export function frequencyBar(actions, frequencies, bigBlind) {
   const bar = el("div", "frequency-bar");
   if (!frequencies) { bar.textContent = "—"; return bar; }
   bar.setAttribute("role", "img");
@@ -54,6 +54,12 @@ export function frequencyBar(actions, frequencies) {
     const segment = el("span", "frequency-segment", frequencies[i] >= 0.1 ? `${Math.round(frequencies[i] * 100)}%` : "");
     segment.style.width = `${frequencies[i] * 100}%`;
     segment.style.background = actionColor(action);
+    const tip = el("div"), frequency = el("div", "r");
+    tip.append(el("div", "t", action.label + (["bet", "raise"].includes(action.kind) ? ` · ${bb(action.amount, bigBlind)}` : "")));
+    frequency.append(el("span", "", "Frequency"), el("strong", "num", `${fmt(frequencies[i] * 100, 1)}%`));
+    tip.append(frequency);
+    segment.onmousemove = (event) => showTip(event, tip.outerHTML);
+    segment.onmouseleave = hideTip;
     bar.append(segment);
   }
   return bar;
@@ -80,16 +86,21 @@ export function moveMixBoundary(values, boundary, frequency, enabled) {
 
 const MIX_PADDING = 0.07;
 
+export function initialFrequencies(actions, disabled = []) {
+  const enabled = actionOrder(actions).filter((i) => !disabled.includes(actions[i].id));
+  const values = actions.map(() => 0);
+  enabled.forEach((index, i) => {
+    values[index] = (Math.round((i + 1) * 20 / enabled.length) - Math.round(i * 20 / enabled.length)) / 20;
+  });
+  return values;
+}
+
 export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHeader = false, disabled = []) {
   const order = actionOrder(canonical), actions = order.map((i) => canonical[i]);
   chosen = chosen && order.map((i) => chosen[i]);
   draft = draft && order.map((i) => draft[i]);
   const enabled = actions.map((a, i) => disabled.includes(a.id) ? -1 : i).filter((i) => i >= 0);
-  let values = chosen || draft || actions.map((_, i) => {
-    const position = enabled.indexOf(i);
-    return position < 0 ? 0 : (Math.round((position + 1) * 20 / enabled.length) - Math.round(position * 20 / enabled.length)) / 20;
-  });
-  let selected = !!(chosen || draft);
+  let values = chosen || draft;
   const editor = el("div", "mix-editor"), buttons = el("div", "mix-actions");
   const slider = el("fieldset", "mix-slider"), labels = [], actionButtons = [], segments = [], handles = [];
   slider.setAttribute("aria-label", "Action frequencies");
@@ -101,7 +112,6 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
   }
   function change(next) {
     values = next;
-    selected = true;
     draw();
     const result = Array(values.length);
     order.forEach((index, i) => { result[index] = values[i]; });
@@ -193,7 +203,7 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
   function draw() {
     labels.forEach((label, i) => {
       label.textContent = `${Math.round(values[i] * 100)}%`;
-      actionButtons[i].classList.toggle("chosen", selected && values[i] > 0);
+      actionButtons[i].classList.toggle("chosen", values[i] > 0);
     });
     segments.forEach((segment, index) => {
       const frequency = values[enabled[index]], width = (frequency + MIX_PADDING) / scale;
@@ -215,13 +225,13 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
 
 export function feedbackCards(feedback, continuation, bigBlind) {
   if (feedback.original) {
-    const comparison = el("div", "feedback-comparison");
-    for (const [label, value] of [["Original", feedback.original], ["Re-solved", { ...feedback, original: null }]]) {
-      const column = el("section", "drill-feedback");
-      column.append(el("h3", "", label), feedbackCards(value, continuation, bigBlind));
-      comparison.append(column);
-    }
-    return comparison;
+    const result = feedbackCards({ ...feedback, original: null }, continuation, bigBlind);
+    const original = el("details", "feedback-original");
+    const contents = el("div", "drill-feedback");
+    contents.append(feedbackCards(feedback.original, continuation, bigBlind));
+    original.append(el("summary", "", "Original strategy"), contents);
+    result.append(original);
+    return result;
   }
   const result = document.createDocumentFragment();
   const legend = el("div", "feedback-legend");
@@ -237,7 +247,7 @@ export function feedbackCards(feedback, continuation, bigBlind) {
   const ranges = el("div", "card feedback-ranges");
   for (const [key, label] of [["range", "Full range · Solver"], ["dealt_solver", "Dealt hands · Solver"], ["dealt_user", "Dealt hands · You"]]) {
     const row = el("div", "feedback-bar-row");
-    row.append(el("span", "", label), frequencyBar(feedback.hands[0].actions, feedback.frequencies[key]));
+    row.append(el("span", "", label), frequencyBar(feedback.hands[0].actions, feedback.frequencies[key], bigBlind));
     ranges.append(row);
   }
   result.append(ranges);
@@ -251,7 +261,7 @@ export function feedbackCards(feedback, continuation, bigBlind) {
     card.append(header);
     for (const [label, frequencies] of [["You", hand.chosen], ["Solver", hand.actions.map((a) => a.frequency)]]) {
       const row = el("div", "feedback-bar-row");
-      row.append(el("span", "", label), frequencyBar(hand.actions, frequencies));
+      row.append(el("span", "", label), frequencyBar(hand.actions, frequencies, bigBlind));
       card.append(row);
     }
     result.append(card);

@@ -92,6 +92,51 @@ class DrillTest(unittest.TestCase):
             time.sleep(0.02)
         self.fail("re-solve did not finish")
 
+    def test_browse_opens_current_decision_and_keeps_drill_independent(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        node = "r:0:b30"
+        state = self.begin(mode="node", node=node, seat="IP")
+        strategy = self.service.hand.solver.cmd("show_strategy " + node)
+        self.solver.cmds(["clear_lines", "add_line 10 10", "build_tree"])
+        opened = self.post("browse", state)
+        self.assertEqual(opened["browse_node"], node)
+        self.assertEqual(self.solver.cmd("show_strategy " + node), strategy)
+        self.assertEqual(opened["hand"], state["hand"])
+        self.assertEqual(opened["token"], state["token"])
+        self.solver.cmd("set_equal_strats")
+        self.assertEqual(self.service.hand.solver.cmd("show_strategy " + node), strategy)
+        self.finish(state)
+        self.service.close()
+        self.assertEqual(vsrv.parse_node_block(self.solver.cmd("show_node " + node))["type"], "IP_DEC")
+
+    def test_browse_resolved_ip_spot_maps_node_and_preserves_feedback(self):
+        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+        self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 20 20 20 30 30",
+                         "add_line 20 20 20 40 40", "build_tree", "go 40 steps", "wait_for_solver"])
+        node = "r:0:b20:c:7c:c"
+        state = self.begin(format="set", seat="IP", mode="node", node=node)
+        self.post("sizes", state, disabled=[node + ":b40"])
+        state = self.resolved()
+        choices = [float(a["kind"] == "check") for a in state["hand"]["actions"]]
+        state = self.post("submit", state, choices=[choices] * len(state["hand"]["exercises"]))
+        strategy = self.service.hand.solver.cmd("show_strategy " + node)
+        opened = self.post("browse", state)
+        self.assertEqual(opened["browse_node"], "r:0:c")
+        self.assertEqual(self.solver.cmd("show_strategy r:0:c"), strategy)
+        shown = vsrv.parse_node_block(self.solver.cmd("show_node r:0:c"))
+        self.assertEqual(shown["board"], state["hand"]["node"]["board"])
+        self.assertEqual(shown["pot"], state["hand"]["node"]["pot"])
+        self.assertEqual([c["id"] for c in vsrv.parse_children(self.solver.cmd("show_children r:0:c"))],
+                         ["r:0:c:b30", "r:0:c:c"])
+        self.assertEqual(opened["hand"], state["hand"])
+        self.assertEqual(opened["token"], state["token"])
+        state = self.post("continue", state)
+        self.assertEqual(state["hand"]["phase"], "complete")
+        opened = self.post("browse", state)
+        self.assertEqual(opened["browse_node"], "r:0:c")
+        self.service.close()
+        self.assertEqual(self.solver.cmd("show_strategy r:0:c"), strategy)
+
     def test_size_toggles_compare_original_and_continue_resolved_strategy(self):
         self.solver.cmds(["clear_lines", "add_line 10 30 60 60", "add_line 20 40 60 60",
                          "add_line 0 10 30 60 60", "add_line 0 20 40 60 60", "build_tree", "go 100 steps", "wait_for_solver"])
@@ -597,6 +642,10 @@ class DrillTest(unittest.TestCase):
         self.assertTrue(all(c["id"].startswith("r:0:c:c:?:") for c in preview["choices"]))
         state = self.begin(source="saved", batch="saved", mode="node", node="r:0:c:c:?")
         self.assertEqual(len(drill.cards(state["hand"]["node"]["board"])), 5)
+        opened = self.post("browse", state)
+        node = state["hand"]["node"]["id"]
+        self.assertEqual(opened["browse_node"], node)
+        self.assertEqual(self.solver.cmd("show_strategy " + node), self.service.hand.solver.cmd("show_strategy " + node))
         state = self.finish(state)
         self.post("stop", state)
         with open(job["out"], "rb") as f:

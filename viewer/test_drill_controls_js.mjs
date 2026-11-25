@@ -1,4 +1,4 @@
-import { setActionFrequency, moveMixBoundary } from "./static/drill_controls.js";
+import { setActionFrequency, moveMixBoundary, initialFrequencies } from "./static/drill_controls.js";
 
 let failures = 0;
 function check(actual, expected, label) {
@@ -7,6 +7,11 @@ function check(actual, expected, label) {
   if (!ok) failures++;
 }
 
+const actions = [{ id: "b75", kind: "bet", amount: 75 }, { id: "b25", kind: "bet", amount: 25 }, { id: "c", kind: "check" }];
+check(initialFrequencies(actions), [0.35, 0.3, 0.35],
+  "untouched frequencies sum to 100% in solver order with the displayed five-percent steps");
+check(initialFrequencies(actions, ["b75"]), [0, 0.5, 0.5],
+  "untouched hands submit zero frequency for disabled range options");
 check(setActionFrequency([0.2, 0.3, 0.5], 0, 0.9, [0, 1, 2]), [0.9, 0.0375, 0.0625],
   "setting check to 90% preserves the relative mix of the remaining actions");
 check(setActionFrequency([1, 0, 0], 0, 0.9, [0, 1, 2]), [0.9, 0.05, 0.05],

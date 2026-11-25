@@ -1717,5 +1717,5 @@ export const study = {
   get pot() { return S.path.length ? potOf(S.path[S.path.length - 1]) : 0; },
   get inSubgame() { return !!S.variant; },
   refresh() { invalidate(); return gotoNode(S.loaded ? S.id : "r:0"); },
-  reset() { S.pinned = null; invalidate(); S.variant = null; return gotoNode("r:0"); },
+  reset(node = "r:0") { S.pinned = null; invalidate(); S.variant = null; return gotoNode(node); },
 };

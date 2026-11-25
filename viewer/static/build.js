@@ -525,6 +525,15 @@ export function initBuild({ built }) {
   editors.OOP = new RangeEditor(document.querySelector('.editor[data-player="OOP"]'), "OOP", saveForm);
   editors.IP = new RangeEditor(document.querySelector('.editor[data-player="IP"]'), "IP", saveForm);
   buildDeck();
+  const picker = $("tree-board-picker"), selectBoard = $("board-select");
+  selectBoard.onclick = () => {
+    if (picker.matches(":popover-open")) { picker.hidePopover(); return; }
+    picker.showPopover();
+    const anchor = selectBoard.getBoundingClientRect(), bounds = picker.getBoundingClientRect();
+    picker.style.left = `${Math.max(12, Math.min(innerWidth - bounds.width - 12, anchor.left))}px`;
+    picker.style.top = `${Math.max(12, anchor.bottom + bounds.height + 6 <= innerHeight - 12 ? anchor.bottom + 6 : anchor.top - bounds.height - 6)}px`;
+  };
+  picker.addEventListener("beforetoggle", (event) => selectBoard.setAttribute("aria-expanded", String(event.newState === "open")));
 
   const slider = $("weight");
   const setW = (v) => {

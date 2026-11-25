@@ -137,12 +137,7 @@
         <label class="field"><span>Play as</span><select id="drill-seat">
           <option value="alternate">Alternating</option><option value="OOP">OOP</option><option value="IP">IP</option>
         </select></label>
-        <div class="drill-option">
-          <label class="field"><span>Hands</span><select id="drill-format"><option value="single">One hand</option><option value="set">Hand set</option></select></label>
-          <div id="drill-count-field" class="sub-settings hidden">
-            <label class="field"><span>Hands per node</span><input id="drill-count" type="number" value="5" min="1" max="20" step="1"></label>
-          </div>
-        </div>
+        <label class="field"><span>Hands per node</span><input id="drill-count" type="number" value="5" min="1" max="20" step="1" required></label>
       </fieldset>
       <button id="drill-start" class="btn primary wide">Start drilling</button>
       <button id="drill-stop" class="btn wide hidden">End session</button>
@@ -167,7 +162,7 @@
       </div>
       <div id="drill-actions" class="drill-actions"></div>
       <div id="drill-feedback" class="drill-feedback hidden"></div>
-      <div class="drill-controls"><button id="drill-submit" class="btn primary hidden">Submit</button><button id="drill-continue" class="btn primary hidden">Continue</button><button id="drill-next" class="btn primary hidden">Next hand</button></div>
+      <div class="drill-controls"><button id="drill-submit" class="btn primary hidden">Submit</button><button id="drill-continue" class="btn primary hidden">Continue</button><button id="drill-next" class="btn primary hidden">Next hand</button><button id="drill-browse" class="btn hidden">Browse spot</button></div>
     </section>
   </div>
 </main>
@@ -218,16 +213,15 @@
         </div>
       </section>
 
-      <section class="card">
-        <div class="card-head">
-          <h2>Board</h2>
-          <div class="card-tools">
-            <button class="btn small" id="board-random">Random flop</button>
-            <button class="btn small ghost" id="board-clear">Clear</button>
-          </div>
+      <section class="card tree-board">
+        <h2>Board</h2>
+        <div id="board-slots" class="board-slots"></div>
+        <div class="card-tools">
+          <button class="btn small" id="board-select" aria-haspopup="dialog" aria-expanded="false" aria-controls="tree-board-picker">Select board</button>
+          <button class="btn small" id="board-random">Random flop</button>
+          <button class="btn small ghost" id="board-clear">Clear</button>
         </div>
-        <div class="board-pick">
-          <div id="board-slots" class="board-slots"></div>
+        <div id="tree-board-picker" popover="auto" role="dialog" aria-label="Select board">
           <div id="deck" class="deck"></div>
         </div>
       </section>

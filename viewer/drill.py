@@ -11,7 +11,7 @@ import server as vsrv
 from jobs_api import jobs
 from drill_spots import action_info, board_plan, merge_tree, node_preview
 from drill_sessions import Sessions
-from drill_resolve import DrillResolve
+from drill_resolve import DrillResolve, Subtree
 from drill_locks import open_locked_simulation
 
 
@@ -656,6 +656,20 @@ class DrillService:
                 raise
         self.revision += 1
 
+    def browse(self):
+        source = self.hand.solver
+        node = self.hand.node["id"]
+        if self.hand.feedback:
+            node = self.hand.feedback["hands"][0]["node"]
+        if isinstance(source, Subtree):
+            node = source.sub_root + node[len(source.root):]
+            source = source.solver
+        with tempfile.TemporaryDirectory(prefix="wsolver-drill-browse-") as temp:
+            path = os.path.join(temp, "spot.cfr")
+            source.cmd(f'dump_tree "{path}" lossless', timeout=3600)
+            vsrv.open_drill_variant(self.main, path, dict(source.locks), None)
+        return node
+
     def close(self):
         self.clear_resolve()
         self.cancel.set()
@@ -759,7 +773,7 @@ class DrillService:
                 if self.config:
                     self.close()
                 self.start(session["settings"], resume=session)
-            elif path in ("/api/drill/next", "/api/drill/action", "/api/drill/submit", "/api/drill/continue", "/api/drill/stop", "/api/drill/retry", "/api/drill/sizes"):
+            elif path in ("/api/drill/next", "/api/drill/action", "/api/drill/submit", "/api/drill/continue", "/api/drill/stop", "/api/drill/retry", "/api/drill/sizes", "/api/drill/browse"):
                 if self.config is None or body.get("token") != self.token():
                     raise vsrv.SolverError("the drill has changed; refresh before playing")
                 if path.endswith("/stop"):
@@ -774,6 +788,9 @@ class DrillService:
                     self.set_sizes(body.get("disabled"))
                 elif self.resolver and (self.resolver.status()["busy"] or not self.resolve_applied):
                     raise vsrv.SolverError("wait for the sizes to finish resolving")
+                elif path.endswith("/browse"):
+                    node = self.browse()
+                    return 200, {**self.state(), "browse_node": node}
                 elif path.endswith(("/action", "/submit")):
                     if path.endswith("/submit"):
                         self.hand = self.hand.submit(body.get("choices"))

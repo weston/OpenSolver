@@ -29,6 +29,9 @@ await post('/api/drill/start', {source: 'current', mode: 'node', seat: 'OOP', fo
 tab('drill');
 await wait(() => !$('drill-submit').classList.contains('hidden') && !$('drill-submit').disabled);
 check(document.querySelectorAll('#drill-actions .mix-slider').length === 5, 'five hands did not render');
+check(document.querySelectorAll('#drill-actions .drill-action').length === 0, 'pure-action shortcut buttons still render');
+check(document.querySelectorAll('#drill-hero .drill-card-back').length === 2, 'hero does not have one concealed hand');
+check(document.querySelector('.villain-seat .dealer-button')?.textContent === 'BTN', 'IP is missing the button');
 $('drill-submit').click();
 await wait(() => !$('drill-continue').classList.contains('hidden'));
 check(document.querySelectorAll('.feedback-hand').length === 5, 'drill results did not render');

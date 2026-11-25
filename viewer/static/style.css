@@ -1090,37 +1090,46 @@ button.rl-card.end { cursor: default; }
 .drill-chart-summary .board { min-width: 0; }
 .drill-status { color: var(--text-2); }
 .drill-error { color: var(--danger); overflow-wrap: anywhere; }
-.drill-table { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px 20px; border: 1px solid var(--border-strong); border-radius: 44px; background: radial-gradient(ellipse at center, var(--accent-soft), var(--surface)); }
-.drill-seat { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 10px; }
-.drill-stack { font-size: 13px; font-weight: 600; }
+.drill-table { padding: 0 16px 28px; }
+.drill-felt { position: relative; height: 240px; max-width: 680px; margin: 36px auto 0; border: 7px solid #303c3e; border-radius: 48% / 50%; background: radial-gradient(ellipse at 50% 40%, #244b45, #193630 75%); box-shadow: inset 0 0 0 2px #8eb2a54d, inset 0 5px 24px #0005, 0 4px 0 #151e20, 0 8px 20px #0003; }
+.drill-felt::before { content: ""; position: absolute; inset: 12px; border: 1px solid #8eb2a526; border-radius: inherit; pointer-events: none; }
+.drill-seat { position: absolute; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; width: 174px; min-height: 53px; padding: 5px 12px 5px 8px; border: 1px solid #4a575b; border-radius: 10px; background: linear-gradient(#253036, #1a2228); color: #f3f5f7; box-shadow: 0 3px 8px #0004; z-index: 1; }
+.villain-seat { top: -32px; }
+.hero-seat { bottom: -27px; }
+.hero-acting .hero-seat { border-color: #9aa8ff; box-shadow: 0 0 0 2px #7b8cff40, 0 3px 8px #0004; }
+.drill-player { display: grid; gap: 4px; }
+.drill-player > span { color: #bac4cb; font-size: 11px; white-space: nowrap; }
+.drill-stack { font-size: 16px; line-height: 1.15; font-weight: 650; white-space: nowrap; }
 .drill-stack:empty { display: none; }
-.drill-cards { display: flex; gap: 4px; min-height: 40px; }
-.drill-cards .pc { --w: 28px; }
-.drill-card-back { display: inline-block; width: 28px; height: 40px; border-radius: 4px; border: 2px solid var(--border-strong); background: repeating-linear-gradient(45deg, var(--accent-soft), var(--accent-soft) 4px, var(--surface-3) 4px, var(--surface-3) 8px); }
-.drill-center { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; }
+.drill-cards { display: flex; gap: 2px; min-height: 39px; align-items: center; flex: none; }
+.drill-cards .pc { --w: 27px; }
+.drill-card-back { display: inline-block; width: 25px; height: 36px; border-radius: 4px; border: 2px solid #b7cbd5; background: repeating-linear-gradient(45deg, #2e526c, #2e526c 3px, #243e56 3px, #243e56 6px); box-shadow: inset 0 0 0 2px #243e56, 0 2px 3px #0004; }
+.drill-cards > .drill-card-back:first-child { transform: rotate(-7deg); }
+.drill-cards > .drill-card-back:last-child { transform: rotate(7deg); }
+.drill-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 6px; width: max-content; max-width: 90%; color: #f1f6f3; }
+#drill-board { justify-content: center; gap: 5px; min-width: 0; min-height: 62px; }
+#drill-board .pc { --w: 44px; box-shadow: 0 2px 4px #0005; }
+#drill-result { font-size: 12px; }
 #drill-result:empty { display: none; }
-.drill-pot { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; }
-.drill-wager { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.drill-pot { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
+.drill-pot .chip-stack { color: #5b99c8; transform: scale(.8); transform-origin: center; margin-right: -5px; }
+.drill-wager { position: absolute; display: flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: #f4eee1; white-space: nowrap; }
+.villain-wager { top: 37px; left: calc(50% + 74px); }
+.hero-wager { bottom: 32px; right: calc(50% + 74px); flex-direction: row-reverse; }
+.drill-wager .chip-stack { transform: scale(.75); margin: -4px; }
 .drill-wager:empty { display: none; }
 .chip-stack { position: relative; display: inline-block; width: 32px; height: 32px; flex: none; color: var(--accent); }
 .chip-stack i { position: absolute; left: 0; width: 30px; height: 13px; border: 3px dashed rgba(255,255,255,.8); border-radius: 50%; background: currentColor; box-shadow: 0 2px 0 currentColor, 0 3px 2px #0004; }
 .drill-wager .chip-stack { color: #c77829; }
 .drill-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
 .drill-actions:empty { margin: 0; }
-.drill-action { min-width: 105px; height: auto; min-height: 64px; display: flex; flex-direction: column; gap: 5px; padding: 10px 8px; border-top-width: 3px; }
-.drill-action.bet, .drill-action.raise { border-top-color: #e66f5c; }
-.drill-action.check, .drill-action.call { border-top-color: var(--ok); }
-.drill-action.fold { border-top-color: var(--accent); }
 .drill-exercise { display: flex; align-items: center; gap: 14px; padding: 12px 0; width: 100%; }
 .drill-exercise .combo-cards { flex: none; }
-.drill-exercise .drill-action { min-width: 88px; min-height: 55px; flex: 1; font-size: 12px; }
-.drill-action.chosen { background: var(--accent-soft); border-color: var(--accent); opacity: 1; }
 .drill-controls { display: flex; justify-content: center; gap: 8px; margin: 8px 0 0; padding: 8px 0; position: sticky; bottom: 0; z-index: 2; background: var(--bg); }
 .drill-history-item { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; font-size: 11px; background: var(--surface); border-radius: var(--radius-sm); }
 .drill-history-item.upcoming { border: 1px dashed var(--accent); background: var(--accent-soft); font-weight: 600; }
 .mix-editor { flex: 1; min-width: 0; }
 .mix-actions { display: flex; gap: 6px; overflow-x: auto; }
-.mix-percent { color: var(--text-2); }
 .mix-slider { position: relative; display: flex; height: 42px; min-width: 0; margin: 8px 0 0; padding: 0; border: 0; border-radius: 6px; overflow: hidden; user-select: none; touch-action: none; cursor: ew-resize; }
 .mix-segment { display: grid; place-items: center; height: 100%; min-width: 0; color: white; font-size: 12px; font-weight: 600; overflow: hidden; }
 .mix-segment.zero { filter: saturate(.35) brightness(.6); }
@@ -1152,10 +1161,10 @@ button.rl-card.end { cursor: default; }
 .feedback-ranges .feedback-bar-row > span { width: 140px; }
 @media (max-width: 800px) {
   .drill-layout { grid-template-columns: 1fr; padding: 0 12px; gap: 16px; }
-  .drill-table { border-radius: 40px; padding: 20px 12px; }
+  .drill-table { padding-inline: 4px; }
 }
 .dealer-button { display: inline-grid; place-items: center; width: 30px; height: 30px; margin-left: 8px; border-radius: 50%; background: #faf8ef; color: #252525; border: 2px solid #c7c3b7; font-size: 10px; font-weight: 800; box-shadow: 0 2px 2px #0003; }
-.drill-seat .dealer-button { width: 24px; height: 24px; margin-left: 6px; font-size: 8px; }
+.drill-seat .dealer-button { position: absolute; right: -38px; top: 17px; width: 26px; height: 26px; margin: 0; font-size: 8px; }
 .drill-history { display: flex; flex-direction: column; width: 100%; font-size: 11px; gap: 6px; }
 .history-street { display: flex; justify-content: center; align-items: baseline; gap: 10px; }
 .history-street > strong { min-width: 42px; color: var(--text-2); }
@@ -1182,11 +1191,9 @@ button.rl-card.end { cursor: default; }
 .hand-set .drill-exercise:hover, .hand-set .drill-exercise:focus-within { background: var(--surface); }
 @media (prefers-reduced-motion: reduce) { .hand-set .drill-exercise { transition: none; } }
 .hand-set .drill-exercise .pc { --w: 26px; }
-.hand-set .drill-action { min-width: 0; min-height: 26px; padding: 4px 3px; flex: 1; border-top-width: 1px; }
-.hand-set .mix-slider { height: 28px; margin-top: 4px; }
+.hand-set .mix-slider { height: 32px; margin: 0; }
 @media (pointer: coarse) { .hand-set .mix-slider { height: 44px; } }
 .hand-set .mix-actions { overflow: visible; }
-.hand-set .mix-percent { font-size: 14px; }
 .hand-set .frequency-bar { height: 18px; }
 .hand-set .frequency-segment { font-size: 10px; }
 #drill-sessions { margin-top: 10px; }

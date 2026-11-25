@@ -37,7 +37,7 @@ check(setActionFrequency([0.4, 0, 0.6], 0, 0.9, [0, 2]), [0.9, 0, 0.1],
 check(setActionFrequency([1, 0, 0], 0, 0, [0, 1, 2]), [0, 0.5, 0.5],
   "setting a pure action to zero still produces a complete mix");
 check(setActionFrequency([0.2, 0.3, 0.5], 1, 1, [0, 1, 2]), [0, 1, 0],
-  "a direct action click selects 100% of that action");
+  "a double-click selects 100% of that action");
 check(moveMixBoundary([0.2, 0.3, 0.5], 0, 0.9, [0, 1, 2]), [0.9, 0, 0.1],
   "dragging check to 90% pushes through the next bet size");
 check(moveMixBoundary([0.4, 0.3, 0.3], 1, 0.1, [0, 1, 2]), [0.1, 0, 0.9],

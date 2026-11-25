@@ -159,9 +159,14 @@
         <div id="drill-loading-stats" class="stats"></div>
       </div>
       <div id="drill-table" class="drill-table">
-        <div class="drill-seat"><span id="drill-villain-seat" class="badge neutral">Villain</span><div id="drill-villain-stack" class="drill-stack num"></div><div id="drill-villain" class="drill-cards"></div><div id="drill-villain-wager" class="drill-wager"></div></div>
-        <div class="drill-center"><div id="drill-pot" class="drill-pot"></div><div id="drill-board" class="board"></div><div id="drill-history" class="drill-history"></div><div id="drill-result" role="status"></div></div>
-        <div class="drill-seat"><div id="drill-hero-wager" class="drill-wager"></div><div id="drill-hero" class="drill-cards"></div><div id="drill-hero-stack" class="drill-stack num"></div><span id="drill-hero-seat" class="badge neutral">Hero</span></div>
+        <div id="drill-history" class="drill-history"></div>
+        <div class="drill-felt" aria-label="Poker table">
+          <div class="drill-seat villain-seat"><div id="drill-villain" class="drill-cards"></div><div class="drill-player"><span id="drill-villain-seat">Villain</span><div id="drill-villain-stack" class="drill-stack num"></div></div></div>
+          <div id="drill-villain-wager" class="drill-wager villain-wager"></div>
+          <div class="drill-center"><div id="drill-pot" class="drill-pot"></div><div id="drill-board" class="board"></div><div id="drill-result" role="status"></div></div>
+          <div id="drill-hero-wager" class="drill-wager hero-wager"></div>
+          <div class="drill-seat hero-seat"><div id="drill-hero" class="drill-cards"></div><div class="drill-player"><span id="drill-hero-seat">Hero</span><div id="drill-hero-stack" class="drill-stack num"></div></div></div>
+        </div>
       </div>
       <div id="drill-actions" class="drill-actions"></div>
       <div id="drill-feedback" class="drill-feedback hidden"></div>

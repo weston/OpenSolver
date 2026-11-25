@@ -124,6 +124,7 @@ function render(s) {
     fields();
   }
   const hand = s.hand;
+  $("drill-table").classList.toggle("hero-acting", hand?.phase === "decision");
   $("drill-number").textContent = `Hand ${s.number}`;
   $("drill-number").classList.toggle("hidden", !hand);
   $("drill-stats").replaceChildren();
@@ -161,25 +162,23 @@ function render(s) {
   for (const card of parseCards(hand.node.board)) $("drill-board").append(cardEl(card, "lg"));
   const key = `${s.token.split(":")[0]}:${s.token.split(":")[3]}:${s.number}:${hand.node.id}`;
   if (draftNode !== key) { drafts.clear(); fullDrafts.clear(); draftNode = key; sizeDraft = null; clearTimeout(sizeTimer); }
-  const set = s.config.count > 1;
   const sizes = hand.actions.filter((a) => ["bet", "raise"].includes(a.kind));
   const toggles = sizes.length > 1 && parseCards(hand.node.board).length >= 3;
-  const shared = set || toggles;
   const disabled = sizeDraft || s.resolution?.disabled || hand.disabled;
-  $("drill-actions").classList.toggle("hand-set", shared);
+  $("drill-actions").classList.add("hand-set");
   $("drill-actions").style.setProperty("--action-count", hand.actions.length);
-  if (shared && hand.actions.length) $("drill-actions").append(actionHeader(hand.actions, hand.big_blind, disabled, toggles ? toggleSize : null));
+  if (hand.actions.length) $("drill-actions").append(actionHeader(hand.actions, hand.big_blind, disabled, toggles ? toggleSize : null));
   for (const [index, exercise] of hand.exercises.entries()) {
     if (!hand.actions.length) break;
     if (!exercise.chosen && !drafts.has(index)) drafts.set(index, initialFrequencies(hand.actions, disabled));
     const row = el("div", "drill-exercise");
-    if (shared) row.append(comboEl(exercise.combo, ""));
+    row.append(comboEl(exercise.combo, ""));
     row.append(mixEditor(hand.actions, exercise.chosen, drafts.get(index),
       (frequencies) => {
         drafts.set(index, frequencies);
         if (fullDrafts.has(index)) fullDrafts.set(index, rememberFrequencies(hand.actions, fullDrafts.get(index), frequencies, disabled));
         controls();
-      }, hand.big_blind, shared, disabled));
+      }, disabled));
     $("drill-actions").append(row);
   }
   if (hand.feedback) $("drill-feedback").append(feedbackCards(hand.feedback, hand.big_blind));

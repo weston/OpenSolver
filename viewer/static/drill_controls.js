@@ -106,14 +106,14 @@ export function rememberFrequencies(actions, remembered, values, disabled) {
   return remembered.map((value, i) => disabled.includes(actions[i].id) ? value : values[i] * available);
 }
 
-export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHeader = false, disabled = []) {
+export function mixEditor(canonical, chosen, draft, onChange, disabled = []) {
   const order = actionOrder(canonical), actions = order.map((i) => canonical[i]);
   chosen = chosen && order.map((i) => chosen[i]);
   draft = draft && order.map((i) => draft[i]);
   const enabled = actions.map((a, i) => disabled.includes(a.id) ? -1 : i).filter((i) => i >= 0);
   let values = chosen || draft;
-  const editor = el("div", "mix-editor"), buttons = el("div", "mix-actions");
-  const slider = el("fieldset", "mix-slider"), labels = [], actionButtons = [], segments = [], handles = [];
+  const editor = el("div", "mix-editor");
+  const slider = el("fieldset", "mix-slider"), segments = [], handles = [];
   slider.setAttribute("aria-label", "Action frequencies");
   slider.dataset.answered = chosen ? "yes" : "no";
   slider.dataset.unavailable = enabled.length < 2 ? "yes" : "no";
@@ -127,22 +127,6 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
     const result = Array(values.length);
     order.forEach((index, i) => { result[index] = values[i]; });
     onChange(result);
-  }
-  for (const i of enabled) {
-    const action = actions[i];
-    const button = el("button", `btn drill-action ${action.kind}`), label = el("span", "mix-percent num");
-    button.type = "button";
-    button.style.borderTopColor = actionColor(action);
-    button.setAttribute("aria-label", action.label);
-    if (!sharedHeader) {
-      button.append(el("strong", "", action.label));
-      if (action.amount != null) button.append(el("span", "num", bb(action.amount, bigBlind)));
-    }
-    button.append(label);
-    button.onclick = () => change(setActionFrequency(values, i, 1, enabled));
-    actionButtons.push(button);
-    labels.push(label);
-    buttons.append(button);
   }
   for (const i of enabled) {
     const segment = el("span", "mix-segment");
@@ -212,10 +196,6 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
     change(setActionFrequency(values, Number(event.target.dataset.index), 0, enabled));
   };
   function draw() {
-    labels.forEach((label, i) => {
-      label.textContent = `${Math.round(values[enabled[i]] * 100)}%`;
-      actionButtons[i].classList.toggle("chosen", values[enabled[i]] > 0);
-    });
     segments.forEach((segment, index) => {
       const frequency = values[enabled[index]], width = (frequency + MIX_PADDING) / scale;
       segment.style.width = `${width * 100}%`;
@@ -228,7 +208,7 @@ export function mixEditor(canonical, chosen, draft, onChange, bigBlind, sharedHe
       handle.setAttribute("aria-valuenow", String(Math.round(cumulative * 100)));
     });
   }
-  editor.append(buttons, slider);
+  editor.append(slider);
   draw();
   editor.querySelectorAll("button").forEach((button) => { button.dataset.answered = chosen ? "yes" : "no"; });
   return editor;

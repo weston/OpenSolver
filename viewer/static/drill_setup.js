@@ -3,10 +3,11 @@ import { el, cardEl, parseCards, RANKS, SUITS } from "./cards.js";
 import { currentTree } from "./build.js";
 import { drillSettings } from "./settings.js";
 import { actionOrder, bb } from "./drill_controls.js";
+import { defaultBoardFilters, renderBoardFilters } from "./board_filters.js";
 
 const $ = (id) => document.getElementById(id);
 let selected = [], previewSequence = 0;
-const filters = { high: RANKS, middle: RANKS, low: RANKS, pairing: "both", suits: ["rainbow", "two-tone", "monotone"] };
+const filters = defaultBoardFilters();
 
 export function boardConfig() {
   return { boards: $("drill-boards").value, selected_boards: selected, board_filters: filters };
@@ -16,15 +17,6 @@ export async function liveConfig() {
   const spot = $("drill-spot").value;
   return { ...drillSettings(), ...boardConfig(), spot,
     tree: spot ? (await get("/api/library/get?kind=config&name=" + encodeURIComponent(spot))).content : currentTree(true) };
-}
-
-function toggleButton(label, active, click) {
-  const button = el("button", "btn small", label);
-  button.type = "button";
-  button.classList.toggle("active", active);
-  button.setAttribute("aria-pressed", active);
-  button.onclick = click;
-  return button;
 }
 
 export function renderBoardOptions() {
@@ -42,28 +34,9 @@ export function renderBoardOptions() {
       host.append(row);
     }
   } else if (mode === "filtered") {
-    for (const [key, label] of [["high", "High card"], ["middle", "Middle card"], ["low", "Low card"]]) {
-      const field = el("div", "board-filter"), ranks = el("div", "rank-options");
-      field.append(el("span", "", label));
-      for (const rank of RANKS) ranks.append(toggleButton(rank, filters[key].includes(rank), () => {
-        filters[key] = filters[key].includes(rank) ? filters[key].replace(rank, "") : filters[key] + rank;
-        renderBoardOptions(); refreshNode();
-      }));
-      const all = toggleButton(filters[key].length === 13 ? "Clear" : "All", false, () => {
-        filters[key] = filters[key].length === 13 ? "" : RANKS; renderBoardOptions(); refreshNode();
-      });
-      field.append(ranks, all); host.append(field);
-    }
-    for (const [key, values] of [["pairing", [["both", "Both"], ["unpaired", "Unpaired"], ["paired", "Paired"]]],
-      ["suits", [["rainbow", "Rainbow"], ["two-tone", "FD"], ["monotone", "Mono"]]]]) {
-      const row = el("div", "texture-options");
-      for (const [value, label] of values) row.append(toggleButton(label, key === "pairing" ? filters[key] === value : filters.suits.includes(value), () => {
-        if (key === "pairing") filters.pairing = value;
-        else filters.suits = filters.suits.includes(value) ? filters.suits.filter((s) => s !== value) : [...filters.suits, value];
-        renderBoardOptions(); refreshNode();
-      }));
-      host.append(row);
-    }
+    renderBoardFilters(host, filters, next => {
+      Object.assign(filters, next); renderBoardOptions(); refreshNode();
+    });
   }
 }
 

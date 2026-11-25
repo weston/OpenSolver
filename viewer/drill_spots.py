@@ -40,34 +40,43 @@ def board_plan(body, tree):
         return {**result, 'board': selected[0], 'board_pool': selected, 'selected_boards': selected}
     if mode != 'filtered':
         raise vsrv.SolverError('invalid board mode')
-    filters = body.get('board_filters', {})
-    if not isinstance(filters, dict):
-        raise vsrv.SolverError('invalid board filters')
-    ranks = []
-    for name in ('high', 'middle', 'low'):
-        value = filters.get(name, RANKS)
-        if not isinstance(value, str) or not value or any(r not in RANKS for r in value):
-            raise vsrv.SolverError('choose ranks for each card position')
-        ranks.append(set(value))
-    pairing = filters.get('pairing', 'both')
-    suits = filters.get('suits', ['rainbow', 'two-tone', 'monotone'])
-    if pairing not in ('both', 'paired', 'unpaired') or not isinstance(suits, list) or not suits or any(s not in ('rainbow', 'two-tone', 'monotone') for s in suits):
+    filters = normalize_board_filters(body.get('board_filters', {}))
+    if any(not filters[key] for key in ('high', 'middle', 'low')):
+        raise vsrv.SolverError('choose ranks for each card position')
+    if not filters['suits']:
         raise vsrv.SolverError('choose board textures')
-    pool = []
-    for cards in itertools.combinations(DECK, 3):
-        if any(c[0] not in allowed for c, allowed in zip(cards, ranks)):
-            continue
-        board = ''.join(cards)
-        paired = jobs.texture_pairing(board) != 'unpaired'
-        if pairing != 'both' and paired != (pairing == 'paired'):
-            continue
-        if jobs.texture_suits(board) in suits:
-            pool.append(board)
+    pool = [''.join(cards) for cards in itertools.combinations(DECK, 3)
+            if matches_board_filters(''.join(cards), filters)]
     if not pool:
         raise vsrv.SolverError('no boards match these filters')
-    normalized = {name: ''.join(r for r in RANKS if r in allowed) for name, allowed in zip(('high', 'middle', 'low'), ranks)}
-    normalized.update(pairing=pairing, suits=list(dict.fromkeys(suits)))
-    return {**result, 'board_pool': pool, 'board_filters': normalized}
+    return {**result, 'board_pool': pool, 'board_filters': filters}
+
+
+def normalize_board_filters(filters):
+    if not isinstance(filters, dict):
+        raise vsrv.SolverError('invalid board filters')
+    normalized = {}
+    for name in ('high', 'middle', 'low'):
+        value = filters.get(name, RANKS)
+        if not isinstance(value, str) or any(r not in RANKS for r in value):
+            raise vsrv.SolverError('choose ranks for each card position')
+        normalized[name] = ''.join(r for r in RANKS if r in value)
+    pairing = filters.get('pairing', 'both')
+    suits = filters.get('suits', ['rainbow', 'two-tone', 'monotone'])
+    if pairing not in ('both', 'paired', 'unpaired') or not isinstance(suits, list) or any(s not in ('rainbow', 'two-tone', 'monotone') for s in suits):
+        raise vsrv.SolverError('choose board textures')
+    return {**normalized, 'pairing': pairing, 'suits': list(dict.fromkeys(suits))}
+
+
+def matches_board_filters(board, filters):
+    flop = ''.join(board.split())[:6]
+    cards = sorted(board_cards(flop), key=lambda card: RANKS.index(card[0]))
+    if len(cards) != 3 or any(card[0] not in filters[key] for key, card in zip(('high', 'middle', 'low'), cards)):
+        return False
+    paired = jobs.texture_pairing(flop) != 'unpaired'
+    if filters['pairing'] != 'both' and paired != (filters['pairing'] == 'paired'):
+        return False
+    return jobs.texture_suits(flop) in filters['suits']
 
 
 def merge_tree(tree, enabled):

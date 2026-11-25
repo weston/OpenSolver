@@ -1,9 +1,10 @@
-import { get, post, fmt } from "./api.js";
+import { get, post, fmt, hideTip } from "./api.js";
 import { el, cardEl, comboEl, parseCards } from "./cards.js";
 import { mixEditor, initialFrequencies, restrictFrequencies, rememberFrequencies, feedbackCards, chipStack, actionHeader, bb } from "./drill_controls.js";
 
 import { liveConfig, renderBoardOptions, restoreSelection, refreshNode, resetNode, selectCurrentBoard } from "./drill_setup.js";
-import { openSessions } from "./drill_sessions.js";
+import { initSessions } from "./drill_sessions.js";
+import { initAnalysis } from "./drill_analysis.js";
 import { drawChart } from "./chart.js";
 import { drillSettings } from "./settings.js";
 
@@ -13,6 +14,7 @@ let requestError = "", draftNode = "";
 const drafts = new Map();
 const fullDrafts = new Map();
 let sizeDraft = null, sizeTimer = null;
+let selectSection;
 
 function fields() {
   $("drill-batch-field").classList.toggle("hidden", $("drill-source").value !== "saved");
@@ -324,6 +326,7 @@ export function showDrill(show) {
 }
 
 export function drillHere(node) {
+  selectSection("practice");
   if (state?.active) return;
   $("drill-source").value = "live";
   $("drill-spot").value = "";
@@ -334,14 +337,34 @@ export function drillHere(node) {
 }
 
 export function initDrill({ opened } = {}) {
+  const analysis = initAnalysis($("drill-analysis-panel"), () => selectSection("sessions"));
+  const sessions = initSessions($("drill-sessions-panel"), {
+    onResume: async (session) => {
+      selectSection("practice"); await command("resume", { session }); await firstHand();
+    },
+    onOpen: opened,
+    onAnalyze: () => selectSection("analysis"),
+  });
+  let sectionVersion = 0;
+  selectSection = async section => {
+    const version = ++sectionVersion;
+    hideTip();
+    document.querySelectorAll("[data-drill-section]").forEach(button => {
+      const active = button.dataset.drillSection === section;
+      button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active));
+      $(button.getAttribute("aria-controls")).classList.toggle("hidden", !active);
+    });
+    if (section === "sessions") sessions.show();
+    if (section === "analysis") {
+      const selected = await sessions.selection();
+      if (version === sectionVersion) analysis.show(selected);
+    }
+  };
+  document.querySelectorAll("[data-drill-section]").forEach(button => { button.onclick = () => selectSection(button.dataset.drillSection); });
   $("drill-source").onchange = () => { resetNode(); fields(); };
   $("drill-boards").onchange = () => { resetNode(); fields(); };
   $("drill-spot").onchange = resetNode;
   $("drill-batch").onchange = resetNode;
-  $("drill-sessions").onclick = () => openSessions(async (session) => {
-    await command("resume", { session });
-    await firstHand();
-  }, opened);
   $("drill-mode").onchange = fields;
   $("drill-start").onclick = start;
   $("drill-browse").onclick = async () => {

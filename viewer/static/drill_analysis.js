@@ -1,28 +1,48 @@
 import { post, fmt, showTip, hideTip } from "./api.js";
-import { el, parseCards, cardEl, categoryLabel } from "./cards.js";
+import { el, parseCards, cardEl, comboEl, categoryLabel } from "./cards.js";
 import { actionOrder, actionColor, frequencyBar, bb } from "./drill_controls.js";
+import { defaultBoardFilters, renderBoardFilters } from "./board_filters.js";
 
 const signed = (value, digits = 1) => `${value > 0 ? "+" : ""}${fmt(value, digits)}`;
 
-export function openAnalysis(container) {
+export function initAnalysis(container, onSelectSessions) {
   const filters = el("div", "analysis-filters"), result = el("div", "analysis-result");
-  const sessionMenu = el("details", "analysis-selection analysis-sessions"), sessionTitle = el("summary", "", "Sessions");
-  sessionMenu.open = true;
-  const sessionList = el("div", "analysis-options");
-  sessionMenu.append(sessionTitle, sessionList);
-  const tree = el("select"), seat = el("select"), baseline = el("select"), metric = el("select");
-  for (const [select, values] of [[seat, [["both", "Both positions"], ["OOP", "OOP"], ["IP", "IP"]]],
-    [baseline, [["played", "Played strategy"], ["original", "Original strategy"]]],
-    [metric, [["gap", "Frequency gap"], ["volume", "Betting volume"]]]]) {
+  const sessionButton = el("button", "btn small", "Choose sessions"); sessionButton.onclick = onSelectSessions;
+  const positions = el("div", "analysis-positions"); positions.setAttribute("role", "group"); positions.setAttribute("aria-label", "Analysis position");
+  let seat = "OOP";
+  for (const position of ["OOP", "IP"]) {
+    const button = el("button", "btn small", position); button.setAttribute("aria-pressed", String(position === seat));
+    button.onclick = () => {
+      seat = position; selectedNode = null;
+      for (const choice of positions.children) choice.setAttribute("aria-pressed", String(choice === button));
+      schedule();
+    };
+    positions.append(button);
+  }
+  const tree = el("select"), baseline = el("select"), metric = el("select");
+  for (const [select, values] of [[baseline, [["played", "Played strategy"], ["original", "Original strategy"]]],
+    [metric, [["gap", "Frequencies"], ["volume", "Betting volume"]]]]) {
     for (const [value, label] of values) { const option = el("option", "", label); option.value = value; select.append(option); }
   }
   tree.setAttribute("aria-label", "Matching game tree");
-  seat.setAttribute("aria-label", "Position"); baseline.setAttribute("aria-label", "Solver baseline"); metric.setAttribute("aria-label", "Tree metric");
+  baseline.setAttribute("aria-label", "Solver baseline"); metric.setAttribute("aria-label", "Tree metric");
   const simMenu = el("details", "analysis-selection"), simTitle = el("summary", "", "Simulations"), simList = el("div", "analysis-options");
   simMenu.append(simTitle, simList);
-  filters.append(sessionMenu, tree, simMenu, seat, baseline, metric);
+  const textureMenu = el("details", "analysis-selection analysis-texture"), textureTitle = el("summary", "", "Flop texture");
+  const textureOptions = el("div", "analysis-options"), textureFields = el("div"), resetTextures = el("button", "btn small", "Reset");
+  let boardFilters = defaultBoardFilters();
+  function changeTextures(next) {
+    boardFilters = next; simulations = null; selectedNode = null;
+    const filtered = [next.high, next.middle, next.low].some(ranks => ranks.length !== 13) || next.pairing !== "both" || next.suits.length !== 3;
+    textureTitle.textContent = filtered ? "Flop texture · Filtered" : "Flop texture";
+    renderBoardFilters(textureFields, boardFilters, changeTextures); schedule();
+  }
+  resetTextures.onclick = () => changeTextures(defaultBoardFilters());
+  renderBoardFilters(textureFields, boardFilters, changeTextures);
+  textureOptions.append(textureFields, resetTextures); textureMenu.append(textureTitle, textureOptions);
+  filters.append(sessionButton, positions, tree, simMenu, textureMenu, baseline, metric);
   container.replaceChildren(filters, result);
-  let sessions = new Set(), simulations = null, selectedNode = null, request = 0, timer, latest, offset = 0;
+  let sessions = [], simulations = null, selectedNode = null, request = 0, timer, latest;
   const expanded = new Set();
   let expandedInitialized = false;
 
@@ -31,37 +51,23 @@ export function openAnalysis(container) {
     const row = el("label", "analysis-option"), input = el("input"); input.type = "checkbox"; input.checked = checked;
     input.onchange = () => change(input.checked); row.append(input, label); parent.append(row); return input;
   };
-  async function loadSessions() {
-    try {
-      const data = await post("/api/drill/sessions", { offset });
-      sessionList.querySelector("button")?.remove();
-      for (const session of data.sessions) {
-        if (offset === 0) sessions.add(session.id);
-        const input = choice(sessionList, el("span", "", `${new Date(session.started * 1000).toLocaleString()} · ${session.settings.spot || "Current tree"} · ${session.hands} hands`), sessions.has(session.id), checked => {
-          checked ? sessions.add(session.id) : sessions.delete(session.id);
-          sessionList.querySelectorAll("input").forEach(input => { input.disabled = sessions.size >= 100 && !input.checked; });
-          simulations = null; schedule();
-        });
-        input.disabled = sessions.size >= 100 && !input.checked;
-      }
-      if (data.sessions.length === 50) {
-        const more = el("button", "btn small", "More sessions"); more.onclick = () => { offset += 50; loadSessions(); }; sessionList.append(more);
-      }
-      await load();
-    } catch (error) { result.textContent = error.message; }
+  function selection() {
+    const body = { sessions, seat, baseline: baseline.value, board_filters: boardFilters };
+    if (tree.value) body.tree = tree.value;
+    if (simulations) body.simulations = [...simulations];
+    if (selectedNode) body.node = selectedNode;
+    return body;
   }
   tree.onchange = () => { simulations = null; selectedNode = null; expanded.clear(); expandedInitialized = false; load(); };
-  seat.onchange = baseline.onchange = schedule;
+  baseline.onchange = schedule;
   metric.onchange = () => latest && render(latest);
 
   async function load() {
+    clearTimeout(timer); hideTip();
     const version = ++request;
     result.setAttribute("aria-busy", "true");
     try {
-      const body = { sessions: [...sessions], seat: seat.value, baseline: baseline.value };
-      if (tree.value) body.tree = tree.value;
-      if (simulations) body.simulations = [...simulations];
-      if (selectedNode) body.node = selectedNode;
+      const body = selection();
       let data = await post("/api/drill/analysis", body);
       if (!data.tree && data.groups.length && body.tree) {
         delete body.tree; delete body.simulations; delete body.node;
@@ -76,7 +82,6 @@ export function openAnalysis(container) {
       }
       tree.value = data.tree || "";
       if (previous !== tree.value) { simulations = null; expanded.clear(); expandedInitialized = false; }
-      sessionTitle.textContent = `Sessions · ${sessions.size} selected`;
       simList.replaceChildren();
       const group = data.groups.find(group => group.id === data.tree);
       if (group) {
@@ -99,7 +104,7 @@ export function openAnalysis(container) {
 
   function render(data) {
     result.replaceChildren();
-    if (!data.nodes.length) { result.append(el("p", "muted", "No submitted decisions in this selection")); return; }
+    if (!data.nodes.length) { result.append(el("p", "muted", sessions.length ? "No submitted decisions in this selection" : "Choose sessions to analyze")); return; }
     result.append(el("div", "analysis-summary muted", `${data.sessions} sessions · ${data.simulations} simulations · ${data.hands} hands · ${data.decisions} nodes`));
     const layout = el("div", "analysis-layout"), graph = el("div", "analysis-tree"), detail = el("div", "analysis-detail");
     const byId = new Map(data.nodes.map(node => [node.id, { ...node }])), children = new Map();
@@ -163,6 +168,7 @@ export function openAnalysis(container) {
   }
 
   function renderDetail(container, stats, node, bigBlind) {
+    const selected = { ...selection(), node: stats.id }, version = request;
     container.append(el("h3", "", `${node.street} · ${node.seat}`), el("div", "muted", `${stats.samples} dealt hands · ${stats.decisions} nodes`));
     const frequencies = el("div", "analysis-comparison");
     for (const [label, values] of [["Solver", stats.solver], ["You", stats.user]]) frequencies.append(el("span", "", label), frequencyBar(stats.actions, values, bigBlind, label));
@@ -192,13 +198,51 @@ export function openAnalysis(container) {
       if (!groups.length || (kind === "draws" && groups.every(group => group.name === "no_draw"))) continue;
       categories.append(el("h4", "", label));
       for (const group of groups.sort((a, b) => b.gap - a.gap)) {
-        const row = el("div", "analysis-category"), bars = el("div", "analysis-category-bars");
+        const row = el("details", "analysis-category"), summary = el("summary"), bars = el("div", "analysis-category-bars");
         bars.append(frequencyBar(group.actions, group.solver, bigBlind, "Solver"), frequencyBar(group.actions, group.user, bigBlind, "You"));
-        row.append(el("strong", "", categoryLabel(group.name)), bars, el("span", "num", `${fmt(group.gap * 100, 1)} pp`));
+        summary.append(el("span", "category-chevron", "›"), el("strong", "", categoryLabel(group.name)), bars, el("span", "num", `${fmt(group.gap * 100, 1)} pp`));
+        const examples = el("div", "category-examples");
+        row.append(summary, examples);
+        row.ontoggle = () => {
+          if (row.open && !examples.childNodes.length) loadExamples(examples, { ...selected, category: `${kind}:${group.name}` }, 0, version, bigBlind);
+        };
         categories.append(row);
       }
     }
     container.append(categories);
   }
-  loadSessions();
+
+  async function loadExamples(container, selection, offset, version, bigBlind) {
+    container.textContent = "Loading…";
+    try {
+      const data = await post("/api/drill/analysis", { ...selection, offset });
+      if (version !== request || !container.isConnected) return;
+      const examples = data.detail.examples;
+      container.replaceChildren();
+      for (const hand of examples.hands) {
+        const row = el("div", "category-example"), cards = el("div", "category-example-cards"), board = el("div", "board");
+        board.append(...parseCards(hand.board).map(card => cardEl(card)));
+        cards.append(comboEl(hand.combo, ""), board, el("span", "num", `${fmt(hand.gap * 100, 1)} pp`));
+        const bars = el("div", "analysis-comparison");
+        for (const [label, frequencies] of [["Solver", hand.solver], ["You", hand.user]]) bars.append(el("span", "", label), frequencyBar(hand.actions, frequencies, bigBlind, label));
+        row.append(cards, bars); container.append(row);
+      }
+      const pager = el("div", "session-pagination");
+      pager.append(el("span", "muted", `${offset + 1}–${offset + examples.hands.length} of ${examples.total} hands`));
+      if (examples.total > 25) {
+        for (const [label, next, disabled] of [["Previous", offset - 25, offset === 0], ["Next", offset + 25, offset + examples.hands.length >= examples.total]]) {
+          const button = el("button", "btn small", label); button.disabled = disabled;
+          button.onclick = () => loadExamples(container, selection, next, version, bigBlind); pager.append(button);
+        }
+      }
+      container.append(pager);
+    } catch (error) { if (version === request && container.isConnected) container.textContent = error.message; }
+  }
+  return { show(selected) {
+    if (JSON.stringify(sessions) !== JSON.stringify(selected)) {
+      sessions = selected; simulations = null; selectedNode = null; expanded.clear(); expandedInitialized = false;
+    }
+    sessionButton.textContent = sessions.length ? `${sessions.length} sessions · Change` : "Choose sessions";
+    load();
+  } };
 }

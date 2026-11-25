@@ -94,6 +94,72 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual({row['name'] for row in detail['categories']['made']}, {'top_pair', 'ace_high'})
         self.assertEqual([row['samples'] for row in detail['categories']['made']], [1, 1])
         self.assertEqual(detail['samples'], 2)
+        examples = self.analyze({'sessions': ['first', 'second'], 'category': 'made:top_pair'})['detail']['examples']
+        self.assertEqual(examples['total'], 1)
+        self.assertEqual(examples['hands'][0]['board'], 'Qh7h2c')
+        self.assertEqual(examples['hands'][0]['combo'], 'AdQs')
+
+    def test_category_expansion_pages_actual_decisions_across_thirty_sessions(self):
+        sessions = [str(i) for i in range(30)]
+        for session in sessions:
+            self.save(session, self.review())
+        body = {'sessions': sessions, 'seat': 'OOP', 'node': 'r:0', 'category': 'made:straight'}
+        first = self.analyze(body)['detail']['examples']
+        last = self.analyze({**body, 'offset': 25})['detail']['examples']
+        self.assertEqual(first['total'], 30)
+        self.assertEqual(len(first['hands']), 25)
+        self.assertEqual([hand['session'] for hand in first['hands'] + last['hands']], sessions)
+        for hand in first['hands'] + last['hands']:
+            self.assertEqual(hand['combo'], 'AcAd')
+            self.assertEqual(hand['board'], '2c3d4h5s9c')
+            bet = next(i for i, action in enumerate(hand['actions']) if action['kind'] == 'bet')
+            self.assertEqual(hand['user'][bet], 1)
+            self.assertAlmostEqual(hand['solver'][bet], .2)
+            self.assertAlmostEqual(hand['gap'], .8)
+        self.assertEqual(self.analyze({**body, 'seat': 'IP'})['detail'], None)
+
+    def test_session_filters_and_bulk_selection_cover_matches_beyond_the_first_page(self):
+        for i in range(110):
+            self.save(str(i), self.review(), {'source': 'live' if i < 30 else 'saved', 'spot': '3BP' if i < 30 else 'SRP'})
+            self.sessions.db.execute('UPDATE sessions SET started=? WHERE id=?', (1600000000 + i * 86400, str(i)))
+        self.sessions.db.commit()
+        first, second = self.sessions.list(0), self.sessions.list(50)
+        self.assertEqual(first['total'], 110)
+        self.assertEqual(first['matching'], [])
+        self.assertEqual(len(first['sessions']), 50)
+        self.assertFalse({s['id'] for s in first['sessions']} & {s['id'] for s in second['sessions']})
+        filtered = self.sessions.list(0, filters={'query': '3bp', 'source': 'live'})
+        self.assertEqual(filtered['total'], 30)
+        self.assertEqual(set(filtered['matching']), {str(i) for i in range(30)})
+        dated = self.sessions.list(0, filters={'query': '3bp', 'since': 1600000000 + 10 * 86400, 'until': 1600000000 + 20 * 86400})
+        self.assertEqual(set(dated['matching']), {str(i) for i in range(10, 20)})
+        for filters in ({'source': 'invalid'}, {'query': []}, {'since': float('nan')}, {'until': True}):
+            with self.assertRaises(vsrv.SolverError):
+                self.sessions.list(0, filters=filters)
+
+    def test_texture_filters_apply_to_the_tree_categories_and_expanded_hands(self):
+        boards = {'fd': 'Qh7h2c', 'mono': 'Qh7h2h', 'paired': 'QhQs2c', 'rainbow': '7d2cQh'}
+        for session, board in boards.items():
+            self.save(session, self.review(board, simulation=session))
+        self.save('turn', self.review('Qh7h2c9h', node='r:0:c:c:9h', simulation='turn'))
+        body = {'sessions': [*boards, 'turn'], 'board_filters': {'high': 'Q', 'middle': '7', 'low': '2',
+                'pairing': 'unpaired', 'suits': ['two-tone']}, 'category': 'made:overpair'}
+        report = self.analyze(body)
+        self.assertEqual(report['sessions'], 2)
+        self.assertEqual(report['simulations'], 2)
+        self.assertEqual(report['detail']['samples'], 2)
+        self.assertEqual({hand['board'] for hand in report['detail']['examples']['hands']}, {'Qh7h2c'})
+        turn = self.analyze({**body, 'node': 'r:0:c:c:?'})['detail']
+        self.assertEqual({hand['board'] for hand in turn['examples']['hands']}, {'Qh7h2c9h'})
+        rainbow = self.analyze({**body, 'board_filters': {**body['board_filters'], 'suits': ['rainbow']}})
+        self.assertEqual(rainbow['sessions'], 1)
+        self.assertEqual({hand['board'] for hand in rainbow['detail']['examples']['hands']}, {'7d2cQh'})
+        paired = self.analyze({**body, 'board_filters': {'pairing': 'paired'}})
+        self.assertEqual(paired['sessions'], 1)
+        self.assertEqual({hand['board'] for hand in paired['detail']['examples']['hands']}, {'QhQs2c'})
+        self.assertEqual(self.analyze({**body, 'board_filters': {'high': ''}})['nodes'], [])
+        with self.assertRaises(vsrv.SolverError):
+            self.analyze({**body, 'board_filters': {'suits': ['invalid']}})
 
     def test_boards_pool_but_different_trees_and_seats_do_not(self):
         self.save('first', self.review())
@@ -149,6 +215,9 @@ class AnalysisTest(unittest.TestCase):
             index = next(i for i, action in enumerate(category['actions']) if action['id'] == 'r:0:b200')
             self.assertEqual(category['solver'][index], .5)
             self.assertEqual(category['user'][index], 0)
+        example = self.analyze({'sessions': ['first'], 'baseline': 'original', 'category': 'made:straight'})['detail']['examples']['hands'][0]
+        self.assertEqual(example['solver'][removed], .5)
+        self.assertEqual(example['user'][removed], 0)
 
     def test_runouts_share_the_betting_line_without_saved_simulation_files(self):
         settings = {'source': 'current', 'analysis_lines': ['r:0', 'r:0:c:c:?:c', 'r:0:c:c:?:b100']}

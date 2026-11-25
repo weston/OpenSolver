@@ -523,7 +523,7 @@ class DrillTest(unittest.TestCase):
         from drill_sessions import Sessions
         persisted = Sessions(os.path.join(self.queue.root, 'drill-sessions.sqlite3'))
         try:
-            row = next(s for s in persisted.list(0) if s['id'] == session)
+            row = next(s for s in persisted.list(0)['sessions'] if s['id'] == session)
             self.assertEqual((row['hands'], row['decisions']), (1, 5))
             self.assertIsNotNone(row['ended'])
             self.assertEqual(persisted.reviews(session, 0)[0]['feedback'], results)

@@ -104,7 +104,12 @@
 </main>
 
 <main id="view-drill" class="view hidden">
-  <div class="drill-layout">
+  <nav class="drill-tabs" role="tablist" aria-label="Drill sections">
+    <button id="drill-practice-tab" class="active" role="tab" aria-selected="true" aria-controls="drill-practice-panel" data-drill-section="practice">Practice</button>
+    <button id="drill-sessions" role="tab" aria-selected="false" aria-controls="drill-sessions-panel" data-drill-section="sessions">Sessions</button>
+    <button id="drill-analysis" role="tab" aria-selected="false" aria-controls="drill-analysis-panel" data-drill-section="analysis">Analysis</button>
+  </nav>
+  <div id="drill-practice-panel" class="drill-layout" role="tabpanel" aria-labelledby="drill-practice-tab">
     <aside class="drill-settings card">
       <div class="card-head"><h2>Drill</h2><span id="drill-number" class="tag hidden"></span></div>
       <div id="drill-convergence" class="chart-box hidden">
@@ -144,7 +149,6 @@
       </details>
       <button id="drill-start" class="btn primary wide">Start drilling</button>
       <button id="drill-stop" class="btn wide hidden">End session</button>
-      <button id="drill-sessions" class="btn wide">Sessions</button>
       <div id="drill-stats" class="stats"></div>
       <div id="drill-preparing" class="drill-status" role="status"></div>
       <div id="drill-error" class="drill-error" role="alert"></div>
@@ -173,10 +177,11 @@
       <div class="drill-controls"><button id="drill-submit" class="btn primary hidden">Submit</button><button id="drill-continue" class="btn primary hidden">Continue</button><button id="drill-next" class="btn primary hidden">Next hand</button><button id="drill-browse" class="btn hidden">Browse spot</button></div>
     </section>
   </div>
+  <section id="drill-sessions-panel" class="drill-section hidden" role="tabpanel" aria-labelledby="drill-sessions"></section>
+  <section id="drill-analysis-panel" class="drill-section hidden" role="tabpanel" aria-labelledby="drill-analysis"></section>
 </main>
 
 <dialog id="drill-board-dialog" class="dialog drill-board-dialog" aria-label="Select boards"></dialog>
-<dialog id="drill-sessions-dialog" class="dialog wide" aria-label="Sessions"></dialog>
 
 <main id="view-settings" class="view hidden">
   <div class="settings-layout">

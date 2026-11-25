@@ -45,9 +45,12 @@ def validate(body):
             raise vsrv.SolverError('invalid analysis selection')
     if body.get('seat', 'both') not in ('both', 'OOP', 'IP') or body.get('baseline', 'played') not in ('played', 'original'):
         raise vsrv.SolverError('invalid analysis filter')
-    for field in ('tree', 'node'):
+    for field in ('tree', 'node', 'category'):
         if field in body and (not isinstance(body[field], str) or len(body[field]) > 1024):
             raise vsrv.SolverError('invalid analysis selection')
+    offset = body.get('offset', 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise vsrv.SolverError('invalid analysis page')
     return list(dict.fromkeys(sessions))
 
 
@@ -220,6 +223,8 @@ def report(records, body, read_categories):
     detail = {'id': selected_node, **totals[selected_node].view()} if selected_node else None
     if detail:
         categories = {'made': {}, 'draws': {}}
+        examples, example_count = [], 0
+        offset = body.get('offset', 0)
         for session, number, settings, review in records():
             if canonical(review['node']['id']) != selected_node or (seat != 'both' and review['seat'] != seat):
                 continue
@@ -233,8 +238,17 @@ def report(records, body, read_categories):
                 for kind, name in labels[key]:
                     category = categories[kind].setdefault(name, Totals())
                     category.add(hand, expected, review['big_blind'], weight)
+                    if body.get('category') == kind + ':' + name:
+                        if offset <= example_count < offset + 25:
+                            comparison = Totals()
+                            comparison.add(hand, expected, review['big_blind'], 1)
+                            examples.append({'session': session, 'number': number, 'combo': combo,
+                                             'board': review['node']['board'], **comparison.view()})
+                        example_count += 1
         detail['categories'] = {kind: [{'name': name, **total.view()} for name, total in buckets.items()]
                                 for kind, buckets in categories.items()}
+        if 'category' in body:
+            detail['examples'] = {'hands': examples, 'total': example_count, 'offset': offset}
     return {'groups': catalog, 'tree': tree, 'nodes': list(nodes.values()), 'detail': detail,
             'sessions': len(selected_sessions), 'hands': len(selected_hands), 'simulations': len(selected_sims_seen),
             'decisions': sum(total.decisions for total in totals.values()), 'big_blind': group['big_blind']}

@@ -791,7 +791,7 @@ class DrillService:
                     raise vsrv.SolverError("invalid page")
                 if path.endswith("/sessions"):
                     active = self.session if self.config else None
-                    return 200, {"sessions": self.sessions.list(offset, active), "active": active}
+                    return 200, {**self.sessions.list(offset, active, body), "active": active}
                 session = str(body.get("session", ""))
                 return 200, {"reviews": self.sessions.reviews(session, offset),
                              "simulations": self.sessions.simulations(session, offset)}

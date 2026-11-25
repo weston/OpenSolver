@@ -44,8 +44,13 @@ await wait(() => (!$('drill-submit').classList.contains('hidden') && !$('drill-s
 check($('drill-number').textContent === 'Hand 2', 'continuing results stopped at the hand-complete screen');
 check($('drill-next').classList.contains('hidden'), 'an extra next-hand click is required');
 $('drill-sessions').click();
-[...document.querySelectorAll('.session-tabs button')].find(b => b.textContent === 'Analysis').click();
+await wait(() => document.querySelector('.session-table tbody input'));
+check(!$('drill-sessions-panel').classList.contains('hidden'), 'Sessions did not open as a Drill section');
+check($('drill-practice-panel').classList.contains('hidden'), 'Practice remained visible in Sessions');
+document.querySelector('.session-toolbar .primary').click();
 await wait(() => document.querySelector('.analysis-detail h3'));
+check($('drill-analysis').getAttribute('aria-selected') === 'true', 'Analysis did not open as a Drill section');
+check(document.querySelector('.analysis-positions [aria-pressed=true]').textContent === 'OOP', 'analysis did not select one position');
 check(document.querySelectorAll('.analysis-node.measured').length > 0, 'session analysis did not render the drilled tree');
 check(document.querySelector('.analysis-detail').textContent.includes('5 dealt hands'), 'session analysis lost the submitted hands');
 check([...document.querySelectorAll('.analysis-comparison > span')].map(label => label.textContent).join(',') === 'Solver,You', 'analysis comparison order changed');
@@ -58,10 +63,16 @@ for (let i = 0; i < 2; i++) {
   const segment = [...bars[i].children].find(segment => segment.getBoundingClientRect().width > 0);
   segment.dispatchEvent(new MouseEvent('mousemove', {bubbles: true, clientX: 100, clientY: 100}));
   check($('tip').textContent.includes(i === 0 ? 'Solver' : 'You'), 'category hover does not identify the player');
-  check($('tip').closest('dialog[open]'), 'category tooltip is behind the dialog');
+  check($('tip').parentElement === document.body, 'category tooltip was not in the analysis page');
 }
-$('drill-sessions-dialog').close();
-await wait(() => $('tip').parentElement === document.body);
-check($('tip').classList.contains('hidden'), 'closing analysis left its tooltip visible');
+document.querySelector('.analysis-category summary').click();
+await wait(() => document.querySelector('.category-example'));
+check(document.querySelectorAll('.category-example-cards .pc').length >= 7, 'category expansion lost the hole cards or board');
+check([...document.querySelectorAll('.category-example .analysis-comparison > span')].slice(0, 2).map(label => label.textContent).join(',') === 'Solver,You', 'expanded hand comparison lost player order');
+$('drill-sessions').click();
+check($('tip').classList.contains('hidden'), 'switching sections left its tooltip visible');
+await wait(() => document.querySelector('.session-table tbody input')?.checked);
+$('drill-practice-tab').click();
+check(!$('drill-practice-panel').classList.contains('hidden') && $('drill-number').textContent === 'Hand 2', 'switching sections changed the active hand');
 check(testErrors.length === 0, testErrors.join('\n'));
 return 'native window loads Browse, saves settings, submits a five-hand drill, continues to the next hand, and analyzes the session';

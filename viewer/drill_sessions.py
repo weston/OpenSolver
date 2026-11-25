@@ -1,10 +1,13 @@
 import json
+import math
 import os
 import sqlite3
 import time
 import tempfile
 from drill_grading import regrade_feedback
 from drill_analysis import category_reader, report, validate
+from drill_spots import normalize_board_filters, matches_board_filters
+import server as vsrv
 
 
 class Sessions:
@@ -95,10 +98,34 @@ class Sessions:
             if os.path.isfile(path):
                 os.remove(path)
 
-    def list(self, offset, active=None):
+    def list(self, offset, active=None, filters=None):
+        filters = filters or {}
+        query, source = filters.get('query', ''), filters.get('source', '')
+        if not isinstance(query, str) or len(query) > 200 or source not in ('', 'live', 'saved', 'current'):
+            raise vsrv.SolverError('invalid session filter')
+        clauses, params = ['hands>0'], []
+        if query.strip():
+            clauses.append("INSTR(LOWER(COALESCE(NULLIF(json_extract(settings, '$.spot'), ''), NULLIF(json_extract(settings, '$.batch'), ''), 'Current tree')), LOWER(?))>0")
+            params.append(query.strip())
+        if source:
+            clauses.append("json_extract(settings, '$.source')=?")
+            params.append(source)
+        for field, operator in (('since', '>='), ('until', '<')):
+            if field not in filters:
+                continue
+            value = filters[field]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise vsrv.SolverError('invalid session date')
+            clauses.append('started' + operator + '?')
+            params.append(value)
         self.remove_empty(active)
-        rows = self.db.execute('SELECT * FROM sessions WHERE hands>0 ORDER BY started DESC LIMIT 50 OFFSET ?', (offset,))
-        return [{**dict(row), 'settings': json.loads(row['settings'])} for row in rows]
+        where = ' AND '.join(clauses)
+        total = self.db.execute('SELECT COUNT(*) FROM sessions WHERE ' + where, params).fetchone()[0]
+        order = ' ORDER BY started DESC, id'
+        rows = self.db.execute('SELECT * FROM sessions WHERE ' + where + order + ' LIMIT 50 OFFSET ?', (*params, offset))
+        sessions = [{**dict(row), 'settings': json.loads(row['settings'])} for row in rows]
+        matching = [row['id'] for row in self.db.execute('SELECT id FROM sessions WHERE ' + where + order, params)] if total <= 100 else []
+        return {'sessions': sessions, 'total': total, 'matching': matching}
 
     def reviews(self, session, offset):
         rows = self.db.execute('SELECT hand, payload FROM reviews WHERE session=? ORDER BY id LIMIT 50 OFFSET ?',
@@ -107,13 +134,16 @@ class Sessions:
 
     def analysis(self, body, solver):
         selected = validate(body)
+        board_filters = normalize_board_filters(body['board_filters']) if 'board_filters' in body else None
         def records():
             for session in selected:
                 saved = self.get(session)
                 if saved is None:
                     continue
                 for row in self.db.execute('SELECT hand, payload FROM reviews WHERE session=? ORDER BY id', (session,)):
-                    yield session, row['hand'], saved['settings'], json.loads(row['payload'])
+                    review = json.loads(row['payload'])
+                    if board_filters is None or matches_board_filters(review['node']['board'], board_filters):
+                        yield session, row['hand'], saved['settings'], review
         return report(records, body, category_reader(solver))
 
     def simulations(self, session, offset):

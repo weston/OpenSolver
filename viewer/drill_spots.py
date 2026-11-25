@@ -78,7 +78,7 @@ def merge_tree(tree, enabled):
     return {**tree, 'pio_extra': extra}
 
 
-def action_info(node, child):
+def action_info(node, child, effective_stack):
     token = child["id"].rsplit(":", 1)[-1]
     actor = 0 if node["type"] == "OOP_DEC" else 1
     own, facing = node["pot"][actor], max(node["pot"][:2])
@@ -90,9 +90,10 @@ def action_info(node, child):
     amount = float(token[1:])
     raising = facing > own
     fraction = (amount - facing) / (sum(node["pot"]) + facing - own) if raising else (amount - own) / sum(node["pot"])
+    allin = amount == effective_stack
     return {"id": child["id"], "kind": "raise" if raising else "bet",
-            "label": ("Raise " if raising else "Bet ") + f"{100 * fraction:.0f}%",
-            "amount": amount - own}
+            "label": ("All-in " if allin else "Raise " if raising else "Bet ") + f"{100 * fraction:.0f}%",
+            "amount": amount - own, "fraction": fraction, "allin": allin}
 
 
 def node_preview(body):
@@ -116,7 +117,7 @@ def node_preview(body):
         for total, child, aggressive in tb._children(cfg, current):
             token = 'b' + str(total) if aggressive else 'c'
             target = prefix + ':' + token
-            action = action_info(parent, {'id': target})
+            action = action_info(parent, {'id': target}, cfg.stack)
             if child is not None and child.street > current.street:
                 target += ':?'
             choices.append((token, child, {**action, 'id': target, 'terminal': child is None,

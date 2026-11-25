@@ -82,6 +82,145 @@ class DrillTest(unittest.TestCase):
         self.request("start", {"source": "current", "seat": "OOP", **settings})
         return self.post("next", self.ready())
 
+    def resolved(self):
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            state = self.request()
+            self.assertFalse(state["resolution"]["error"], state["resolution"])
+            if not state["resolution"]["busy"]:
+                return state
+            time.sleep(0.02)
+        self.fail("re-solve did not finish")
+
+    def test_size_toggles_compare_original_and_continue_resolved_strategy(self):
+        self.solver.cmds(["clear_lines", "add_line 10 30 60 60", "add_line 20 40 60 60",
+                         "add_line 0 10 30 60 60", "add_line 0 20 40 60 60", "build_tree", "go 100 steps", "wait_for_solver"])
+        original = self.solver.cmd("show_strategy r:0")
+        state = self.begin(format="set")
+        dealt = state["hand"]["exercises"]
+        disabled = ["r:0:b20"]
+        self.post("sizes", state, disabled=disabled)
+        state = self.resolved()
+        self.assertEqual(state["hand"]["disabled"], disabled)
+        self.assertEqual(state["hand"]["exercises"], dealt)
+        self.assertNotIn("r:0:b20", self.service.hand.solver.cmd("show_children r:0"))
+        choices = [float(a["id"] == "r:0:b10") for a in state["hand"]["actions"]]
+        illegal = [float(a["id"] == "r:0:b20") for a in state["hand"]["actions"]]
+        self.request("submit", {"token": state["token"], "choices": [illegal] * len(dealt)}, expected=400)
+        state = self.post("submit", state, choices=[choices] * len(dealt))
+        feedback = state["hand"]["feedback"]
+        removed = next(i for i, a in enumerate(feedback["hands"][0]["actions"]) if a["id"] in disabled)
+        self.assertEqual(feedback["frequencies"]["range"][removed], 0)
+        self.assertGreater(feedback["original"]["frequencies"]["range"][removed], 0)
+        for actual, baseline in zip(feedback["hands"], feedback["original"]["hands"]):
+            self.assertEqual(actual["chosen"], baseline["chosen"])
+            combo = vsrv.hand_order(self.solver).index(actual["combo"])
+            self.assertEqual([a["ev"] for a in baseline["actions"]],
+                             [vsrv.ev_pair(self.solver, "OOP", a["id"])["ev"][combo] for a in baseline["actions"]])
+        resolved_solver = self.service.resolver.rsolver
+        self.post("continue", state)
+        self.assertIs(self.service.playing_solver, resolved_solver)
+        self.assertEqual(self.solver.cmd("show_strategy r:0"), original)
+
+    def test_size_toggles_preserve_ip_line_and_can_restore_all_sizes(self):
+        self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 20 20 20 30 30",
+                         "add_line 20 20 20 40 40", "build_tree", "go 40 steps", "wait_for_solver"])
+        node = "r:0:b20:c:7c:c"
+        state = self.begin(format="set", seat="IP", mode="node", node=node)
+        history = state["hand"]["history"]
+        original = self.service.hand.solver.cmd("show_strategy " + node)
+        self.post("sizes", state, disabled=[node + ":b40"])
+        state = self.resolved()
+        self.assertEqual(state["hand"]["history"], history)
+        self.assertEqual(state["hand"]["stacks"], [40, 40])
+        self.assertIn(node + ":b30", self.service.hand.solver.cmd("show_children " + node))
+        state = self.post("sizes", state, disabled=[])
+        self.assertIsNone(state["resolution"])
+        self.assertEqual(self.service.hand.solver.cmd("show_strategy " + node), original)
+        self.post("sizes", state, disabled=[node + ":b30", node + ":b40"])
+        state = self.resolved()
+        self.assertEqual([c["id"] for c in vsrv.parse_children(self.service.hand.solver.cmd("show_children " + node))], [node + ":c"])
+
+    def test_later_street_keeps_original_comparison_through_another_resolve(self):
+        self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 10 10 10 20 20",
+                         "add_line 20 20 20 40 40", "add_line 0 0 10 10", "add_line 0 0 20 20",
+                         "build_tree", "go 40 steps", "wait_for_solver"])
+        state = self.begin(format="set")
+        self.post("sizes", state, disabled=["r:0:b20"])
+        state = self.resolved()
+        check = [float(a["kind"] == "check") for a in state["hand"]["actions"]]
+        state = self.post("submit", state, choices=[check] * len(state["hand"]["exercises"]))
+        state = self.post("continue", state)
+        node = state["hand"]["node"]["id"]
+        self.assertTrue(node.startswith("r:0:c:c:"))
+        self.assertIsNotNone(self.service.hand.original)
+        self.post("sizes", state, disabled=[node + ":b20"])
+        state = self.resolved()
+        original = self.service.hand.original
+        self.assertIs(original.solver, self.service.reader)
+        self.assertEqual(original.solver.cmd("show_strategy " + node), self.solver.cmd("show_strategy " + node))
+        check = [float(a["kind"] == "check") for a in state["hand"]["actions"]]
+        state = self.post("submit", state, choices=[check] * len(state["hand"]["exercises"]))
+        self.assertIn("original", state["hand"]["feedback"])
+        self.finish(state)
+
+    def test_changing_sizes_cancels_an_ongoing_resolve(self):
+        self.solver.cmds(["add_line 10 60 60", "build_tree"])
+        state = self.begin()
+        original = self.service.hand.solver.cmd("show_strategy r:0")
+        solve = drill.DrillResolve._build_and_solve
+
+        def slow_solve(manager, ctx, body, acc, **kwargs):
+            return solve(manager, ctx, body, 0, **{**kwargs, "seconds": 60})
+
+        with patch.object(drill.DrillResolve, "_build_and_solve", slow_solve):
+            state = self.post("sizes", state, disabled=["r:0:b10"])
+            worker = self.service.resolver.worker
+            self.assertTrue(state["resolution"]["busy"])
+            state = self.post("sizes", state, disabled=[])
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(state["resolution"])
+        self.assertEqual(self.service.hand.solver.cmd("show_strategy r:0"), original)
+
+    def test_disabling_raises_keeps_call_fold_and_investments(self):
+        self.solver.cmds(["set_eff_stack 100", "clear_lines", "add_line 30 60 100 100",
+                         "add_line 30 80 100 100", "build_tree", "go 40 steps", "wait_for_solver"])
+        state = self.begin(mode="node", node="r:0:b30", seat="IP", format="set")
+        disabled = [a["id"] for a in state["hand"]["actions"] if a["kind"] == "raise"]
+        self.assertEqual(len(disabled), 2)
+        self.post("sizes", state, disabled=disabled)
+        state = self.resolved()
+        self.assertEqual(state["hand"]["wagers"], [30, 0])
+        self.assertEqual(state["hand"]["stacks"], [70, 100])
+        call = [float(a["kind"] == "call") for a in state["hand"]["actions"]]
+        state = self.post("submit", state, choices=[call] * len(state["hand"]["exercises"]))
+        self.assertIn("original", state["hand"]["feedback"])
+        state = self.post("continue", state)
+        self.assertEqual(state["hand"]["stacks"], [70, 70])
+
+    def test_resume_restores_setup_statistics_and_alternating_position(self):
+        state = self.begin(mode="node", format="set", seat="alternate")
+        session = state["token"].split(":")[0]
+        choices = [float(a["kind"] == "check") for a in state["hand"]["actions"]]
+        state = self.post("submit", state, choices=[choices] * len(state["hand"]["exercises"]))
+        state = self.post("continue", state)
+        stats = state["stats"]
+        self.post("stop", state)
+        self.solver.cmds(["set_board Kh9h4h2c3d", "build_tree"])
+        state = self.request("resume", {"session": session})
+        self.assertEqual(state["stats"], stats)
+        self.assertEqual(state["token"].split(":")[0], session)
+        state = self.post("next", self.ready())
+        self.assertEqual(state["number"], 2)
+        self.assertEqual(state["hand"]["seat"], "IP")
+        self.assertIn("2c", state["hand"]["node"]["board"])
+        self.assertIsNone(self.service.sessions.get(session)["ended"])
+        previous = state
+        self.request("resume", {"session": session})
+        state = self.post("next", self.ready())
+        self.assertNotEqual(state["token"], previous["token"])
+        self.request("submit", {"token": previous["token"], "choices": []}, expected=400)
+
     def finish(self, state):
         for _ in range(30):
             hand = state["hand"]
@@ -96,9 +235,12 @@ class DrillTest(unittest.TestCase):
         self.fail("hand did not finish")
 
     def test_grading_hidden_cards_alternation_and_study_isolation(self):
+        self.solver.cmds(["add_line 60 60", "build_tree", "go 50 steps", "wait_for_solver"])
         before = self.solver.cmd("show_strategy r:0")
         state = self.begin(seat="alternate")
         self.assertEqual(state["hand"]["seat"], "OOP")
+        shove = next(a for a in state["hand"]["actions"] if a.get("allin") and a["kind"] == "bet")
+        self.assertEqual(shove["label"], "All-in 150%")
         self.assertNotIn("frequency", state["hand"]["actions"][0])
         self.assertNotIn("ev", state["hand"]["actions"][0])
         self.assertNotIn("hands", state["hand"])
@@ -127,7 +269,10 @@ class DrillTest(unittest.TestCase):
         state = self.begin(mode="node", node="r:0:b30", seat="IP")
         self.assertEqual(state["hand"]["node"]["id"], "r:0:b30")
         self.assertEqual(state["hand"]["wagers"], [30, 0])
+        self.assertEqual(state["hand"]["stacks"], [30, 60])
         self.assertEqual(state["hand"]["history"][0]["id"], "r:0:b30")
+        shove = next(a for a in state["hand"]["actions"] if a.get("allin"))
+        self.assertEqual((shove["kind"], shove["label"]), ("raise", "All-in 30%"))
         state = self.post("action", state, action=state["hand"]["actions"][-1]["id"])
         state = self.post("continue", state)
         self.assertEqual((state["hand"]["phase"], state["stats"]["decisions"]), ("complete", 1))
@@ -137,6 +282,7 @@ class DrillTest(unittest.TestCase):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 20 20 20 40 40", "build_tree"])
         state = self.begin(mode="node", node="r:0:b20:c:7c:c:b40", seat="OOP")
         self.assertEqual(state["hand"]["wagers"], [0, 20])
+        self.assertEqual(state["hand"]["stacks"], [40, 20])
         self.assertEqual(len(state["hand"]["history"]), 5)
         self.assertEqual(state["hand"]["history"][0]["amount"], 20)
         self.assertEqual(sum(state["hand"]["node"]["pot"]), 100)
@@ -145,6 +291,7 @@ class DrillTest(unittest.TestCase):
         state = self.post("continue", state)
         self.assertEqual(state["hand"]["wagers"], [0, 0])
         self.assertEqual(sum(state["hand"]["node"]["pot"]), 120)
+        self.assertEqual(state["hand"]["stacks"], [20, 20])
 
     def test_mixed_choices_grade_expected_ev_and_play_the_sampled_hand(self):
         state = self.begin(format="set", mode="node")
@@ -455,6 +602,70 @@ class DrillTest(unittest.TestCase):
         with open(job["out"], "rb") as f:
             self.assertEqual(f.read(), before)
 
+    def test_saved_drill_locks_are_separate_and_villain_best_response_preserves_hero(self):
+        setup, _ = vsrv.setup_from_body(TREE)
+        job = self.queue.add_batch("lock-drill", setup, [(TREE["board"], 1)], 1, 50, None, "full", None)[0]
+        self.assertEqual(drill.jobs.run_job(self.queue, job, SOLVER, 1, log=lambda _: None), "done")
+        with open(job["out"], "rb") as f:
+            before = f.read()
+        state = self.begin(source="saved", batch="lock-drill", format="set", mode="node", seat="alternate")
+        session = state["token"].split(":")[0]
+        expected = {}
+        for _ in range(2):
+            hand = state["hand"]
+            choices = [[1 / len(hand["actions"])] * len(hand["actions"])] * len(hand["exercises"])
+            state = self.post("submit", state, choices=choices)
+            expected[hand["seat"]] = state["hand"]["feedback"]["hands"]
+            state = self.post("continue", state)
+            if hand["seat"] == "OOP":
+                state = self.post("next", self.ready())
+        self.post("stop", state)
+        simulations = self.request("reviews", {"session": session})["simulations"]
+        self.assertEqual((simulations[0]["oop"], simulations[0]["ip"]), (5, 5))
+        for seat in ("OOP", "IP"):
+            self.request("open-locks", {"session": session, "simulation": job["out"], "seat": seat})
+            self.assertEqual(self.solver.state()["drill_variant"]["hero"], seat)
+            self.assertFalse(self.solver.loaded_file)
+            node = expected[seat][0]["node"]
+            self.assertEqual(set(self.solver.locks), {node})
+            rows = [vsrv.parse_floats(row, 1326) for row in self.solver.cmd("show_strategy " + node).splitlines() if row.strip()]
+            order = vsrv.hand_order(self.solver)
+            for hand in expected[seat]:
+                for row, frequency in zip(rows, hand["chosen"]):
+                    self.assertAlmostEqual(row[order.index(hand["combo"])], frequency, places=5)
+            hero_strategy = self.solver.cmd("show_strategy " + node)
+            villain = "IP" if seat == "OOP" else "OOP"
+            from resolve import parse_evs
+            ev_before = parse_evs(self.solver.cmd("calc_results"))[villain]
+            status, _ = vsrv.api(self.solver, None, "POST", "/api/best_response", {}, {"player": villain})
+            self.assertEqual(status, 200)
+            self.assertEqual(self.solver.cmd("show_strategy " + node), hero_strategy)
+            self.assertGreaterEqual(parse_evs(self.solver.cmd("calc_results"))[villain], ev_before - 1e-6)
+            vsrv.api(self.solver, None, "POST", "/api/lock", {}, {"id": node, "mode": "current"})
+            self.solver.cmds(["go 10 steps", "wait_for_solver"])
+            self.assertEqual(self.solver.cmd("show_strategy " + node), hero_strategy)
+        with open(job["out"], "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def test_live_session_resumes_after_service_restart(self):
+        state = self.begin(source="live", tree=TREE, boards="selected", selected_boards=[TREE["board"]], mode="node", ahead=1)
+        state = self.finish(state)
+        session = state["token"].split(":")[0]
+        self.post("stop", state)
+        resumed = drill.DrillService(self.solver, SOLVER, self.queue, random.Random(42))
+        vsrv.set_drill(resumed)
+        try:
+            state = self.request("resume", {"session": session})
+            self.assertEqual(state["stats"]["hands"], 1)
+            state = self.post("next", self.ready())
+            self.assertEqual(state["number"], 2)
+            self.assertEqual("".join(state["hand"]["node"]["board"].split()), TREE["board"])
+            self.assertIn("r:0:b20", [a["id"] for a in state["hand"]["actions"]])
+        finally:
+            resumed.close()
+            resumed.sessions.db.close()
+            vsrv.set_drill(self.service)
+
     def test_hand_set_varies_classes_and_properties_and_grades_every_choice(self):
         broad = "AA,KK,QQ,JJ,TT,99,88,77,66,55,44,33,22,AK,AQ,AJ,KQ,QJ,JT,T9s,98s,87s,76s,A5s,A4s"
         self.solver.cmds(["set_range OOP " + broad, "set_range IP " + broad,
@@ -511,6 +722,7 @@ class DrillTest(unittest.TestCase):
         state = self.begin(seat="IP")
         self.assertEqual(state["hand"]["node"]["board"], "")
         self.assertEqual(state["hand"]["node"]["type"], "IP_DEC")
+        self.assertEqual(state["hand"]["stacks"], [90, 95])
         self.post("stop", state)
         state = self.begin(mode="node", node="r:0:b25:c", seat="IP")
         self.assertEqual(set(drill.cards(state["hand"]["node"]["board"])), {"7c", "8d", "9h"})

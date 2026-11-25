@@ -84,6 +84,11 @@ async function pollOnce() {
   try { st = await get("/api/progress"); } catch (e) { setPill("offline", "Server offline"); return; }
   const wasSolving = app.solving;
   app.solving = st.solving;
+  $("drill-lock-seat").classList.toggle("hidden", !st.drill_variant);
+  $("drill-lock-seat").textContent = st.drill_variant ? `Hero ${st.drill_variant.hero} · Drill locks` : "";
+  $("btn-drill-exploit").classList.toggle("hidden", !st.drill_variant);
+  $("btn-drill-exploit").disabled = st.solving || !!app.exploitBusy;
+  app.drillHero = st.drill_variant?.hero;
   if (st.tree && !app.tree) { app.tree = true; await refreshRootPot(); }
   if (!st.tree) app.tree = false;
   if (st.events !== app.lastEvents || st.solving) {
@@ -189,7 +194,25 @@ async function boot() {
   initLock({ changed: () => study.refresh() });
   initPreview();
   initSettings();
-  initDrill();
+  initDrill({ opened: async () => {
+    app.tree = true;
+    freshTree();
+    treeLoadedElsewhere();
+    await refreshRootPot();
+    setView("study");
+    study.reset();
+    await pollOnce();
+  } });
+  $("btn-drill-exploit").onclick = async () => {
+    app.exploitBusy = true;
+    $("btn-drill-exploit").disabled = true;
+    try {
+      await post("/api/best_response", { player: app.drillHero === "OOP" ? "IP" : "OOP" });
+      freshTree();
+      await study.refresh();
+    } catch (e) { fail(e); }
+    finally { app.exploitBusy = false; await pollOnce(); }
+  };
   $("btn-drill").onclick = () => { drillHere(study.id); setView("drill"); };
   // Fast preview: the strategy is readable now (the solve carries on). From a Build view left
   // alone since Solve, open the Study view; anywhere else, stay there and say so.

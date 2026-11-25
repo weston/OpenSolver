@@ -111,7 +111,7 @@ function describe(parent, tok, pi, path) {
       // the preflop street: every bet is a raise (over the big blind at least), to a whole amount
       const r = preflopRaise(pot, own, facing, amt);
       return {
-        kind: allin ? "allin" : "raise", label: allin ? "All-in" : `Raise ${pctLabel(r.frac)}`,
+        kind: allin ? "allin" : "raise", label: `${allin ? "All-in" : "Raise"} ${pctLabel(r.frac)}`,
         // no multiple in the label (it is cut short in a card of three actions): it goes in the tooltip
         sub: allin ? fmtChips(r.to) : `to ${fmtChips(r.to)}`, more: `${r.mult.toFixed(1)}x`,
         color: allin ? COL.allin : betColor(r.frac), frac: 10 + r.frac,
@@ -124,7 +124,7 @@ function describe(parent, tok, pi, path) {
       // Headline size is always % of the pot (owner): a raise's size is its increment over
       // the call, as a fraction of the pot after calling; chips and the multiple go below.
       return {
-        kind: allin ? "allin" : "raise", label: allin ? "All-in" : `Raise ${pctLabel(frac)}`,
+        kind: allin ? "allin" : "raise", label: `${allin ? "All-in" : "Raise"} ${pctLabel(frac)}`,
         sub: allin ? fmtChips(amt - base) : `to ${fmtChips(amt - base)} · ${mult.toFixed(1)}x`,
         // the strip's card has no room for the multiple beside the combo count: there, the amount only
         short: allin ? undefined : `to ${fmtChips(amt - base)}`,
@@ -133,7 +133,7 @@ function describe(parent, tok, pi, path) {
     }
     const frac = (amt - own) / pot;
     return {
-      kind: allin ? "allin" : "bet", label: allin ? "All-in" : `Bet ${pctLabel(frac)}`,
+      kind: allin ? "allin" : "bet", label: `${allin ? "All-in" : "Bet"} ${pctLabel(frac)}`,
       sub: fmtChips(amt - own), color: allin ? COL.allin : betColor(frac), frac,
     };
   }

@@ -55,6 +55,8 @@
         <span id="lock-tag" class="tag lock hidden" title="This strategy is a lock you set, not a solver output">Locked</span>
         <button id="btn-lock" class="btn small hidden" title="Set this player's strategy here by hand and lock it">Lock…</button>
         <button id="btn-drill" class="btn small hidden">Drill here</button>
+        <span id="drill-lock-seat" class="tag lock hidden"></span>
+        <button id="btn-drill-exploit" class="btn small hidden">Villain max exploit</button>
         <button id="btn-report" class="btn small hidden" title="This node on every flop of the save's job batch (aggregate report)">Report…</button>
         <div class="seg" id="view-seg">
           <button data-mode="strategy" class="active">Strategy</button>
@@ -159,9 +161,9 @@
         <div id="drill-loading-stats" class="stats"></div>
       </div>
       <div id="drill-table" class="drill-table">
-        <div class="drill-seat"><span id="drill-villain-seat" class="badge neutral">Solver</span><div id="drill-villain" class="drill-cards"></div><div id="drill-villain-wager" class="drill-wager"></div></div>
+        <div class="drill-seat"><span id="drill-villain-seat" class="badge neutral">Villain</span><div id="drill-villain-stack" class="drill-stack num"></div><div id="drill-villain" class="drill-cards"></div><div id="drill-villain-wager" class="drill-wager"></div></div>
         <div class="drill-center"><div id="drill-pot" class="drill-pot"></div><div id="drill-board" class="board"></div><div id="drill-history" class="drill-history"></div><div id="drill-result" role="status"></div></div>
-        <div class="drill-seat"><div id="drill-hero-wager" class="drill-wager"></div><div id="drill-hero" class="drill-cards"></div><span id="drill-hero-seat" class="badge neutral">You</span></div>
+        <div class="drill-seat"><div id="drill-hero-wager" class="drill-wager"></div><div id="drill-hero" class="drill-cards"></div><div id="drill-hero-stack" class="drill-stack num"></div><span id="drill-hero-seat" class="badge neutral">Hero</span></div>
       </div>
       <div id="drill-actions" class="drill-actions"></div>
       <div id="drill-feedback" class="drill-feedback hidden"></div>

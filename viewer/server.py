@@ -99,6 +99,7 @@ class Solver:
         self._iter_mark = None    # (reports, solver time, iterations) at the last report seen
         self._hold_wait = None    # how long the last hold took to land (a stand-in until then)
         self.locks = {}          # node id -> "node" | "combos": locks set from the viewer (#200)
+        self.drill_variant = None
         self.undo = None         # {"path", "time"}: lossless save of the tree before its first lock
         self.start()
 
@@ -232,7 +233,8 @@ class Solver:
                     "solver_status": self.solver_status, "events": self.events,
                     "tree": self.tree_present and not self.dead, "version": self.version,
                     "partial": partial, "loaded_file": self.loaded_file,
-                    "loaded_path": self.loaded_path if self.loaded_file else None}
+                    "loaded_path": self.loaded_path if self.loaded_file else None,
+                    "drill_variant": self.drill_variant}
 
     # ---- parking a running solve (UPI hold / release, an extension) ----
 
@@ -368,6 +370,7 @@ class Solver:
     def forget_locks(self):
         """A new tree (generate / build / load / restart): drop the lock list and the undo copy."""
         self.locks = {}
+        self.drill_variant = None
         if self.undo:
             try:
                 os.remove(self.undo["path"])
@@ -528,7 +531,7 @@ def lib_query(query, name="name"):
 # POSTs that change the main tree's strategies (or drop it): a re-solve shown in place was built on
 # the old ranges, so it is no longer shown - nor is a running one once it finishes.
 VARIANT_ENDERS = ("/api/lock", "/api/unlock", "/api/lock/revert", "/api/lock/apply", "/api/solve",
-                  "/api/solve_node", "/api/restart")
+                  "/api/solve_node", "/api/restart", "/api/best_response")
 
 
 def api(solver, lib, method, path, query, body):
@@ -616,7 +619,7 @@ def _api(solver, lib, method, path, query, body):
     return _api_main(solver, lib, method, path, query, body)
 
 
-LOCK_PATHS = ("/api/lock", "/api/unlock", "/api/lock/revert", "/api/lock/apply")
+LOCK_PATHS = ("/api/lock", "/api/unlock", "/api/lock/revert", "/api/lock/apply", "/api/best_response")
 BROWSE_PATHS = ("/api/node", "/api/strategy", "/api/path", "/api/range", "/api/categories", "/api/ev",
                 "/api/calc_results", "/api/hand_order", "/api/blockers", "/api/graphs", "/api/hand_lines")
 
@@ -818,11 +821,33 @@ def _api_main(solver, lib, method, path, query, body):
     if path == "/api/lock/apply":
         return 200, op_lock_apply(solver, need_body(body))
 
+    if path == "/api/best_response":
+        player = need_body(body).get("player")
+        if player not in ("OOP", "IP"):
+            raise SolverError("choose OOP or IP")
+        with solver.cmd_lock:
+            if solver.state()["solving"]:
+                raise SolverError("the solver is running (stop it first)")
+            solver.cmd("set_mes " + player, timeout=3600)
+            solver.reset_series()
+            solver.clear_partial()
+        return 200, {"ok": True}
+
     if path == "/api/restart":
         solver.restart()
         return 200, {"ok": True}
 
     return 404, {"error": "unknown endpoint"}
+
+
+def open_drill_variant(solver, path, locks, variant):
+    with solver.cmd_lock:
+        api(solver, None, "POST", "/api/load", {}, {"path": path})
+        solver.cmd("load_all_nodes", timeout=3600)
+        solver.loaded_file = False
+        solver.loaded_path = None
+        solver.locks = locks
+        solver.drill_variant = variant
 
 
 def ev_pair(solver, player, node_id):

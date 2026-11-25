@@ -372,7 +372,8 @@ class ResolveManager:
             self.job_tree_gen = self.tree_gen
             # the subgame solver's tree is about to be replaced: the shown re-solve goes with it
             self.applied, self.job_apply = None, apply
-        threading.Thread(target=self._entry, args=(job,), daemon=True).start()
+        self.worker = threading.Thread(target=self._entry, args=(job,), daemon=True)
+        self.worker.start()
 
     def main_tree_changed(self):
         """The main solver built or loaded another tree (#357): a re-solve of the old one no longer
@@ -427,12 +428,13 @@ class ResolveManager:
                     pass
         return {"ok": True, "was_busy": busy}
 
-    def _build_and_solve(self, ctx, body, acc, bet_override=None, locks=None):
+    def _build_and_solve(self, ctx, body, acc, bet_override=None, locks=None, lines=None, seconds=None):
         """Configure rsolver for the subgame at ctx, build, set the carried locks, solve to
         acc; return lines. self.carried reports the locks ({applied, skipped}, main ids)."""
         tb = _tree_builder()
-        cfg, start = build_config(tb, ctx, body, bet_override)
-        lines = tb.build_lines(cfg, start)
+        if lines is None:
+            cfg, start = build_config(tb, ctx, body, bet_override)
+            lines = tb.build_lines(cfg, start)
         if not lines:
             raise vsrv.SolverError("config produced no lines (check bet/raise sizes)")
         pot = ctx["pot"]
@@ -447,7 +449,7 @@ class ResolveManager:
         cmds.append("build_tree")
         self.rsolver.cmds(cmds)
         self.carried = self._apply_locks(locks)
-        self.rsolver.cmds([f"set_accuracy {acc:g}", "go"])
+        self.rsolver.cmds([f"set_accuracy {acc:g}", f"go {seconds:g} seconds" if seconds else "go"])
         self.rsolver.cmd("wait_for_solver", timeout=SOLVE_TIMEOUT)
         return lines
 

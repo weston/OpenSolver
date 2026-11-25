@@ -2,10 +2,13 @@ import json
 import os
 import sqlite3
 import time
+import tempfile
 
 
 class Sessions:
     def __init__(self, path):
+        self.temp = tempfile.TemporaryDirectory(prefix="wsolver-sessions-") if path == ":memory:" else None
+        self.assets = self.temp.name if self.temp else path + ".d"
         if path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False)
@@ -20,6 +23,10 @@ class Sessions:
                     id INTEGER PRIMARY KEY, session TEXT NOT NULL, hand INTEGER NOT NULL,
                     payload TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS reviews_session ON reviews(session, id);
+                CREATE TABLE IF NOT EXISTS choices (
+                    session TEXT NOT NULL, simulation TEXT NOT NULL, seat TEXT NOT NULL,
+                    node TEXT NOT NULL, combo TEXT NOT NULL, payload TEXT NOT NULL,
+                    PRIMARY KEY(session, simulation, seat, node, combo));
             ''')
 
     def start(self, session, settings):
@@ -27,11 +34,28 @@ class Sessions:
             self.db.execute('INSERT INTO sessions(id, started, settings) VALUES (?, ?, ?)',
                             (session, time.time(), json.dumps(settings)))
 
+    def snapshot_path(self, session):
+        os.makedirs(self.assets, exist_ok=True)
+        return os.path.join(self.assets, session + ".cfr")
+
+    def get(self, session):
+        row = self.db.execute('SELECT *, MAX(hands, COALESCE((SELECT MAX(hand) FROM reviews WHERE session=sessions.id), 0)) AS number FROM sessions WHERE id=?', (session,)).fetchone()
+        return {**dict(row), 'settings': json.loads(row['settings'])} if row else None
+
+    def resume(self, session):
+        with self.db:
+            self.db.execute('UPDATE sessions SET ended=NULL WHERE id=?', (session,))
+
     def record(self, session, number, hand, stats):
         with self.db:
             self.db.execute('INSERT INTO reviews(session, hand, payload) VALUES (?, ?, ?)',
                             (session, number, json.dumps(hand)))
             self.update(session, stats)
+            if hand.get('simulation'):
+                for result in hand['feedback']['hands']:
+                    mix = {a['id']: f for a, f in zip(result['actions'], result['chosen'])}
+                    self.db.execute('INSERT OR REPLACE INTO choices VALUES (?, ?, ?, ?, ?, ?)',
+                                    (session, hand['simulation'], hand['seat'], result['node'], result['combo'], json.dumps(mix)))
 
     def update(self, session, stats):
         self.db.execute('UPDATE sessions SET hands=?, decisions=?, loss=? WHERE id=?', (*stats, session))
@@ -52,3 +76,14 @@ class Sessions:
         rows = self.db.execute('SELECT hand, payload FROM reviews WHERE session=? ORDER BY id LIMIT 50 OFFSET ?',
                                (session, offset))
         return [{'number': row['hand'], **json.loads(row['payload'])} for row in rows]
+
+    def simulations(self, session, offset):
+        rows = self.db.execute('''SELECT simulation,
+            SUM(seat='OOP') AS oop, SUM(seat='IP') AS ip FROM choices WHERE session=?
+            GROUP BY simulation ORDER BY simulation LIMIT 50 OFFSET ?''', (session, offset))
+        return [dict(row) for row in rows]
+
+    def choices(self, session, simulation, seat):
+        rows = self.db.execute('SELECT node, combo, payload FROM choices WHERE session=? AND simulation=? AND seat=? ORDER BY node, combo',
+                               (session, simulation, seat))
+        return [{'node': row['node'], 'combo': row['combo'], 'mix': json.loads(row['payload'])} for row in rows]

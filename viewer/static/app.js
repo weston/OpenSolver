@@ -194,13 +194,13 @@ async function boot() {
   initLock({ changed: () => study.refresh() });
   initPreview();
   initSettings();
-  initDrill({ opened: async (node = "r:0") => {
+  initDrill({ opened: async (node = "r:0", combo = null) => {
     app.tree = true;
     freshTree();
     treeLoadedElsewhere();
     await refreshRootPot();
     setView("study");
-    await study.reset(node);
+    await study.reset(node, combo);
     await pollOnce();
   } });
   $("btn-drill-exploit").onclick = async () => {

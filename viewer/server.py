@@ -88,6 +88,7 @@ class Solver:
         self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
         self.loaded_path = None   # ... from this file (meaningful while loaded_file; the Study report button)
         self.drill_snapshot = None
+        self.drill_context = None
         # The Build form the current tree's lines came from (op_generate): street refines rebuild
         # their subgames with these sizes, not with whatever the form holds by the time you browse.
         self.built_sizes = None
@@ -374,6 +375,7 @@ class Solver:
         """A new tree (generate / build / load / restart): drop the lock list and the undo copy."""
         self.locks = {}
         self.drill_variant = None
+        self.drill_context = None
         if self.drill_snapshot:
             self.drill_snapshot.cleanup()
             self.drill_snapshot = None
@@ -678,6 +680,10 @@ def _api_main(solver, lib, method, path, query, body):
         with solver.cmd_lock:
             nodes = [parse_node_block(solver.cmd("show_node " + i)) for i in ids]
             stack = parse_num(solver.cmd("show_effective_stack").split()[0])
+            context = solver.drill_context
+            if context and (node_id == context["root"] or node_id.startswith(context["root"] + ":")):
+                depth = len(context["root"].split(":")) - 2
+                return 200, {"nodes": nodes[depth:], "eff_stack": stack, "history": context["path"]}
         return 200, {"nodes": nodes, "eff_stack": stack}
 
     if path == "/api/convergence":
@@ -846,7 +852,7 @@ def _api_main(solver, lib, method, path, query, body):
     return 404, {"error": "unknown endpoint"}
 
 
-def open_drill_snapshot(solver, path):
+def open_drill_snapshot(solver, path, context=None):
     snapshot = tempfile.TemporaryDirectory(prefix="wsolver-browse-")
     target = os.path.join(snapshot.name, "spot.cfr")
     try:
@@ -854,6 +860,7 @@ def open_drill_snapshot(solver, path):
         with solver.cmd_lock:
             api(solver, None, "POST", "/api/load", {}, {"path": target})
             solver.drill_snapshot = snapshot
+            solver.drill_context = context
     except Exception:
         snapshot.cleanup()
         raise

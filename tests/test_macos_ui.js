@@ -38,6 +38,22 @@ check(document.querySelectorAll('.feedback-hand').length === 5, 'drill results d
 for (const hand of document.querySelectorAll('.feedback-hand')) {
   check([...hand.querySelectorAll('.feedback-bar-row > span')].map(label => label.textContent).join(',') === 'Solver,You', 'drill comparison order changed');
 }
+const resultState = await (await fetch('/api/drill/state')).json();
+check(document.querySelectorAll('#drill-feedback .feedback-browse').length === 5, 'each result needs a Browse hand button');
+for (const index of [0, 1]) {
+  const combo = resultState.hand.feedback.hands[index].combo;
+  document.querySelectorAll('#drill-feedback .feedback-browse')[index].click();
+  await wait(() => !$('view-study').classList.contains('hidden') && document.querySelector('#side-hand tr.selected'));
+  const selected = [...document.querySelectorAll('#side-hand tr.selected .pc')].map(card => card.title).sort().join('');
+  check(selected === [combo.slice(0, 2), combo.slice(2)].sort().join(''), `Browse selected ${selected} instead of ${combo} for result ${index}`);
+  check(document.querySelectorAll('#side-hand tr.selected').length === 1, 'Browse selected more than one combo');
+  check(document.querySelectorAll('#side-hand .hand-head .pc').length === 2, 'Browse is missing the exact hand');
+  check(document.querySelectorAll('#side-hand .hand-action-ev').length > 0, 'Browse is missing action EVs');
+  tab('drill');
+  await wait(() => !document.querySelector('#drill-feedback .feedback-browse').disabled);
+  const afterBrowse = await (await fetch('/api/drill/state')).json();
+  check(afterBrowse.token === resultState.token && afterBrowse.hand.phase === 'feedback', 'browsing advanced the drill');
+}
 $('drill-continue').click();
 await wait(() => (!$('drill-submit').classList.contains('hidden') && !$('drill-submit').disabled)
   || (!$('drill-next').classList.contains('hidden') && !$('drill-next').disabled));

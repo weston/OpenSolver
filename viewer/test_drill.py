@@ -143,6 +143,28 @@ class DrillTest(unittest.TestCase):
         self.service.close()
         self.assertEqual(self.solver.cmd("show_strategy r:0:c"), strategy)
 
+    def test_browse_resolved_bet_keeps_real_history_and_hides_wrapper(self):
+        self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 20 20 50 60 60",
+                         "add_line 20 20 50 50", "build_tree", "go 40 steps", "wait_for_solver"])
+        node = "r:0:b20:c:7c:b50"
+        state = self.begin(seat="IP", mode="node", node=node)
+        _, original_path = vsrv._api_main(self.service.reader, None, "GET", "/api/path", {"id": [node]}, None)
+        self.post("sizes", state, disabled=[node + ":b60"])
+        state = self.resolved()
+        opened = self.post("browse", state)
+        shown_id = opened["browse_node"]
+        _, path = vsrv.api(self.solver, None, "GET", "/api/path", {"id": [shown_id]}, None)
+        self.assertEqual([n["id"] for n in path["nodes"]], [shown_id])
+        self.assertEqual(path["history"], original_path["nodes"])
+        self.assertEqual(path["nodes"][0]["pot"], state["hand"]["node"]["pot"])
+        self.assertEqual(path["history"][-1]["id"], node)
+        self.service.close()
+        _, after = vsrv.api(self.solver, None, "GET", "/api/path", {"id": [shown_id + ":c"]}, None)
+        self.assertEqual(after["history"], path["history"])
+        self.assertEqual([n["id"] for n in after["nodes"]], [shown_id, shown_id + ":c"])
+        self.solver.restart()
+        self.assertIsNone(self.solver.drill_context)
+
     def test_size_toggles_compare_original_and_continue_resolved_strategy(self):
         self.solver.cmds(["clear_lines", "add_line 10 30 60 60", "add_line 20 40 60 60",
                          "add_line 0 10 30 60 60", "add_line 0 20 40 60 60", "build_tree", "go 100 steps", "wait_for_solver"])

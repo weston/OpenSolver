@@ -687,6 +687,7 @@ class DrillService:
 
     def browse(self):
         source = self.hand.solver
+        context = None
         node = self.hand.node["id"]
         if self.hand.feedback:
             node = self.hand.feedback["hands"][0]["node"]
@@ -694,12 +695,14 @@ class DrillService:
             vsrv.open_drill_snapshot(self.main, self.used_solve["path"])
             return node
         if isinstance(source, Subtree):
+            _, path = vsrv._api_main(self.reader, None, "GET", "/api/path", {"id": [source.root]}, None)
+            context = {"root": source.sub_root, "path": path["nodes"]}
             node = source.sub_root + node[len(source.root):]
             source = source.solver
         with tempfile.TemporaryDirectory(prefix="wsolver-drill-browse-") as temp:
             path = os.path.join(temp, "spot.cfr")
             source.cmd(f'dump_tree "{path}" lossless no_compress', timeout=3600)
-            vsrv.open_drill_snapshot(self.main, path)
+            vsrv.open_drill_snapshot(self.main, path, context)
         return node
 
     def close(self):

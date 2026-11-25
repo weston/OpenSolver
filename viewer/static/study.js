@@ -2,7 +2,7 @@
 // action strip and 13x13 matrix in the middle, details on the right. Navigating only swaps
 // data inside these regions, so nothing moves while you click through a line.
 
-import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, parseCards, blockedBy, displayCombo, categoryLabel as prettyCat } from "./cards.js";
+import { H, RANKS, SUITS, GLYPH, el, cardEl, comboEl, comboClass, parseCards, blockedBy, displayCombo, categoryLabel as prettyCat } from "./cards.js";
 import { prepare as prepareBlockers, comboReport, shareChanges, cardEffects } from "./blockers.js";
 import { curves as rangeCurves, at as rangeAt, shareAbove } from "./graphs.js";
 import { sideCache } from "./sidecache.js";
@@ -18,6 +18,7 @@ const $ = (id) => document.getElementById(id);
 const S = {
   id: "r:0",
   path: [],          // node blocks root..current (from /api/path)
+  history: [],
   eff: 0,            // effective stack
   cur: null,         // /api/strategy response for the current node (decision or not)
   dec: null,         // strategy data shown in the matrix (current decision or last one above it)
@@ -27,6 +28,7 @@ const S = {
   range: null,       // /api/range of the current node
   ev: {},            // player -> /api/ev of the current node
   pinned: null,      // class pinned by click
+  handCombo: null,
   hover: null,
   catsPlayer: null,  // OOP/IP override in that tab; null = the actor
   catHl: null,       // Set of classes highlighted by a hovered category row
@@ -86,6 +88,10 @@ const lockOf = (n) => {
 
 /** Street-start investment at node index i of the path (both players matched there). */
 function streetBase(path, i) {
+  if (path === S.path && S.history.length) {
+    i += S.history.length - 1;
+    path = [...S.history.slice(0, -1), ...path];
+  }
   const len = (n) => parseCards(n.board).length;
   if (len(path[i]) === 0) return 0;   // before the flop (a preflop tree): amounts are whole investments
   let j = i;
@@ -192,9 +198,10 @@ export async function gotoNode(id) {
       }
     }
     if (seq !== S.seq) return;
-    Object.assign(S, { id, path: p.nodes, eff: p.eff_stack || 0, cur, dec, decId, range: null, ev: {}, loaded: true,
+    Object.assign(S, { id, path: p.nodes, history: p.history || [], eff: p.eff_stack || 0, cur, dec, decId, range: null, ev: {}, loaded: true,
                        variant: p.variant || null });
     if (S.pinned && !Object.prototype.hasOwnProperty.call(H.byClass, S.pinned)) S.pinned = null;
+    if (S.handCombo && blockedBy(boardOf(dec?.node || node))(S.handCombo)) S.handCombo = null;
     // a pinned/hovered category is board-dependent: it does not survive navigation
     S.catPin = null; S.catHl = null;
     if (S.mode !== "strategy") await loadModeData();
@@ -451,19 +458,25 @@ function renderPath() {
     box.appendChild(m);
   };
   const vroot = S.variant ? S.variant.root : null;
-  for (let i = 0; i < P.length - 1; i++) {
-    const n = P[i];
+  const past = S.history.slice(0, -1);
+  const trail = [...past, ...P];
+  for (let i = 0; i < trail.length - 1; i++) {
+    const n = trail[i];
     if (!isDec(n)) continue; // deals show up as street marks
     mark(n);
-    const d = describe(n, lastTok(P[i + 1].id), i, P);
-    const b = el("button", "step");
+    const historical = i < past.length;
+    const next = historical ? S.history[i + 1] : trail[i + 1];
+    const d = describe(n, lastTok(next.id), i, trail);
+    const b = el(historical ? "div" : "button", "step");
     const bar = el("span", "bar"); bar.style.background = d.color;
     b.append(bar, el("span", "who", actorOf(n)), el("span", null, d.label));
     if (d.sub) b.appendChild(el("span", "sub", d.sub));
-    b.title = "Go to this decision";
-    if (lockOf(n)) { b.classList.add("locked"); b.title += ` (${actorOf(n)}'s strategy here is locked)`; }
-    if (n.id === vroot) { b.classList.add("custom"); b.title += ` (custom sizes from here: ${variantText(S.variant)})`; }
-    b.onclick = () => gotoNode(n.id);
+    if (!historical) {
+      b.title = "Go to this decision";
+      if (lockOf(n)) { b.classList.add("locked"); b.title += ` (${actorOf(n)}'s strategy here is locked)`; }
+      if (n.id === vroot) { b.classList.add("custom"); b.title += ` (custom sizes from here: ${variantText(S.variant)})`; }
+      b.onclick = () => gotoNode(n.id);
+    }
     box.appendChild(b);
   }
   const cur = P[P.length - 1];
@@ -671,7 +684,7 @@ function ensureCells() {
     c.append(fill, lbl, val);
     c.onmouseenter = () => { S.hover = cls; if (!S.pinned) renderSide(); };
     c.onmouseleave = () => { S.hover = null; };
-    c.onclick = () => { S.pinned = S.pinned === cls ? null : cls; markSel(); renderSide(); syncUrl(); };
+    c.onclick = () => { S.handCombo = null; S.pinned = S.pinned === cls ? null : cls; markSel(); renderSide(); syncUrl(); };
     m.appendChild(c);
     return { cls, c, fill, val };
   });
@@ -799,6 +812,7 @@ function renderBetaPanel() {
 async function renderHand() {
   const box = $("side-hand");
   const cls = S.pinned || S.hover;
+  const selectedCombo = S.handCombo;
   const d = S.dec;
   if (!cls || !d || !d.freq) {
     box.textContent = "";
@@ -810,13 +824,15 @@ async function renderHand() {
   const seq = S.seq, key = `${S.base}|${S.decId}`;
   const evs = await Promise.all(acts.map((a, i) => sideData(`hand-ev-${i}`, key,
     `${S.base}/ev?id=${q(a.id)}&player=${d.actor}`, (data) => ({ data }))));
-  if (seq !== S.seq || S.side !== "hand" || cls !== (S.pinned || S.hover)) return;
+  if (seq !== S.seq || S.side !== "hand" || cls !== (S.pinned || S.hover) || selectedCombo !== S.handCombo) return;
   box.textContent = "";
   const handPot = potOf(d.node);
   const blocked = blockedBy(boardOf(d.node));
-  const cw = classWeight(d.reach, cls, blocked);
+  const indices = selectedCombo ? [H.index.get(selectedCombo)] : H.byClass[cls];
+  const weight = selectedCombo ? d.reach[indices[0]] || 0 : 0;
+  const cw = selectedCombo ? { w: weight, combos: weight, n: 1 } : classWeight(d.reach, cls, blocked);
   const head = el("div", "hand-head");
-  head.appendChild(el("div", "cls", cls));
+  head.appendChild(selectedCombo ? comboEl(selectedCombo, "") : el("div", "cls", cls));
   const meta = el("div", "meta");
   meta.innerHTML = `${d.actor} · weight <b>${fmt(cw.w * 100, 0)}%</b><br>${fmt(cw.combos, 2)} of ${cw.n} combos${S.pinned ? " · pinned" : ""}`;
   head.appendChild(meta);
@@ -830,7 +846,7 @@ async function renderHand() {
     mix.appendChild(columns);
     acts.forEach((a, index) => {
       let s = 0, ev = 0, mass = 0;
-      for (const i of H.byClass[cls]) {
+      for (const i of indices) {
         s += (d.reach[i] || 0) * (d.freq[a.k][i] || 0);
         const value = evs[index]?.data.ev[i], weight = d.ev?.matchups?.[i] || 0;
         if (value != null && weight > 0) { ev += value * weight; mass += weight; }
@@ -851,6 +867,10 @@ async function renderHand() {
     const combo = H.order[i];
     if (blocked(combo)) continue;
     const tr = el("tr");
+    if (selectedCombo && H.index.get(selectedCombo) === i) {
+      tr.classList.add("selected");
+      tr.setAttribute("aria-selected", "true");
+    }
     const c1 = el("td"); c1.appendChild(comboEl(combo, "xs"));
     const w = d.reach[i] || 0;
     const c2 = el("td", "w num", fmt(w * 100, 0) + "%");
@@ -1629,7 +1649,7 @@ export function initStudy() {
       e.preventDefault();
       goUp();
     } else if (e.key === "Escape") {
-      S.pinned = null; S.catPin = null; S.catHl = null;
+      S.pinned = null; S.handCombo = null; S.catPin = null; S.catHl = null;
       markSel(); markCatHl(); renderSide();
     }
   });
@@ -1648,6 +1668,7 @@ function urlState() {
   if (S.player) s += "&player=" + S.player;
   if (S.side !== "hand") s += "&side=" + S.side;
   if (S.pinned) s += "&pin=" + S.pinned;
+  if (S.handCombo) s += "&hand=" + S.handCombo;
   if (S.blkCombo) s += "&blk=" + S.blkCombo;
   return s;
 }
@@ -1658,6 +1679,10 @@ export function applyUrlState(params) {
   if (SIDES.includes(params.side)) S.side = params.side;
   if (params.blk && H.index.has(params.blk)) { S.blkCombo = displayCombo(H.order[H.index.get(params.blk)]); S.blkFor = null; }
   if (params.pin && Object.prototype.hasOwnProperty.call(H.byClass, params.pin)) S.pinned = params.pin;
+  if (params.hand && H.index.has(params.hand)) {
+    S.handCombo = H.order[H.index.get(params.hand)];
+    S.pinned = comboClass(S.handCombo);
+  }
   document.querySelectorAll("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.mode === S.mode));
 }
 
@@ -1722,5 +1747,10 @@ export const study = {
   get pot() { return S.path.length ? potOf(S.path[S.path.length - 1]) : 0; },
   get inSubgame() { return !!S.variant; },
   refresh() { invalidate(); return gotoNode(S.loaded ? S.id : "r:0"); },
-  reset(node = "r:0") { S.pinned = null; invalidate(); S.variant = null; return gotoNode(node); },
+  reset(node = "r:0", combo = null) {
+    S.pinned = null; S.handCombo = null;
+    $("side-hand").replaceChildren();
+    if (combo) { S.player = null; applyUrlState({ hand: combo, side: "hand", mode: "strategy" }); }
+    invalidate(); S.variant = null; return gotoNode(node);
+  },
 };

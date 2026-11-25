@@ -651,6 +651,8 @@ class ResolveManager:
             data["eff_stack"] = top["eff_stack"]
         if status == 200 and isinstance(data, dict):
             rewrite_ids(data, sroot, x)
+            if path == "/api/path" and "history" in top:
+                data["history"] = top["history"]
             data["variant"] = a
         return status, data
 

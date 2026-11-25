@@ -1,6 +1,6 @@
 import { get, post, fmt, hideTip } from "./api.js";
 import { el, cardEl, comboEl, parseCards } from "./cards.js";
-import { mixEditor, initialFrequencies, restrictFrequencies, rememberFrequencies, feedbackCards, chipStack, actionHeader, bb } from "./drill_controls.js";
+import { mixEditor, initialFrequencies, restrictFrequencies, rememberFrequencies, feedbackCards, chipStack, actionHeader, actionColor, bb } from "./drill_controls.js";
 
 import { liveConfig, renderBoardOptions, restoreSelection, refreshNode, resetNode, selectCurrentBoard } from "./drill_setup.js";
 import { initSessions } from "./drill_sessions.js";
@@ -14,7 +14,7 @@ let requestError = "", draftNode = "";
 const drafts = new Map();
 const fullDrafts = new Map();
 let sizeDraft = null, sizeTimer = null;
-let selectSection;
+let selectSection, browseSpot;
 
 function fields() {
   $("drill-batch-field").classList.toggle("hidden", $("drill-source").value !== "saved");
@@ -40,6 +40,7 @@ function controls() {
   const resolving = !!state?.resolution?.busy;
   $("drill-browse").classList.toggle("hidden", !hand);
   $("drill-browse").disabled = busy || resolving || !!state?.resolution?.error || sizeDraft !== null;
+  document.querySelectorAll("#drill-feedback .feedback-browse").forEach(button => { button.disabled = $("drill-browse").disabled; });
   $("drill-submit").disabled = busy || resolving || !!state?.resolution?.error || sizeDraft !== null || !hand?.exercises.every((e, i) => e.chosen || drafts.has(i));
   $("drill-next").classList.toggle("hidden", !active || (hand && hand.phase !== "complete"));
   $("drill-next").disabled = busy || !state?.can_deal;
@@ -184,7 +185,7 @@ function render(s) {
       }, disabled));
     $("drill-actions").append(row);
   }
-  if (hand.feedback) $("drill-feedback").append(feedbackCards(hand.feedback, hand.big_blind));
+  if (hand.feedback) $("drill-feedback").append(feedbackCards(hand.feedback, hand.big_blind, browseSpot));
   renderHistory(hand);
   controls();
 }
@@ -219,11 +220,16 @@ function renderHistory(hand) {
   if (hand.continuation) groups.get(current).push({ ...hand.continuation, actor: hand.seat, upcoming: true });
   const previous = el("div", "previous-streets");
   for (const [street, items] of groups) {
-    const section = el("div", "history-street");
+    const section = el("div", `history-street${street === current ? " current-street" : ""}`);
     section.append(el("strong", "", streets[street]));
     const actions = el("div", "history-actions");
-    for (const item of items) actions.append(el("span", `drill-history-item${item.upcoming ? " upcoming" : ""}`,
-      `${item.upcoming ? "Next · " : ""}${item.label}${item.amount != null && item.kind !== "call" ? " · " + bb(item.amount, hand.big_blind) : ""}`));
+    for (const item of items) {
+      const action = el("span", `drill-history-item${item.upcoming ? " upcoming" : ""}`);
+      action.style.setProperty("--action-color", actionColor(item));
+      action.append(el("strong", "", `${item.upcoming ? "Next · " : ""}${item.label}`));
+      if (item.amount != null && item.kind !== "call") action.append(el("span", "num", bb(item.amount, hand.big_blind)));
+      actions.append(action);
+    }
     section.append(actions);
     if (street === current) $("drill-history").append(section);
     else previous.append(section);
@@ -367,10 +373,11 @@ export function initDrill({ opened } = {}) {
   $("drill-batch").onchange = resetNode;
   $("drill-mode").onchange = fields;
   $("drill-start").onclick = start;
-  $("drill-browse").onclick = async () => {
+  browseSpot = async (combo) => {
     const result = await command("browse");
-    if (result) await opened(result.browse_node);
+    if (result) await opened(result.browse_node, combo);
   };
+  $("drill-browse").onclick = () => browseSpot();
   $("drill-submit").onclick = () => command("submit", { choices: state.hand.exercises.map((e, i) => e.chosen || drafts.get(i)) });
   for (const action of ["stop", "next", "continue", "retry"]) $("drill-" + action).onclick = () => command(action);
   fields();

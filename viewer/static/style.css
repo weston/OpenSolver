@@ -974,22 +974,24 @@ label.check input { accent-color: var(--accent); }
 .gr-stats td:first-child span.sw { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 7px; }
 
 #side-graphs { display: flex; flex-direction: column; overflow: hidden; }
-.graphs-tabs { flex: none; align-self: flex-start; margin-bottom: 14px; }
+.graphs-tabs { flex: none; align-self: flex-start; flex-wrap: wrap; margin-bottom: 14px; }
 .graphs-content { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
 .mixing-order { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; }
 .mixing-order select { flex: 1; min-width: 0; }
 .mixing-head { flex-wrap: wrap; font-size: 12px; }
 .mixing-head .muted { margin-left: auto; }
-.mixing-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 12px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
-.mixing-stats > div { display: flex; flex-direction: column; gap: 3px; }
-.mixing-stats b { font-size: 20px; }
-.mixing-stats span { font-size: 10px; color: var(--text-2); }
+.mixing-stats, .volume-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 12px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+.mixing-stats > div, .volume-stats > div { display: flex; flex-direction: column; gap: 3px; }
+.mixing-stats b, .volume-stats b { font-size: 20px; }
+.mixing-stats span, .volume-stats span { font-size: 10px; color: var(--text-2); }
 .mixing-area { fill: var(--accent-soft); }
 .mixing-area-label { fill: var(--accent); font-size: 11px; font-weight: 600; }
 .mixing-line { stroke: var(--accent); }
 .mixing-dot { fill: var(--accent); }
-.mixing-chart:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-.mixing-detail { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--surface-2); }
+.mixing-chart:focus-visible, .volume-chart:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.mixing-detail, .volume-detail { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--surface-2); }
+.volume-selection { fill: var(--accent-soft); }
+.volume-band { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-size: 12px; }
 .mixing-hand { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .mixing-hand .pc { --w: 26px; }
 .mixing-hand .pc .s { display: block; }

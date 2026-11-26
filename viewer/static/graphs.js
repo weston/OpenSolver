@@ -85,3 +85,52 @@ export function mixingCurve(reach, frequencies, order, sortValues = null) {
   }
   return { ...result, nearlyPure: result.total > 0 ? nearlyPure / result.total : null };
 }
+
+export function mixingPlot(profile, raw) {
+  if (!raw) return { pts: profile.pts, lo: 0, hi: 1, area: profile.avg };
+  const pts = profile.pts.filter(point => point.sortValue != null);
+  const lo = pts[0]?.sortValue ?? 0, hi = pts.at(-1)?.sortValue ?? 0;
+  const span = hi - lo;
+  let area = 0;
+  const positioned = pts.map((point, i) => {
+    const x = span > 0 ? (point.sortValue - lo) / span : 0.5;
+    if (i > 0 && span > 0) {
+      const previous = pts[i - 1];
+      area += (point.v + previous.v) / 2 * (point.sortValue - previous.sortValue) / span;
+    }
+    return { ...point, x };
+  });
+  return { pts: positioned, lo, hi, area: span > 0 ? area : null };
+}
+
+export function equityVolume(data, equity, binCount = 10) {
+  const own = data.node.pot[data.actor === "OOP" ? 0 : 1];
+  const sizes = data.children.map(child => {
+    const token = child.id.slice(child.id.lastIndexOf(":") + 1);
+    return token.startsWith("b") ? Number(token.slice(1)) - own : 0;
+  });
+  const bins = Array.from({ length: binCount }, (_, i) => ({
+    lo: i / binCount, hi: (i + 1) / binCount, reach: 0, volume: 0, actions: sizes.map(() => 0),
+  }));
+  let reach = 0, volume = 0, aggressive = 0, weightedEquity = 0;
+  for (let i = 0; i < data.reach.length; i++) {
+    const weight = data.reach[i], eq = equity[i];
+    const total = data.freq.reduce((sum, row) => sum + row[i], 0);
+    if (!(weight > 0) || !Number.isFinite(eq) || !(total > 0)) continue;
+    const bin = bins[Math.min(binCount - 1, Math.max(0, Math.floor(eq * binCount)))];
+    reach += weight;
+    bin.reach += weight;
+    for (let k = 0; k < sizes.length; k++) {
+      if (!(sizes[k] > 0)) continue;
+      const frequency = data.freq[k][i] / total;
+      const amount = weight * frequency * sizes[k];
+      bin.actions[k] += amount;
+      bin.volume += amount;
+      volume += amount;
+      aggressive += weight * frequency;
+      weightedEquity += amount * eq;
+    }
+  }
+  return { bins, sizes, reach, volume, average: reach > 0 ? volume / reach : 0,
+    frequency: reach > 0 ? aggressive / reach : 0, equity: volume > 0 ? weightedEquity / volume : null };
+}

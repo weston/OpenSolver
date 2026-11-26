@@ -1,6 +1,6 @@
 import { H, el, comboEl, displayCombo } from "./cards.js";
 import { fmt } from "./api.js";
-import { mixingCurve, at } from "./graphs.js";
+import { mixingCurve, mixingPlot, at } from "./graphs.js";
 
 let view = null;
 
@@ -36,11 +36,13 @@ export function renderMixing(box, data, actions, sortBy = "mixing", sortValues =
 
 function draw() {
   const { box, data, profile, actions, sortBy } = view;
+  const raw = sortBy.endsWith("-raw"), metric = sortBy.split("-")[0];
+  const plot = profile ? mixingPlot(profile, raw) : null;
   const width = Math.round(box.clientWidth);
   if (!width) return;
   view.width = width;
   box.replaceChildren();
-  if (!profile?.pts.length) {
+  if (!plot?.pts.length) {
     box.appendChild(el("div", "side-empty", "No strategy at this node."));
     return;
   }
@@ -56,14 +58,19 @@ function draw() {
     stats.appendChild(stat);
   }
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const pot = data.node.pot.reduce((sum, value) => sum + value, 0);
+  const scale = metric === "eq" ? 100 : pot > 0 ? 100 / pot : 0;
+  const axisValue = fraction => raw ? (plot.lo + fraction * (plot.hi - plot.lo)) * scale : fraction * 100;
+  const axisLabel = raw ? metric === "eq" ? "Equity (%)" : "EV (% pot)"
+    : { mixing: "Range weight · pure → mixed", eq: "Equity percentile · range weight", ev: "EV percentile · range weight" }[metric];
   const height = Math.round(Math.min(340, Math.max(245, width * 0.5)));
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("class", "gr-chart mixing-chart");
   svg.setAttribute("role", "slider");
-  svg.setAttribute("aria-label", `Combo mixing by share of range, ordered by ${sortBy === "eq" ? "equity" : sortBy === "ev" ? "EV" : "mixing"}`);
+  svg.setAttribute("aria-label", `Combo mixing by ${axisLabel}`);
   svg.dataset.sort = sortBy;
-  svg.setAttribute("aria-valuemin", "0");
-  svg.setAttribute("aria-valuemax", "100");
+  svg.setAttribute("aria-valuemin", String(axisValue(0)));
+  svg.setAttribute("aria-valuemax", String(axisValue(1)));
   svg.setAttribute("tabindex", "0");
   const detail = el("div", "mixing-detail");
   box.append(head, stats, svg, detail);
@@ -74,36 +81,41 @@ function draw() {
   const grid = svgEl("g", { class: "grid" }, svg);
   const axis = svgEl("g", { class: "axis" }, svg);
   svgEl("text", { x: left, y: 12, class: "axis-title" }, axis, "Mixing");
-  svgEl("text", { x: right, y: 12, "text-anchor": "end", class: "mixing-area-label" }, svg, `Area: ${fmt(profile.avg * 100, 1)}%`);
+  svgEl("text", { x: right, y: 12, "text-anchor": "end", class: "mixing-area-label" }, svg,
+    `${raw ? "Normalized area" : "Area"}: ${plot.area == null ? "—" : `${fmt(plot.area * 100, 1)}%`}`);
   for (const value of [0, 0.25, 0.5, 0.75, 1]) {
     svgEl("line", { x1: left, x2: right, y1: y(value), y2: y(value) }, grid);
     svgEl("text", { x: left - 8, y: y(value) + 4, "text-anchor": "end" }, axis, `${value * 100}%`);
   }
-  for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+  const ticks = raw && plot.lo === plot.hi ? [0.5] : raw && right - left < 300 ? [0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1];
+  const tickDigits = raw ? Math.max(1, Math.min(4, Math.ceil(-Math.log10((plot.hi - plot.lo) * scale / 4 || 1)))) : 0;
+  for (const fraction of ticks) {
     svgEl("text", { x: x(fraction), y: bottom + 17, "text-anchor": fraction === 0 ? "start" : fraction === 1 ? "end" : "middle" },
-      axis, `${fraction * 100}%`);
+      axis, `${fmt(axisValue(fraction), tickDigits)}%`);
   }
-  const direction = { mixing: "pure → mixed", eq: "equity low → high", ev: "EV low → high" }[sortBy];
-  svgEl("text", { x: (left + right) / 2, y: height - 2, "text-anchor": "middle", class: "axis-title" }, axis, `Range weight · ${direction}`);
+  svgEl("text", { x: (left + right) / 2, y: height - 2, "text-anchor": "middle", class: "axis-title" }, axis, axisLabel);
 
-  let path = `M${left},${y(profile.pts[0].v)}`;
-  for (const point of profile.pts) path += `V${y(point.v)}H${x(point.x1)}`;
-  svgEl("path", { d: `${path}V${bottom}H${left}Z`, class: "mixing-area" }, svg);
+  const start = raw ? x(plot.pts[0].x) : left;
+  let path = `M${start},${y(plot.pts[0].v)}`;
+  for (const point of plot.pts) path += raw ? `L${x(point.x)},${y(point.v)}` : `V${y(point.v)}H${x(point.x1)}`;
+  svgEl("path", { d: `${path}V${bottom}H${start}Z`, class: "mixing-area" }, svg);
   svgEl("path", { d: path, class: "gr-line mixing-line" }, svg);
   const cross = svgEl("line", { y1: top, y2: bottom, class: "gr-cross" }, svg);
   const dot = svgEl("circle", { r: 4, class: "gr-dot mixing-dot" }, svg);
   const hit = svgEl("rect", { x: left, y: top, width: right - left, height: bottom - top, class: "gr-hit" }, svg);
 
   let selected = null;
-  function select(fraction) {
+  function select(fraction, point = null) {
     view.position = Math.min(1, Math.max(0, fraction));
-    const point = at(profile, view.position);
+    point ??= raw ? plot.pts.reduce((best, candidate) => Math.abs(candidate.x - view.position) < Math.abs(best.x - view.position) ? candidate : best)
+      : at(profile, view.position);
+    if (raw) view.position = point.x;
     const name = displayCombo(point.combo);
     cross.setAttribute("x1", x(view.position));
     cross.setAttribute("x2", x(view.position));
     dot.setAttribute("cx", x(view.position));
     dot.setAttribute("cy", y(point.v));
-    svg.setAttribute("aria-valuenow", fmt(view.position * 100, 1));
+    svg.setAttribute("aria-valuenow", fmt(axisValue(view.position), 1));
     svg.setAttribute("aria-valuetext", `${name}, ${fmt(point.v * 100, 1)}% mixing`);
     if (selected === point) return;
     selected = point;
@@ -112,9 +124,8 @@ function draw() {
     const score = el("span", "mixing-score");
     score.append(el("b", "num", `${fmt(point.v * 100, 1)}%`), el("span", "muted", "mixing"));
     if (sortBy !== "mixing") {
-      const pot = data.node.pot.reduce((sum, value) => sum + value, 0);
-      const value = point.sortValue == null ? null : sortBy === "eq" ? point.sortValue * 100 : pot > 0 ? point.sortValue / pot * 100 : null;
-      score.appendChild(el("span", "muted mixing-sort-value", `${sortBy === "eq" ? "Equity" : "EV"} ${fmt(value, 1)}${value == null ? "" : sortBy === "eq" ? "%" : "% pot"}`));
+      const value = point.sortValue == null ? null : point.sortValue * scale;
+      score.appendChild(el("span", "muted mixing-sort-value", `${metric === "eq" ? "Equity" : "EV"} ${fmt(value, 1)}${value == null ? "" : metric === "eq" ? "%" : "% pot"}`));
     }
     hand.append(comboEl(point.combo), score);
     const bar = el("div", "mini-bar mixing-strategy");
@@ -135,7 +146,11 @@ function draw() {
   }
   hit.onpointermove = (event) => {
     const bounds = svg.getBoundingClientRect();
-    select(((event.clientX - bounds.left) * width / bounds.width - left) / (right - left));
+    const px = (event.clientX - bounds.left) * width / bounds.width;
+    const py = (event.clientY - bounds.top) * height / bounds.height;
+    const distance = point => (x(point.x) - px) ** 2 + (y(point.v) - py) ** 2;
+    const nearest = raw ? plot.pts.reduce((best, point) => distance(point) < distance(best) ? point : best) : null;
+    select((px - left) / (right - left), nearest);
   };
   hit.onpointerdown = (event) => { svg.focus({ preventScroll: true }); hit.onpointermove(event); };
   svg.onkeydown = (event) => {
@@ -143,7 +158,11 @@ function draw() {
     if (position == null) return;
     event.preventDefault();
     event.stopPropagation();
-    select(position);
+    if (raw) {
+      const index = { Home: 0, End: plot.pts.length - 1, ArrowLeft: plot.pts.indexOf(selected) - 1, ArrowRight: plot.pts.indexOf(selected) + 1 }[event.key];
+      const point = plot.pts[Math.max(0, Math.min(plot.pts.length - 1, index))];
+      select(point.x, point);
+    } else select(position);
   };
   select(view.position);
 }

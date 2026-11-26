@@ -8,6 +8,7 @@ import { curves as rangeCurves, at as rangeAt, shareAbove } from "./graphs.js";
 import { sideCache } from "./sidecache.js";
 import { renderRunouts, forgetRunouts } from "./beta.js";
 import { renderMixing } from "./mixing.js";
+import { renderVolume } from "./volume.js";
 import { nodeShown, whenReleased } from "./preview.js";
 import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips, fmtEvPct, prefs } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
@@ -38,8 +39,8 @@ const S = {
   blkNoBoardRanks: prefs.get("blk-no-board-ranks", false),  // card grid: leave out cards that pair the board
   blkView: prefs.get("blk-view", "made"),  // range shift by "made" category, "draw" or hand "classes"
   blkRemovedOpen: false,  // the blocked-combos list is unfolded
-  grMetric: ["eq", "ev", "mixing"].includes(prefs.get("graph-metric", "eq")) ? prefs.get("graph-metric", "eq") : "eq",
-  mixingOrder: ["mixing", "eq", "ev"].includes(prefs.get("mixing-order", "mixing")) ? prefs.get("mixing-order", "mixing") : "mixing",
+  grMetric: ["eq", "ev", "mixing", "volume"].includes(prefs.get("graph-metric", "eq")) ? prefs.get("graph-metric", "eq") : "eq",
+  mixingOrder: ["mixing", "eq", "ev", "eq-raw", "ev-raw"].includes(prefs.get("mixing-order", "mixing")) ? prefs.get("mixing-order", "mixing") : "mixing",
   side: "hand",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
@@ -1432,7 +1433,7 @@ function renderGraphsPanel() {
   const box = $("side-graphs");
   if (!box.querySelector(".graphs-tabs")) {
     const tabs = el("div", "seg small graphs-tabs");
-    for (const [metric, label] of [["eq", "Equity"], ["ev", "EV"], ["mixing", "Mixing"]]) {
+    for (const [metric, label] of [["eq", "Equity"], ["ev", "EV"], ["mixing", "Mixing"], ["volume", "Volume"]]) {
       const button = el("button", "", label);
       button.dataset.graph = metric;
       button.onclick = () => {
@@ -1446,7 +1447,8 @@ function renderGraphsPanel() {
     const sorting = el("label", "mixing-order");
     const select = el("select");
     select.setAttribute("aria-label", "Sort hands");
-    for (const [value, label] of [["mixing", "Mixing"], ["eq", "Equity"], ["ev", "EV"]]) {
+    for (const [value, label] of [["mixing", "Mixing"], ["eq", "Equity Percentile"], ["eq-raw", "Equity Raw"],
+      ["ev", "EV Percentile"], ["ev-raw", "EV Raw"]]) {
       const option = el("option", "", label);
       option.value = value;
       select.appendChild(option);
@@ -1473,25 +1475,28 @@ function renderGraphsPanel() {
     content = replacement;
     content.dataset.metric = S.grMetric;
   }
-  if (S.grMetric === "mixing") renderMixingPanel(content);
+  if (S.grMetric === "mixing" || S.grMetric === "volume") renderStrategyGraphPanel(content);
   else renderRangeGraphsPanel(content);
 }
 
-async function renderMixingPanel(box) {
-  const seq = S.seq, data = S.dec, sortBy = S.mixingOrder;
-  let sortValues = sortBy === "ev" ? data?.ev?.ev : null;
-  if (sortBy === "eq" && data?.freq) {
+async function renderStrategyGraphPanel(box) {
+  const seq = S.seq, data = S.dec, metric = S.grMetric;
+  const sortBy = metric === "volume" ? "eq" : S.mixingOrder;
+  let sortValues = sortBy.startsWith("ev") ? data?.ev?.ev : null;
+  if (sortBy.startsWith("eq") && data?.freq) {
     box.setAttribute("aria-busy", "true");
     const key = `${S.base}|${S.decId}`;
     const ent = await sideData("gr", key, `${S.base}/graphs?id=${q(S.decId)}`, (data) => ({ key, data }));
-    if (!box.isConnected || seq !== S.seq || S.side !== "graphs" || S.grMetric !== "mixing" || S.mixingOrder !== sortBy) return;
+    if (!box.isConnected || seq !== S.seq || S.side !== "graphs" || S.grMetric !== metric || (metric === "mixing" && S.mixingOrder !== sortBy)) return;
     box.setAttribute("aria-busy", "false");
     if (!ent) return;
     sortValues = ent.data[data.actor.toLowerCase()].eq;
   }
   box.setAttribute("aria-busy", "false");
   const pi = S.path.findIndex((node) => node.id === S.decId);
-  renderMixing(box, data, data?.freq ? actionsOf(data, pi) : [], sortBy, sortValues);
+  const actions = data?.freq ? actionsOf(data, pi) : [];
+  if (metric === "volume") renderVolume(box, data, actions, sortValues);
+  else renderMixing(box, data, actions, sortBy, sortValues);
 }
 
 async function renderRangeGraphsPanel(box) {

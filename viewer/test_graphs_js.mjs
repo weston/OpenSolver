@@ -1,6 +1,6 @@
 // Unit test for the Graphs tab's range curves (viewer/static/graphs.js).
 // usage: node viewer/test_graphs_js.mjs
-import { curve, curves, at, shareAbove, mixingCurve } from "./static/graphs.js";
+import { curve, curves, at, shareAbove, mixingCurve, mixingPlot, equityVolume } from "./static/graphs.js";
 
 let fails = 0;
 const check = (cond, msg) => { console.log((cond ? "  ok: " : "  FAIL: ") + msg); if (!cond) fails++; };
@@ -62,6 +62,36 @@ const evSorting = mixingCurve(mixingReach, frequencies, [...order, "9s9h"], [-10
 check(evSorting.pts.map(point => point.i).join() === "2,0,3,1", "EV ordering handles negative and positive values");
 const ties = mixingCurve(mixingReach, frequencies, [...order, "9s9h"], mixingReach.map(() => .5));
 check(ties.pts.map(point => point.i).join() === mixing.pts.map(point => point.i).join(), "equal sorting values group hands from pure to mixed deterministically");
+
+const rawEquity = mixingPlot(sortedMixing, true);
+check(rawEquity.pts.length === 3 && near(rawEquity.lo, .1) && near(rawEquity.hi, .9), "raw equity plots only hands with an actual equity value");
+check(near(rawEquity.pts[0].x, 0) && near(rawEquity.pts[1].x, .375) && near(rawEquity.pts[2].x, 1), "raw equity spacing follows equity distance");
+check(near(rawEquity.area, ((1/.82 - 1)/2 + 1)/2 * .375 + .5 * .625), "raw area integrates the line over its equity span");
+check(near(mixingPlot(sortedMixing, false).area, mixing.avg), "percentile area retains the range-weighted average");
+const rawEv = mixingPlot(evSorting, true);
+check(rawEv.lo === -20 && rawEv.hi === 5 && near(rawEv.pts[1].x, .4) && near(rawEv.pts[2].x, .8), "raw EV keeps negative values and their actual distances");
+const flatAxis = mixingPlot(ties, true);
+check(flatAxis.area === null && flatAxis.pts.every(point => point.x === .5), "equal raw values share one x coordinate and have no area over a nonzero span");
+
+const volumeData = {
+  node: { pot: [20, 20, 60] }, actor: "OOP", reach: [3, 1, 0, 2],
+  children: [{id: "r:0:b45"}, {id: "r:0:b120"}, {id: "r:0:c"}, {id: "r:0:f"}],
+  freq: [[.5, 0, 1, 0], [0, 1, 0, .25], [.5, 0, 0, .75], [0, 0, 0, 0]],
+};
+const volume = equityVolume(volumeData, [0, .5, .9, 1]);
+check(near(volume.volume, 187.5) && near(volume.average, 31.25) && near(volume.frequency, .5), "volume weights each bet by range mass, frequency, and new chips invested");
+check(near(volume.bins[0].volume, 37.5) && near(volume.bins[5].volume, 100) && near(volume.bins[9].volume, 50), "equity bands include 0%, band boundaries, and 100%, excluding zero-reach hands");
+check(near(volume.equity, 100/187.5), "volume-weighted equity reflects the size of every bet");
+check(near(volume.bins.reduce((sum, bin) => sum + bin.volume / volume.volume, 0), 1)
+  && volume.bins.every(bin => near(bin.actions.reduce((sum, value) => sum + value, 0), bin.volume)), "action stacks and equity bands account for all betting volume");
+const raiseData = { node: {pot: [40, 20, 60]}, actor: "IP", reach: [2],
+  children: [{id: "r:0:b40:b80"}, {id: "r:0:b40:c"}, {id: "r:0:b40:f"}], freq: [[.25], [.75], [0]] };
+const raiseVolume = equityVolume(raiseData, [.6]);
+check(near(raiseVolume.average, 15) && near(raiseVolume.frequency, .25), "raising volume uses the actor's new investment, including the call portion, and excludes calls");
+const passiveVolume = equityVolume({...raiseData, freq: [[0], [1], [0]]}, [.6]);
+check(passiveVolume.volume === 0 && passiveVolume.frequency === 0 && passiveVolume.equity === null, "a purely passive strategy has zero bet or raise volume");
+const scaledVolume = equityVolume({...volumeData, reach: volumeData.reach.map(weight => weight * 3)}, [0, .5, .9, 1]);
+check(near(scaledVolume.average, volume.average) && near(scaledVolume.frequency, volume.frequency), "range scaling leaves per-decision volume and frequency unchanged");
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log("ALL PASSED");

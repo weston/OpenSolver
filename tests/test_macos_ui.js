@@ -80,13 +80,22 @@ const mostMixed = parseFloat(document.querySelector('.mixing-score b').textConte
 check(purest >= 0 && mostMixed <= 100 && mostMixed >= purest && mixingChart.getAttribute('aria-valuenow') === '100.0', 'mixing curve does not run from purest to most mixed on a 0–100% scale');
 check(document.querySelectorAll('.mixing-hand .pc').length === 2 && document.querySelectorAll('.mixing-action').length >= 2, 'mixing inspection lost the combo or action frequencies');
 const mixingSummary = document.querySelector('.mixing-stats').textContent;
-for (const metric of ['eq', 'ev']) {
+for (const metric of ['eq', 'eq-raw', 'ev', 'ev-raw']) {
   mixingOrder.value = metric;
   mixingOrder.dispatchEvent(new Event('change', {bubbles: true}));
   await wait(() => document.querySelector('.mixing-chart')?.dataset.sort === metric);
   check(document.querySelector('.mixing-stats').textContent === mixingSummary, 'sorting changes mixing summary statistics');
-  check(document.querySelector('.mixing-sort-value').textContent.startsWith(metric === 'eq' ? 'Equity' : 'EV'), 'inspected hand is missing its sorting value');
+  check(document.querySelector('.mixing-sort-value').textContent.startsWith(metric.startsWith('eq') ? 'Equity' : 'EV'), 'inspected hand is missing its sorting value');
+  const axis = document.querySelector('.mixing-chart .axis text:last-child').textContent;
+  check(metric.endsWith('-raw') ? axis.includes(metric === 'eq-raw' ? 'Equity (%)' : 'EV (% pot)') : axis.includes('percentile'), 'mixing axis does not match the chosen raw or percentile mode');
 }
+document.querySelector('[data-graph=volume]').click();
+await wait(() => document.querySelector('.volume-chart'));
+check(document.querySelector('.volume-stats').textContent.includes('Bet / raise frequency'), 'volume summary is missing');
+const volumeShare = [...document.querySelectorAll('.volume-bin')].reduce((sum, bin) => sum + Number(bin.dataset.share), 0);
+check(Math.abs(volumeShare - 1) < 1e-9 || volumeShare === 0, 'equity bands do not account for the total bet or raise volume');
+document.querySelector('.volume-chart').dispatchEvent(new KeyboardEvent('keydown', {key: 'End', bubbles: true}));
+check(document.querySelector('.volume-band').textContent.includes('90–100% equity'), 'volume inspection does not reach the highest-equity band');
 document.querySelector('[data-graph=eq]').click();
 await wait(() => document.querySelector('#side-graphs .gr-stats'));
 document.querySelector('[data-graph=mixing]').click();

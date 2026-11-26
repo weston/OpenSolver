@@ -358,6 +358,12 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
 // ------------------------------------------------------------------------------------------------
 // Solving
 
+RootStats Upi::current_root_stats() {
+  if (tree_->lazy) return solver_->root_stats();
+  if (!cached_root_stats_) cached_root_stats_ = solver_->root_stats();
+  return *cached_root_stats_;
+}
+
 std::string Upi::stats_block(const RootStats& st, double running_time) {
   char buf[512];
   std::snprintf(buf, sizeof(buf),
@@ -490,6 +496,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           }
         }
       }
+      cached_root_stats_.reset();
       if (sub) {
         solver_->iterate_subtree(sub->root, static_cast<int>(done + 1), sub->r0.data(), sub->r1.data());
       } else {
@@ -549,6 +556,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
         } else {
           st = metal && !limit ? metal->evaluate_and_prepare(*tree_, *solver_, static_cast<int>(tick + 1 - discount_restart_))
                                : solver_->root_stats();
+          cached_root_stats_ = st;
           out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
           target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
         }
@@ -569,6 +577,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
             // extra is the whole float32 storage, twice the net difference (8 vs 4 bytes per entry).
             const uint64_t need = 2 * (tree_->memory_bytes_for(false, predictive_) - tree_->memory_bytes_for(true, predictive_));
             if (need <= available_memory_bytes() * 9 / 10) {
+              cached_root_stats_.reset();
               tree_->decompress();
               out_raw("SOLVER: 16-bit storage stopped improving; switched to 32-bit storage\n");
             } else {
@@ -733,8 +742,17 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   return okmsg;
 }
 
+void Upi::apply_payoff() {
+  if (!tree_) return;
+  TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+  cached_root_stats_.reset();
+  tree_->set_payoff(payoff_);
+  discount_restart_ = tree_->iterations;
+}
+
 void Upi::apply_pcfr_settings() {
   if (!solver_) return;
+  cached_root_stats_.reset();
   solver_->predictive = predictive_;
   solver_->avg_delay = avg_delay_;
   // Costs storage_floats * 4 bytes, committed immediately. ZeroAlloc::allocate does use
@@ -1438,11 +1456,7 @@ void Upi::register_commands() {
     payoff_.rake_cap = arg_double(a, 1, "cap");
     // Rake and ICM are exclusive; like Pio, the last one set wins (setting rake turns ICM off).
     if (payoff_.rake_frac > 0) payoff_.icm.enabled = false;
-    if (tree_) {
-      TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
-      tree_->set_payoff(payoff_);
-      discount_restart_ = tree_->iterations;
-    }
+    apply_payoff();
     return std::string("set_rake ok!");
   };
   H["set_icm"] = [this](const Args& a) {
@@ -1467,11 +1481,7 @@ void Upi::register_commands() {
     payoff_.icm.enabled = true;
     payoff_.rake_frac = 0;  // the last of rake / ICM wins
     payoff_.rake_cap = 0;
-    if (tree_) {
-      TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
-      tree_->set_payoff(payoff_);
-      discount_restart_ = tree_->iterations;
-    }
+    apply_payoff();
     return std::string("set_icm ok!");
   };
   H["set_icm_point"] = [this](const Args& a) {
@@ -1483,21 +1493,13 @@ void Upi::register_commands() {
     pts.push_back({st, v});
     std::sort(pts.begin(), pts.end());
     icm_tables_defined_ = true;
-    if (tree_) {
-      TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
-      tree_->set_payoff(payoff_);
-      discount_restart_ = tree_->iterations;
-    }
+    apply_payoff();
     return std::string("set_icm_point ok!");
   };
   H["reset_icm_tables"] = [this](const Args&) {
     payoff_.icm = IcmModel{};  // rake (if any) is left as it is
     icm_tables_defined_ = true;  // Pio: reset tables are "defined" (empty table = chip values)
-    if (tree_) {
-      TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
-      tree_->set_payoff(payoff_);
-      discount_restart_ = tree_->iterations;
-    }
+    apply_payoff();
     return std::string("reset_icm_tables ok!");
   };
 
@@ -1533,7 +1535,11 @@ void Upi::register_commands() {
     compression_level_ = static_cast<int>(v);
     return std::string("set_compression_level ok!");
   };
-  H["clear_cache"] = [](const Args&) { return std::string("clear_cache ok!"); };
+  H["clear_cache"] = [this](const Args&) {
+    TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+    cached_root_stats_.reset();
+    return std::string("clear_cache ok!");
+  };
   H["deactivate"] = [](const Args&) { return std::string("Deactivation successful!"); };
 
   register_node_commands();

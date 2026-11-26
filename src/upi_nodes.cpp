@@ -594,17 +594,24 @@ std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
   const float* rp = p == 0 ? r0.data() : r1.data();
   const float* ro = p == 0 ? r1.data() : r0.data();
   int Hp = tree_->num_hands(p);
-  std::vector<float> cfv(Hp), mass(Hp);
-  solver_->walk(Walk::Evaluate, r.node, p, rp, ro, cfv.data());
+  std::vector<float> mass(Hp), m1326(NUM_COMBOS, 0.0f);
   solver_->compat_mass(p, ro, mass.data());
+  const uint64_t bm = board_mask(r.board);
+  for (int h = 0; h < Hp; ++h) {
+    const int c = PERM_COMBO[r.frame][tree_->hands[p][h]];
+    if (!(combo_mask(c) & bm)) m1326[c] = rp[h] * mass[h];
+  }
+  if (!pp && a.size() == 3 && a[2] == "matchups") return floats_line(m1326.data(), NUM_COMBOS);
+
+  std::vector<float> cfv(Hp);
+  solver_->walk(Walk::Evaluate, r.node, p, rp, ro, cfv.data());
   // Pio semantics: matchups = own reach * compatible opponent mass; EV = cfv / compatible mass, the
   // hand's counterfactual value, for every hand of the player's own range - also one whose reach
   // here is exactly 0 (Pio prints a finite EV there, #247: its average strategy never quite reaches
   // 0, and its on-the-fly river recalcs give 0-reach hands their EV too). Hands outside the own
   // range print +-inf/nan (cfv / 0), untracked hands nan.
   const float nanv = std::numeric_limits<float>::quiet_NaN(), infv = std::numeric_limits<float>::infinity();
-  std::vector<float> ev1326(NUM_COMBOS, nanv), m1326(NUM_COMBOS, 0.0f);
-  uint64_t bm = board_mask(r.board);
+  std::vector<float> ev1326(NUM_COMBOS, nanv);
   // Hands only in the opponent's range: Pio tracks them too (EV = x / 0). With union_hands
   // they have a slot, so the loop below computes a real cfv and gets the sign right; this
   // unsigned fallback is only for the narrow lists, where no cfv exists for them at all.
@@ -617,7 +624,6 @@ std::string Upi::cmd_calc_ev(const Args& a, bool pp) {
   for (int h = 0; h < Hp; ++h) {
     int c = PERM_COMBO[r.frame][tree_->hands[p][h]];
     if (combo_mask(c) & bm) continue;
-    m1326[c] = rp[h] * mass[h];
     const bool in_range = tree_->cfg.range[p][PERM_COMBO[PERM_INV[display_perm_]][c]] > 0;
     if ((rp[h] > 0 || in_range) && mass[h] > 0) ev1326[c] = cfv[h] / mass[h];
     else ev1326[c] = cfv[h] > 0 ? infv : cfv[h] < 0 ? -infv : nanv;
@@ -880,6 +886,7 @@ void Upi::set_node_strategy(uint32_t ni, const float* strat, bool persist) {
   // Pio 3.10 (probe9): under the default v4 algorithms an edited strategy persists through further
   // solving (it is written as a dominant regret); under original_pio / pio_cfr it is only a start.
   // persist = false: only a start under every algorithm (eliminate_path, #421).
+  cached_root_stats_.reset();
   const float regret_scale = (!persist || tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
   const GNode& n = tree_->nodes[ni];
   int A = n.num_children, H = tree_->num_hands(n.player);
@@ -907,6 +914,7 @@ void Upi::set_node_strategy(uint32_t ni, const float* strat, bool persist) {
 void Upi::lock_node_impl(uint32_t ni, bool lock) {
   GNode& n = tree_->nodes[ni];
   if (n.kind != ANodeKind::Decision) throw CmdError{"incorrect node"};
+  cached_root_stats_.reset();
   if (lock) {
     if (n.flags & GF_LOCKED) return;
     int A = n.num_children, H = tree_->num_hands(n.player);
@@ -957,6 +965,7 @@ std::string Upi::cmd_set_mes(const Args& a) {
   // Like set_strategy (set_node_strategy): under the v4 algorithms Pio's written best response persists
   // through further solving, under original_pio / pio_cfr it is a start (#423, paired probes).
   solver_->br_regret_scale = (tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
+  cached_root_stats_.reset();
   solver_->write_best_response = true;
   solver_->walk(Walk::BestResponse, 0, p, tree_->init_reach[p].data(), tree_->init_reach[1 - p].data(), out.data());
   solver_->write_best_response = false;
@@ -1037,6 +1046,7 @@ double Upi::explo_at_reach(uint32_t node, const float* r0, const float* r1, Root
 }
 
 void Upi::solve_subtree(const NodeRef& r, double accuracy, long long max_iters, double max_seconds) {
+  cached_root_stats_.reset();
   std::vector<float> r0, r1;
   node_reach(r, r0, r1);
   auto t0 = std::chrono::steady_clock::now();
@@ -1107,6 +1117,7 @@ std::string Upi::cmd_solve_all_splits(const Args& a) {
   if (a.empty() || (a[0] != "turns" && a[0] != "rivers")) throw CmdError{"incorrect or missing argument"};
   require_tree();
   stop_solver();
+  cached_root_stats_.reset();
   if (tree_->fast_loaded) throw CmdError{"Can't do that on partially loaded tree - please call load_all_nodes"};
   int street = a[0] == "turns" ? 4 : 5;
   std::vector<uint32_t> locked;
@@ -1254,7 +1265,7 @@ void Upi::register_node_commands() {
       const double* v = tree_->saved_stats;
       st.ev[0] = v[0], st.ev[1] = v[1], st.mes[0] = v[2], st.mes[1] = v[3], st.exploitability = v[4];
     } else {
-      st = solver_->root_stats();
+      st = current_root_stats();
     }
     std::string s = stats_block(st, solve_seconds_);
     // drop the leading "running time" line to match the 3.x layout (EV OOP first)
@@ -1324,6 +1335,7 @@ void Upi::register_node_commands() {
     require_tree();
     if (tree_->fast_loaded) throw CmdError{"Can't do that on partially loaded tree - please call load_all_nodes"};
     TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+    cached_root_stats_.reset();
     tree_alg_ = algorithm_;
     // As Pio (#427, paired probes): the regrets and the iteration count start over, the strategy sums stay.
     // So the displayed strategies are the solved ones until the next solve (probe3's calc_line_freq after it
@@ -1412,6 +1424,7 @@ void Upi::register_node_commands() {
   H["unlock_all"] = [this](const Args&) {
     require_tree();
     TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+    cached_root_stats_.reset();
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~GF_LOCKED);
     return std::string("unlock_all ok!");
   };
@@ -1420,6 +1433,7 @@ void Upi::register_node_commands() {
   H["combo_unlock_all"] = [this](const Args&) {
     require_tree();
     TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+    cached_root_stats_.reset();
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~GF_COMBO_LOCKED);
     tree_->combo_lock.clear();
     tree_->combo_lock_s.clear();
@@ -1457,6 +1471,7 @@ void Upi::register_node_commands() {
     from_1326(n.player, r.frame, v.data(), local.data());
     std::vector<float> sig(static_cast<size_t>(A) * Hn);
     solver_->average_strategy(r.node, sig.data());
+    cached_root_stats_.reset();
     std::vector<float> sbuf(tree_->compressed ? static_cast<size_t>(A) * Hn : 0);
     float* S = tree_->strat_rw(n, sbuf.data());
     std::vector<uint8_t> mask(Hn, 0);
@@ -1505,6 +1520,7 @@ void Upi::register_node_commands() {
   H["set_equal_strats"] = [this](const Args&) {
     require_tree();
     TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+    cached_root_stats_.reset();
     tree_->clear_storage();
     for (auto& n : tree_->nodes) n.flags &= static_cast<uint8_t>(~(GF_LOCKED | GF_COMBO_LOCKED));
     tree_->combo_lock.clear();
@@ -1581,6 +1597,7 @@ void Upi::register_node_commands() {
     GNode& n = tree_->nodes[ni];
     if (n.kind != ANodeKind::Decision) throw CmdError{"incorrect node"};
     if (v.size() != n.num_children) throw CmdError{"incorrect or missing argument"};
+    cached_root_stats_.reset();
     tree_->incentives[ni] = v;
     n.flags |= GF_INCENTIVES;
   };
@@ -1616,6 +1633,7 @@ void Upi::register_node_commands() {
     // also cleared r:0's), and with no argument too.
     require_tree();
     TreePause np(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+    cached_root_stats_.reset();
     for (const auto& [ni, v] : tree_->incentives) tree_->nodes[ni].flags &= static_cast<uint8_t>(~GF_INCENTIVES);
     tree_->incentives.clear();
     return std::string("clear_incentives ok!");

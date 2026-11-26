@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -147,6 +148,8 @@ class Upi {
   void solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
                           const std::string& endl_str, bool gpu);
   void start_subtree_solve(const NodeRef& r, double seconds, long long steps);
+  RootStats current_root_stats();
+  void apply_payoff();
   std::string stats_block(const RootStats& st, double running_time);
   std::string fmt(double v) const;
   std::string pfmt(const char* f, double v) const;  // printf-style single value
@@ -234,6 +237,7 @@ class Upi {
   std::atomic<bool> stop_flag_{false};
   std::string stop_reason_;
   std::mutex tree_mu_;
+  std::optional<RootStats> cached_root_stats_;
   TreePauseRequests pause_requests_;
   bool held_ = false;  // `hold` (viewer extension) is keeping a running solve parked
   void release_hold();

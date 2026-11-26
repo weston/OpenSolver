@@ -184,6 +184,7 @@ def check_strategies(u, order, evo):
     board_blocked = [i for i, h in enumerate(order) if any(c in ("Qh", "Qc", "2c") for c in (h[:2], h[2:]))]
     check(all(sum(l[i] for l in st) == 0 for i in board_blocked), "board-blocked hands have 0 strategy")
     ev = u.cmd("calc_ev OOP r:0").split("\n")
+    check(u.cmd("calc_ev OOP r:0 matchups") == ev[1], "matchup-only root weights match calc_ev byte for byte")
     evs, mus = floats(ev[0]), floats(ev[1])
     rng = floats(u.cmd("show_range OOP r:0"))
     # matchups are already weighted by the hand's reach (Pio semantics); EV is nan/inf off-range
@@ -223,6 +224,10 @@ def check_isomorphism(u, order):
 
     dev = max(abs(a[i] - b[swap_ds(h)]) for i, h in enumerate(order))
     check(dev < 1e-6, f"7d and 7s turn strategies are suit-swapped copies (max dev {dev})")
+    node = "r:0:c:c:7s"
+    for p in ("IP", "OOP"):
+        check(u.cmd(f"calc_ev {p} {node} matchups") == u.cmd(f"calc_ev {p} {node}").splitlines()[1],
+              f"{p} matchup-only weights follow the dealt card and suit frame")
     n7s = u.cmd("show_node r:0:c:c:7s").split("\n")
     check(n7s[0] == "r:0:c:c:7s" and n7s[2] == "Qh Qc 2c 7s ", "show_node keeps requested isomorphic card")
     sp = u.cmd("show_children r:0:c:c")
@@ -2097,6 +2102,39 @@ def check_unlock_resumes(u):
     u.cmd("free_tree")
 
 
+def check_report_after_edit(u):
+    set_small_tree(u)
+    u.cmd("build_tree")
+    u.cmd("set_accuracy 0")
+    u.cmd("go 1 steps")
+    u.cmd("wait_for_solver")
+    report = next(b for b in reversed(u.solver_msgs) if b[0].startswith("running time:"))
+    final = u.cmd("calc_results")
+    check(final.splitlines() == report[1:], "calc_results matches all five fields of the last whole-tree report")
+    with tempfile.TemporaryDirectory() as td:
+        exact = os.path.join(td, "exact.cfr")
+        truncated = os.path.join(td, "edited.cfr")
+        u.cmd(f'dump_tree "{exact}" lossless')
+        u.cmd("set_incentives_node r:0 100 100 100")
+        u.cmd(f'dump_tree "{truncated}" no_rivers')
+        edited = u.cmd("calc_results")
+        u.cmd(f'load_tree "{truncated}"')
+        check(u.cmd("calc_results") == edited and edited != final, "truncated save reports the payoff after an edit")
+        u.cmd(f'load_tree "{exact}" full')
+        check(u.cmd("calc_results") == final, "whole-tree report matches an independent lossless evaluation")
+        u.cmd("set_incentives_node r:0 100 100 100")
+        check(u.cmd("calc_results") == edited, "edited result matches a fresh evaluation of the same strategy")
+        u.cmd("go 1 steps")
+        u.cmd("wait_for_solver")
+        whole = u.cmd("calc_results")
+        u.cmd("go_partial r:0:c 5 steps")
+        u.cmd("wait_for_solver")
+        after_partial = u.cmd("calc_results")
+        u.cmd("clear_cache")
+        check(after_partial != whole and u.cmd("calc_results") == after_partial,
+              "a subtree solve updates the whole-tree result even when the whole-tree iteration count stays fixed")
+
+
 def check_incentives_in_results(u):
     """#439, as Pio 3.10.1: calc_results counts an incentive as payoff. With +1 on an action, EV of its player
     rises by about how often that action is taken, and exploitability is measured in that game (it used to
@@ -2495,6 +2533,9 @@ def check_solve_device(exe):
         for cmd in ("build_tree", "set_info_freq 1", "set_accuracy 1000", "go 10 steps", "wait_for_solver"):
             assert "ERROR" not in u.cmd(cmd), cmd
         stopped = u.cmd("show_strategy r:0")
+        reported = u.cmd("calc_results")
+        u.cmd("clear_cache")
+        check(u.cmd("calc_results") == reported, "Metal's accuracy stop reports the exact published strategy")
         assert u.cmd("show_iters") == "1"
         for cmd in ("build_tree", "set_accuracy 0", "go 1 steps", "wait_for_solver"):
             assert "ERROR" not in u.cmd(cmd), cmd
@@ -2562,6 +2603,7 @@ def main(exe, big=False):
         check_set_equal_strats_restarts(u)
         check_rebuild_tree_restarts(u)
         check_unlock_resumes(u)
+        check_report_after_edit(u)
         check_incentives_in_results(u)
         check_predictive(u)
         check_small_commands(u)

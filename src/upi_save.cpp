@@ -777,7 +777,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   double stats[5];
   const double* stats_p = nullptr;
   if (truncate && g.missing_street == 0 && g.iterations > 0) {
-    RootStats st = solver_->root_stats();
+    RootStats st = current_root_stats();
     double v[5] = {st.ev[0], st.ev[1], st.mes[0], st.mes[1], st.exploitability};
     std::copy(v, v + 5, stats);
     stats_p = stats;

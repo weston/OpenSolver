@@ -541,9 +541,14 @@ def root_summary(s) -> dict:
         return {}
     actions = [k["id"].rsplit(":", 1)[1] for k in vserver.parse_children(s.cmd("show_children r:0"))]
     rows = [l.split() for l in s.cmd("show_strategy r:0").splitlines() if l.strip()]
-    mus = vserver.ev_pair(s, player, "r:0")["matchups"]
-    if mus is None:
-        raise ValueError("calc_ev gave no matchups line")
+    ev_cmd = f"calc_ev {player} r:0"
+    try:
+        result = s.cmd(ev_cmd + " matchups")
+    except vserver.SolverError as e:
+        if str(e) != "ERROR: calc_ev incorrect or missing argument":
+            raise
+        result = s.cmd(ev_cmd)
+    mus = vserver.parse_floats(result.rsplit("\n", 1)[-1], vserver.NUM_COMBOS)
     num = [0.0] * len(rows)
     tot = 0.0
     for i, m in enumerate(mus):

@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 
 SCHEMA = 1
@@ -49,6 +50,68 @@ class LibraryError(Exception):
 class Library:
     def __init__(self, root):
         self.root = os.path.abspath(os.path.expanduser(root))
+        self.simulation_lock = threading.RLock()
+
+    def _job_simulations(self):
+        try:
+            with open(os.path.join(self.root, ".job-simulations.json")) as file:
+                return json.load(file)
+        except FileNotFoundError:
+            return {}
+
+    def _write_job_simulations(self, entries):
+        os.makedirs(self.root, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=self.root, prefix=".job-simulations-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as file:
+                json.dump(entries, file)
+            _replace(tmp, os.path.join(self.root, ".job-simulations.json"))
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    def include_job_simulations(self, simulations):
+        with self.simulation_lock:
+            entries = self._job_simulations()
+            names = {entry["name"] for entry in self.list("sim")}
+            changed = False
+            for simulation in simulations:
+                path = simulation["path"]
+                if path in entries:
+                    metadata = entries[path]["metadata"]
+                    if any(metadata.get(key) != value for key, value in simulation["metadata"].items()):
+                        metadata.update(simulation["metadata"])
+                        changed = True
+                    continue
+                name = simulation["name"]
+                suffix = 2
+                while name in names:
+                    name = f'{simulation["name"]} ({suffix})'
+                    suffix += 1
+                self._check_name(name)
+                entries[path] = {"name": name, "metadata": simulation["metadata"]}
+                names.add(name)
+                changed = True
+            if changed:
+                self._write_job_simulations(entries)
+
+    def job_simulation(self, name):
+        self._check_name(name)
+        for path, entry in self._job_simulations().items():
+            if entry["name"] == name:
+                return {**entry, "path": path}
+        return None
+
+    def _rename_job_simulation(self, src, dst):
+        self._check_name(src)
+        with self.simulation_lock:
+            entries = self._job_simulations()
+            for entry in entries.values():
+                if entry["name"] == src:
+                    entry["name"] = dst
+                    self._write_job_simulations(entries)
+                    return True
+        return False
 
     def install_defaults(self):
         marker = os.path.join(self.root, ".defaults-v2")
@@ -149,8 +212,13 @@ class Library:
         """All entries as a flat, sorted list of {'name', 'bytes', 'mtime'}."""
         section = self._section(kind)
         out = []
+        if kind == "sim":
+            for path, entry in self._job_simulations().items():
+                if entry["name"] is not None and os.path.isfile(path):
+                    stat = os.stat(path)
+                    out.append({**entry["metadata"], "name": entry["name"], "job": True, "bytes": stat.st_size, "mtime": int(stat.st_mtime)})
         if not os.path.isdir(section):
-            return out
+            return sorted(out, key=lambda entry: entry["name"])
         for dirpath, dirnames, filenames in os.walk(section):
             dirnames[:] = [d for d in dirnames
                            if not os.path.islink(os.path.join(dirpath, d)) and not (kind == "sim" and d.startswith(".open-"))]
@@ -176,10 +244,13 @@ class Library:
 
     def get(self, kind, name):
         """Range content as text, or config content as a parsed JSON object."""
-        path = self._existing_file(kind, name)
         if kind == "sim":
+            path = self.simulation_path(name)
             stat = os.stat(path)
-            return {**self.simulation_metadata(path), "bytes": stat.st_size, "mtime": int(stat.st_mtime)}
+            job = self.job_simulation(name)
+            metadata = job["metadata"] if job else self.simulation_metadata(path)
+            return {**metadata, "bytes": stat.st_size, "mtime": int(stat.st_mtime)}
+        path = self._existing_file(kind, name)
         with open(path, "r", encoding="utf-8") as f:
             text = f.read()
         if kind == "config":
@@ -221,6 +292,12 @@ class Library:
 
     def rename(self, kind, src, dst):
         """Rename or move an entry; moving to a new folder creates it."""
+        if kind == "sim":
+            self._check_name(dst)
+            if src != dst and any(entry["name"] == dst for entry in self.list(kind)):
+                raise LibraryError("target already exists")
+            if self._rename_job_simulation(src, dst):
+                return dst
         spath = self._existing_file(kind, src)
         dpath = self._resolve(kind, dst)
         if dpath == spath:
@@ -235,6 +312,8 @@ class Library:
         return dst
 
     def delete(self, kind, name):
+        if kind == "sim" and self._rename_job_simulation(name, None):
+            return
         path = self._existing_file(kind, name)
         os.remove(path)
         if kind == "sim" and os.path.isfile(path + ".json"):
@@ -253,6 +332,13 @@ class Library:
         return {}
 
     def update_simulation_metadata(self, name, metadata):
+        with self.simulation_lock:
+            entries = self._job_simulations()
+            for entry in entries.values():
+                if entry["name"] == name:
+                    entry["metadata"] = metadata
+                    self._write_job_simulations(entries)
+                    return
         path = self._existing_file("sim", name)
         stat = os.stat(path)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".metadata-", suffix=".tmp")
@@ -266,7 +352,7 @@ class Library:
 
     def save_simulation(self, name, write_tree, metadata, overwrite=False):
         path = self._resolve("sim", name)
-        if os.path.exists(path) and not overwrite:
+        if (os.path.exists(path) or self.job_simulation(name)) and not overwrite:
             raise LibraryError("a simulation with that name already exists")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=self._section("sim"), prefix=".simulation-", suffix=".tmp")
@@ -274,6 +360,7 @@ class Library:
         try:
             write_tree(tmp)
             _replace(tmp, path)
+            self._rename_job_simulation(name, None)
             self.update_simulation_metadata(name, metadata)
         finally:
             if os.path.exists(tmp):
@@ -281,6 +368,11 @@ class Library:
         return name
 
     def simulation_path(self, name):
+        job = self.job_simulation(name)
+        if job:
+            if not os.path.isfile(job["path"]):
+                raise LibraryError("no such entry")
+            return job["path"]
         return self._existing_file("sim", name)
 
     def simulation_snapshot(self, name):

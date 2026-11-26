@@ -193,9 +193,10 @@ function previewConfig(pv, c) {
 
 function updateButtons() {
   const sel = !!L.selected;
+  const removalAction = L.entries.find((entry) => entry.name === L.selected)?.job ? "Remove" : "Delete";
   $("lib-rename").disabled = !sel;
   $("lib-delete").disabled = !sel;
-  $("lib-delete").textContent = L.armedDelete === L.selected && sel ? "Confirm delete" : "Delete";
+  $("lib-delete").textContent = L.armedDelete === L.selected && sel ? `Confirm ${removalAction.toLowerCase()}` : removalAction;
   $("lib-delete").classList.toggle("danger", L.armedDelete === L.selected && sel);
   if (L.mode === "load") {
     $("lib-ok").disabled = !sel;
@@ -298,7 +299,7 @@ async function del() {
   }
   try {
     await post("/api/library/delete", { kind: L.kind, name: L.selected });
-    toast(`Deleted “${L.selected}”`);
+    toast(`${L.entries.find((entry) => entry.name === L.selected)?.job ? "Removed" : "Deleted"} “${L.selected}”`);
     L.selected = null;
     L.armedDelete = null;
     $("lib-preview").textContent = "";

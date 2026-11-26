@@ -122,6 +122,46 @@ class LibraryUnitTest(unittest.TestCase):
         with open(opened, "rb") as file:
             self.assertEqual(file.read(), b"original tree")
 
+    def test_job_saves_keep_names_and_removals_without_copying_artifacts(self):
+        source = os.path.join(self.lib.root, "job.cfr")
+        with open(source, "wb") as file:
+            file.write(b"job result")
+        simulation = {"name": "SRP/Kh9h4h", "path": source, "metadata": {"board": "Kh9h4h"}}
+        self.lib.include_job_simulations([simulation])
+        self.assertEqual(self.lib.simulation_path(simulation["name"]), source)
+        self.assertFalse(os.path.exists(os.path.join(self.lib.root, "simulations")))
+        self.lib.rename("sim", simulation["name"], "Favorites/Monotone")
+        self.lib = libm.Library(self.lib.root)
+        self.lib.include_job_simulations([simulation])
+        self.assertEqual([entry["name"] for entry in self.lib.list("sim")], ["Favorites/Monotone"])
+        backup = os.path.join(self.lib.root, "backup.cfr")
+        self.lib.export_simulation("Favorites/Monotone", backup)
+        with open(backup, "rb") as file:
+            self.assertEqual(file.read(), b"job result")
+        self.lib.delete("sim", "Favorites/Monotone")
+        self.lib.include_job_simulations([simulation])
+        self.assertEqual(self.lib.list("sim"), [])
+        self.assertTrue(os.path.isfile(source))
+
+    def test_job_names_do_not_replace_saved_simulations_and_overwrites_preserve_jobs(self):
+        source = os.path.join(self.lib.root, "job.cfr")
+        with open(source, "wb") as file:
+            file.write(b"job result")
+        write = lambda path: shutil.copyfile(source, path)
+        self.lib.save_simulation("SRP/Kh9h4h", write, {})
+        simulation = {"name": "SRP/Kh9h4h", "path": source, "metadata": {"board": "Kh9h4h"}}
+        self.lib.include_job_simulations([simulation])
+        self.assertEqual([entry["name"] for entry in self.lib.list("sim")], ["SRP/Kh9h4h", "SRP/Kh9h4h (2)"])
+        with self.assertRaises(libm.LibraryError):
+            self.lib.save_simulation("SRP/Kh9h4h (2)", write, {})
+        self.lib.save_simulation("SRP/Kh9h4h (2)", write, {"board": "AsKsQs"}, overwrite=True)
+        self.lib.include_job_simulations([simulation])
+        self.assertEqual(len(self.lib.list("sim")), 2)
+        self.assertEqual(self.lib.get("sim", "SRP/Kh9h4h (2)")["board"], "AsKsQs")
+        self.assertNotEqual(self.lib.simulation_path("SRP/Kh9h4h (2)"), source)
+        with open(source, "rb") as file:
+            self.assertEqual(file.read(), b"job result")
+
     # ----- ranges -----
     def test_range_crud_nested_folders(self):
         name = "BTN vs BB/SRP/BB call"

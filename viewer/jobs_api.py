@@ -152,6 +152,21 @@ class JobsService:
         files.sort(key=lambda f: (f["boards"], f["name"]))
         return {"dir": self.flops_dir, "files": files}
 
+    def saved_simulations(self):
+        batches = {}
+        simulations = []
+        for job in self.q.jobs():
+            if job["status"] != "done" or not os.path.isfile(job["out"]):
+                continue
+            if job["batch"] not in batches:
+                batches[job["batch"]] = self.q.batch(job["batch"])
+            batch = batches[job["batch"]]
+            stack = next((int(float(line.split()[1])) for line in reversed(batch["setup"]) if line.startswith("set_eff_stack ")), None)
+            simulations.append({"name": f'{job["batch"]}/{job["board"]}', "path": job["out"],
+                                "metadata": {"board": job["board"], "pot": jobs.start_pot(batch["setup"]),
+                                             "stack": stack, "big_blind": 100, "save_mode": batch["save"]}})
+        return simulations
+
     def _flop_file_text(self, name):
         name = str(name)
         if not self.flops_dir or os.path.basename(name) != name or not name.lower().endswith(".txt"):

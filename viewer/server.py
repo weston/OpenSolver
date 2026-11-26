@@ -642,6 +642,8 @@ def _api_main(solver, lib, method, path, query, body):
 
     # ---- saved ranges and tree configs (#116); state-free, no solver needed ----
     if path == "/api/library/list":
+        if lib_query(query, "kind") == "sim" and _jobs is not None:
+            lib.include_job_simulations(_jobs.saved_simulations())
         return 200, {"entries": lib.list(lib_query(query, "kind"))}
     if path == "/api/library/get":
         return 200, {"kind": lib_query(query, "kind"), "name": lib_query(query),
@@ -765,6 +767,12 @@ def _api_main(solver, lib, method, path, query, body):
     if path == "/api/library/open":
         name = need_body(body).get("name")
         source = lib.simulation_path(name)
+        job = lib.job_simulation(name)
+        if job:
+            with solver.cmd_lock:
+                api(solver, lib, "POST", "/api/load", {}, {"path": source})
+                lib.update_simulation_metadata(name, job["metadata"] | simulation_metadata(solver))
+            return 200, {"ok": True}
         snapshot, target = lib.simulation_snapshot(name)
         try:
             with solver.cmd_lock:

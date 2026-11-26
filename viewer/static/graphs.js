@@ -54,7 +54,7 @@ export function shareAbove(c, v) {
   return s / c.total;
 }
 
-export function mixingCurve(reach, frequencies, order) {
+export function mixingCurve(reach, frequencies, order, sortValues = null) {
   const values = new Array(reach.length).fill(null);
   const strategies = new Array(reach.length);
   let nearlyPure = 0;
@@ -70,6 +70,18 @@ export function mixingCurve(reach, frequencies, order) {
     if (Math.max(...strategy) >= 0.9 - 1e-9) nearlyPure += reach[i];
   }
   const result = curve(reach, values, null, order);
-  for (const point of result.pts) point.strategy = strategies[point.i];
+  for (const point of result.pts) {
+    point.strategy = strategies[point.i];
+    point.sortValue = sortValues && Number.isFinite(sortValues[point.i]) ? sortValues[point.i] : null;
+  }
+  if (sortValues) {
+    result.pts.sort((a, b) => (a.sortValue ?? Infinity) - (b.sortValue ?? Infinity) || a.v - b.v || a.i - b.i);
+    let weight = 0;
+    for (const point of result.pts) {
+      point.x0 = weight / result.total;
+      weight += point.r;
+      point.x1 = weight / result.total;
+    }
+  }
   return { ...result, nearlyPure: result.total > 0 ? nearlyPure / result.total : null };
 }

@@ -51,5 +51,17 @@ for (const count of [2, 3, 4, 7]) {
 check(near(mixingCurve([1], [[.5], [.5]], order).avg, 1) && near(mixingCurve([1], [[.5], [.5], [0]], order).avg, .5),
   "a 50/50 mix is maximum with two actions and halfway to maximum with three");
 
+const sortingValues = [0.9, 0.1, null, 0.4, 1, 0];
+const sortedMixing = mixingCurve(mixingReach, frequencies, [...order, "9s9h"], sortingValues);
+check(sortedMixing.pts.map(point => point.i).join() === "1,3,0,2", "equity ordering runs low to high and retains unknown-valued hands at the end");
+check(near(sortedMixing.pts[0].x1, 1/10.5) && near(sortedMixing.pts[2].x1, 9.5/10.5), "sorted hands retain their range-weighted horizontal spans");
+check(near(sortedMixing.avg, mixing.avg) && sortedMixing.median === mixing.median && near(sortedMixing.nearlyPure, mixing.nearlyPure),
+  "changing order preserves the mean, mixing median, and nearly-pure share");
+check(near(sortedMixing.pts.reduce((area, point) => area + point.v * (point.x1 - point.x0), 0), mixing.avg), "sorting preserves the exact area under the mixing curve");
+const evSorting = mixingCurve(mixingReach, frequencies, [...order, "9s9h"], [-10, 5, -20, 0, 1, 0]);
+check(evSorting.pts.map(point => point.i).join() === "2,0,3,1", "EV ordering handles negative and positive values");
+const ties = mixingCurve(mixingReach, frequencies, [...order, "9s9h"], mixingReach.map(() => .5));
+check(ties.pts.map(point => point.i).join() === mixing.pts.map(point => point.i).join(), "equal sorting values group hands from pure to mixed deterministically");
+
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log("ALL PASSED");

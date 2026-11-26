@@ -38,9 +38,9 @@ const S = {
   blkNoBoardRanks: prefs.get("blk-no-board-ranks", false),  // card grid: leave out cards that pair the board
   blkView: prefs.get("blk-view", "made"),  // range shift by "made" category, "draw" or hand "classes"
   blkRemovedOpen: false,  // the blocked-combos list is unfolded
-  grMetric: prefs.get("graph-metric", "eq") === "ev" ? "ev" : "eq",
+  grMetric: ["eq", "ev", "mixing"].includes(prefs.get("graph-metric", "eq")) ? prefs.get("graph-metric", "eq") : "eq",
+  mixingOrder: ["mixing", "eq", "ev"].includes(prefs.get("mixing-order", "mixing")) ? prefs.get("mixing-order", "mixing") : "mixing",
   side: "hand",
-  experimental: prefs.get("experimental-view", "mixing") === "runouts" ? "runouts" : "mixing",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
   base: "/api",
@@ -233,7 +233,7 @@ function invalidate() {
   S.decId = null;
   side.invalidate();
   forgetRunouts();
-  for (const k of ["side-cats", "side-blockers", "side-graphs", "side-beta"]) {
+  for (const k of ["side-cats", "side-blockers", "side-beta"]) {
     const box = $(k);
     if (box) box.dataset.key = "";
   }
@@ -800,41 +800,11 @@ function renderSide() {
 /** Beta, runout lines (beta.js): the lines the pinned class takes on every runout from this node, for
  *  the player whose hands the matrix shows. */
 function renderBetaPanel() {
-  const box = $("side-beta");
-  if (!box.querySelector(".experimental-tabs")) {
-    const tabs = el("div", "seg small experimental-tabs");
-    for (const [key, label] of [["mixing", "Mixing"], ["runouts", "Runouts"]]) {
-      const button = el("button", "", label);
-      button.dataset.experiment = key;
-      button.onclick = () => {
-        S.experimental = key;
-        prefs.set("experimental-view", key);
-        hideTip();
-        renderBetaPanel();
-      };
-      tabs.appendChild(button);
-    }
-    box.replaceChildren(tabs, el("div", "experimental-mixing"), el("div", "experimental-runouts"));
-  }
-  box.querySelectorAll("[data-experiment]").forEach((button) => {
-    const selected = button.dataset.experiment === S.experimental;
-    button.classList.toggle("active", selected);
-    button.setAttribute("aria-pressed", String(selected));
-  });
-  const mixing = box.querySelector(".experimental-mixing");
-  const runouts = box.querySelector(".experimental-runouts");
-  mixing.classList.toggle("hidden", S.experimental !== "mixing");
-  runouts.classList.toggle("hidden", S.experimental !== "runouts");
-  if (S.experimental === "mixing") {
-    const pi = S.path.findIndex((p) => p.id === S.decId);
-    renderMixing(mixing, S.dec, S.dec?.freq ? actionsOf(S.dec, pi) : []);
-    return;
-  }
   const seq = S.seq, n = S.path[S.path.length - 1];
-  renderRunouts(runouts, {
+  renderRunouts($("side-beta"), {
     base: S.base, id: S.id, board: boardOf(n), cls: S.pinned,
     player: S.mode === "strategy" && S.dec ? S.dec.actor : viewPlayer(),
-    current: () => seq === S.seq && S.side === "beta" && S.experimental === "runouts",
+    current: () => seq === S.seq && S.side === "beta",
     goto: gotoNode,
   });
 }
@@ -1458,30 +1428,89 @@ function niceTick(span, n = 4) {
   return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
 }
 
-async function renderGraphsPanel() {
+function renderGraphsPanel() {
   const box = $("side-graphs");
+  if (!box.querySelector(".graphs-tabs")) {
+    const tabs = el("div", "seg small graphs-tabs");
+    for (const [metric, label] of [["eq", "Equity"], ["ev", "EV"], ["mixing", "Mixing"]]) {
+      const button = el("button", "", label);
+      button.dataset.graph = metric;
+      button.onclick = () => {
+        S.grMetric = metric;
+        prefs.set("graph-metric", metric);
+        hideTip();
+        renderGraphsPanel();
+      };
+      tabs.appendChild(button);
+    }
+    const sorting = el("label", "mixing-order");
+    const select = el("select");
+    select.setAttribute("aria-label", "Sort hands");
+    for (const [value, label] of [["mixing", "Mixing"], ["eq", "Equity"], ["ev", "EV"]]) {
+      const option = el("option", "", label);
+      option.value = value;
+      select.appendChild(option);
+    }
+    select.onchange = () => {
+      S.mixingOrder = select.value;
+      prefs.set("mixing-order", select.value);
+      renderGraphsPanel();
+    };
+    sorting.append(el("span", "", "Sort hands"), select);
+    box.replaceChildren(tabs, sorting, el("div", "graphs-content"));
+  }
+  box.querySelectorAll("[data-graph]").forEach((button) => {
+    const active = button.dataset.graph === S.grMetric;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  box.querySelector(".mixing-order").classList.toggle("hidden", S.grMetric !== "mixing");
+  box.querySelector("select").value = S.mixingOrder;
+  let content = box.querySelector(".graphs-content");
+  if (content.dataset.metric !== S.grMetric) {
+    const replacement = el("div", "graphs-content");
+    content.replaceWith(replacement);
+    content = replacement;
+    content.dataset.metric = S.grMetric;
+  }
+  if (S.grMetric === "mixing") renderMixingPanel(content);
+  else renderRangeGraphsPanel(content);
+}
+
+async function renderMixingPanel(box) {
+  const seq = S.seq, data = S.dec, sortBy = S.mixingOrder;
+  let sortValues = sortBy === "ev" ? data?.ev?.ev : null;
+  if (sortBy === "eq" && data?.freq) {
+    box.setAttribute("aria-busy", "true");
+    const key = `${S.base}|${S.decId}`;
+    const ent = await sideData("gr", key, `${S.base}/graphs?id=${q(S.decId)}`, (data) => ({ key, data }));
+    if (!box.isConnected || seq !== S.seq || S.side !== "graphs" || S.grMetric !== "mixing" || S.mixingOrder !== sortBy) return;
+    box.setAttribute("aria-busy", "false");
+    if (!ent) return;
+    sortValues = ent.data[data.actor.toLowerCase()].eq;
+  }
+  box.setAttribute("aria-busy", "false");
+  const pi = S.path.findIndex((node) => node.id === S.decId);
+  renderMixing(box, data, data?.freq ? actionsOf(data, pi) : [], sortBy, sortValues);
+}
+
+async function renderRangeGraphsPanel(box) {
   const seq = S.seq;
+  const metric = S.grMetric;
   const key = `${S.base}|${S.id}`;
   const ent = await sideData("gr", key, `${S.base}/graphs?id=${q(S.id)}`, (data) => ({ key, data }));
   if (!ent) return;
-  if (seq !== S.seq || S.side !== "graphs") return;
+  if (!box.isConnected || seq !== S.seq || S.side !== "graphs" || metric !== S.grMetric) return;
+  box.setAttribute("aria-busy", "false");
   const width = Math.round(box.clientWidth);
-  const vkey = `${key}|${S.grMetric}|${width}`;
+  const vkey = `${seq}|${key}|${metric}|${width}`;
   if (box.dataset.key === vkey) return;
   box.dataset.key = vkey;
   box.textContent = "";
   const data = ent.data;
-  const metric = S.grMetric;
 
   const head = el("div", "cats-head");
   head.appendChild(el("span", "gr-title", metric === "eq" ? "Equity distribution" : "EV distribution (% of pot)"));
-  const seg = el("div", "seg small");
-  for (const [k, label] of [["eq", "Equity"], ["ev", "EV"]]) {
-    const b = el("button", k === metric ? "active" : "", label);
-    b.onclick = () => { S.grMetric = k; prefs.set("graph-metric", k); renderGraphsPanel(); };
-    seg.appendChild(b);
-  }
-  head.appendChild(seg);
   box.appendChild(head);
   if (data.id !== S.id) box.appendChild(el("div", "hint cats-note", `At ${data.id}: the hand has ended here, so these are the last node's values.`));
 

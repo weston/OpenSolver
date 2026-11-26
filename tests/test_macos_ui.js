@@ -65,8 +65,10 @@ await wait(() => document.querySelector('#side-graphs svg'));
 const chart = document.querySelector('#side-graphs svg');
 check(Math.abs(chart.viewBox.baseVal.width - chart.getBoundingClientRect().width) < 2, 'the graph scales up its axes');
 check(document.querySelector('.side-tabs [data-side=beta]').textContent === 'Experimental', 'the Beta tab was not renamed');
-document.querySelector('.side-tabs [data-side=beta]').click();
-document.querySelector('[data-experiment=mixing]').click();
+document.querySelector('[data-graph=mixing]').click();
+const mixingOrder = document.querySelector('.mixing-order select');
+mixingOrder.value = 'mixing';
+mixingOrder.dispatchEvent(new Event('change', {bubbles: true}));
 await wait(() => document.querySelector('.mixing-chart'));
 const mixingChart = document.querySelector('.mixing-chart');
 check(mixingChart.querySelector('.mixing-area-label').textContent === `Area: ${document.querySelector('.mixing-stats b').textContent}`, 'curve area and mean mixing disagree');
@@ -77,10 +79,22 @@ mixingChart.dispatchEvent(new KeyboardEvent('keydown', {key: 'End', bubbles: tru
 const mostMixed = parseFloat(document.querySelector('.mixing-score b').textContent);
 check(purest >= 0 && mostMixed <= 100 && mostMixed >= purest && mixingChart.getAttribute('aria-valuenow') === '100.0', 'mixing curve does not run from purest to most mixed on a 0–100% scale');
 check(document.querySelectorAll('.mixing-hand .pc').length === 2 && document.querySelectorAll('.mixing-action').length >= 2, 'mixing inspection lost the combo or action frequencies');
-document.querySelector('[data-experiment=runouts]').click();
-await wait(() => document.querySelector('.experimental-runouts')?.dataset.key);
-check(!document.querySelector('.experimental-runouts .rl-main').classList.contains('hidden'), 'runout visualization no longer opens in Experimental');
-document.querySelector('[data-experiment=mixing]').click();
+const mixingSummary = document.querySelector('.mixing-stats').textContent;
+for (const metric of ['eq', 'ev']) {
+  mixingOrder.value = metric;
+  mixingOrder.dispatchEvent(new Event('change', {bubbles: true}));
+  await wait(() => document.querySelector('.mixing-chart')?.dataset.sort === metric);
+  check(document.querySelector('.mixing-stats').textContent === mixingSummary, 'sorting changes mixing summary statistics');
+  check(document.querySelector('.mixing-sort-value').textContent.startsWith(metric === 'eq' ? 'Equity' : 'EV'), 'inspected hand is missing its sorting value');
+}
+document.querySelector('[data-graph=eq]').click();
+await wait(() => document.querySelector('#side-graphs .gr-stats'));
+document.querySelector('[data-graph=mixing]').click();
+await wait(() => document.querySelector('#side-graphs .mixing-chart'));
+document.querySelector('.side-tabs [data-side=beta]').click();
+await wait(() => $('side-beta').dataset.key && document.querySelector('#side-beta .rl-main'));
+check(!document.querySelector('#side-beta .mixing-chart, [data-experiment]'), 'mixing remains in Experimental');
+check(!document.querySelector('#side-beta .rl-main').classList.contains('hidden'), 'runout visualization no longer opens in Experimental');
 document.querySelector('.side-tabs [data-side=hand]').click();
 await wait(() => document.querySelector('#side-hand .hand-blockers[aria-busy=false]'));
 

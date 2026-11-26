@@ -12,7 +12,7 @@ function svgEl(tag, attrs, parent, text) {
   return element;
 }
 
-export function renderMixing(box, data, actions) {
+export function renderMixing(box, data, actions, sortBy = "mixing", sortValues = null) {
   if (view?.box !== box) {
     view?.observer.disconnect();
     view = { box, data: null, actions: [], width: 0, position: 0.5 };
@@ -22,18 +22,20 @@ export function renderMixing(box, data, actions) {
     });
     view.observer.observe(box);
   }
-  if (view.data === data && view.width === Math.round(box.clientWidth)) return;
-  if (view.data !== data) {
+  if (view.data === data && view.sortBy === sortBy && view.sortValues === sortValues && view.width === Math.round(box.clientWidth)) return;
+  if (view.data !== data || view.sortBy !== sortBy || view.sortValues !== sortValues) {
     view.data = data;
     view.actions = actions;
-    view.profile = data?.freq ? mixingCurve(data.reach, data.freq, H.order) : null;
+    view.sortBy = sortBy;
+    view.sortValues = sortValues;
+    view.profile = data?.freq ? mixingCurve(data.reach, data.freq, H.order, sortValues) : null;
     view.position = 0.5;
   }
   draw();
 }
 
 function draw() {
-  const { box, data, profile, actions } = view;
+  const { box, data, profile, actions, sortBy } = view;
   const width = Math.round(box.clientWidth);
   if (!width) return;
   view.width = width;
@@ -43,7 +45,7 @@ function draw() {
     return;
   }
 
-  const head = el("div", "cats-head");
+  const head = el("div", "cats-head mixing-head");
   head.append(el("span", `badge ${data.actor.toLowerCase()}`, data.actor), el("strong", "", "Mixing profile"),
     el("span", "muted num", `${fmt(profile.total, 1)} combos`));
   const stats = el("div", "mixing-stats");
@@ -58,7 +60,8 @@ function draw() {
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("class", "gr-chart mixing-chart");
   svg.setAttribute("role", "slider");
-  svg.setAttribute("aria-label", "Combo mixing by share of range");
+  svg.setAttribute("aria-label", `Combo mixing by share of range, ordered by ${sortBy === "eq" ? "equity" : sortBy === "ev" ? "EV" : "mixing"}`);
+  svg.dataset.sort = sortBy;
   svg.setAttribute("aria-valuemin", "0");
   svg.setAttribute("aria-valuemax", "100");
   svg.setAttribute("tabindex", "0");
@@ -80,7 +83,8 @@ function draw() {
     svgEl("text", { x: x(fraction), y: bottom + 17, "text-anchor": fraction === 0 ? "start" : fraction === 1 ? "end" : "middle" },
       axis, `${fraction * 100}%`);
   }
-  svgEl("text", { x: (left + right) / 2, y: height - 2, "text-anchor": "middle", class: "axis-title" }, axis, "Range weight · pure → mixed");
+  const direction = { mixing: "pure → mixed", eq: "equity low → high", ev: "EV low → high" }[sortBy];
+  svgEl("text", { x: (left + right) / 2, y: height - 2, "text-anchor": "middle", class: "axis-title" }, axis, `Range weight · ${direction}`);
 
   let path = `M${left},${y(profile.pts[0].v)}`;
   for (const point of profile.pts) path += `V${y(point.v)}H${x(point.x1)}`;
@@ -107,6 +111,11 @@ function draw() {
     const hand = el("div", "mixing-hand");
     const score = el("span", "mixing-score");
     score.append(el("b", "num", `${fmt(point.v * 100, 1)}%`), el("span", "muted", "mixing"));
+    if (sortBy !== "mixing") {
+      const pot = data.node.pot.reduce((sum, value) => sum + value, 0);
+      const value = point.sortValue == null ? null : sortBy === "eq" ? point.sortValue * 100 : pot > 0 ? point.sortValue / pot * 100 : null;
+      score.appendChild(el("span", "muted mixing-sort-value", `${sortBy === "eq" ? "Equity" : "EV"} ${fmt(value, 1)}${value == null ? "" : sortBy === "eq" ? "%" : "% pot"}`));
+    }
     hand.append(comboEl(point.combo), score);
     const bar = el("div", "mini-bar mixing-strategy");
     const legend = el("div", "mixing-actions");

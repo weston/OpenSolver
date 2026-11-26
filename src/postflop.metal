@@ -84,26 +84,26 @@ kernel void advance_forced(TRAVERSAL_BUFFERS, device const float* old_regrets [[
     strategy_sums[j] = q.accumulate ? fma(old_sums[j], q.average_discount, weight) : old_sums[j];
   }
 }
-template <typename Reach>
-void river_prefixes(device const BoardPrefixes& b, device const ushort* indices, Reach reach, threadgroup float* prefix,
+template <typename Sum = float, typename Reach, typename Entry>
+void river_prefixes(device const BoardPrefixes& b, device const ushort* indices, Reach reach, threadgroup Entry* prefix,
                     uint tid) {
   if (tid < 52) {
     uint start = b.start[tid + 1], end = b.start[tid + 2] - 1;
-    float s = 0;
+    Sum s = 0;
     prefix[start] = 0;
     for (uint j = start + 1; j <= end; ++j) {
-      s += reach[indices[b.index_offset + j]];
+      s += Sum(reach[indices[b.index_offset + j]]);
       prefix[j] = s;
     }
   }
   if (tid >= 64 && tid < 96) {
     uint lane = tid - 64;
-    float carry = 0;
+    Sum carry = 0;
     if (!lane) prefix[0] = 0;
     for (uint base = 1; base < b.start[1]; base += 32) {
       uint j = base + lane;
-      float w = j < b.start[1] ? reach[indices[b.index_offset + j]] : 0;
-      float t = simd_prefix_inclusive_sum(w) + carry;
+      Sum w = j < b.start[1] ? Sum(reach[indices[b.index_offset + j]]) : Sum(0);
+      Sum t = simd_prefix_inclusive_sum(w) + carry;
       carry = simd_broadcast(t, 31);
       if (j < b.start[1]) prefix[j] = t;
     }
@@ -270,6 +270,68 @@ float update_binary(device float* regrets, device float* sums, device const floa
   return value;
 }
 
+float3 round_reach(device const RiverRound& r, device const float* opp_r, float weight, uint j, uint O, bool leading) {
+  if (r.final_raise) {
+    if (leading) {
+      float2 response = binary_strategy(opp_r, r.storage[1] + j, O);
+      return weight * float3(response.x, 1.f, response.y);
+    }
+    return weight * raise_strategy(opp_r, r.storage[0] + j, O);
+  }
+  if (leading) {
+    float2 response = binary_strategy(opp_r, r.storage[1] + j, O);
+    float2 probe = binary_strategy(opp_r, r.storage[2] + j, O);
+    return weight * float3(response.x, probe.x, probe.y);
+  }
+  float2 first = binary_strategy(opp_r, r.storage[0] + j, O);
+  float2 response = binary_strategy(opp_r, r.storage[3] + j, O);
+  float check = weight * first.y;
+  return float3(weight * first.x, check * response.x, check);
+}
+
+float update_river_round(device const RiverRound& r, constant IterationParams& q, device const float* old_r,
+                         device const float* old_s, device float* regrets, device float* strategy_sums, uint h, uint H,
+                         float reach, bool leading, float3 sd, float3 mass) {
+  uint p = q.p;
+  float value;
+  if (r.final_raise) {
+    if (leading) {
+      uint j = r.storage[0] + h;
+      float3 policy = raise_strategy(old_r, j, H);
+      float3 cfv = {sd.x + mass.z * r.fold[0][p], sd.y, mass.y * r.fold[1][p]};
+      value = fma(policy.z, cfv.z, fma(policy.y, cfv.y, policy.x * cfv.x));
+      for (uint a = 0; a < 3; ++a) {
+        uint k = j + a * H;
+        float v = old_r[k];
+        regrets[k] = v * (v > 0 ? q.positive_discount : q.negative_discount) + (cfv[a] - value);
+        strategy_sums[k] = q.accumulate ? fma(reach, policy[a], old_s[k] * q.average_discount) : old_s[k];
+      }
+    } else {
+      float2 response = binary_strategy(old_r, r.storage[1] + h, H);
+      float raised = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[1] + h, H, reach, response,
+                                   float2(sd.x, r.fold[0][p] * mass.x));
+      value = (raised + sd.y) + r.fold[1][p] * mass.z;
+    }
+  } else if (leading) {
+    float lead = sd.x + r.fold[0][p] * (mass.y + mass.z - mass.x);
+    float2 first = binary_strategy(old_r, r.storage[0] + h, H);
+    float2 response = binary_strategy(old_r, r.storage[3] + h, H);
+    float check_bet = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[3] + h, H, reach * first.y,
+                                    response, float2(sd.y, r.fold[1][p] * mass.y));
+    value = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[0] + h, H, reach, first,
+                          float2(lead, check_bet + sd.z));
+  } else {
+    float2 call = binary_strategy(old_r, r.storage[1] + h, H);
+    float2 probe = binary_strategy(old_r, r.storage[2] + h, H);
+    float vs_lead = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[1] + h, H, reach, call,
+                                  float2(sd.x, r.fold[0][p] * mass.x));
+    float bet = sd.y + r.fold[1][p] * (mass.z - mass.y);
+    value = vs_lead + update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[2] + h, H, reach, probe,
+                                    float2(bet, sd.z));
+  }
+  return value;
+}
+
 kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
                                 device const ushort* indices [[buffer(10)]],
                                 device const HandPrefixes* heroes [[buffer(11)]],
@@ -285,47 +347,9 @@ kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* b
   device const float* opp_r = q.phase ? regrets : old_r;
   threadgroup packed_float3* reaches = prefix + b.start[53];
   bool leading = n.actor == p;
-  for (uint j = tid; j < O; j += width) {
-    if (r.final_raise) {
-      if (leading) {
-        float2 response = binary_strategy(opp_r, r.storage[1] + j, O);
-        reaches[j] = opp[j] * float3(response.x, 1.f, response.y);
-      } else
-        reaches[j] = opp[j] * raise_strategy(opp_r, r.storage[0] + j, O);
-    } else if (leading) {
-      float2 response = binary_strategy(opp_r, r.storage[1] + j, O);
-      float2 probe = binary_strategy(opp_r, r.storage[2] + j, O);
-      reaches[j] = opp[j] * float3(response.x, probe.x, probe.y);
-    } else {
-      float2 first = binary_strategy(opp_r, r.storage[0] + j, O);
-      float2 response = binary_strategy(opp_r, r.storage[3] + j, O);
-      float check = opp[j] * first.y;
-      reaches[j] = float3(opp[j] * first.x, check * response.x, check);
-    }
-  }
+  for (uint j = tid; j < O; j += width) reaches[j] = round_reach(r, opp_r, opp[j], j, O, leading);
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  if (tid < 52) {
-    uint start = b.start[tid + 1], end = b.start[tid + 2];
-    float3 sum = 0;
-    prefix[start] = sum;
-    for (uint j = start + 1; j < end; ++j) {
-      sum += float3(reaches[indices[b.index_offset + j]]);
-      prefix[j] = sum;
-    }
-  }
-  if (tid >= 64 && tid < 96) {
-    uint lane = tid - 64;
-    float3 carry = 0;
-    if (!lane) prefix[0] = carry;
-    for (uint base = 1; base < b.start[1]; base += 32) {
-      uint j = base + lane;
-      float3 w = j < b.start[1] ? float3(reaches[indices[b.index_offset + j]]) : 0.f;
-      float3 sum = simd_prefix_inclusive_sum(w) + carry;
-      carry = simd_broadcast(sum, 31);
-      if (j < b.start[1]) prefix[j] = sum;
-    }
-  }
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  river_prefixes<float3>(b, indices, reaches, prefix, tid);
   float3 win = {r.win[0][p], r.win[1][p], r.win[2][p]};
   float3 loss = {r.loss[0][p], r.loss[1][p], r.loss[2][p]};
   float3 tie = {r.tie[0][p], r.tie[1][p], r.tie[2][p]};
@@ -339,42 +363,50 @@ kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* b
     float3 lo = float3(prefix[m.lo[0]]) - float3(prefix[m.lo[1]]) - float3(prefix[m.lo[2]]);
     float3 hi = float3(prefix[m.hi[0]]) - float3(prefix[m.hi[1]]) - float3(prefix[m.hi[2]]) + same;
     float3 sd = fma(win - tie, lo, fma(tie - loss, hi, loss * live));
-    float reach = blocked(c, n.public_cards) ? 0.f : own[h], value;
-    if (r.final_raise) {
-      if (leading) {
-        uint j = r.storage[0] + h;
-        float3 policy = raise_strategy(old_r, j, H);
-        float3 cfv = {sd.x + mass.z * r.fold[0][p], sd.y, mass.y * r.fold[1][p]};
-        value = fma(policy.z, cfv.z, fma(policy.y, cfv.y, policy.x * cfv.x));
-        for (uint a = 0; a < 3; ++a) {
-          uint k = j + a * H;
-          float v = old_r[k];
-          regrets[k] = v * (v > 0 ? q.positive_discount : q.negative_discount) + (cfv[a] - value);
-          strategy_sums[k] = q.accumulate ? fma(reach, policy[a], old_s[k] * q.average_discount) : old_s[k];
-        }
-      } else {
-        float2 response = binary_strategy(old_r, r.storage[1] + h, H);
-        float raised = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[1] + h, H, reach, response,
-                                     float2(sd.x, r.fold[0][p] * mass.x));
-        value = (raised + sd.y) + r.fold[1][p] * mass.z;
-      }
-    } else if (leading) {
-      float lead = sd.x + r.fold[0][p] * (mass.y + mass.z - mass.x);
-      float2 first = binary_strategy(old_r, r.storage[0] + h, H);
-      float2 response = binary_strategy(old_r, r.storage[3] + h, H);
-      float check_bet = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[3] + h, H, reach * first.y,
-                                      response, float2(sd.y, r.fold[1][p] * mass.y));
-      value = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[0] + h, H, reach, first,
-                            float2(lead, check_bet + sd.z));
-    } else {
-      float2 call = binary_strategy(old_r, r.storage[1] + h, H);
-      float2 probe = binary_strategy(old_r, r.storage[2] + h, H);
-      float vs_lead = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[1] + h, H, reach, call,
-                                    float2(sd.x, r.fold[0][p] * mass.x));
-      float bet = sd.y + r.fold[1][p] * (mass.z - mass.y);
-      value = vs_lead + update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[2] + h, H, reach, probe,
-                                      float2(bet, sd.z));
+    float reach = blocked(c, n.public_cards) ? 0.f : own[h];
+    values[n.value_row * q.stride + h] =
+        update_river_round(r, q, old_r, old_s, regrets, strategy_sums, h, H, reach, leading, sd, mass);
+  }
+}
+
+kernel void river_betting_round_wide(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
+                                     device const ushort* indices [[buffer(10)]],
+                                     device const HandPrefixes* heroes [[buffer(11)]],
+                                     device const float* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]],
+                                     device const RiverRound* rounds [[buffer(14)]],
+                                     threadgroup float* prefix [[threadgroup(0)]], NODE_THREADS) {
+  device const RiverRound& r = rounds[k];
+  TraversalNode n = nodes[r.root];
+  device const BoardPrefixes& b = boards[r.board];
+  uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
+  device const float* opp = (p ? oop_reach : ip_reach) + n.row[1 - p] * q.stride;
+  device const float* own = (p ? ip_reach : oop_reach) + n.row[p] * q.stride;
+  device const float* opp_r = q.phase ? regrets : old_r;
+  threadgroup float* reaches = prefix + b.start[53];
+  bool leading = n.actor == p;
+
+  constexpr uint max_hands_per_thread = (1326 + 127) / 128;
+  float3 mass_by_hand[max_hands_per_thread], showdown_by_hand[max_hands_per_thread];
+  for (uint channel = 0; channel < 3; ++channel) {
+    for (uint j = tid; j < O; j += width) reaches[j] = round_reach(r, opp_r, opp[j], j, O, leading)[channel];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    river_prefixes(b, indices, reaches, prefix, tid);
+    for (uint h = tid; h < H; h += width) {
+      HandPrefixes m = heroes[b.hand_offset + h];
+      uchar2 c = cards[p * q.stride + h];
+      float same = m.same >= 0 ? reaches[m.same] : 0.f;
+      mass_by_hand[h / width][channel] =
+          prefix[b.start[1] - 1] - prefix[b.start[c.x + 2] - 1] - prefix[b.start[c.y + 2] - 1] + same;
+      showdown_by_hand[h / width][channel] =
+          showdown_payoff(m, prefix, same, r.win[channel][p], r.loss[channel][p], r.tie[channel][p]);
     }
-    values[n.value_row * q.stride + h] = value;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  for (uint h = tid; h < H; h += width) {
+    uchar2 c = cards[p * q.stride + h];
+    float3 sd = showdown_by_hand[h / width], mass = mass_by_hand[h / width];
+    float reach = blocked(c, n.public_cards) ? 0.f : own[h];
+    values[n.value_row * q.stride + h] =
+        update_river_round(r, q, old_r, old_s, regrets, strategy_sums, h, H, reach, leading, sd, mass);
   }
 }

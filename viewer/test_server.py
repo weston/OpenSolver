@@ -650,7 +650,7 @@ class ViewerTest(unittest.TestCase):
         f = d["form"]
         self.assertEqual((f["pot"], f["stack"], f["board"]), (40, 230, "QhQc2c"))
         self.assertEqual(f["pio_extra"], [])
-        # settings without a form field travel as pio_extra and change the build: ForceOOPBet takes
+        # the imported headers change the build: ForceOOPBet takes
         # OOP's flop check away, MergeSimilarBets folds 30% into 33%
         text = ("#Pot#100\n#EffectiveStacks#1000\n#AllinThreshold#67\n#ForceOOPBet#True\n"
                 "#MergeSimilarBets#True\n#MergeSimilarBetsThreshold#12\n#FlopConfig.BetSize#30 33\n")

@@ -1,5 +1,4 @@
 import itertools
-from decimal import Decimal
 
 import server as vsrv
 from jobs_api import jobs
@@ -8,7 +7,6 @@ from jobs_api import jobs
 RANKS = 'AKQJT98765432'
 DECK = [r + s for r in RANKS for s in 'shdc']
 STREETS = {0: 'Preflop', 3: 'Flop', 4: 'Turn', 5: 'River'}
-MERGE_THRESHOLD = 5
 
 
 def board_cards(board):
@@ -79,23 +77,17 @@ def matches_board_filters(board, filters):
     return jobs.texture_suits(flop) in filters['suits']
 
 
-def merge_tree(tree, enabled):
+def live_tree(settings):
+    tree = settings.get('tree')
     if not isinstance(tree, dict):
-        raise vsrv.SolverError('choose a tree first')
-    if not isinstance(enabled, bool):
-        raise vsrv.SolverError('merge similar sizes must be on or off')
-    extra = vsrv.pio_extra_lines(tree)
-    extra += [f'#MergeSimilarBets#{enabled}', f'#MergeSimilarBetsThreshold#{MERGE_THRESHOLD}']
-    return {**tree, 'pio_extra': extra}
-
-
-def similar_size_removals(node, actions):
-    own = int(node['pot'][0 if node['type'] == 'OOP_DEC' else 1])
-    bets = [(int(own + a['amount']), a['id']) for a in actions if a['kind'] in ('bet', 'raise')]
-    options = sorted((total, {action}) for total, action in bets)
-    tb = vsrv.load_tree_builder()
-    kept = {total for total, _ in tb._merge_similar(options, Decimal(MERGE_THRESHOLD), int(sum(node['pot'])), own)}
-    return [action for total, action in bets if total not in kept]
+        raise vsrv.SolverError('choose a tree on the Tree tab first')
+    if 'merge_similar' in settings:
+        enabled = settings['merge_similar']
+        if not isinstance(enabled, bool):
+            raise vsrv.SolverError('merge similar sizes must be on or off')
+        extra = [*vsrv.pio_extra_lines(tree), f'#MergeSimilarBets#{enabled}', '#MergeSimilarBetsThreshold#5']
+        return {**tree, 'pio_extra': extra}
+    return tree
 
 
 def action_info(node, child, effective_stack):
@@ -117,7 +109,7 @@ def action_info(node, child, effective_stack):
 
 
 def node_preview(body):
-    tree = merge_tree(body.get('tree'), body.get('merge_similar', True))
+    tree = live_tree(body)
     plan = board_plan(body, tree)
     cfg = vsrv.tree_config_from_body({**tree, 'board': plan['board']})
     tb = vsrv.load_tree_builder()

@@ -207,18 +207,23 @@ function readForm() {
     allin_threshold: Number($("f-allin-threshold").value), add_allin_limit: Number($("f-allin-limit").value),
   };
   Object.assign(f, readSizes(sizesBody()));
-  if (pioExtra.length) f.pio_extra = pioExtra;
+  const extra = [...pioExtra];
+  const merge = $("f-merge-similar").checked;
+  const threshold = $("f-merge-threshold").value;
+  if (merge) extra.push("#MergeSimilarBets#True");
+  if (merge || (threshold !== "" && Number(threshold) !== 5))
+    extra.push(`#MergeSimilarBetsThreshold#${threshold}`);
+  if (extra.length) f.pio_extra = extra;
   return f;
 }
 
 /* PioViewer settings the form has no field for (#317), kept from an imported tree file and sent
- * with every build: merge similar bets, street caps, forced bets, unified re-raises, hand edits. */
+ * with every build: street caps, forced bets, unified re-raises, hand edits. */
 let pioExtra = [];
 
 function describePioExtra(lines) {
   const kv = Object.fromEntries(lines.map((l) => { const m = l.match(/^#([^#]+)#(.*)$/); return m ? [m[1], m[2]] : ["", ""]; }));
   const out = [];
-  if (/^true$/i.test(kv.MergeSimilarBets || "")) out.push(`merge similar bets (${kv.MergeSimilarBetsThreshold || 12}%)`);
   if (/^true$/i.test(kv.CapEnabled || "") && kv.CapPerStreet) out.push(`street caps ${kv.CapPerStreet.split(/\\n/).join("/")}`);
   if (/^true$/i.test(kv.ForceOOPBet || "")) out.push("OOP must bet the flop");
   if (/^true$/i.test(kv.ForceIPBet || "")) out.push("IP must bet the flop");
@@ -264,7 +269,18 @@ function applyForm(f) {
     set("f-allin-threshold", f.allin_threshold); set("f-allin-limit", f.add_allin_limit);
   }
   renderSizes(sizesBody(), STREETS, f || {});
-  pioExtra = f && Array.isArray(f.pio_extra) ? f.pio_extra.map(String) : [];
+  let mergeFlag, threshold;
+  pioExtra = [];
+  const extra = Array.isArray(f?.pio_extra) ? f.pio_extra.map(String) : [];
+  for (const line of extra) {
+    const [, key, value = ""] = line.split("#");
+    if (key === "MergeSimilarBets") mergeFlag = value.trim().toLowerCase() === "true";
+    else if (key === "MergeSimilarBetsThreshold") threshold = value.trim();
+    else pioExtra.push(line);
+  }
+  $("f-merge-similar").checked = mergeFlag === true;
+  $("f-merge-threshold").disabled = !mergeFlag;
+  $("f-merge-threshold").value = threshold ?? (mergeFlag === undefined ? 5 : 12);
   renderPioExtra();
   drawBoard();
   updateSpr();
@@ -285,11 +301,12 @@ const NUMBER_FIELDS = {
   "f-stack": ["Effective stack (a whole number of chips, at least 1)", (v) => Number.isInteger(v) && v >= 1],
   "f-allin-threshold": ["All-in threshold (above 0)", (v) => v > 0],
   "f-allin-limit": ["Add all-in below (0 or more)", (v) => v >= 0],
+  "f-merge-threshold": ["Merge threshold (0 or more)", (v) => v >= 0],
   "f-accuracy": ["Target exploitability (above 0)", (v) => v > 0],
 };
 function checkNumber(id) {
   const raw = $(id).value.trim();
-  const good = raw !== "" && Number.isFinite(Number(raw)) && NUMBER_FIELDS[id][1](Number(raw));
+  const good = $(id).disabled || (raw !== "" && Number.isFinite(Number(raw)) && NUMBER_FIELDS[id][1](Number(raw)));
   $(id).classList.toggle("invalid", !good);
   return good;
 }
@@ -405,7 +422,7 @@ function memLine(text) {
 async function build() {
   if (!validateSizes()) { info("Fix the highlighted sizes: 33 (% pot), 2e (geometric), 3x (raises only), a (all-in).", true); return false; }
   if (board.length < 3) { info("Pick at least a flop (3 cards).", true); return false; }
-  const bad = badNumbers(["f-pot", "f-stack", "f-allin-threshold", "f-allin-limit"]);
+  const bad = badNumbers(["f-pot", "f-stack", "f-allin-threshold", "f-allin-limit", "f-merge-threshold"]);
   if (bad.length) { info(`Fix ${bad.join(", ")}.`, true); return false; }
   const f = readForm();
   setBusy(true, "Generating the tree…");
@@ -543,6 +560,10 @@ export function initBuild({ built }) {
     while (board.length < 3) { const c = deck[Math.floor(Math.random() * deck.length)]; if (!board.includes(c)) board.push(c); }
     boardChanged();
   };
+  $("f-merge-similar").oninput = () => {
+    $("f-merge-threshold").disabled = !$("f-merge-similar").checked;
+    checkNumber("f-merge-threshold");
+  };
   document.querySelector(".tree-form").addEventListener("input", () => { validateSizes(); saveForm(); });
   $("f-accuracy").addEventListener("input", () => { prefs.set("accuracy", $("f-accuracy").value); markSpot(); });
   let acc = prefs.get("accuracy", null);
@@ -569,7 +590,7 @@ export function treeLoadedElsewhere() { builtSig = null; markDirty(); }
 // The Build form as a tree config for the job queue (#196): everything but the board, which each job sets.
 export function currentTree(withBoard = false) {
   if (!validateSizes()) throw new Error("Fix the highlighted sizes on the Tree tab first.");
-  const bad = badNumbers(["f-pot", "f-stack", "f-allin-threshold", "f-allin-limit"]);
+  const bad = badNumbers(["f-pot", "f-stack", "f-allin-threshold", "f-allin-limit", "f-merge-threshold"]);
   if (bad.length) throw new Error(`Fix ${bad.join(", ")} on the Tree tab first.`);
   const f = readForm();
   if (!f.range_oop || !f.range_ip) throw new Error("Set both ranges on the Tree tab first.");

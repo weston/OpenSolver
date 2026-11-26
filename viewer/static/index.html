@@ -204,7 +204,6 @@
         <label class="field"><span>Target exploitability</span><div class="suffix"><input id="drill-accuracy" type="number" value="0.5" min="0.01" max="100" step="0.01" required><i>% pot</i></div></label>
         <label class="field"><span>Solve time limit</span><div class="suffix"><input id="drill-seconds" type="number" value="60" min="1" max="3600" step="1" required><i>seconds</i></div></label>
         <label class="field"><span>Frequency tolerance</span><div class="suffix"><input id="drill-frequency_tolerance" type="number" value="10" min="0" max="100" step="1" required><i>%</i></div></label>
-        <label class="check"><input id="drill-merge-similar" type="checkbox" checked>Merge similar bet sizes</label>
       </div>
     </section>
     <section id="device-settings" class="card hidden">
@@ -276,6 +275,10 @@
             <thead><tr><th></th><th></th><th>Bet</th><th>Raise</th><th>Donk <small>(OOP lead)</small></th><th title="Maximum bets + raises on the street">Cap</th><th>All-in</th></tr></thead>
             <tbody id="sizes-body"></tbody>
           </table>
+          <div class="btn-row">
+            <label class="check"><input id="f-merge-similar" type="checkbox">Merge similar bet sizes</label>
+            <label class="field"><span>Merge threshold</span><div class="suffix"><input id="f-merge-threshold" type="number" min="0" step="any" value="5" disabled><i>% pot</i></div></label>
+          </div>
           <div id="pio-extra" class="pio-extra hidden"><span id="pio-extra-text"></span> <button class="btn small ghost" id="pio-extra-clear" title="Build without these PioViewer settings">Remove</button></div>
         </div>
       </section>

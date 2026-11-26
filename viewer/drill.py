@@ -9,7 +9,7 @@ import uuid
 
 import server as vsrv
 from jobs_api import jobs
-from drill_spots import action_info, board_plan, merge_tree, node_preview, similar_size_removals
+from drill_spots import action_info, board_plan, live_tree, node_preview
 from drill_sessions import Sessions
 from drill_analysis import digest
 from drill_resolve import DrillResolve, Subtree
@@ -183,7 +183,6 @@ class Hand:
         self.simplification_baseline = None
         self.simplification = None
         self.disabled = []
-        self.merged = []
         for _ in range(128):
             if self.node["type"] == "END_NODE":
                 self.finish()
@@ -264,7 +263,6 @@ class Hand:
             selected, self.pending = choose_continuation(self.exercises, self.exercise_weights, self.rng)
             self.pending_hand = self.exercises[selected]["index"]
             self.feedback = self.summarize([e["feedback"] for e in self.exercises])
-            self.feedback["merged"] = self.merged
             self.feedback["simplification"] = self.simplification
             if self.original:
                 self.feedback["original"] = self.original.summarize([
@@ -381,7 +379,7 @@ class Hand:
                 "villain": self.order[self.hands[1 - hero]] if self.phase == "complete" and self.mode == "hand"
                 and not (self.answer_mode == "play" and self.node["id"].endswith(":f")) else None,
                 "node": self.node, "actions": self.actions if self.phase == "decision" else [],
-                "disabled": self.disabled, "merged": self.merged,
+                "disabled": self.disabled,
                 "wagers": wagers, "big_blind": self.big_blind,
                 "stacks": [self.effective_stack - invested for invested in self.node["pot"][:2]],
                 "continuation": {"combo": self.order[self.pending_hand], **self.actions[self.pending]}
@@ -433,7 +431,7 @@ class DrillService:
                                   "config": self.config and {k: self.config[k] for k in (
                                       "source", "mode", "answer_mode", "feedback_timing", "seat", "node", "ahead", "format", "count",
                                       "boards", "selected_boards", "board_filters", "accuracy", "seconds", "frequency_tolerance",
-                                      "merge_similar", "batch", "spot") if k in self.config},
+                                      "batch", "spot") if k in self.config},
                                   "hand": self.hand.view() if self.hand else None, "number": self.number,
                                   "reviews": self.sessions.hand_reviews(self.session, self.number)
                                   if self.hand and self.hand.phase == "complete" and self.config["answer_mode"] == "play"
@@ -459,9 +457,6 @@ class DrillService:
         feedback_timing = body.get("feedback_timing", "none")
         if feedback_timing not in ("action", "hand", "none"):
             raise vsrv.SolverError("invalid feedback timing")
-        merge_similar = body.get("merge_similar", True)
-        if not isinstance(merge_similar, bool):
-            raise vsrv.SolverError("merge similar sizes must be on or off")
         node = vsrv.node_id_arg({"id": [str(body.get("node", "r:0"))]}) if mode == "node" else "r:0"
         if node == "r":
             node = "r:0"
@@ -479,7 +474,7 @@ class DrillService:
             raise vsrv.SolverError("frequency tolerance must be from 0 to 100")
         config = {"source": source, "mode": mode, "answer_mode": answer_mode, "feedback_timing": feedback_timing,
                   "seat": seat, "node": node, "ahead": ahead,
-                  "format": hand_format, "count": count, "frequency_tolerance": tolerance, "merge_similar": merge_similar}
+                  "format": hand_format, "count": count, "frequency_tolerance": tolerance}
         if source == "current":
             if resume and not os.path.isfile(body.get("path", "")):
                 raise vsrv.SolverError("this session's saved tree is unavailable")
@@ -496,12 +491,9 @@ class DrillService:
             if not config["saves"]:
                 raise vsrv.SolverError("this batch has no finished simulations")
         else:
-            tree = body.get("tree")
-            if not isinstance(tree, dict):
-                raise vsrv.SolverError("choose a tree on the Tree tab first")
+            tree = live_tree(body)
             config["spot"] = str(body.get("spot", ""))
             config.update(board_plan(body, tree))
-            tree = merge_tree(tree, config["merge_similar"])
             config["setup"], _ = vsrv.setup_from_body({**tree, "board": config["board"]})
         for key, default, limit in (("accuracy", 0.5, 100), ("seconds", 60, 3600)):
             value = body.get(key, default)
@@ -653,7 +645,6 @@ class DrillService:
             if previous_solve and "job" in previous_solve:
                 self.remove_job(previous_solve["job"])
         self.prepare()
-        self.merge_sizes()
 
     def settle_resolve(self):
         if not self.resolver or self.resolve_applied:
@@ -683,7 +674,6 @@ class DrillService:
         if self.hand.phase == "complete":
             self.completed += 1
             self.sessions.finish_hand(self.session, self.session_stats())
-        self.merge_sizes()
 
     def clear_resolve(self, keep=False):
         if self.resolver:
@@ -698,19 +688,13 @@ class DrillService:
             self.resolver = None
         self.resolve_applied = False
 
-    def merge_sizes(self):
-        if self.config["merge_similar"] and self.hand.phase == "decision":
-            self.hand.merged = similar_size_removals(self.hand.node, self.hand.actions)
-            if self.hand.merged:
-                self.set_sizes(self.hand.merged)
-
     def set_sizes(self, disabled):
         if self.hand.phase != "decision" or any(e["chosen"] is not None for e in self.hand.exercises):
             raise vsrv.SolverError("sizes can be changed before submitting a decision")
         allowed = {a["id"] for a in self.hand.actions if a["kind"] in ("bet", "raise")}
         if not isinstance(disabled, list) or any(not isinstance(a, str) or a not in allowed for a in disabled):
             raise vsrv.SolverError("choose bet or raise sizes from this node")
-        disabled = sorted(set(disabled) | set(self.hand.merged))
+        disabled = sorted(set(disabled))
         base = self.hand.unrestricted or self.hand
         self.clear_resolve()
         self.hand = base

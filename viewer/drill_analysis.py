@@ -5,7 +5,7 @@ from collections import defaultdict
 from functools import lru_cache
 
 import server as vsrv
-from drill_spots import action_info, merge_tree
+from drill_spots import action_info, live_tree
 
 
 STREETS = {0: 'Preflop', 3: 'Flop', 4: 'Turn', 5: 'River'}
@@ -175,7 +175,7 @@ def report(records, body, read_categories):
     for settings in settings_by_tree[tree].values():
         sizes = {key: value for key, value in (settings.get('tree') or {}).items()
                  if key not in ('board', 'range_oop', 'range_ip')}
-        shape = digest([settings.get('analysis_lines'), sizes, settings.get('merge_similar', True)])
+        shape = digest([settings.get('analysis_lines'), sizes, settings.get('merge_similar')])
         if shape in seen_shapes:
             continue
         seen_shapes.add(shape)
@@ -184,7 +184,7 @@ def report(records, body, read_categories):
                 if path.startswith('r:0'):
                     add_path(path)
         elif settings.get('source') == 'live' and settings.get('tree'):
-            cfg = vsrv.tree_config_from_body(merge_tree(settings['tree'], settings.get('merge_similar', True)))
+            cfg = vsrv.tree_config_from_body(live_tree(settings))
             tb = vsrv.load_tree_builder()
             root = tb.Node(group['street'] - 3, (0, 0), tb.OOP, False, None,
                            removed=tuple(cfg.removed_lines), extra=tuple(cfg.extra_lines))

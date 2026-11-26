@@ -4,7 +4,6 @@ import unittest
 
 from jobs_api import jobs
 from drill_sessions import Sessions
-from drill_spots import merge_tree
 import server as vsrv
 
 
@@ -288,11 +287,14 @@ class AnalysisTest(unittest.TestCase):
 
     def test_existing_live_sessions_match_new_sessions_and_include_undrilled_branches(self):
         tree = {'range_oop': 'AA,KK', 'range_ip': 'AA,KK', 'board': '2c3d4h5s9c', 'pot': 200,
-                'stack': 300, 'river_bet': '50', 'river_raise': '50'}
-        legacy = {'source': 'live', 'tree': tree, 'boards': 'fixed'}
-        setup, _ = vsrv.setup_from_body(merge_tree(tree, True))
+                'stack': 300, 'river_bet': '48 50', 'river_raise': '50'}
+        legacy = {'source': 'live', 'tree': tree, 'boards': 'fixed', 'merge_similar': True}
+        current = {'source': 'live', 'boards': 'fixed', 'tree': tree}
         self.save('old', self.review(), legacy)
-        self.save('new', self.review('TcJdQhKsAs', simulation='two'), {**legacy, 'analysis_setup': setup})
+        self.save('new', self.review('TcJdQhKsAs', simulation='two'), current)
+        for session, smaller_bet in [('old', False), ('new', True)]:
+            nodes = self.analyze({'sessions': [session]})['nodes']
+            self.assertEqual(any(n['id'] == 'r:0:b96' for n in nodes), smaller_bet)
         report = self.analyze({'sessions': ['old', 'new']})
         self.assertEqual(len(report['groups']), 1)
         self.assertEqual(report['detail']['samples'], 4)

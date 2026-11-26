@@ -1627,8 +1627,7 @@ def setup_from_body(b):
     return cmds, lines
 
 
-# PioViewer settings the Build form has no field for (#317): they travel with the form as raw
-# `#Key#Value` lines (`pio_extra`) and go into the tree builder's header as they are.
+# These PioViewer settings travel with the form as raw tree builder header lines (#317).
 PIO_EXTRA_KEYS = ("MergeSimilarBets", "MergeSimilarBetsThreshold", "CapEnabled", "CapPerStreet",
                   "ForceOOPBet", "ForceIPBet", "UseUnifiedRaiseAfterRaise", "UnifiedRaiseAfterRaise",
                   "RemovedLines_", "ExtraLines_")
@@ -1657,8 +1656,7 @@ def pio_extra_lines(b):
 def op_pio_import(b):
     """POST /api/pio_import (#317): a PioViewer tree file -> Build form values.
 
-    Sizes, pot, stack, board, all-in settings and ranges fill the form; what the form has no field
-    for comes back as `pio_extra`. `matches` says whether the builder reproduces the file's own
+    Bet merging and the other PIO_EXTRA_KEYS travel as `pio_extra`. `matches` says whether the builder reproduces the file's own
     add_lines (it does for all 145 configs of #313)."""
     text = b.get("text")
     if not isinstance(text, str) or not text.strip():

@@ -179,16 +179,15 @@ function render(s) {
     drafts.clear(); fullDrafts.clear(); draftNode = key; sizeDraft = null; clearTimeout(sizeTimer);
     $("drill-roll").textContent = "—";
   }
-  const visibleActions = hand.actions.filter((a) => !hand.merged?.includes(a.id));
-  const sizes = visibleActions.filter((a) => ["bet", "raise"].includes(a.kind));
+  const sizes = hand.actions.filter((a) => ["bet", "raise"].includes(a.kind));
   const toggles = sizes.length > 1 && parseCards(hand.node.board).length >= 3;
   const disabled = sizeDraft || s.resolution?.disabled || hand.disabled;
   $("drill-actions").classList.toggle("hand-set", !play);
-  $("drill-actions").style.setProperty("--action-count", visibleActions.length);
-  if (play && visibleActions.length) {
-    $("drill-actions").append(playActions(visibleActions, hand.big_blind, disabled, action => command("action", { action })));
-  } else if (visibleActions.length) {
-    $("drill-actions").append(actionHeader(visibleActions, hand.big_blind, disabled, toggles ? toggleSize : null));
+  $("drill-actions").style.setProperty("--action-count", hand.actions.length);
+  if (play && hand.actions.length) {
+    $("drill-actions").append(playActions(hand.actions, hand.big_blind, disabled, action => command("action", { action })));
+  } else if (hand.actions.length) {
+    $("drill-actions").append(actionHeader(hand.actions, hand.big_blind, disabled, toggles ? toggleSize : null));
   }
   for (const [index, exercise] of (play ? [] : hand.exercises).entries()) {
     if (!hand.actions.length) break;

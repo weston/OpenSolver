@@ -217,7 +217,7 @@ class DrillTest(unittest.TestCase):
         values = vsrv.ev_pair(self.solver, "IP", node)
         truncated_ev = sum(e * w for e, w in zip(values["ev"], values["matchups"]) if e is not None and w) / mass
         self.assertGreater(abs(full_ev - truncated_ev), 0.1)
-        state = self.begin(seat="IP", mode="node", node=node, accuracy=0.001, merge_similar=False)
+        state = self.begin(seat="IP", mode="node", node=node, accuracy=0.001)
         source_lines = set(self.service.reader.cmd("show_all_lines").splitlines())
         disabled = node + ":b40"
         self.post("sizes", state, disabled=[disabled])
@@ -522,7 +522,7 @@ class DrillTest(unittest.TestCase):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 10 10 20 20",
                          "add_line 20 20 40 40", "add_line 0 0 10 10", "add_line 0 0 20 20",
                          "build_tree", "set_equal_strats"])
-        state = self.begin(answer_mode="play", seat="alternate", format="set", count=5, merge_similar=False)
+        state = self.begin(answer_mode="play", seat="alternate", format="set", count=5)
         session = self.service.session
         self.assertEqual(state["config"]["count"], 1)
         self.assertEqual(state["config"]["format"], "single")
@@ -568,7 +568,7 @@ class DrillTest(unittest.TestCase):
                          "build_tree", "set_equal_strats"])
         for timing in ("action", "hand", "none"):
             with self.subTest(timing=timing):
-                state = self.begin(answer_mode="play", feedback_timing=timing, merge_similar=False)
+                state = self.begin(answer_mode="play", feedback_timing=timing)
                 session = self.service.session
                 self.assertEqual(state["reviews"], [])
                 for street in (4, 5):
@@ -759,76 +759,36 @@ class DrillTest(unittest.TestCase):
                 self.assertEqual(self.service.sessions.reviews(session, 0)[0]["feedback"]["hands"], results)
                 self.post("stop", state)
 
-    def test_similar_sizes_keep_separated_choices_and_can_be_disabled(self):
+    def test_live_drill_solves_the_sizes_in_the_tree_form(self):
         tree = {**TREE, "pot": 1000, "stack": 3000, "river_bet": "50 52 55 60 100", "river_raise": "",
                 "allin_threshold": 100, "add_allin_limit": 0}
-        for enabled, sizes in ((True, [1000, 600, 520]), (False, [1000, 600, 550, 520, 500])):
-            with self.subTest(merge=enabled):
+        for extra, sizes in (([], [1000, 600, 550, 520, 500]),
+                             (["#MergeSimilarBets#True", "#MergeSimilarBetsThreshold#5"], [1000, 600, 520])):
+            with self.subTest(extra=extra):
                 self.service.close()
-                config = {"tree": tree, "boards": "fixed", "ahead": 1, "seconds": 1}
-                if not enabled:
-                    config["merge_similar"] = False
+                config = {"tree": {**tree, "pio_extra": extra}, "boards": "fixed", "ahead": 1, "seconds": 1}
+                preview = self.request("preview", config)
+                self.assertCountEqual([a["amount"] for a in preview["choices"] if a["kind"] == "bet"], sizes)
                 self.request("start", config)
                 state = self.post("next", self.ready())
-                self.assertEqual(state["config"]["merge_similar"], enabled)
+                self.assertIsNone(state["resolution"])
                 self.assertEqual([a["amount"] for a in state["hand"]["actions"] if a["kind"] == "bet"], sizes)
+                self.assertEqual(len(self.service.hand.solver.cmd("show_strategy r:0").splitlines()), len(sizes) + 1)
 
-    def test_saved_and_current_drills_merge_close_river_sizes_without_changing_the_save(self):
-        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
+    def test_saved_and_current_drills_keep_the_solved_river_sizes(self):
         tree = {**TREE, "pot": 8000, "stack": 6000, "river_bet": "25 29.0625 a", "river_raise": "",
                 "allin_threshold": 100, "add_allin_limit": 0}
         setup, _ = vsrv.setup_from_body(tree)
         job = self.queue.add_batch("close-river", setup, [(tree["board"], 1)], 1, 20, None, "full", None)[0]
         self.assertEqual(drill.jobs.run_job(self.queue, job, SOLVER, 1, log=lambda _: None), "done")
-        with open(job["out"], "rb") as file:
-            saved = file.read()
-        for source, enabled in (("saved", True), ("saved", False), ("current", True)):
-            with self.subTest(source=source, merge=enabled):
+        for source in ("current", "saved"):
+            with self.subTest(source=source):
                 self.service.close()
                 self.solver.cmd(f'load_tree "{job["out"]}" full')
-                state = self.begin(source=source, batch="close-river", mode="node", format="set", merge_similar=enabled, seconds=1)
-                self.assertEqual(state["config"]["merge_similar"], enabled)
-                state = self.resolved() if enabled else state
-                merged = state["hand"]["merged"]
-                self.assertEqual(merged, ["r:0:b2000"] if enabled else [])
-                sizes = [a["amount"] for a in state["hand"]["actions"] if a["kind"] == "bet" and a["id"] not in merged]
-                self.assertEqual(sizes, [6000, 2325] if enabled else [6000, 2325, 2000])
-                if enabled:
-                    self.assertNotIn("r:0:b2000", self.service.hand.solver.cmd("show_children r:0"))
-                    self.post("sizes", state, disabled=[])
-                    state = self.resolved()
-                    self.assertEqual(state["hand"]["disabled"], merged)
-                    choices = [float(a["kind"] == "check") for a in state["hand"]["actions"]]
-                    state = self.post("submit", state, choices=[choices] * len(state["hand"]["exercises"]))
-                    feedback = state["hand"]["feedback"]
-                    self.assertEqual(feedback["merged"], merged)
-                    self.assertIn("original", feedback)
-                    self.assertGreater(feedback["removed_frequency"], 0)
-                    self.post("continue", state)
-                self.service.close()
-        with open(job["out"], "rb") as file:
-            self.assertEqual(file.read(), saved)
-
-    def test_whole_hands_merge_again_when_reaching_the_next_street(self):
-        self.addCleanup(self.service.rng.setstate, self.service.rng.getstate())
-        tree = {**TREE, "board": "2c3d4h5s", "pot": 1000, "stack": 3000, "turn_bet": "50 52",
-                "turn_raise": "", "river_bet": "25 29", "river_donk": "25 29", "river_raise": "",
-                "allin_threshold": 100, "add_allin_limit": 0}
-        setup, _ = vsrv.setup_from_body(tree)
-        self.solver.cmds([*setup, "build_tree"])
-        state = self.begin(format="set", seconds=1)
-        state = self.resolved()
-        self.assertEqual(state["hand"]["merged"], ["r:0:b500"])
-        for _ in range(3):
-            if len(drill.cards(state["hand"]["node"]["board"])) == 5:
-                break
-            choices = [float(a["kind"] in ("check", "call")) for a in state["hand"]["actions"]]
-            state = self.post("submit", state, choices=[choices] * len(state["hand"]["exercises"]))
-            state = self.post("continue", state)
-            state = self.resolved() if state["resolution"] else state
-        self.assertEqual(len(drill.cards(state["hand"]["node"]["board"])), 5)
-        self.assertEqual(len(state["hand"]["merged"]), 1)
-        self.assertNotIn(state["hand"]["merged"][0], self.service.hand.solver.cmd("show_children " + state["hand"]["node"]["id"]))
+                state = self.begin(source=source, batch="close-river", mode="node", format="set")
+                self.assertIsNone(state["resolution"])
+                self.assertEqual([a["amount"] for a in state["hand"]["actions"] if a["kind"] == "bet"],
+                                 [6000, 2325, 2000])
 
     def test_chance_deals_and_allin_runouts_exclude_both_hands(self):
         self.solver.cmds(["set_board 2c3d4h5s", "clear_lines", "add_line 60 60", "add_line 0 0 30 60 60", "build_tree"])

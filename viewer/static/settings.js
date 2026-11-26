@@ -11,8 +11,7 @@ export function drillSettings() {
       throw new Error("Check the highlighted drill setting.");
     }
   }
-  return { ...Object.fromEntries(fields.map((key) => [key, Number(input(key).value)])),
-    merge_similar: input("merge-similar").checked };
+  return Object.fromEntries(fields.map((key) => [key, Number(input(key).value)]));
 }
 
 let savingDevice = false;
@@ -34,9 +33,6 @@ export function initSettings() {
     catch (e) { fail(e); }
     finally { savingDevice = false; device.disabled = false; }
   };
-  const merge = input("merge-similar");
-  merge.checked = prefs.get("drill-merge-similar", true) !== false;
-  merge.onchange = () => prefs.set("drill-merge-similar", merge.checked);
   for (const key of fields) {
     const field = input(key);
     field.value = prefs.get("drill-" + key, field.defaultValue);

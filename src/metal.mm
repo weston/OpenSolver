@@ -524,6 +524,9 @@ class PostflopSolve final : public MetalSolve {
     list.insert(list.end(), terminal_ids.begin(), terminal_ids.end());
     pair_range = {list.size(), paired_ids.size()};
     list.insert(list.end(), paired_ids.begin(), paired_ids.end());
+    std::stable_sort(allin_ids.begin(), allin_ids.end(), [&](unsigned a, unsigned b) {
+      return packed_nodes[a].aux < packed_nodes[b].aux;
+    });
     allin_range = {list.size(), allin_ids.size()};
     list.insert(list.end(), allin_ids.begin(), allin_ids.end());
     check_workspace(g, available, value_rows, size_t(next_row[0]) + next_row[1], deals_by_node.size(),

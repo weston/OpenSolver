@@ -2192,7 +2192,7 @@ void Solver::iterate(int t) {
 // drifts off the pot (a flop all-in spot: 60.311 on a 60 pot; set_isomorphism 0 0 gives 60.000).
 // Averaging each orbit's rows at the root street keeps it exact; those are the few nodes above the
 // first deal, so it costs next to nothing.
-void Solver::symmetrize_root_street(int p) {
+void Solver::symmetrize_root_street(int p, float* regrets, float* strategy) {
   const auto& G = g_.perm_all;
   if (G.size() <= 1 || g_.cfg.preflop || g_.nodes.empty()) return;
   if (!sym_ready_) {
@@ -2226,8 +2226,8 @@ void Solver::symmetrize_root_street(int p) {
     if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) return;
     const int A = n.num_children;
     ArenaScope sc;
-    float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
-    float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+    float* R = regrets ? regrets + n.storage : g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+    float* S = strategy ? strategy + n.storage : g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
     for (int a = 0; a < A; ++a) {
       float* r = R + static_cast<size_t>(a) * H;
       float* s = S + static_cast<size_t>(a) * H;
@@ -2241,8 +2241,10 @@ void Solver::symmetrize_root_street(int p) {
         b = e;
       }
     }
-    g_.regrets_commit(n, R);
-    g_.strat_commit(n, S);
+    if (g_.compressed) {
+      g_.regrets_commit(n, R);
+      g_.strat_commit(n, S);
+    }
   };
   const int K = static_cast<int>(sym_nodes_[p].size());
   if (parallel && K > 1) {

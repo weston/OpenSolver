@@ -73,6 +73,20 @@ class ViewerTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
 
+    def test_device_selection(self):
+        _, state = self.req("/api/status")
+        self.assertEqual(state["device"], "cpu")
+        if "gpu" in state["devices"]:
+            try:
+                status, data = self.req("/api/device", "POST", {"device": "gpu"})
+                self.assertEqual(status, 200, data)
+                self.assertIn("algorithm:v4_metal", self.solver.cmd("show_settings"))
+                self.assertEqual(self.req("/api/progress")[1]["device"], "gpu")
+            finally:
+                self.req("/api/device", "POST", {"device": "cpu"})
+        else:
+            self.assertGreaterEqual(self.req("/api/device", "POST", {"device": "gpu"})[0], 400)
+
     def test_00_static_and_status(self):
         with urllib.request.urlopen(self.base + "/", timeout=10) as f:
             html = f.read().decode()

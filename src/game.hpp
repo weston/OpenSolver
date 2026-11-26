@@ -400,7 +400,9 @@ class GameTree {
   double terminal_payoff(const ActionNode& an, int p, int outcome) const;
   // Rake and ICM. Set through set_payoff, which also refreshes term_pay.
   const PayoffModel& payoff() const { return payoff_; }
+  uint64_t payoff_version = 0;
   void set_payoff(const PayoffModel& pm) {
+    ++payoff_version;
     payoff_ = pm;
     fill_term_pay();
     // An outcome table holds 2 * wins + ties, which is all a payoff needs while a tie pays the middle
@@ -472,6 +474,7 @@ class GameTree {
   uint64_t table_limit = 0;
   bool limit_compress = true, limit_preds = false;
   int allin_plan = -1;
+  bool gpu_tables = false;
 
  private:
   void store_allin_boards(AllinRunouts& ar);

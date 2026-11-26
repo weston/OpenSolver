@@ -13,6 +13,7 @@
 #include "../src/range.hpp"
 #include "../src/reach_digits.hpp"
 #include "../src/solver.hpp"
+#include "../src/metal.hpp"
 #include "../src/upi.hpp"
 
 using namespace pio;
@@ -787,6 +788,16 @@ static bool preflop_runout_tables() {
     };
     std::vector<Tables> first;
     for (AllinRunouts& ar : g.allins) first.push_back(take(ar));
+    if (&sp == &spots[0] && metal_available()) {
+      g.gpu_tables = true;
+      g.build_allin_tables();
+      for (size_t i = 0; i < g.allins.size(); ++i)
+        if (take(g.allins[i]) != first[i]) {
+          std::printf("Metal flop table differs at set %zu\n", i);
+          return false;
+        }
+      g.gpu_tables = false;
+    }
     // what the boards will add is known before they are built (the memory check of set_icm): never
     // more than they do add, and most of it (the strength groups are what the count leaves out)
     const uint64_t missing = g.allin_boards_missing_bytes(), before_boards = g.memory_bytes_for(true);

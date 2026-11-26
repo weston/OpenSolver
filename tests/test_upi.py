@@ -2379,7 +2379,128 @@ def check_save_robustness(exe):
               f"go / go_partial on an unreadable lazy tree answer once each ({blocks[:3]})")
 
 
+def check_solve_device(exe):
+    u = Upi(exe)
+    try:
+        check("algorithm:auto" in u.cmd("show_settings"), "CPU is the default solve device")
+        if "v4_metal," not in u.cmd("list_algorithms"):
+            check(u.cmd("set_algorithm v4_metal").startswith("ERROR"), "unavailable GPU refused")
+            return
+
+        setup = ("set_board Kh9h4h2c", "set_pot 0 0 100", "set_eff_stack 400",
+                 "set_range OOP 99+,ATs+,AKo", "set_range IP 77+,KTs+,AQo+",
+                 "add_line 0 50 50 120", "add_line 50 150 400", "set_pruning off",
+                 "set_accuracy 0", "set_avg_delay 4")
+        for cmd in setup:
+            assert "ERROR" not in u.cmd(cmd), cmd
+
+        def wait_for_iterations(minimum):
+            deadline = time.monotonic() + 10
+            while int(u.cmd("show_iters")) < minimum:
+                if time.monotonic() >= deadline:
+                    raise AssertionError(f"solver did not reach iteration {minimum}")
+                time.sleep(0.002)
+
+        def run(device):
+            assert "ok!" in u.cmd("set_algorithm " + ("v4_metal" if device == "gpu" else "auto"))
+            assert "ok!" in u.cmd("build_tree")
+            u.solver_msgs.clear()
+            u.cmd("go 8 steps")
+            u.cmd("wait_for_solver")
+            assert u.cmd("show_iters") == "8"
+            return floats(u.cmd("show_strategy r:0"))
+
+        cpu, gpu = run("cpu"), run("gpu")
+        check(["SOLVER: device gpu"] in u.solver_msgs, "Metal executed both player updates")
+        check(len(cpu) == len(gpu) and max(abs(a-b) for a, b in zip(cpu, gpu)) < 0.002,
+              "Metal turn strategies match CPU through symmetry and average reset")
+        u.cmd("set_info_freq 1")
+        check(run("gpu") == gpu, "checking exploitability every step preserves the accepted Metal iterations")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "gpu.cfr")
+            check("ok!" in u.cmd("dump_tree " + path + " lossless") and
+                  "ok!" in u.cmd("load_tree " + path) and floats(u.cmd("show_strategy r:0")) == gpu,
+                  "lossless save and lazy load retain Metal strategies")
+            u.cmd("go")
+            wait_for_iterations(9)
+            u.cmd("hold")
+            tick = int(u.cmd("show_iters"))
+            edited = " ".join(["1"] * 1326 + ["0"] * 1326)
+            assert tick > 8 and "ok!" in u.cmd("set_strategy r:0 " + edited)
+            snapshot = os.path.join(tmp, "edited.cfr")
+            assert "ok!" in u.cmd("dump_tree " + snapshot + " lossless")
+            u.cmd("release")
+            wait_for_iterations(tick + 3)
+            u.cmd("stop")
+            remaining = int(u.cmd("show_iters")) - tick
+            live = u.cmd("show_strategy r:0:c:b50")
+            assert remaining > 0 and not live.startswith("ERROR") and "ok!" in u.cmd("load_tree " + snapshot)
+            u.cmd(f"go {remaining} steps")
+            u.cmd("wait_for_solver")
+            check(u.cmd("show_strategy r:0:c:b50") == live,
+                  "Metal refreshes reach after a live edit exactly as it does on reload")
+            tick = int(u.cmd("show_iters"))
+            u.solver_msgs.clear()
+            u.cmd("go")
+            wait_for_iterations(tick + 1)
+            u.cmd("hold")
+            u.cmd("lock_node r:0")
+            locked = u.cmd("show_strategy r:0")
+            tick = int(u.cmd("show_iters"))
+            u.cmd("release")
+            wait_for_iterations(tick + 1)
+            u.cmd("stop")
+            check(["SOLVER: device gpu"] in u.solver_msgs and
+                  any(m[0].startswith("SOLVER: device cpu") for m in u.solver_msgs) and
+                  u.cmd("show_strategy r:0") == locked, "a live lock switches Metal to CPU and preserves its strategy")
+            u.cmd("unlock_node r:0")
+            tick = int(u.cmd("show_iters"))
+            u.cmd("set_algorithm auto")
+            u.cmd("go 1 steps")
+            u.cmd("wait_for_solver")
+            check(int(u.cmd("show_iters")) == tick + 1, "continue a Metal save on CPU")
+
+        for cmd in ("clear_lines", "set_board Js8h4d7c", "set_eff_stack 240", "set_avg_delay 0",
+                    "set_first_iteration_player IP", "set_range OOP 22+,AJs:0.4,AKo",
+                    "set_range IP 22+,T9s:0.7,AQo", "add_line 0 0 100", "add_line 0 0 0 100",
+                    "add_line 30 30 90 240", "add_line 30 30 30 90 240", "add_line 0 40 40", "add_line 240"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+
+        def strategies(algorithm, paths):
+            u.solver_msgs.clear()
+            for cmd in ("set_algorithm " + algorithm, "build_tree", "set_rake .05 10", "set_accuracy 0",
+                        "set_info_freq 2", "go 4 steps", "wait_for_solver"):
+                assert "ERROR" not in u.cmd(cmd), cmd
+            if algorithm == "v4_metal":
+                assert ["SOLVER: device gpu"] in u.solver_msgs
+            return [floats(u.cmd("show_strategy " + path)) for path in paths]
+
+        def compare_strategies(paths, message):
+            reference = strategies("auto", paths)
+            actual = strategies("v4_metal", paths)
+            check(all(len(x) == len(y) and max(abs(a - b) for a, b in zip(x, y)) < .002
+                      for x, y in zip(reference, actual)), message)
+
+        compare_strategies(("r:0", "r:0:c:c:2c", "r:0:c:c:2c:b100", "r:0:b30:c:2c:b90"),
+                           "raked river bets and raises match CPU with IP updating first")
+        for cmd in ("clear_lines", "set_board Js8h4d", "add_line 0 0 0 0 100", "add_line 0 0 0 0 0 100",
+                    "add_line 60", "add_line 240"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+        compare_strategies(("r:0", "r:0:c:c:2c:c:c:3h", "r:0:c:c:2c:c:c:3h:b100"),
+                           "compiled flop checkdowns and river actions preserve both public-card blockers")
+        for cmd in ("build_tree", "set_info_freq 1", "set_accuracy 1000", "go 10 steps", "wait_for_solver"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+        stopped = u.cmd("show_strategy r:0")
+        assert u.cmd("show_iters") == "1"
+        for cmd in ("build_tree", "set_accuracy 0", "go 1 steps", "wait_for_solver"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+        check(u.cmd("show_strategy r:0") == stopped, "stopping at accuracy publishes only the checked iteration")
+    finally:
+        u.close()
+
+
 def main(exe, big=False):
+    check_solve_device(exe)
     check_framing(exe)
     check_save_robustness(exe)
     check_tree_construction_edges(exe)

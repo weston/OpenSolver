@@ -1,5 +1,6 @@
 // UPI core: input loop, output/END handling, settings, tree building, solving thread.
 #include "upi.hpp"
+#include "metal.hpp"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -390,8 +391,9 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   solving_ = true;
   // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)
   std::string endl_str = end_string_.empty() ? "END" : end_string_;
-  solver_thread_ = std::thread([this, seconds, steps, sub = std::move(sub), endl_str = std::move(endl_str)] {
-    solver_thread_main(seconds, steps, std::move(sub), endl_str);
+  const bool gpu = algorithm_ == "v4_metal";
+  solver_thread_ = std::thread([this, seconds, steps, gpu, sub = std::move(sub), endl_str = std::move(endl_str)] {
+    solver_thread_main(seconds, steps, std::move(sub), endl_str, gpu);
   });
 }
 
@@ -410,7 +412,7 @@ void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps)
 }
 
 void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
-                             const std::string& endl_str) {
+                             const std::string& endl_str, bool gpu) {
   out_raw("SOLVER: started\n");
   double best_e = std::numeric_limits<double>::infinity();  // 16-bit stall detection (#182)
   int stalled = 0;
@@ -433,6 +435,8 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
 #else
   const bool tune_threads = !sub && threads_ == 0 && hw_threads >= 4;
 #endif
+  std::unique_ptr<MetalSolve> metal;
+  uint64_t metal_payoff_version = 0, metal_generation = 0;
   bool pool_set = !tune_threads;  // set under tree_mu_ below: a command may be using the pool now
   try {
   for (;;) {
@@ -441,9 +445,9 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       break;
     }
     // Let pending commands run between iterations.
-    if (pause_requests_.load() > 0) {
+    if (pause_requests_.pending.load() > 0) {
       std::unique_lock<std::mutex> lk(pause_mu_);
-      pause_cv_.wait(lk, [&] { return pause_requests_.load() == 0 || stop_flag_.load(); });
+      pause_cv_.wait(lk, [&] { return pause_requests_.pending.load() == 0 || stop_flag_.load(); });
       continue;
     }
     bool report = false;
@@ -461,19 +465,50 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       }
       // DCFR discount clock: the tree's own counter for a whole solve (restarted when the payoff
       // model changes), a fresh 1..N for a subtree solve (exactly what solve_partial does).
+      const bool refresh_reach = done == 0 || metal_generation != pause_requests_.generation;
+      if (gpu && refresh_reach && (done == 0 || metal)) {
+        const char* fallback = nullptr;
+        if (sub || tree_->cfg.preflop) fallback = "subtree and preflop iterations use CPU";
+        else if (tree_->compressed || solver_->predictive || !tree_->preds.empty() || tree_->payoff().icm.enabled)
+          fallback = "storage or payoff model requires CPU";
+        else if (metal && tree_->payoff_version != metal_payoff_version) fallback = "payoff changed";
+        else if (std::any_of(tree_->nodes.begin(), tree_->nodes.end(), [](const GNode& n) { return n.flags != 0; }))
+          fallback = "node edits require CPU";
+        else if (!metal && std::any_of(tree_->allins.begin(), tree_->allins.end(),
+                                      [](const AllinRunouts& ar) { return ar.e2.empty() && ar.e2b.empty(); }))
+          fallback = "all-in outcome tables unavailable";
+        if (fallback) {
+          metal.reset();
+          out_raw(std::string("SOLVER: device cpu (") + fallback + ")\n");
+        } else if (!metal) {
+          try {
+            metal = make_metal_solve(*tree_, available_memory_bytes() * 9 / 10);
+            metal_payoff_version = tree_->payoff_version;
+            out_raw("SOLVER: device gpu\n");
+          } catch (const std::exception& e) {
+            out_raw(std::string("SOLVER: device cpu (") + e.what() + ")\n");
+          }
+        }
+      }
       if (sub) {
         solver_->iterate_subtree(sub->root, static_cast<int>(done + 1), sub->r0.data(), sub->r1.data());
       } else {
-        ++tree_->iterations;
-        ++iterations_;
         if (!pool_set) {
           pool().set_threads(tree_->tuned_threads > 0 ? tree_->tuned_threads : hw_threads);
           pool_set = true;
         }
-        const bool trial = tune_threads && tree_->tuned_threads == 0 && tree_->iterations >= 18;
+        const bool trial = tune_threads && tree_->tuned_threads == 0 && tree_->iterations + 1 >= 18;
         if (trial) pool().set_threads(tree_->tune_k % 2 == 0 ? hw_threads : hw_threads / 2);
         const auto it0 = std::chrono::steady_clock::now();
-        solver_->iterate(static_cast<int>(tree_->iterations - discount_restart_));
+        const int tick = static_cast<int>(tree_->iterations + 1 - discount_restart_);
+        if (metal) {
+          metal->iterate(*tree_, *solver_, tick, refresh_reach);
+          metal_generation = pause_requests_.generation;
+        } else {
+          solver_->iterate(tick);
+        }
+        ++tree_->iterations;
+        ++iterations_;
         if (trial) {
           tree_->tune_s[tree_->tune_k % 2] += std::chrono::duration<double>(std::chrono::steady_clock::now() - it0).count();
           if (++tree_->tune_k == 6) {
@@ -512,7 +547,8 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           out_raw("SOLVER:\npartial: " + sub->id + "\n" + stats_block(st, el) + endl_str + "\n");
           target = accuracy_fraction_ ? accuracy_ * sub->pot : accuracy_;
         } else {
-          st = solver_->root_stats();
+          st = metal && !limit ? metal->evaluate_and_prepare(*tree_, *solver_, static_cast<int>(tick + 1 - discount_restart_))
+                               : solver_->root_stats();
           out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
           target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
         }
@@ -572,7 +608,7 @@ void Upi::release_hold() {
   held_ = false;
   {
     std::lock_guard<std::mutex> g(pause_mu_);  // see TreePause: no lost wake-up
-    pause_requests_.fetch_sub(1);
+    pause_requests_.pending.fetch_sub(1);
   }
   pause_cv_.notify_all();
 }
@@ -627,6 +663,7 @@ void Upi::plan_outcome_tables(GameTree& t, uint64_t avail, bool compress) const 
   t.table_limit = outcome_tables_ == "auto" ? avail * 9 / 10 : 0;
   t.limit_compress = compress;
   t.limit_preds = predictive_;
+  t.gpu_tables = algorithm_ == "v4_metal";
   t.allin_plan = outcome_tables_ == "fast" ? 3 : -1;
 }
 
@@ -935,7 +972,7 @@ void Upi::register_commands() {
   H["hold"] = [this](const Args&) {
     if (!held_) {
       held_ = true;
-      pause_requests_.fetch_add(1);
+      pause_requests_.pending.fetch_add(1);
     }
     std::lock_guard<std::mutex> lk(tree_mu_);  // iterations run under tree_mu_
     return std::string("hold ok!");
@@ -1294,17 +1331,23 @@ void Upi::register_commands() {
   };
   H["build_tree"] = [this](const Args& a) { return cmd_build_tree(a); };
   H["list_algorithms"] = [](const Args&) {
-    return std::string(
+    std::string algorithms(
         "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4); this solver uses one algorithm for every code\n"
         "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
         "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
         "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)");
+    if (metal_available()) algorithms += "\nv4_metal,DCFR,Apple GPU (Metal), unpruned postflop traversal";
+    return algorithms;
   };
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
     static const char* valid[] = {"auto", "v4_small", "v4_large", "pio_cfr", "original_pio"};
-    if (std::find_if(std::begin(valid), std::end(valid), [&](const char* v) { return a[0] == v; }) == std::end(valid))
+    if (a[0] == "v4_metal") {
+      if (!metal_available()) throw CmdError{"GPU unavailable"};
+    } else if (std::find(std::begin(valid), std::end(valid), a[0]) == std::end(valid))
       throw CmdError{"incorrect or missing argument"};
+    if (solving_ && a[0] != algorithm_ && (a[0] == "v4_metal" || algorithm_ == "v4_metal"))
+      throw CmdError{"stop the solver first"};
     algorithm_ = a[0];
     return std::string("set_algorithm ok!");
   };

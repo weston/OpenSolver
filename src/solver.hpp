@@ -159,7 +159,7 @@ class Solver {
   void reset_strategy_sums();  // zero every unlocked strategy sum (locked strategies are kept)
   // #300: average player p's regrets and strategy sums over each hand's orbit under the board's suit
   // symmetries (GameTree::perm_all), at the decisions on the root street.
-  void symmetrize_root_street(int p);
+  void symmetrize_root_street(int p, float* regrets = nullptr, float* strategy = nullptr);
   // Built on first use: the root-street decisions of each player, and each player's hand orbits of two
   // or more (flattened: sym_orbits_[p] holds the hands, sym_orbit_end_[p] where each orbit ends).
   bool sym_ready_ = false;

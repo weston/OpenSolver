@@ -30,16 +30,22 @@ struct CmdError {
   bool raw = false;  // print as "ERROR: <msg>" without the command name
 };
 
+struct TreePauseRequests {
+  std::atomic<int> pending{0};
+  uint64_t generation = 0;
+};
+
 // RAII: asks the solving thread to pause between iterations, then holds the tree mutex.
 struct TreePause {
-  std::atomic<int>& req;
+  TreePauseRequests& req;
   std::condition_variable& cv;
   std::mutex& pm;  // the mutex the solver thread waits under (pause_mu_)
   std::unique_lock<std::mutex> lk;
-  TreePause(std::atomic<int>& r, std::mutex& m, std::condition_variable& c, std::mutex& p)
+  TreePause(TreePauseRequests& r, std::mutex& m, std::condition_variable& c, std::mutex& p)
       : req(r), cv(c), pm(p), lk(m, std::defer_lock) {
-    req.fetch_add(1);
+    req.pending.fetch_add(1);
     lk.lock();
+    ++req.generation;
   }
   ~TreePause() {
     lk.unlock();
@@ -47,7 +53,7 @@ struct TreePause {
     // wait, and be lost: the solve then stays parked for good (a lost wake-up; #294).
     {
       std::lock_guard<std::mutex> g(pm);
-      req.fetch_sub(1);
+      req.pending.fetch_sub(1);
     }
     cv.notify_all();
   }
@@ -139,7 +145,7 @@ class Upi {
   void start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub = nullptr);
   void prepare_solve();
   void solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
-                          const std::string& endl_str);
+                          const std::string& endl_str, bool gpu);
   void start_subtree_solve(const NodeRef& r, double seconds, long long steps);
   std::string stats_block(const RootStats& st, double running_time);
   std::string fmt(double v) const;
@@ -228,7 +234,7 @@ class Upi {
   std::atomic<bool> stop_flag_{false};
   std::string stop_reason_;
   std::mutex tree_mu_;
-  std::atomic<int> pause_requests_{0};
+  TreePauseRequests pause_requests_;
   bool held_ = false;  // `hold` (viewer extension) is keeping a running solve parked
   void release_hold();
   void signal_stop();

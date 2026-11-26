@@ -1,4 +1,4 @@
-import { prefs } from "./api.js";
+import { fail, post, prefs } from "./api.js";
 
 const fields = ["ahead", "accuracy", "seconds", "frequency_tolerance"];
 const input = (key) => document.getElementById("drill-" + key);
@@ -15,7 +15,25 @@ export function drillSettings() {
     merge_similar: input("merge-similar").checked };
 }
 
+let savingDevice = false;
+
+export function updateDevice(st) {
+  const available = st.devices?.includes("gpu");
+  document.getElementById("device-settings").classList.toggle("hidden", !available);
+  const field = document.getElementById("solve-device");
+  if (!savingDevice) field.value = st.device;
+  field.disabled = savingDevice || st.solving || st.dead;
+}
+
 export function initSettings() {
+  const device = document.getElementById("solve-device");
+  device.onchange = async () => {
+    savingDevice = true;
+    device.disabled = true;
+    try { await post("/api/device", { device: device.value }); }
+    catch (e) { fail(e); }
+    finally { savingDevice = false; device.disabled = false; }
+  };
   const merge = input("merge-similar");
   merge.checked = prefs.get("drill-merge-similar", true) !== false;
   merge.onchange = () => prefs.set("drill-merge-similar", merge.checked);

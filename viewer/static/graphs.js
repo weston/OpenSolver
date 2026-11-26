@@ -64,7 +64,8 @@ export function mixingCurve(reach, frequencies, order) {
     const total = weights.reduce((sum, p) => sum + p, 0);
     if (!(total > 0)) continue;
     const strategy = weights.map((p) => p / total);
-    values[i] = Math.max(1, 1 / strategy.reduce((sum, p) => sum + p * p, 0));
+    const effectiveActions = 1 / strategy.reduce((sum, p) => sum + p * p, 0);
+    values[i] = strategy.length > 1 ? Math.min(1, Math.max(0, (effectiveActions - 1) / (strategy.length - 1))) : 0;
     strategies[i] = strategy;
     if (Math.max(...strategy) >= 0.9 - 1e-9) nearlyPure += reach[i];
   }

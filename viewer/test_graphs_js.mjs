@@ -30,19 +30,26 @@ const mixingReach = [8, 1, 1, 0.5, 0, 1];
 const frequencies = [[1, .9, .5, 1/3, .5, 0], [0, .1, .5, 1/3, .5, 0], [0, 0, 0, 1/3, 0, 0]];
 const mixing = mixingCurve(mixingReach, frequencies, [...order, "9s9h"]);
 check(mixing.pts.length === 4 && near(mixing.total, 10.5), "mixing excludes unreachable combos and combos without a strategy");
-check(near(mixing.pts[0].v, 1) && near(mixing.pts[1].v, 1/.82) && near(mixing.pts[2].v, 2) && near(mixing.pts[3].v, 3),
-  "effective actions distinguish pure, 90/10, 50/50, and equal three-way strategies");
-check(near(mixing.avg, (8 + 1/.82 + 2 + 1.5)/10.5) && mixing.median === 1 && near(mixing.nearlyPure, 9/10.5),
+check(near(mixing.pts[0].v, 0) && near(mixing.pts[1].v, (1/.82 - 1)/2) && near(mixing.pts[2].v, .5) && near(mixing.pts[3].v, 1),
+  "mixing runs from zero for pure play to one for an equal mix of every available action");
+check(near(mixing.avg, ((1/.82 - 1)/2 + .5 + .5)/10.5) && mixing.median === 0 && near(mixing.nearlyPure, 9/10.5),
   "mean, median, and nearly-pure share use the combo's weight at the node");
 check(near(mixing.pts[0].x1, 8/10.5) && at(mixing, .8).combo === "KsKh", "mixing curve widths and inspection follow range weight");
+check(near(mixing.pts.reduce((area, point) => area + point.v * (point.x1 - point.x0), 0), mixing.avg),
+  "the area under the curve equals the range-weighted mean mixing score");
 const unused = mixingCurve(mixingReach, [...frequencies, mixingReach.map(() => 0)], [...order, "9s9h"]);
-check(near(unused.avg, mixing.avg) && unused.pts.every((p, i) => near(p.v, mixing.pts[i].v)), "an unused action does not change mixing scores");
+check(near(unused.avg, mixing.avg * 2/3) && unused.pts.every((p, i) => near(p.v, mixing.pts[i].v * 2/3)), "normalization includes every available action, including unused options");
 const reordered = mixingCurve(mixingReach, frequencies.slice().reverse(), [...order, "9s9h"]);
 check(near(reordered.avg, mixing.avg), "action order does not change mixing");
 const pureRange = mixingCurve([1, 1], [[1, 0], [0, 1]], order);
-check(pureRange.avg === 1 && pureRange.nearlyPure === 1, "different pure actions across the range still count as pure combos");
-check(mixingCurve([1], [[.99999]], order).avg === 1, "frequency rounding is normalized before measuring mixing");
-check(mixingCurve([1], [[1]], order).avg === 1 && mixingCurve([0], [[1]], order).avg === null, "forced actions are pure and empty ranges have no average");
+check(pureRange.avg === 0 && pureRange.nearlyPure === 1, "different pure actions across the range still count as pure combos");
+check(mixingCurve([1], [[.99999], [0]], order).avg === 0, "frequency rounding is normalized before measuring mixing");
+check(mixingCurve([1], [[1]], order).avg === 0 && mixingCurve([0], [[1]], order).avg === null, "forced actions are pure and empty ranges have no average");
+for (const count of [2, 3, 4, 7]) {
+  check(near(mixingCurve([1], Array.from({length: count}, () => [1/count]), order).avg, 1), `equal mixing across ${count} actions reaches 100%`);
+}
+check(near(mixingCurve([1], [[.5], [.5]], order).avg, 1) && near(mixingCurve([1], [[.5], [.5], [0]], order).avg, .5),
+  "a 50/50 mix is maximum with two actions and halfway to maximum with three");
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log("ALL PASSED");

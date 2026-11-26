@@ -47,7 +47,7 @@ function draw() {
   head.append(el("span", `badge ${data.actor.toLowerCase()}`, data.actor), el("strong", "", "Mixing profile"),
     el("span", "muted num", `${fmt(profile.total, 1)} combos`));
   const stats = el("div", "mixing-stats");
-  for (const [label, value] of [["Mean actions", fmt(profile.avg, 2)], ["Median actions", fmt(profile.median, 2)],
+  for (const [label, value] of [["Mean mixing", `${fmt(profile.avg * 100, 1)}%`], ["Median mixing", `${fmt(profile.median * 100, 1)}%`],
     ["≥90% one action", `${fmt(profile.nearlyPure * 100, 1)}%`]]) {
     const stat = el("div");
     stat.append(el("b", "num", value), el("span", "", label));
@@ -66,17 +66,15 @@ function draw() {
   box.append(head, stats, svg, detail);
 
   const left = 40, right = width - 12, top = 28, bottom = height - 42;
-  const max = Math.max(2, Math.ceil(profile.pts.at(-1).v - 1e-9));
-  const step = Math.max(1, Math.ceil((max - 1) / 4));
-  const ceiling = 1 + Math.ceil((max - 1) / step) * step;
   const x = (fraction) => left + fraction * (right - left);
-  const y = (value) => bottom - (value - 1) / (ceiling - 1) * (bottom - top);
+  const y = (value) => bottom - value * (bottom - top);
   const grid = svgEl("g", { class: "grid" }, svg);
   const axis = svgEl("g", { class: "axis" }, svg);
-  svgEl("text", { x: left, y: 12, class: "axis-title" }, axis, "Effective actions");
-  for (let value = 1; value <= ceiling; value += step) {
+  svgEl("text", { x: left, y: 12, class: "axis-title" }, axis, "Mixing");
+  svgEl("text", { x: right, y: 12, "text-anchor": "end", class: "mixing-area-label" }, svg, `Area: ${fmt(profile.avg * 100, 1)}%`);
+  for (const value of [0, 0.25, 0.5, 0.75, 1]) {
     svgEl("line", { x1: left, x2: right, y1: y(value), y2: y(value) }, grid);
-    svgEl("text", { x: left - 8, y: y(value) + 4, "text-anchor": "end" }, axis, value);
+    svgEl("text", { x: left - 8, y: y(value) + 4, "text-anchor": "end" }, axis, `${value * 100}%`);
   }
   for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
     svgEl("text", { x: x(fraction), y: bottom + 17, "text-anchor": fraction === 0 ? "start" : fraction === 1 ? "end" : "middle" },
@@ -102,13 +100,13 @@ function draw() {
     dot.setAttribute("cx", x(view.position));
     dot.setAttribute("cy", y(point.v));
     svg.setAttribute("aria-valuenow", fmt(view.position * 100, 1));
-    svg.setAttribute("aria-valuetext", `${name}, ${fmt(point.v, 2)} effective actions`);
+    svg.setAttribute("aria-valuetext", `${name}, ${fmt(point.v * 100, 1)}% mixing`);
     if (selected === point) return;
     selected = point;
     detail.dataset.combo = point.combo;
     const hand = el("div", "mixing-hand");
     const score = el("span", "mixing-score");
-    score.append(el("b", "num", fmt(point.v, 2)), el("span", "muted", "effective actions"));
+    score.append(el("b", "num", `${fmt(point.v * 100, 1)}%`), el("span", "muted", "mixing"));
     hand.append(comboEl(point.combo), score);
     const bar = el("div", "mini-bar mixing-strategy");
     const legend = el("div", "mixing-actions");

@@ -75,16 +75,20 @@ class ViewerTest(unittest.TestCase):
 
     def test_device_selection(self):
         _, state = self.req("/api/status")
-        self.assertEqual(state["device"], "cpu")
         if "gpu" in state["devices"]:
+            self.assertEqual(state["device"], "gpu")
+            self.assertIn("algorithm:v4_metal", self.solver.cmd("show_settings"))
             try:
-                status, data = self.req("/api/device", "POST", {"device": "gpu"})
+                status, data = self.req("/api/device", "POST", {"device": "cpu"})
                 self.assertEqual(status, 200, data)
-                self.assertIn("algorithm:v4_metal", self.solver.cmd("show_settings"))
-                self.assertEqual(self.req("/api/progress")[1]["device"], "gpu")
+                self.assertIn("algorithm:auto", self.solver.cmd("show_settings"))
+                self.assertEqual(self.req("/api/progress")[1]["device"], "cpu")
             finally:
-                self.req("/api/device", "POST", {"device": "cpu"})
+                status, data = self.req("/api/device", "POST", {"device": "gpu"})
+            self.assertEqual(status, 200, data)
+            self.assertIn("algorithm:v4_metal", self.solver.cmd("show_settings"))
         else:
+            self.assertEqual(state["device"], "cpu")
             self.assertGreaterEqual(self.req("/api/device", "POST", {"device": "gpu"})[0], 400)
 
     def test_00_static_and_status(self):

@@ -124,7 +124,11 @@ class Solver:
             self.devices = ["cpu", "gpu"] if any(a.startswith("v4_metal,") for a in algorithms) else ["cpu"]
         except SolverError:
             self.devices = ["cpu"]
+        self.cpu_algorithm = "auto"
         self.device = "cpu"
+        if "gpu" in self.devices:
+            self.cmd("set_algorithm v4_metal")
+            self.device = "gpu"
         self.active_device = None
 
     def _pump(self, generation, stream, q):

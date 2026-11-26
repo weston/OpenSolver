@@ -264,7 +264,7 @@ class Upi {
   AutoReportSchedule auto_sched_;
   int threads_ = 0;
   double step_ = 1.0;
-  std::string algorithm_ = "auto";
+  std::string algorithm_;
   std::string tree_alg_ = "auto";  // algorithm the current tree was built with
   std::string small_strats_ = "auto";
   std::string outcome_tables_ = "auto";  // set_outcome_tables

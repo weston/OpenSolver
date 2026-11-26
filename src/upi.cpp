@@ -155,7 +155,7 @@ uint64_t available_memory_bytes() {
 
 // ------------------------------------------------------------------------------------------------
 
-Upi::Upi() {
+Upi::Upi() : algorithm_(metal_available() ? "v4_metal" : "auto") {
   init_cards();
   cfg_.iso_flop = true;
   cfg_.iso_turn = false;

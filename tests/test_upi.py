@@ -2420,8 +2420,8 @@ def check_save_robustness(exe):
 def check_solve_device(exe):
     u = Upi(exe)
     try:
-        check("algorithm:auto" in u.cmd("show_settings"), "CPU is the default solve device")
         if "v4_metal," not in u.cmd("list_algorithms"):
+            check("algorithm:auto" in u.cmd("show_settings"), "CPU is the default without Metal")
             check(u.cmd("set_algorithm v4_metal").startswith("ERROR"), "unavailable GPU refused")
             return
 
@@ -2439,8 +2439,9 @@ def check_solve_device(exe):
                     raise AssertionError(f"solver did not reach iteration {minimum}")
                 time.sleep(0.002)
 
-        def run(device):
-            assert "ok!" in u.cmd("set_algorithm " + ("v4_metal" if device == "gpu" else "auto"))
+        def run(algorithm=None):
+            if algorithm:
+                assert "ok!" in u.cmd("set_algorithm " + algorithm)
             assert "ok!" in u.cmd("build_tree")
             u.solver_msgs.clear()
             u.cmd("go 8 steps")
@@ -2448,12 +2449,14 @@ def check_solve_device(exe):
             assert u.cmd("show_iters") == "8"
             return floats(u.cmd("show_strategy r:0"))
 
-        cpu, gpu = run("cpu"), run("gpu")
-        check(["SOLVER: device gpu"] in u.solver_msgs, "Metal executed both player updates")
+        gpu = run()
+        check(["SOLVER: device gpu"] in u.solver_msgs, "a fresh postflop solve runs on Metal by default")
+        cpu = run("auto")
+        check(["SOLVER: device gpu"] not in u.solver_msgs, "explicit CPU selection runs on CPU")
         check(len(cpu) == len(gpu) and max(abs(a-b) for a, b in zip(cpu, gpu)) < 0.002,
               "Metal turn strategies match CPU through symmetry and average reset")
         u.cmd("set_info_freq 1")
-        check(run("gpu") == gpu, "checking exploitability every step preserves the accepted Metal iterations")
+        check(run("v4_metal") == gpu, "checking exploitability every step preserves the accepted Metal iterations")
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "gpu.cfr")
             check("ok!" in u.cmd("dump_tree " + path + " lossless") and

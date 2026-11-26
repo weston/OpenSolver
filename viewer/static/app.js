@@ -15,7 +15,7 @@ import { initLock } from "./lock.js";
 import { initJobs, showJobs, openReport } from "./jobs.js";
 import { initPreview, previewStatus } from "./preview.js";
 import { initDrill, showDrill, drillHere } from "./drill.js";
-import { initSettings } from "./settings.js";
+import { initSettings, updateDevice } from "./settings.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -86,6 +86,7 @@ async function pollOnce() {
   try { st = await get("/api/progress"); } catch (e) { setPill("offline", "Server offline"); return; }
   const wasSolving = app.solving;
   app.solving = st.solving;
+  updateDevice(st);
   $("drill-lock-seat").classList.toggle("hidden", !st.drill_variant);
   $("drill-lock-seat").textContent = st.drill_variant ? `Hero ${st.drill_variant.hero} · Drill locks` : "";
   $("btn-drill-exploit").classList.toggle("hidden", !st.drill_variant);
@@ -105,7 +106,7 @@ async function pollOnce() {
   if (st.dead) setPill("err", "Solver stopped working — restart from Open");
   else if (st.suspended) setPill("solving", `Refining a street · ${pct != null ? pct + " · " : ""}main solve paused`);
   else if (st.solving && st.partial) setPill("solving", `Solving further · ${ppct != null ? fmt(ppct, 2) + "%" : "…"} · ${pt ? fmt(pt.t, 0) + "s" : "0s"}`);
-  else if (st.solving) setPill("solving", `Solving · ${pct != null ? pct : "…"} · ${last ? fmt(last.t, 0) + "s" : "0s"}`);
+  else if (st.solving) setPill("solving", `Solving${st.device === "gpu" ? " · " + (st.active_device || "cpu").toUpperCase() : ""} · ${pct != null ? pct : "…"} · ${last ? fmt(last.t, 0) + "s" : "0s"}`);
   else if (last) setPill("done", `Solved · ${exploText(last.explo, "% pot") || "—"}`);
   else setPill("", app.tree ? "Tree ready" : "Idle");
   drawSpark($("pill-spark"), app.series, app.rootPot);

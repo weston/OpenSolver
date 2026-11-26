@@ -1,5 +1,6 @@
 // UPI core: input loop, output/END handling, settings, tree building, solving thread.
 #include "upi.hpp"
+#include "metal.hpp"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -433,6 +434,8 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
 #else
   const bool tune_threads = !sub && threads_ == 0 && hw_threads >= 4;
 #endif
+  std::unique_ptr<MetalSolve> metal;
+  uint64_t metal_payoff_version = 0;
   bool pool_set = !tune_threads;  // set under tree_mu_ below: a command may be using the pool now
   try {
   for (;;) {
@@ -461,19 +464,45 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       }
       // DCFR discount clock: the tree's own counter for a whole solve (restarted when the payoff
       // model changes), a fresh 1..N for a subtree solve (exactly what solve_partial does).
+      if (gpu_device_ && (done == 0 || metal)) {
+        const char* fallback = nullptr;
+        if (sub || tree_->cfg.preflop) fallback = "subtree and preflop iterations use CPU";
+        else if (tree_->compressed || solver_->predictive || !tree_->preds.empty() || tree_->payoff().icm.enabled)
+          fallback = "storage or payoff model requires CPU";
+        else if (metal && tree_->payoff_version != metal_payoff_version) fallback = "payoff changed";
+        else if (std::any_of(tree_->nodes.begin(), tree_->nodes.end(), [](const GNode& n) { return n.flags != 0; }))
+          fallback = "node edits require CPU";
+        else if (!metal && std::any_of(tree_->allins.begin(), tree_->allins.end(),
+                                      [](const AllinRunouts& ar) { return ar.e2.empty() && ar.e2b.empty(); }))
+          fallback = "all-in outcome tables unavailable";
+        if (fallback) {
+          metal.reset();
+          out_raw(std::string("SOLVER: device cpu (") + fallback + ")\n");
+        } else if (!metal) {
+          try {
+            metal = make_metal_solve(*tree_, available_memory_bytes() * 9 / 10);
+            metal_payoff_version = tree_->payoff_version;
+            out_raw("SOLVER: device gpu\n");
+          } catch (const std::exception& e) {
+            out_raw(std::string("SOLVER: device cpu (") + e.what() + ")\n");
+          }
+        }
+      }
       if (sub) {
         solver_->iterate_subtree(sub->root, static_cast<int>(done + 1), sub->r0.data(), sub->r1.data());
       } else {
-        ++tree_->iterations;
-        ++iterations_;
         if (!pool_set) {
           pool().set_threads(tree_->tuned_threads > 0 ? tree_->tuned_threads : hw_threads);
           pool_set = true;
         }
-        const bool trial = tune_threads && tree_->tuned_threads == 0 && tree_->iterations >= 18;
+        const bool trial = tune_threads && tree_->tuned_threads == 0 && tree_->iterations + 1 >= 18;
         if (trial) pool().set_threads(tree_->tune_k % 2 == 0 ? hw_threads : hw_threads / 2);
         const auto it0 = std::chrono::steady_clock::now();
-        solver_->iterate(static_cast<int>(tree_->iterations - discount_restart_));
+        const int tick = static_cast<int>(tree_->iterations + 1 - discount_restart_);
+        if (metal) metal->iterate(*tree_, *solver_, tick);
+        else solver_->iterate(tick);
+        ++tree_->iterations;
+        ++iterations_;
         if (trial) {
           tree_->tune_s[tree_->tune_k % 2] += std::chrono::duration<double>(std::chrono::steady_clock::now() - it0).count();
           if (++tree_->tune_k == 6) {
@@ -627,6 +656,7 @@ void Upi::plan_outcome_tables(GameTree& t, uint64_t avail, bool compress) const 
   t.table_limit = outcome_tables_ == "auto" ? avail * 9 / 10 : 0;
   t.limit_compress = compress;
   t.limit_preds = predictive_;
+  t.gpu_tables = gpu_device_;
   t.allin_plan = outcome_tables_ == "fast" ? 3 : -1;
 }
 
@@ -957,6 +987,15 @@ void Upi::register_commands() {
   };
   H["solver_time"] = [this](const Args&) {  // seconds since this process started, like Pio
     return pfmt("%f", std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count());
+  };
+  H["list_devices"] = [](const Args&) { return std::string(metal_available() ? "cpu gpu" : "cpu"); };
+  H["show_device"] = [this](const Args&) { return std::string(gpu_device_ ? "gpu" : "cpu"); };
+  H["set_device"] = [this](const Args& a) {
+    if (a.size() != 1 || (a[0] != "cpu" && a[0] != "gpu")) throw CmdError{"incorrect or missing argument"};
+    if (solving_) throw CmdError{"stop the solver first"};
+    if (a[0] == "gpu" && !metal_available()) throw CmdError{"GPU unavailable"};
+    gpu_device_ = a[0] == "gpu";
+    return std::string("set_device ok!");
   };
   H["set_threads"] = [this](const Args& a) {
     long long n = arg_int(a, 0, "threads");

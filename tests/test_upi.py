@@ -2379,7 +2379,57 @@ def check_save_robustness(exe):
               f"go / go_partial on an unreadable lazy tree answer once each ({blocks[:3]})")
 
 
+def check_solve_device(exe):
+    u = Upi(exe)
+    try:
+        check(u.cmd("show_device") == "cpu", "CPU is the default solve device")
+        if "gpu" not in u.cmd("list_devices").split():
+            check(u.cmd("set_device gpu").startswith("ERROR"), "unavailable GPU refused")
+            return
+
+        setup = ("set_board Kh9h4h2c", "set_pot 0 0 100", "set_eff_stack 400",
+                 "set_range OOP 99+,ATs+,AKo", "set_range IP 77+,KTs+,AQo+",
+                 "add_line 0 50 50 120", "add_line 50 150 400", "set_pruning off",
+                 "set_accuracy 0", "set_avg_delay 4")
+        for cmd in setup:
+            assert "ERROR" not in u.cmd(cmd), cmd
+
+        def run(device):
+            assert "ok!" in u.cmd("set_device " + device)
+            assert "ok!" in u.cmd("build_tree")
+            u.solver_msgs.clear()
+            u.cmd("go 8 steps")
+            u.cmd("wait_for_solver")
+            assert u.cmd("show_iters") == "8"
+            return floats(u.cmd("show_strategy r:0"))
+
+        cpu, gpu = run("cpu"), run("gpu")
+        check(["SOLVER: device gpu"] in u.solver_msgs, "Metal executed both player updates")
+        check(len(cpu) == len(gpu) and max(abs(a-b) for a, b in zip(cpu, gpu)) < 0.002,
+              "Metal turn strategies match CPU through symmetry and average reset")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "gpu.cfr")
+            check("ok!" in u.cmd("dump_tree " + path + " lossless") and
+                  "ok!" in u.cmd("load_tree " + path) and floats(u.cmd("show_strategy r:0")) == gpu,
+                  "lossless save and lazy load retain Metal strategies")
+            u.cmd("lock_node r:0")
+            locked = u.cmd("show_strategy r:0")
+            u.solver_msgs.clear()
+            u.cmd("go 2 steps")
+            u.cmd("wait_for_solver")
+            check(any(m[0].startswith("SOLVER: device cpu") for m in u.solver_msgs) and
+                  u.cmd("show_strategy r:0") == locked, "a GPU session honors the locked strategy on CPU")
+            u.cmd("unlock_node r:0")
+            u.cmd("set_device cpu")
+            u.cmd("go 1 steps")
+            u.cmd("wait_for_solver")
+            check(u.cmd("show_iters") == "11", "continue a Metal save on CPU")
+    finally:
+        u.close()
+
+
 def main(exe, big=False):
+    check_solve_device(exe)
     check_framing(exe)
     check_save_robustness(exe)
     check_tree_construction_edges(exe)

@@ -1,4 +1,5 @@
 #include "game.hpp"
+#include "metal.hpp"
 #include "parallel.hpp"
 #include "pfh2h.hpp"
 
@@ -853,11 +854,6 @@ void fill_allin_table(const GameTree& g, const AllinRunouts& ar, std::vector<E>&
 template <class E, class T>
 void compact_allin_table(const GameTree& g, AllinRunouts& ar, const std::vector<E>& e2, std::vector<T>& tri) {
   const size_t H = static_cast<size_t>(g.num_hands(0));
-  uint64_t mask = 0;
-  for (uint8_t c : ar.cards) mask |= card_bit(c);
-  ar.live.clear();
-  for (size_t h = 0; h < H; ++h)
-    if (!(combo_mask(g.hands[0][h]) & mask)) ar.live.push_back(static_cast<uint16_t>(h));
   const size_t n = ar.live.size();
   tri.assign(n * (n - (n > 0)) / 2, 0);
   T* t = tri.data();
@@ -897,6 +893,24 @@ void GameTree::build_allin_tables() {
     std::vector<uint8_t> full8;  // a compact table is filled as a full one first, which then goes
     std::vector<uint16_t> full16;
     const bool tri = compact_tables();
+    if (tri) {
+      uint64_t mask = 0;
+      for (uint8_t card : ar.cards) mask |= card_bit(card);
+      ar.live.clear();
+      for (int h = 0; h < H0; ++h)
+        if (!(combo_mask(hands[0][h]) & mask)) ar.live.push_back(static_cast<uint16_t>(h));
+      if (gpu_tables && ar.boards.empty() && ar.cards.size() == 3) {
+        std::vector<std::array<uint32_t, 4>> boards;
+        boards.reserve(ar.runouts);
+        for_each_runout(ar, [&](const std::vector<int>& cards) {
+          std::array<uint32_t, 4> suits{};
+          for (int card : cards) suits[card & 3] |= 1u << (card >> 2);
+          boards.push_back(suits);
+        });
+        metal_flop_table(*this, ar, boards);
+        return;
+      }
+    }
     std::vector<uint8_t>& t8 = tri ? full8 : ar.e2b;
     std::vector<uint16_t>& t16 = tri ? full16 : ar.e2;
     if (ar.boards.empty()) small ? fill_allin_table(*this, ar, t8) : fill_allin_table(*this, ar, t16);

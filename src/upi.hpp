@@ -225,6 +225,7 @@ class Upi {
   // solver run state
   std::thread solver_thread_;
   std::atomic<bool> solving_{false};
+  bool gpu_device_ = false;
   std::atomic<bool> stop_flag_{false};
   std::string stop_reason_;
   std::mutex tree_mu_;

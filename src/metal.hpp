@@ -1,0 +1,28 @@
+#pragma once
+#include <array>
+#include <cstdint>
+#include <vector>
+#include <memory>
+
+namespace pio {
+class GameTree;
+class Solver;
+struct AllinRunouts;
+
+class MetalSolve {
+ public:
+  virtual ~MetalSolve() = default;
+  virtual void iterate(GameTree& tree, Solver& solver, int iteration) = 0;
+};
+
+#if defined(__APPLE__) && defined(__aarch64__)
+bool metal_available();
+std::unique_ptr<MetalSolve> make_metal_solve(GameTree& tree, uint64_t available);
+void metal_flop_table(const GameTree& tree, AllinRunouts& runouts,
+                      const std::vector<std::array<uint32_t, 4>>& boards);
+#else
+inline bool metal_available() { return false; }
+inline std::unique_ptr<MetalSolve> make_metal_solve(GameTree&, uint64_t) { return {}; }
+inline void metal_flop_table(const GameTree&, AllinRunouts&, const std::vector<std::array<uint32_t, 4>>&) {}
+#endif
+}  // namespace pio

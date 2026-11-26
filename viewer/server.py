@@ -119,6 +119,12 @@ class Solver:
         self.send_raw("set_end_string " + END)
         self._read_response()  # banner lines, skipped until the first END
         self.version = self.cmd("show_version")
+        try:
+            self.devices = self.cmd("list_devices").split()
+        except SolverError:
+            self.devices = ["cpu"]
+        self.device = "cpu"
+        self.active_device = None
 
     def _pump(self, generation, stream, q):
         """Demux solver stdout: SOLVER: blocks go to state, everything else to the response queue."""
@@ -152,7 +158,10 @@ class Solver:
                         self.solver_status = msg
                         if msg.startswith("started"):
                             self.solving = True
+                            self.active_device = "cpu"
                             self.progress = []
+                        elif msg.startswith("device "):
+                            self.active_device = msg.split()[1]
                         elif msg.startswith("stopped"):
                             self.solving = False
                             if self.partial:
@@ -233,6 +242,7 @@ class Solver:
             if partial:
                 partial["progress"] = list(partial["progress"])
             return {"solving": self.solving, "suspended": "refine" in self.holds,
+                    "devices": self.devices, "device": self.device, "active_device": self.active_device,
                     "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
                     "tree": self.tree_present and not self.dead, "version": self.version,
@@ -635,6 +645,15 @@ BROWSE_PATHS = ("/api/node", "/api/strategy", "/api/path", "/api/range", "/api/c
 
 
 def _api_main(solver, lib, method, path, query, body):
+    if method == "POST" and path == "/api/device":
+        device = need_body(body).get("device")
+        with solver.cmd_lock:
+            if device not in solver.devices:
+                raise SolverError("unknown solve device")
+            solver.cmd("set_device " + device)
+            with solver.state_lock:
+                solver.device = device
+        return 200, {"device": device}
     if path == "/api/status":
         return 200, solver.state()
     if path == "/api/hand_order":

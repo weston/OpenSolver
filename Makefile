@@ -15,7 +15,13 @@ CXXFLAGS ?= -std=c++20 -O3 $(NATIVE_ARCH) -Wall -Wextra -DNDEBUG
 LDLIBS   := -lz -lpthread
 SRC      := src/cards.cpp src/eval.cpp src/range.cpp src/action_tree.cpp src/game.cpp src/solver.cpp \
             src/parallel.cpp src/equity.cpp src/categories.cpp src/pfh2h.cpp src/upi.cpp src/upi_nodes.cpp src/upi_save.cpp
-OBJ      := $(SRC:src/%.cpp=build/%.o)
+ifeq ($(shell uname -s),Darwin)
+ifneq ($(filter aarch64 arm64,$(TARGET_ARCH)),)
+METAL_OBJ := metal.o
+LDLIBS += -framework Metal -framework Foundation
+endif
+endif
+OBJ      := $(SRC:src/%.cpp=build/%.o) $(addprefix build/,$(METAL_OBJ))
 
 all: solver
 
@@ -144,8 +150,8 @@ RELEASE_ARCH     ?= $(NATIVE_ARCH)
 RELEASE_CXXFLAGS ?= -std=c++20 -O3 $(RELEASE_ARCH) -Wall -Wextra -DNDEBUG
 
 PGO_DIR  := build/pgo
-GEN_OBJ  := $(SRC:src/%.cpp=$(PGO_DIR)/gen/%.o) $(PGO_DIR)/gen/main.o
-OPT_OBJ  := $(SRC:src/%.cpp=$(PGO_DIR)/opt/%.o) $(PGO_DIR)/opt/main.o
+GEN_OBJ  := $(SRC:src/%.cpp=$(PGO_DIR)/gen/%.o) $(PGO_DIR)/gen/main.o $(addprefix $(PGO_DIR)/gen/,$(METAL_OBJ))
+OPT_OBJ  := $(SRC:src/%.cpp=$(PGO_DIR)/opt/%.o) $(PGO_DIR)/opt/main.o $(addprefix $(PGO_DIR)/opt/,$(METAL_OBJ))
 PGO_DEPS := $(wildcard src/*.hpp)
 
 CXX_IS_CLANG := $(shell $(CXX) --version 2>/dev/null | head -n1 | grep -qi clang && echo 1)
@@ -272,7 +278,7 @@ dist:
 # library has the floating-point std::to_chars that src/upi.cpp prints with.
 MACOS_MIN      ?= 13.3
 MACOS_CXXFLAGS := -std=c++20 -O3 -mcpu=apple-m1 -arch arm64 -mmacosx-version-min=$(MACOS_MIN) $(LTO_FLAG) -Wall -Wextra -DNDEBUG
-MACOS_OBJ      := $(SRC:src/%.cpp=build/macos/obj/%.o) build/macos/obj/main.o
+MACOS_OBJ      := $(SRC:src/%.cpp=build/macos/obj/%.o) build/macos/obj/main.o $(addprefix build/macos/obj/,$(METAL_OBJ))
 
 build/macos/obj:
 	mkdir -p $@
@@ -282,6 +288,21 @@ build/macos/obj/%.o: src/%.cpp $(wildcard src/*.hpp) | build/macos/obj
 
 build/macos/solver: $(MACOS_OBJ)
 	$(CXX) $(MACOS_CXXFLAGS) $^ -o $@ $(LDLIBS)
+
+build/metal_kernels.inc: src/metal_layout.h src/postflop.metal src/flop_table.metal | build
+	{ echo 'R"MSL('; cat $^; echo ')MSL"'; } > $@
+
+build/metal.o: src/metal.mm $(wildcard src/*.hpp) build/metal_kernels.inc | build
+	$(CXX) $(CXXFLAGS) -fobjc-arc -Ibuild -c $< -o $@
+
+$(PGO_DIR)/gen/metal.o: src/metal.mm $(PGO_DEPS) build/metal_kernels.inc | $(PGO_DIR)/gen
+	$(CXX) $(RELEASE_CXXFLAGS) $(PGO_GEN) -fobjc-arc -Ibuild -c $< -o $@
+
+$(PGO_DIR)/opt/metal.o: src/metal.mm $(PGO_DEPS) build/metal_kernels.inc $(PGO_TRAIN_DEP) | $(PGO_DIR)/opt
+	$(CXX) $(RELEASE_CXXFLAGS) $(LTO_FLAG) $(PGO_USE) -fobjc-arc -Ibuild -c $< -o $@
+
+build/macos/obj/metal.o: src/metal.mm $(wildcard src/*.hpp) build/metal_kernels.inc | build/macos/obj
+	$(CXX) $(MACOS_CXXFLAGS) -fobjc-arc -Ibuild -c $< -o $@
 
 ifeq ($(shell uname -sm),Darwin arm64)
 macos-app: build/macos/solver

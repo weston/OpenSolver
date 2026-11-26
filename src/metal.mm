@@ -196,7 +196,7 @@ class PostflopSolve final : public MetalSolve {
  public:
   Metal& m = metal();
   id<MTLComputePipelineState> propagate_reach, update_values, advance_forced, terminals, river_pairs, river_rounds,
-      allins;
+      allins, wide_rounds;
   id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], equity[2], offsets[2];
   id<MTLBuffer> rounds;
   MetalRows regrets, strategy_sums;
@@ -258,6 +258,9 @@ class PostflopSolve final : public MetalSolve {
     if (2 * g.nodes.size() * sizeof(TraversalNode) > available)
       throw std::runtime_error("Metal workspace exceeds available memory");
     pack_nodes(g, available);
+    const size_t round_bytes = 3 * round_channel_bytes(std::max(g.num_hands(0), g.num_hands(1)));
+    if (round_range.count && round_bytes > m.dev.maxThreadgroupMemoryLength)
+      wide_rounds = m.pipeline(@"river_betting_round_wide", true);
     regrets.bind(m, g.regrets);
     strategy_sums.bind(m, g.strat);
     pack_hands(g);
@@ -367,13 +370,15 @@ class PostflopSolve final : public MetalSolve {
     return true;
   }
 
+  static size_t round_channel_bytes(unsigned hands) { return (4 * hands + 53) * sizeof(float); }
+
   void pack_nodes(const GameTree& g, uint64_t available) {
     const size_t N = g.nodes.size();
     vector<TraversalNode> packed_nodes(N);
     vector<uint8_t> covered(N);
     vector<RiverRound> betting_rounds;
     const bool rounds_fit =
-        (4 * std::max(g.num_hands(0), g.num_hands(1)) + 53) * 3 * sizeof(float) <= m.dev.maxThreadgroupMemoryLength;
+        round_channel_bytes(std::max(g.num_hands(0), g.num_hands(1))) <= m.dev.maxThreadgroupMemoryLength;
     vector<unsigned> list, frontier{0}, terminal_ids, paired_ids, allin_ids;
     array<vector<unsigned>, 2> forced;
     vector<array<unsigned, 2>> deals_by_node;
@@ -519,6 +524,9 @@ class PostflopSolve final : public MetalSolve {
     list.insert(list.end(), terminal_ids.begin(), terminal_ids.end());
     pair_range = {list.size(), paired_ids.size()};
     list.insert(list.end(), paired_ids.begin(), paired_ids.end());
+    std::stable_sort(allin_ids.begin(), allin_ids.end(), [&](unsigned a, unsigned b) {
+      return packed_nodes[a].aux < packed_nodes[b].aux;
+    });
     allin_range = {list.size(), allin_ids.size()};
     list.insert(list.end(), allin_ids.begin(), allin_ids.end());
     check_workspace(g, available, value_rows, size_t(next_row[0]) + next_row[1], deals_by_node.size(),
@@ -579,7 +587,11 @@ class PostflopSolve final : public MetalSolve {
     dispatch(terminals, terminal_range, (3 * O + 53) * sizeof(float));
     dispatch(river_pairs, pair_range, (5 * O + 106) * sizeof(float));
     buffers[14] = rounds;
-    dispatch(river_rounds, round_range, (4 * O + 53) * 3 * sizeof(float));
+    const size_t channel_bytes = round_channel_bytes(O);
+    if (channel_bytes * 3 <= m.dev.maxThreadgroupMemoryLength)
+      dispatch(river_rounds, round_range, channel_bytes * 3);
+    else
+      dispatch(wide_rounds, round_range, channel_bytes);
     buffers[9] = offsets[p];
     buffers[10] = equity[p];
     dispatch(allins, allin_range, 0, (g.num_hands(p) + 3) / 4);

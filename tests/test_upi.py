@@ -2483,6 +2483,10 @@ def check_solve_device(exe):
 
         compare_strategies(("r:0", "r:0:c:c:2c", "r:0:c:c:2c:b100", "r:0:b30:c:2c:b90"),
                            "raked river bets and raises match CPU with IP updating first")
+        assert "ok!" in u.cmd("set_range OOP " + " ".join(["1"] * 1326))
+        compare_strategies(("r:0", "r:0:c:c:2c", "r:0:c:c:2c:b100", "r:0:b30:c:2c:b90"),
+                           "a full OOP range matches CPU through both Metal river passes")
+        assert "ok!" in u.cmd("set_range OOP 22+,AJs:0.4,AKo")
         for cmd in ("clear_lines", "set_board Js8h4d", "add_line 0 0 0 0 100", "add_line 0 0 0 0 0 100",
                     "add_line 60", "add_line 240"):
             assert "ERROR" not in u.cmd(cmd), cmd

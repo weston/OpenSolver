@@ -9,7 +9,9 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#include <unordered_map>
 #include "solver.hpp"
+#include "parallel.hpp"
 namespace pio {
 namespace {
 using std::array;
@@ -36,17 +38,21 @@ struct Metal {
 #else
     options.fastMathEnabled = NO;
 #endif
-    library = [dev newLibraryWithSource:[NSString stringWithUTF8String:kernel_source]
-                                options:options
-                                  error:&error];
+    library = [dev newLibraryWithSource:[NSString stringWithUTF8String:kernel_source] options:options error:&error];
     if (!library) fail(error);
   }
   [[noreturn]] static void fail(NSError* error) {
     throw std::runtime_error(error ? error.localizedDescription.UTF8String : "Metal command failed");
   }
-  id<MTLComputePipelineState> pipeline(NSString* name) {
+  id<MTLComputePipelineState> pipeline(NSString* name, bool replay = false) {
     NSError* error = nil;
-    auto state = [dev newComputePipelineStateWithFunction:[library newFunctionWithName:name] error:&error];
+    auto descriptor = [MTLComputePipelineDescriptor new];
+    descriptor.computeFunction = [library newFunctionWithName:name];
+    descriptor.supportIndirectCommandBuffers = replay;
+    auto state = [dev newComputePipelineStateWithDescriptor:descriptor
+                                                    options:MTLPipelineOptionNone
+                                                 reflection:nil
+                                                      error:&error];
     if (!state) fail(error);
     if (state.threadExecutionWidth != 32 || state.maxTotalThreadsPerThreadgroup < 128)
       throw std::runtime_error("unsupported Metal threadgroup size");
@@ -68,10 +74,13 @@ struct Metal {
     if (!enc) throw std::bad_alloc();
     return enc;
   }
-  void finish(id<MTLCommandBuffer> cmd) {
-    [cmd commit];
+  void wait(id<MTLCommandBuffer> cmd) {
     [cmd waitUntilCompleted];
     if (cmd.status != MTLCommandBufferStatusCompleted) fail(cmd.error);
+  }
+  void finish(id<MTLCommandBuffer> cmd) {
+    [cmd commit];
+    wait(cmd);
   }
 };
 Metal& metal() {
@@ -106,8 +115,7 @@ struct MetalRows {
   }
 
   void prepare(const ZVec<float>& current) {
-    if (input == output && !current.empty())
-      memcpy(input.contents, current.data(), current.size() * sizeof(float));
+    if (input == output && !current.empty()) memcpy(input.contents, current.data(), current.size() * sizeof(float));
   }
 
   void publish(ZVec<float>& current) {
@@ -124,62 +132,89 @@ struct BoardTables {
   vector<BoardPrefixes> boards;
   vector<uint16_t> indices;
   vector<HandPrefixes> heroes;
-  void add(const ShowdownBoard& sd, int p, int H) {
-    BoardPrefixes b{};
-    b.index_offset = indices.size();
-    b.hand_offset = heroes.size();
+  BoardTables(const GameTree& g, const ShowdownBoard& fold, int p) {
+    const unsigned H = g.num_hands(p);
+    boards.resize(g.showdowns.size() + 1);
+    auto board_at = [&](size_t i) -> const ShowdownBoard& { return i < g.showdowns.size() ? g.showdowns[i] : fold; };
+    unsigned total = 0;
+    for (size_t i = 0; i < boards.size(); ++i) {
+      boards[i].index_offset = total;
+      boards[i].hand_offset = i * H;
+      total += 53 + 3 * board_at(i).ent[1 - p].size();
+    }
+    indices.resize(total);
     HandPrefixes blocked{};
     blocked.same = -1;
-    heroes.resize(b.hand_offset + H, blocked);
-    array<vector<int>, 53> lists;
-    const auto& opponents = sd.ent[1 - p];
-    for (int j = 0; j < int(opponents.size()); ++j) {
-      auto o = opponents[j];
-      lists[0].push_back(j);
-      lists[1 + o.c1].push_back(j);
-      lists[1 + o.c2].push_back(j);
-    }
-    for (int c = 0; c < 53; ++c) {
-      b.start[c] = indices.size() - b.index_offset;
-      indices.push_back(0);
-      for (int pos : lists[c]) indices.push_back(opponents[pos].idx);
-    }
-    b.start[53] = indices.size() - b.index_offset;
-    unsigned i0 = 0, j0 = 0;
-    for (auto [i1, j1] : sd.groups[p]) {
-      for (unsigned i = i0; i < i1; ++i) {
-        auto h = sd.ent[p][i];
-        HandPrefixes& m = heroes[b.hand_offset + h.idx];
-        m.same = h.same;
-        int l = 0;
-        for (int c : {0, 1 + h.c1, 1 + h.c2}) {
-          const auto& list = lists[c];
-          m.lo[l] = b.start[c] + (std::lower_bound(list.begin(), list.end(), j0) - list.begin());
-          m.hi[l] = b.start[c] + (std::lower_bound(list.begin(), list.end(), j1) - list.begin());
-          m.end[l] = b.start[c] + list.size();
-          ++l;
-        }
+    heroes.resize(boards.size() * H, blocked);
+    pool().parallel_for(int(boards.size()), [&](int index) {
+      auto& b = boards[index];
+      const auto& sd = board_at(index);
+      const auto& opponents = sd.ent[1 - p];
+      unsigned count[53]{}, position[53];
+      count[0] = opponents.size();
+      for (const auto& o : opponents) {
+        ++count[1 + o.c1];
+        ++count[1 + o.c2];
       }
-      i0 = i1;
-      j0 = j1;
-    }
-    boards.push_back(b);
+      for (int c = 0; c < 53; ++c) {
+        position[c] = b.start[c];
+        b.start[c + 1] = b.start[c] + 1 + count[c];
+      }
+      auto* entries = indices.data() + b.index_offset;
+      unsigned hero_start = 0, opp_start = 0;
+      for (auto [hero_end, opp_end] : sd.groups[p]) {
+        for (unsigned j = hero_start; j < hero_end; ++j) {
+          auto h = sd.ent[p][j];
+          auto& m = heroes[b.hand_offset + h.idx];
+          m.same = h.same;
+          unsigned c[3] = {0, 1u + h.c1, 1u + h.c2};
+          for (int k = 0; k < 3; ++k) {
+            m.lo[k] = position[c[k]];
+            m.end[k] = b.start[c[k] + 1] - 1;
+          }
+        }
+        for (unsigned j = opp_start; j < opp_end; ++j) {
+          auto o = opponents[j];
+          entries[++position[0]] = o.idx;
+          entries[++position[1 + o.c1]] = o.idx;
+          entries[++position[1 + o.c2]] = o.idx;
+        }
+        for (unsigned j = hero_start; j < hero_end; ++j) {
+          auto h = sd.ent[p][j];
+          auto& m = heroes[b.hand_offset + h.idx];
+          m.hi[0] = position[0];
+          m.hi[1] = position[1 + h.c1];
+          m.hi[2] = position[1 + h.c2];
+        }
+        hero_start = hero_end;
+        opp_start = opp_end;
+      }
+    });
   }
 };
 class PostflopSolve final : public MetalSolve {
  public:
   Metal& m = metal();
-  id<MTLComputePipelineState> propagate_reach, update_values, terminals, allins;
-  id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], equity[2],
-      offsets[2];
+  id<MTLComputePipelineState> propagate_reach, update_values, advance_forced, terminals, river_pairs, river_rounds,
+      allins;
+  id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], equity[2], offsets[2];
+  id<MTLBuffer> rounds;
   MetalRows regrets, strategy_sums;
   struct Range {
     size_t start, count;
   };
   vector<Range> levels;
   vector<array<Range, 2>> reach_levels;
-  Range terminal_range, allin_range;
+  Range terminal_range, pair_range, round_range, allin_range, forced_range[2];
   size_t stride, state_bytes;
+  int prepared_iteration = 0;
+  struct Replay {
+    id<MTLIndirectCommandBuffer> commands;
+    NSUInteger count = 0;
+  };
+  Replay replays[2][2][2];
+  id<MTLBuffer> params[2];
+  unsigned state_slot = 0;
   template <class V>
   id<MTLBuffer> copy_buffer(const V& x) {
     auto n = x.size() * sizeof(x[0]);
@@ -187,32 +222,19 @@ class PostflopSolve final : public MetalSolve {
     if (n) memcpy(b.contents, x.data(), n);
     return b;
   }
-  void check_workspace(const GameTree& g, uint64_t available) const {
+  void check_workspace(const GameTree& g, uint64_t available, uint64_t value_rows, uint64_t reach_rows,
+                       uint64_t mappings, uint64_t rounds) const {
     const size_t N = g.nodes.size();
     const size_t pairs = size_t(g.num_hands(0)) * g.num_hands(1);
-    if (!g.num_hands(0) || !g.num_hands(1) || N * stride > UINT32_MAX || g.storage_floats > UINT32_MAX ||
-        g.allins.size() * pairs > UINT32_MAX)
-      throw std::runtime_error("tree exceeds Metal index limits");
-    uint64_t rows = 2, mappings = 0;
-    for (const auto& node : g.nodes) {
-      if (node.kind == ANodeKind::Chance) {
-        rows += 2 * node.num_children;
-        const auto& chance = g.chances[node.aux];
-        mappings += chance.cards.size();
-        for (const auto& copies : chance.iso) mappings += copies.size();
-      } else if (node.kind == ANodeKind::Decision && node.num_children > 1) {
-        rows += node.num_children;
-      }
-    }
     uint64_t hands = g.num_hands(0) + g.num_hands(1);
-    uint64_t boardBytes = (g.showdowns.size() + 1) *
-                          (2 * sizeof(BoardPrefixes) + hands * (sizeof(HandPrefixes) + 3 * sizeof(uint16_t)) +
-                           106 * sizeof(uint16_t));
+    uint64_t boardBytes =
+        (g.showdowns.size() + 1) *
+        (2 * sizeof(BoardPrefixes) + hands * (sizeof(HandPrefixes) + 3 * sizeof(uint16_t)) + 106 * sizeof(uint16_t));
     uint64_t equityBytes = 2 * g.allins.size() * pairs * sizeof(float);
-    uint64_t workspace = (N + rows) * stride * sizeof(float) + 2 * state_bytes;
+    uint64_t workspace = (value_rows + reach_rows) * stride * sizeof(float) + 2 * state_bytes;
     uint64_t peak = workspace +
                     2 * (boardBytes + equityBytes + N * (sizeof(TraversalNode) + 4 * sizeof(unsigned)) +
-                         mappings * 2 * sizeof(unsigned)) +
+                         mappings * 2 * sizeof(unsigned) + rounds * sizeof(RiverRound)) +
                     128 * stride;
     if (mappings > UINT32_MAX || (g.showdowns.size() + 1) * (3 * stride + 53) > UINT32_MAX)
       throw std::runtime_error("tree exceeds Metal board index limits");
@@ -220,17 +242,26 @@ class PostflopSolve final : public MetalSolve {
       throw std::runtime_error("Metal workspace exceeds available memory");
   }
   explicit PostflopSolve(GameTree& g, uint64_t available) {
-    propagate_reach = m.pipeline(@"propagate_reach");
-    update_values = m.pipeline(@"update_values");
-    terminals = m.pipeline(@"terminal");
-    allins = m.pipeline(@"allin");
+    propagate_reach = m.pipeline(@"propagate_reach", true);
+    update_values = m.pipeline(@"update_values", true);
+    advance_forced = m.pipeline(@"advance_forced", true);
+    river_rounds = m.pipeline(@"river_betting_round", true);
+    river_pairs = m.pipeline(@"river_call_fold", true);
+    terminals = m.pipeline(@"terminal", true);
+    allins = m.pipeline(@"allin", true);
     stride = (std::max(g.num_hands(0), g.num_hands(1)) + 31) & ~size_t(31);
     state_bytes = g.storage_floats * sizeof(float);
-    check_workspace(g, available);
+    const uint64_t indices = uint64_t(g.num_hands(0)) * g.num_hands(1) * g.allins.size();
+    if (!g.num_hands(0) || !g.num_hands(1) || g.nodes.size() * stride > UINT32_MAX || g.storage_floats > UINT32_MAX ||
+        indices > UINT32_MAX)
+      throw std::runtime_error("tree exceeds Metal index limits");
+    if (2 * g.nodes.size() * sizeof(TraversalNode) > available)
+      throw std::runtime_error("Metal workspace exceeds available memory");
+    pack_nodes(g, available);
     regrets.bind(m, g.regrets);
     strategy_sums.bind(m, g.strat);
     pack_hands(g);
-    pack_nodes(g);
+    for (auto& b : params) b = m.buffer(sizeof(IterationParams));
   }
 
   void pack_hands(const GameTree& g) {
@@ -239,8 +270,8 @@ class PostflopSolve final : public MetalSolve {
     for (int p = 0; p < 2; ++p) {
       for (int h = 0; h < g.num_hands(p); ++h) {
         hand_cards[p * stride + h] = {g.hcard[p][0][h], g.hcard[p][1][h]};
-        fold.ent[p].push_back({uint16_t(h), hand_cards[p * stride + h][0], hand_cards[p * stride + h][1],
-                               int16_t(g.same_hand[p][h])});
+        fold.ent[p].push_back(
+            {uint16_t(h), hand_cards[p * stride + h][0], hand_cards[p * stride + h][1], int16_t(g.same_hand[p][h])});
       }
       vector<uint16_t> permutations(24 * stride);
       for (uint8_t j = 0; j < 24; ++j)
@@ -251,37 +282,120 @@ class PostflopSolve final : public MetalSolve {
     cards = copy_buffer(hand_cards);
     for (int p = 0; p < 2; ++p) {
       fold.groups[p].push_back({uint16_t(g.num_hands(p)), uint16_t(g.num_hands(1 - p))});
-      BoardTables b;
-      for (const auto& board : g.showdowns) b.add(board, p, g.num_hands(p));
-      b.add(fold, p, g.num_hands(p));
+      BoardTables b(g, fold, p);
       boards[p] = copy_buffer(b.boards);
       indices[p] = copy_buffer(b.indices);
       heroes[p] = copy_buffer(b.heroes);
-      vector<float> equities;
-      vector<unsigned> equity_offsets;
-      for (const auto& ar : g.allins) {
-        equity_offsets.push_back(equities.size());
-        int H1 = g.num_hands(1);
-        for (int h = 0; h < g.num_hands(p); ++h)
-          for (int o = 0; o < g.num_hands(1 - p); ++o) {
-            size_t j = p ? o * H1 + h : h * H1 + o;
+      const int H = g.num_hands(p), O = g.num_hands(1 - p);
+      vector<float> equities(g.allins.size() * H * O);
+      vector<unsigned> equity_offsets(g.allins.size());
+      pool().parallel_for(int(g.allins.size()), [&](int k) {
+        const auto& ar = g.allins[k];
+        const size_t offset = size_t(k) * H * O;
+        equity_offsets[k] = offset;
+        uint64_t board = 0;
+        for (auto c : ar.cards) board |= card_bit(c);
+        for (int h = 0; h < H; ++h) {
+          uint64_t hero = combo_mask(g.hands[p][h]);
+          for (int o = 0; o < O; ++o) {
+            uint64_t opp = combo_mask(g.hands[1 - p][o]);
+            size_t j = p ? size_t(o) * H + h : size_t(h) * O + o;
             float e = (ar.e2.empty() ? ar.e2b[j] : ar.e2[j]) * .5f * ar.scale;
-            bool disjoint = !(combo_mask(g.hands[p][h]) & combo_mask(g.hands[1 - p][o]));
-            equities.push_back(disjoint ? (p ? 1.f - e : e) : -1.f);
+            equities[offset + size_t(h) * O + o] = (hero & opp) || ((hero | opp) & board) ? -1.f : (p ? 1.f - e : e);
           }
-      }
+        }
+      });
       equity[p] = copy_buffer(equities);
       offsets[p] = copy_buffer(equity_offsets);
     }
   }
 
-  void pack_nodes(const GameTree& g) {
+  static bool pack_river_round(const GameTree& g, unsigned i, vector<RiverRound>& rounds) {
+    const auto& n = g.nodes[i];
+    if (n.kind != ANodeKind::Decision || n.board_len != 5) return false;
+    if (n.num_children == 3) {
+      unsigned raised = n.first_child, called = raised + 1, folded = raised + 2;
+      const auto& response = g.nodes[raised];
+      if (response.kind != ANodeKind::Decision || response.num_children != 2 || response.player == n.player ||
+          g.nodes[called].kind != ANodeKind::Showdown || g.nodes[folded].kind != ANodeKind::Fold ||
+          g.nodes[response.first_child].kind != ANodeKind::Showdown ||
+          g.nodes[response.first_child + 1].kind != ANodeKind::Fold)
+        return false;
+      RiverRound r{};
+      r.root = i;
+      r.final_raise = 1;
+      r.board = g.nodes[called].aux;
+      r.storage[0] = n.storage;
+      r.storage[1] = response.storage;
+      for (unsigned j = 0; j < 2; ++j) {
+        unsigned call = j ? called : response.first_child;
+        const auto& pay = g.term_pay(g.nodes[call]);
+        std::copy_n(pay.w, 2, r.win[j]);
+        std::copy_n(pay.l, 2, r.loss[j]);
+        std::copy_n(pay.t, 2, r.tie[j]);
+        std::copy_n(g.term_pay(g.nodes[call + 1]).w, 2, r.fold[j]);
+      }
+      rounds.push_back(r);
+      return true;
+    }
+    if (n.num_children != 2) return false;
+    auto decision = [&](unsigned index, int actor) {
+      const auto& d = g.nodes[index];
+      return d.kind == ANodeKind::Decision && d.num_children == 2 && d.player == actor;
+    };
+    unsigned lead = n.first_child, check = lead + 1;
+    if (!decision(lead, 1 - n.player) || !decision(check, 1 - n.player)) return false;
+    unsigned bet = g.nodes[check].first_child, last = bet + 1;
+    if (!decision(bet, n.player) || g.nodes[last].kind != ANodeKind::Showdown) return false;
+    unsigned call0 = g.nodes[lead].first_child, call1 = g.nodes[bet].first_child;
+    if (g.nodes[call0].kind != ANodeKind::Showdown || g.nodes[call0 + 1].kind != ANodeKind::Fold ||
+        g.nodes[call1].kind != ANodeKind::Showdown || g.nodes[call1 + 1].kind != ANodeKind::Fold)
+      return false;
+    RiverRound r{};
+    r.root = i;
+    r.board = g.nodes[last].aux;
+    unsigned decisions[] = {i, lead, check, bet}, leaves[] = {call0, call1, last};
+    for (int j = 0; j < 4; ++j) r.storage[j] = g.nodes[decisions[j]].storage;
+    for (int j = 0; j < 3; ++j) {
+      const auto& pay = g.term_pay(g.nodes[leaves[j]]);
+      std::copy_n(pay.w, 2, r.win[j]);
+      std::copy_n(pay.l, 2, r.loss[j]);
+      std::copy_n(pay.t, 2, r.tie[j]);
+      if (j < 2) std::copy_n(g.term_pay(g.nodes[leaves[j] + 1]).w, 2, r.fold[j]);
+    }
+    rounds.push_back(r);
+    return true;
+  }
+
+  void pack_nodes(const GameTree& g, uint64_t available) {
     const size_t N = g.nodes.size();
-    v = m.buffer(N * stride * sizeof(float));
     vector<TraversalNode> packed_nodes(N);
-    vector<unsigned> list, frontier{0}, terminal_ids, allin_ids;
+    vector<uint8_t> covered(N);
+    vector<RiverRound> betting_rounds;
+    const bool rounds_fit =
+        (4 * std::max(g.num_hands(0), g.num_hands(1)) + 53) * 3 * sizeof(float) <= m.dev.maxThreadgroupMemoryLength;
+    vector<unsigned> list, frontier{0}, terminal_ids, paired_ids, allin_ids;
+    array<vector<unsigned>, 2> forced;
     vector<array<unsigned, 2>> deals_by_node;
-    unsigned next_row[2] = {1, 1};
+    std::unordered_map<uint64_t, unsigned> outcomes;
+    for (unsigned j = 0; j < g.allins.size(); ++j) {
+      uint64_t mask = 0;
+      for (auto c : g.allins[j].cards) mask |= card_bit(c);
+      outcomes[mask] = j;
+    }
+    vector<unsigned> showdown(N, UINT32_MAX);
+    for (size_t i = N; i-- > 0;) {
+      const auto& n = g.nodes[i];
+      if (n.kind == ANodeKind::Showdown)
+        showdown[i] = i;
+      else if (n.num_children == 1 && n.kind == ANodeKind::Decision)
+        showdown[i] = showdown[n.first_child];
+      else if (n.kind == ANodeKind::Chance && g.chances[n.aux].cards.size() == size_t(52 - n.board_len) &&
+               std::all_of(showdown.begin() + n.first_child, showdown.begin() + n.first_child + n.num_children,
+                           [](unsigned end) { return end != UINT32_MAX; }))
+        showdown[i] = showdown[n.first_child];
+    }
+    unsigned next_row[2] = {1, 1}, value_rows = 1;
     while (!frontier.empty()) {
       size_t start = list.size();
       vector<unsigned> next;
@@ -293,9 +407,53 @@ class PostflopSolve final : public MetalSolve {
         a.actor = n.player;
         a.storage = n.storage;
         a.aux = n.aux;
+        if (rounds_fit && pack_river_round(g, i, betting_rounds)) continue;
+        if (n.kind == ANodeKind::Decision && n.board_len == 5 && n.num_children == 2 &&
+            g.nodes[n.first_child].kind == ANodeKind::Showdown && g.nodes[n.first_child + 1].kind == ANodeKind::Fold) {
+          paired_ids.push_back(i);
+          for (unsigned k = 0; k < 2; ++k) {
+            auto& child = packed_nodes[a.child + k];
+            const auto& original = g.nodes[a.child + k];
+            const auto& pay = g.term_pay(original);
+            child.aux = original.aux;
+            std::copy_n(pay.w, 2, child.win);
+            std::copy_n(pay.l, 2, child.loss);
+            std::copy_n(pay.t, 2, child.tie);
+          }
+          continue;
+        }
+        const bool skipped = covered[i];
+        bool table = false;
+        if (!skipped && n.kind == ANodeKind::Chance && showdown[i] != UINT32_MAX) {
+          auto found = outcomes.find(g.chances[n.aux].board_mask);
+          if (found != outcomes.end()) {
+            table = true;
+            a.kind = AllIn;
+            a.aux = found->second;
+            auto pay = g.term_pay(g.nodes[showdown[i]]);
+            std::copy_n(pay.w, 2, a.win);
+            std::copy_n(pay.l, 2, a.loss);
+            allin_ids.push_back(i);
+          }
+        }
+        if ((skipped || table) && n.kind == ANodeKind::Chance) {
+          for (unsigned k = 0; k < a.count; ++k) {
+            auto& child = packed_nodes[a.child + k];
+            covered[a.child + k] = true;
+            child.public_cards = (a.public_cards << 8) | (g.chances[n.aux].cards[k] + 1);
+            std::copy_n(a.row, 2, child.row);
+            next.push_back(a.child + k);
+          }
+          continue;
+        }
+        if (skipped && n.kind == ANodeKind::Showdown) continue;
         if (n.kind == ANodeKind::Decision || n.kind == ANodeKind::Chance) {
           a.kind = n.kind == ANodeKind::Chance ? Deal : Decision;
-          list.push_back(i);
+          const bool single = a.kind == Decision && a.count == 1;
+          if (single)
+            forced[a.actor].push_back(i);
+          else
+            list.push_back(i);
           if (a.kind == Deal) {
             const auto& ci = g.chances[n.aux];
             a.deals = deals_by_node.size();
@@ -307,10 +465,16 @@ class PostflopSolve final : public MetalSolve {
             }
             a.deal_count = deals_by_node.size() - a.deals;
           }
+          a.child_value = single ? a.value_row : value_rows;
+          if (!single) value_rows += a.count;
           for (unsigned k = 0; k < a.count; ++k) {
+            covered[a.child + k] = skipped;
+            packed_nodes[a.child + k].public_cards =
+                a.kind == Deal ? (a.public_cards << 8) | (packed_nodes[a.child + k].card + 1) : a.public_cards;
+            packed_nodes[a.child + k].value_row = a.child_value + k;
             for (int p = 0; p < 2; ++p)
               packed_nodes[a.child + k].row[p] =
-                  (a.kind == Deal || ((a.actor == unsigned(p)) && a.count > 1)) ? next_row[p]++ : a.row[p];
+                  (a.kind == Decision && a.actor == unsigned(p) && a.count > 1) ? next_row[p]++ : a.row[p];
             next.push_back(a.child + k);
           }
         } else {
@@ -341,30 +505,98 @@ class PostflopSolve final : public MetalSolve {
         for (size_t j = level.start; j < level.start + level.count; ++j) {
           unsigned index = list[j];
           const auto& node = packed_nodes[index];
-          if (node.kind == Deal || (node.actor == p && node.count > 1)) list.push_back(2 * index + p);
+          if (node.kind == Decision && node.actor == p && node.count > 1) list.push_back(2 * index + p);
         }
         by_player[p] = {start, list.size() - start};
       }
       reach_levels.push_back(by_player);
     }
+    for (int p = 0; p < 2; ++p) {
+      forced_range[p] = {list.size(), forced[p].size()};
+      list.insert(list.end(), forced[p].begin(), forced[p].end());
+    }
     terminal_range = {list.size(), terminal_ids.size()};
     list.insert(list.end(), terminal_ids.begin(), terminal_ids.end());
+    pair_range = {list.size(), paired_ids.size()};
+    list.insert(list.end(), paired_ids.begin(), paired_ids.end());
     allin_range = {list.size(), allin_ids.size()};
     list.insert(list.end(), allin_ids.begin(), allin_ids.end());
+    check_workspace(g, available, value_rows, size_t(next_row[0]) + next_row[1], deals_by_node.size(),
+                    betting_rounds.size());
     for (int p = 0; p < 2; ++p) {
       r[p] = m.buffer(next_row[p] * stride * 4);
       memcpy(r[p].contents, g.init_reach[p].data(), g.num_hands(p) * 4);
     }
+    v = m.buffer(size_t(value_rows) * stride * sizeof(float));
+    round_range = {0, betting_rounds.size()};
+    rounds = copy_buffer(betting_rounds);
     nodes = copy_buffer(packed_nodes);
     node_ids = copy_buffer(list);
+    for (auto& entry : deals_by_node) {
+      const auto& child = packed_nodes[entry[0]];
+      entry = {child.value_row, entry[1] | (child.card << 8)};
+    }
     iso = copy_buffer(deals_by_node);
   }
 
-  void iterate(GameTree& g, Solver& s, int t, bool refresh_reach) override {
+  Replay record(const GameTree& g, unsigned p, bool refresh_reach) {
+    auto descriptor = [MTLIndirectCommandBufferDescriptor new];
+    descriptor.commandTypes = MTLIndirectCommandTypeConcurrentDispatch;
+    descriptor.inheritPipelineState = NO;
+    descriptor.inheritBuffers = NO;
+    descriptor.maxKernelBufferBindCount = 15;
+    Replay plan;
+    plan.commands = [m.dev newIndirectCommandBufferWithDescriptor:descriptor
+                                                  maxCommandCount:reach_levels.size() + levels.size() + 5
+                                                          options:MTLResourceStorageModeShared];
+    if (!plan.commands) throw std::bad_alloc();
+    id<MTLBuffer> buffers[15] = {
+        nodes, node_ids,      params[p],           r[0], r[1], v, regrets.output, strategy_sums.output, cards, nil, nil,
+        nil,   regrets.input, strategy_sums.input, nil};
+    auto dispatch = [&](id<MTLComputePipelineState> pipe, Range span, size_t scratch = 0, unsigned y = 1) {
+      if (!span.count) return;
+      auto c = [plan.commands indirectComputeCommandAtIndex:plan.count++];
+      [c setComputePipelineState:pipe];
+      for (unsigned i = 0; i < 15; ++i)
+        if (buffers[i]) [c setKernelBuffer:buffers[i] offset:i == 1 ? span.start * 4 : 0 atIndex:i];
+      if (scratch) [c setThreadgroupMemoryLength:(scratch + 15) & ~size_t(15) atIndex:0];
+      unsigned width = pipe != allins && stride >= 256 ? 256 : 128;
+      [c setBarrier];
+      [c concurrentDispatchThreadgroups:MTLSizeMake(span.count, y, 1)
+                  threadsPerThreadgroup:MTLSizeMake(std::min<NSUInteger>(pipe.maxTotalThreadsPerThreadgroup, width), 1,
+                                                    1)];
+    };
+    for (const auto& reach : reach_levels) {
+      Range span = reach[1 - p];
+      if (refresh_reach) span = {reach[0].start, reach[0].count + reach[1].count};
+      dispatch(propagate_reach, span);
+    }
+    dispatch(advance_forced, forced_range[p]);
+    buffers[9] = boards[p];
+    buffers[10] = indices[p];
+    buffers[11] = heroes[p];
+    auto O = g.num_hands(1 - p);
+    dispatch(terminals, terminal_range, (3 * O + 53) * sizeof(float));
+    dispatch(river_pairs, pair_range, (5 * O + 106) * sizeof(float));
+    buffers[14] = rounds;
+    dispatch(river_rounds, round_range, (4 * O + 53) * 3 * sizeof(float));
+    buffers[9] = offsets[p];
+    buffers[10] = equity[p];
+    dispatch(allins, allin_range, 0, (g.num_hands(p) + 3) / 4);
+    buffers[9] = iso;
+    buffers[10] = perms[p];
+    for (auto it = levels.rbegin(); it != levels.rend(); ++it) dispatch(update_values, *it);
+    return plan;
+  }
+
+  id<MTLCommandBuffer> submit(GameTree& g, Solver& s, int t, bool refresh_reach) {
     regrets.prepare(g.regrets);
     strategy_sums.prepare(g.strat);
     auto disc = [](double z) { return float(z / (1 + z)); };
-    for (unsigned phase = 0; phase < 2; ++phase) @autoreleasepool {
+    @autoreleasepool {
+      auto cmd = m.command();
+      const bool symmetrize = t % 4 == 0 && g.perm_all.size() > 1;
+      for (unsigned phase = 0; phase < 2; ++phase) {
         unsigned p = phase ^ s.first_player;
         IterationParams args = {unsigned(g.num_hands(0)),
                                 unsigned(g.num_hands(1)),
@@ -376,48 +608,67 @@ class PostflopSolve final : public MetalSolve {
                                 unsigned(s.avg_reset || t > s.avg_delay),
                                 phase};
         if (s.avg_reset && s.avg_delay > 0 && t == s.avg_delay + 1) args.average_discount = 0.f;
-        auto cmd = m.command();
+        memcpy(params[p].contents, &args, sizeof(args));
+        auto& plan = replays[state_slot][p][phase == 0 && refresh_reach];
+        if (!plan.commands) plan = record(g, p, phase == 0 && refresh_reach);
         auto enc = m.encoder(cmd);
-        [enc setBuffer:nodes offset:0 atIndex:0];
-        [enc setBytes:&args length:sizeof(args) atIndex:2];
-        for (int j = 0; j < 2; ++j) [enc setBuffer:r[j] offset:0 atIndex:3 + j];
-        [enc setBuffer:v offset:0 atIndex:5];
-        [enc setBuffer:regrets.output offset:0 atIndex:6];
-        [enc setBuffer:regrets.input offset:0 atIndex:12];
-        [enc setBuffer:strategy_sums.output offset:0 atIndex:7];
-        [enc setBuffer:strategy_sums.input offset:0 atIndex:13];
-        [enc setBuffer:cards offset:0 atIndex:8];
-        auto dispatch = [&](id<MTLComputePipelineState> pipe, Range span, unsigned y = 1) {
-          if (!span.count) return;
-          [enc setComputePipelineState:pipe];
-          [enc setBuffer:node_ids offset:span.start * 4 atIndex:1];
-          [enc dispatchThreadgroups:MTLSizeMake(span.count, y, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
-          [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
-        };
-        for (const auto& reach : reach_levels) {
-          Range span = reach[1 - p];
-          if (phase == 0 && refresh_reach) span = {reach[0].start, reach[0].count + reach[1].count};
-          dispatch(propagate_reach, span);
-        }
-        [enc setBuffer:boards[p] offset:0 atIndex:9];
-        [enc setBuffer:indices[p] offset:0 atIndex:10];
-        [enc setBuffer:heroes[p] offset:0 atIndex:11];
-        [enc setThreadgroupMemoryLength:((3 * g.num_hands(1 - p) + 53) * 4 + 15) & ~15 atIndex:0];
-        dispatch(terminals, terminal_range);
-        [enc setBuffer:offsets[p] offset:0 atIndex:9];
-        [enc setBuffer:equity[p] offset:0 atIndex:10];
-        dispatch(allins, allin_range, (g.num_hands(p) + 3) / 4);
-        [enc setBuffer:iso offset:0 atIndex:9];
-        [enc setBuffer:perms[p] offset:0 atIndex:10];
-        for (auto it = levels.rbegin(); it != levels.rend(); ++it) dispatch(update_values, *it);
+        id<MTLResource> read[] = {nodes,  node_ids,   params[p], cards, boards[p], indices[p],    heroes[p],
+                                  rounds, offsets[p], equity[p], iso,   perms[p],  regrets.input, strategy_sums.input};
+        id<MTLResource> write[] = {r[0], r[1], v, regrets.output, strategy_sums.output};
+        [enc useResources:read count:sizeof(read) / sizeof(read[0]) usage:MTLResourceUsageRead];
+        [enc useResources:write
+                    count:sizeof(write) / sizeof(write[0])
+                    usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+        [enc executeCommandsInBuffer:plan.commands withRange:NSMakeRange(0, plan.count)];
         [enc endEncoding];
-        m.finish(cmd);
-        if (t % 4 == 0)
-          s.symmetrize_root_street(p, static_cast<float*>(regrets.output.contents),
-                                   static_cast<float*>(strategy_sums.output.contents));
+        if (phase == 0 && symmetrize) {
+          m.finish(cmd);
+          symmetrize_output(s, p);
+          cmd = m.command();
+        }
       }
+      [cmd commit];
+      return cmd;
+    }
+  }
+
+  void symmetrize_output(Solver& solver, unsigned p) {
+    solver.symmetrize_root_street(p, static_cast<float*>(regrets.output.contents),
+                                  static_cast<float*>(strategy_sums.output.contents));
+  }
+
+  void finish_iteration(id<MTLCommandBuffer> cmd, GameTree& g, Solver& s, int t) {
+    m.wait(cmd);
+    if (t % 4 == 0 && g.perm_all.size() > 1) symmetrize_output(s, 1 - s.first_player);
+  }
+
+  RootStats evaluate_and_prepare(GameTree& g, Solver& s, int next) override {
+    @autoreleasepool {
+      auto cmd = submit(g, s, next, false);
+      RootStats stats;
+      try {
+        stats = s.root_stats();
+      } catch (...) {
+        [cmd waitUntilCompleted];
+        throw;
+      }
+      finish_iteration(cmd, g, s, next);
+      prepared_iteration = next;
+      return stats;
+    }
+  }
+
+  void iterate(GameTree& g, Solver& s, int t, bool refresh_reach) override {
+    if (refresh_reach || prepared_iteration != t) {
+      @autoreleasepool {
+        auto cmd = submit(g, s, t, refresh_reach);
+        finish_iteration(cmd, g, s, t);
+      }
+    }
+    prepared_iteration = 0;
     regrets.publish(g.regrets);
     strategy_sums.publish(g.strat);
+    state_slot ^= 1;
   }
 };
 
@@ -434,8 +685,7 @@ std::unique_ptr<MetalSolve> make_metal_solve(GameTree& tree, uint64_t available)
     return std::make_unique<PostflopSolve>(tree, available);
   }
 }
-void metal_flop_table(const GameTree& g, AllinRunouts& ar,
-                      const std::vector<std::array<uint32_t, 4>>& runout_boards) {
+void metal_flop_table(const GameTree& g, AllinRunouts& ar, const std::vector<std::array<uint32_t, 4>>& runout_boards) {
   @autoreleasepool {
     auto& m = metal();
     static auto rank = m.pipeline(@"rankhands"), count = m.pipeline(@"countpairs");
@@ -463,8 +713,7 @@ void metal_flop_table(const GameTree& g, AllinRunouts& ar,
     [enc setComputePipelineState:count];
     [enc setBuffer:ranks offset:0 atIndex:0];
     [enc setBuffer:result offset:0 atIndex:2];
-    [enc dispatchThreadgroups:MTLSizeMake((H + 15) / 16, (H + 3) / 4, 1)
-        threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+    [enc dispatchThreadgroups:MTLSizeMake((H + 15) / 16, (H + 3) / 4, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
     [enc endEncoding];
     m.finish(cmd);
     memcpy(ar.tri16.data(), result.contents, ar.tri16.size() * 2);

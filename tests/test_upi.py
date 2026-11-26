@@ -2414,6 +2414,8 @@ def check_solve_device(exe):
         check(["SOLVER: device gpu"] in u.solver_msgs, "Metal executed both player updates")
         check(len(cpu) == len(gpu) and max(abs(a-b) for a, b in zip(cpu, gpu)) < 0.002,
               "Metal turn strategies match CPU through symmetry and average reset")
+        u.cmd("set_info_freq 1")
+        check(run("gpu") == gpu, "checking exploitability every step preserves the accepted Metal iterations")
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "gpu.cfr")
             check("ok!" in u.cmd("dump_tree " + path + " lossless") and
@@ -2457,6 +2459,42 @@ def check_solve_device(exe):
             u.cmd("go 1 steps")
             u.cmd("wait_for_solver")
             check(int(u.cmd("show_iters")) == tick + 1, "continue a Metal save on CPU")
+
+        for cmd in ("clear_lines", "set_board Js8h4d7c", "set_eff_stack 240", "set_avg_delay 0",
+                    "set_first_iteration_player IP", "set_range OOP 22+,AJs:0.4,AKo",
+                    "set_range IP 22+,T9s:0.7,AQo", "add_line 0 0 100", "add_line 0 0 0 100",
+                    "add_line 30 30 90 240", "add_line 30 30 30 90 240", "add_line 0 40 40", "add_line 240"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+
+        def strategies(algorithm, paths):
+            u.solver_msgs.clear()
+            for cmd in ("set_algorithm " + algorithm, "build_tree", "set_rake .05 10", "set_accuracy 0",
+                        "set_info_freq 2", "go 4 steps", "wait_for_solver"):
+                assert "ERROR" not in u.cmd(cmd), cmd
+            if algorithm == "v4_metal":
+                assert ["SOLVER: device gpu"] in u.solver_msgs
+            return [floats(u.cmd("show_strategy " + path)) for path in paths]
+
+        def compare_strategies(paths, message):
+            reference = strategies("auto", paths)
+            actual = strategies("v4_metal", paths)
+            check(all(len(x) == len(y) and max(abs(a - b) for a, b in zip(x, y)) < .002
+                      for x, y in zip(reference, actual)), message)
+
+        compare_strategies(("r:0", "r:0:c:c:2c", "r:0:c:c:2c:b100", "r:0:b30:c:2c:b90"),
+                           "raked river bets and raises match CPU with IP updating first")
+        for cmd in ("clear_lines", "set_board Js8h4d", "add_line 0 0 0 0 100", "add_line 0 0 0 0 0 100",
+                    "add_line 60", "add_line 240"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+        compare_strategies(("r:0", "r:0:c:c:2c:c:c:3h", "r:0:c:c:2c:c:c:3h:b100"),
+                           "compiled flop checkdowns and river actions preserve both public-card blockers")
+        for cmd in ("build_tree", "set_info_freq 1", "set_accuracy 1000", "go 10 steps", "wait_for_solver"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+        stopped = u.cmd("show_strategy r:0")
+        assert u.cmd("show_iters") == "1"
+        for cmd in ("build_tree", "set_accuracy 0", "go 1 steps", "wait_for_solver"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+        check(u.cmd("show_strategy r:0") == stopped, "stopping at accuracy publishes only the checked iteration")
     finally:
         u.close()
 

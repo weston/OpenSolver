@@ -8,10 +8,12 @@ namespace pio {
 class GameTree;
 class Solver;
 struct AllinRunouts;
+struct RootStats;
 
 class MetalSolve {
  public:
   virtual ~MetalSolve() = default;
+  virtual RootStats evaluate_and_prepare(GameTree& tree, Solver& solver, int next_iteration) = 0;
   virtual void iterate(GameTree& tree, Solver& solver, int iteration, bool refresh_reach) = 0;
 };
 

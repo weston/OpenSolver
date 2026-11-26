@@ -547,7 +547,8 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           out_raw("SOLVER:\npartial: " + sub->id + "\n" + stats_block(st, el) + endl_str + "\n");
           target = accuracy_fraction_ ? accuracy_ * sub->pot : accuracy_;
         } else {
-          st = solver_->root_stats();
+          st = metal && !limit ? metal->evaluate_and_prepare(*tree_, *solver_, static_cast<int>(tick + 1 - discount_restart_))
+                               : solver_->root_stats();
           out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
           target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
         }

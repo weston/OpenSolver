@@ -87,7 +87,7 @@ class Solver:
         self.partial = None      # live/last subtree solve (#153): {node, pot, accuracy, done, ...}
         self.loaded_file = False  # the tree came from load_tree (view-only: no solving further)
         self.loaded_path = None   # ... from this file (meaningful while loaded_file; the Study report button)
-        self.drill_snapshot = None
+        self.browse_snapshot = None
         self.drill_context = None
         # The Build form the current tree's lines came from (op_generate): street refines rebuild
         # their subgames with these sizes, not with whatever the form holds by the time you browse.
@@ -376,9 +376,9 @@ class Solver:
         self.locks = {}
         self.drill_variant = None
         self.drill_context = None
-        if self.drill_snapshot:
-            self.drill_snapshot.cleanup()
-            self.drill_snapshot = None
+        if self.browse_snapshot:
+            self.browse_snapshot.cleanup()
+            self.browse_snapshot = None
         if self.undo:
             try:
                 os.remove(self.undo["path"])
@@ -568,6 +568,8 @@ def _api(solver, lib, method, path, query, body):
         if _jobs is None:
             raise SolverError("job queue not initialized")
         return _jobs.api(solver, method, path, query, body)
+    if path == "/api/files" and method == "GET":
+        return 200, saved_files(query.get("path", ["~"])[0])
     if path == "/api/refine" or path.startswith("/api/refine/"):
         if _refiner is None:
             raise SolverError("fast preview not initialized")
@@ -749,15 +751,62 @@ def _api_main(solver, lib, method, path, query, body):
 
     if path == "/api/library/save":
         b = need_body(body)
-        name = lib.save(b.get("kind"), b.get("name"), b.get("content"))
+        if b.get("kind") == "sim":
+            mode = need_body(b.get("content", {})).get("save_mode", "full")
+            if mode not in ("full", "no_rivers", "no_turns"):
+                raise SolverError("bad save mode")
+            suffix = "" if mode == "full" else " " + mode
+            with solver.cmd_lock:
+                metadata = simulation_metadata(solver) | {"save_mode": mode}
+                name = lib.save_simulation(b.get("name"), lambda tmp: solver.cmd(f'dump_tree "{safe_path(tmp)}"{suffix}', timeout=7200), metadata, b.get("overwrite") is True)
+        else:
+            name = lib.save(b.get("kind"), b.get("name"), b.get("content"))
         return 200, {"name": name}
+    if path == "/api/library/open":
+        name = need_body(body).get("name")
+        source = lib.simulation_path(name)
+        snapshot, target = lib.simulation_snapshot(name)
+        try:
+            with solver.cmd_lock:
+                api(solver, lib, "POST", "/api/load", {}, {"path": target})
+                solver.browse_snapshot = snapshot
+                solver.loaded_path = source
+                lib.update_simulation_metadata(name, lib.simulation_metadata(source) | simulation_metadata(solver))
+        except Exception:
+            if solver.browse_snapshot is not snapshot:
+                snapshot.cleanup()
+            raise
+        return 200, {"ok": True}
+    if path == "/api/library/import":
+        b = need_body(body)
+        source = os.path.abspath(os.path.expanduser(safe_path(b.get("path", ""))))
+        name = lib.save_simulation(b.get("name"), lambda tmp: shutil.copyfile(source, tmp), {})
+        return 200, {"name": name}
+    if path == "/api/library/export":
+        b = need_body(body)
+        lib.export_simulation(b.get("name"), safe_path(b.get("path", "")))
+        return 200, {"ok": True}
     if path == "/api/library/rename":
         b = need_body(body)
-        lib.rename(b.get("kind"), b.get("from"), b.get("to"))
+        if b.get("kind") == "sim" and solver is not None:
+            with solver.cmd_lock:
+                source = lib.simulation_path(b.get("from"))
+                lib.rename("sim", b.get("from"), b.get("to"))
+                if solver.loaded_path == source:
+                    solver.loaded_path = lib.simulation_path(b.get("to"))
+        else:
+            lib.rename(b.get("kind"), b.get("from"), b.get("to"))
         return 200, {"name": b.get("to")}
     if path == "/api/library/delete":
         b = need_body(body)
-        lib.delete(b.get("kind"), b.get("name"))
+        if b.get("kind") == "sim" and solver is not None:
+            with solver.cmd_lock:
+                source = lib.simulation_path(b.get("name"))
+                lib.delete("sim", b.get("name"))
+                if solver.loaded_path == source:
+                    solver.loaded_path = None
+        else:
+            lib.delete(b.get("kind"), b.get("name"))
         return 200, {"ok": True}
 
     if path == "/api/generate":
@@ -859,7 +908,7 @@ def open_drill_snapshot(solver, path, context=None):
         shutil.copyfile(path, target)
         with solver.cmd_lock:
             api(solver, None, "POST", "/api/load", {}, {"path": target})
-            solver.drill_snapshot = snapshot
+            solver.browse_snapshot = snapshot
             solver.drill_context = context
     except Exception:
         snapshot.cleanup()
@@ -1084,9 +1133,48 @@ def need_body(body):
 
 
 def safe_path(p):
-    if not isinstance(p, str) or not p or '"' in p or "\n" in p or "\r" in p:
+    if not isinstance(p, str) or not p or '"' in p or "\n" in p or "\r" in p or "\x00" in p:
         raise SolverError("bad path")
     return p
+
+
+def saved_files(path):
+    path = safe_path(path or "~")
+    target = os.path.abspath(os.path.expanduser(path))
+    selected = target if os.path.isfile(target) else None
+    directory = os.path.dirname(target) if selected else target
+    entries = []
+    try:
+        with os.scandir(directory) as scan:
+            for entry in scan:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    folder = entry.is_dir()
+                    if not folder and (not entry.name.lower().endswith(".cfr") or not entry.is_file()):
+                        continue
+                    stat = entry.stat()
+                except FileNotFoundError:
+                    continue
+                entries.append({"name": entry.name, "path": entry.path, "folder": folder,
+                                "bytes": None if folder else stat.st_size, "mtime": stat.st_mtime})
+    except OSError as error:
+        raise SolverError(str(error)) from None
+    entries.sort(key=lambda entry: (not entry["folder"], entry["name"].casefold()))
+    home = os.path.expanduser("~")
+    places = [{"name": name, "path": location} for name, location in
+              [("Home", home)] + [(name, os.path.join(home, name)) for name in ("Desktop", "Documents", "Downloads")]
+              if os.path.isdir(location)]
+    parent = os.path.dirname(directory)
+    return {"path": directory, "parent": parent if parent != directory else None,
+            "selected": selected, "entries": entries, "places": places}
+
+
+def simulation_metadata(solver):
+    node = parse_node_block(solver.cmd("show_node r:0"))
+    return {"board": "".join(node["board"].split()), "pot": sum(node["pot"]),
+            "stack": int(solver.cmd("show_effective_stack").strip()),
+            "big_blind": 100 if node["board"] else max(node["pot"][:2])}
 
 
 def no_newlines(value, name):

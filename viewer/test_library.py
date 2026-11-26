@@ -83,6 +83,45 @@ class LibraryUnitTest(unittest.TestCase):
         self.assertEqual([e["name"] for e in self.lib.list("config")],
                          ["HUNL 3BP", "HUNL SRP", "My spot"])
 
+    def test_simulation_metadata_and_open_snapshot_survive_management(self):
+        name = "SRP/Monotone"
+        def write(path):
+            with open(path, "wb") as file:
+                file.write(b"saved tree")
+        self.lib.save_simulation(name, write, {"board": "Kh9h4h", "pot": 2000})
+        self.assertEqual(self.lib.list("sim")[0]["board"], "Kh9h4h")
+        snapshot, opened = self.lib.simulation_snapshot(name)
+        self.addCleanup(snapshot.cleanup)
+        self.assertEqual(os.stat(opened).st_ino, os.stat(self.lib.simulation_path(name)).st_ino)
+        self.assertEqual(len(self.lib.list("sim")), 1)
+        self.lib.rename("sim", name, "Review/Flush board")
+        self.assertEqual(self.lib.get("sim", "Review/Flush board")["pot"], 2000)
+        backup = os.path.join(self.lib.root, "backup.cfr")
+        self.lib.export_simulation("Review/Flush board", backup)
+        with open(backup, "rb") as file:
+            self.assertEqual(file.read(), b"saved tree")
+        self.lib.delete("sim", "Review/Flush board")
+        self.assertEqual(self.lib.list("sim"), [])
+        with open(opened, "rb") as file:
+            self.assertEqual(file.read(), b"saved tree")
+
+    def test_simulation_overwrite_is_explicit_and_preserves_open_versions(self):
+        def write(path):
+            with open(path, "wb") as file:
+                file.write(b"original tree")
+        self.lib.save_simulation("Original", write, {"board": "2c3d4h"})
+        snapshot, opened = self.lib.simulation_snapshot("Original")
+        self.addCleanup(snapshot.cleanup)
+        with self.assertRaises(libm.LibraryError):
+            self.lib.save_simulation("Original", write, {})
+        def replacement(path):
+            with open(path, "wb") as file:
+                file.write(b"updated tree")
+        self.lib.save_simulation("Original", replacement, {"board": "AsKsQs"}, overwrite=True)
+        self.assertEqual(self.lib.get("sim", "Original")["board"], "AsKsQs")
+        with open(opened, "rb") as file:
+            self.assertEqual(file.read(), b"original tree")
+
     # ----- ranges -----
     def test_range_crud_nested_folders(self):
         name = "BTN vs BB/SRP/BB call"

@@ -220,6 +220,64 @@ class ViewerTest(unittest.TestCase):
         self.assertEqual(st, 200, d)
         self.assertEqual(len(d["ev"]), 1326)
 
+    def test_saved_file_browser_lists_folders_and_save_metadata_without_loading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = os.path.join(directory, "A folder")
+            os.mkdir(folder)
+            path = os.path.join(directory, "Kh9h4h.cfr")
+            with open(path, "wb") as file:
+                file.write(b"metadata only")
+            with open(os.path.join(directory, "notes.txt"), "w") as file:
+                file.write("not a save")
+            before = self.req("/api/status")[1]
+            st, listing = self.req("/api/files?path=" + urllib.parse.quote(directory))
+            self.assertEqual(st, 200, listing)
+            self.assertEqual([entry["name"] for entry in listing["entries"]], ["A folder", "Kh9h4h.cfr"])
+            self.assertTrue(listing["entries"][0]["folder"])
+            self.assertEqual(listing["entries"][1]["bytes"], 13)
+            self.assertEqual(listing["parent"], os.path.dirname(directory))
+            st, selected = self.req("/api/files?path=" + urllib.parse.quote(path))
+            self.assertEqual(st, 200, selected)
+            self.assertEqual(selected["selected"], path)
+            self.assertEqual(selected["path"], directory)
+            st, child = self.req("/api/files?path=" + urllib.parse.quote(folder))
+            self.assertEqual(st, 200, child)
+            self.assertEqual(child["entries"], [])
+            self.assertEqual(child["parent"], directory)
+            after = self.req("/api/status")[1]
+            self.assertEqual(after["tree"], before["tree"])
+            self.assertEqual(after["loaded_path"], before["loaded_path"])
+            self.assertEqual(self.req("/api/files?path=" + urllib.parse.quote(directory + "\nexit"))[0], 400)
+
+    def test_simulation_library_save_import_backup_and_browse_after_delete(self):
+        self.assertEqual(self.req("/api/generate", "POST", CFG)[0], 200)
+        self.assertEqual(self.req("/api/build", "POST")[0], 200)
+        name = "Review/Paired flop"
+        st, saved = self.req("/api/library/save", "POST", {"kind": "sim", "name": name, "content": {"save_mode": "full"}})
+        self.assertEqual(st, 200, saved)
+        entry = next(e for e in self.req("/api/library/list?kind=sim")[1]["entries"] if e["name"] == name)
+        self.assertEqual(entry["board"], CFG["board"])
+        self.assertEqual(entry["pot"], CFG["pot"])
+        self.assertEqual(entry["stack"], CFG["stack"])
+        self.assertEqual(self.req("/api/library/save", "POST", {"kind": "sim", "name": name, "content": {}})[0], 400)
+        self.assertEqual(self.req("/api/library/open", "POST", {"name": name})[0], 200)
+        with tempfile.TemporaryDirectory() as directory:
+            backup = os.path.join(directory, "backup.cfr")
+            self.assertEqual(self.req("/api/library/export", "POST", {"name": name, "path": backup})[0], 200)
+            self.assertEqual(self.req("/api/library/import", "POST", {"name": "Imported", "path": backup})[0], 200)
+        renamed = "Favorites/Paired flop"
+        self.assertEqual(self.req("/api/library/rename", "POST", {"kind": "sim", "from": name, "to": renamed})[0], 200)
+        self.assertEqual(self.req("/api/library/delete", "POST", {"kind": "sim", "name": renamed})[0], 200)
+        st, strategy = self.req("/api/strategy?id=r:0:c:c:As")
+        self.assertEqual(st, 200, strategy)
+        self.assertIn("As", strategy["node"]["board"])
+        old_snapshot = self.solver.browse_snapshot.name
+        self.assertEqual(self.req("/api/library/open", "POST", {"name": "Imported"})[0], 200)
+        self.assertFalse(os.path.exists(old_snapshot))
+        self.assertEqual(self.req("/api/library/get?kind=sim&name=Imported")[1]["content"]["board"], CFG["board"])
+        self.assertEqual(self.req("/api/library/delete", "POST", {"kind": "sim", "name": "Imported"})[0], 200)
+        self.solver.forget_locks()
+
     def test_08b_categories(self):
         # #154: category breakdown at the root decision (pre-solve strategies are uniform)
         st, d = self.req("/api/categories?id=r:0")

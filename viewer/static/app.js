@@ -2,12 +2,13 @@
 // ES modules, no build step. Talks to viewer/server.py.
 
 import { initHands } from "./cards.js";
-import { get, post, toast, fail, prefs, fmt } from "./api.js";
+import { get, post, toast, fail, fmt } from "./api.js";
 import { initStudy, gotoNode, showEmpty, study, applyUrlState, setReportBatch } from "./study.js";
 import { initBuild, updateProgress, treeLoadedElsewhere } from "./build.js";
 import { drawSpark } from "./chart.js";
 import { bigBlindOf, chipsToBb100 } from "./preflop.js";
-import { initLibrary } from "./library.js";
+import { initLibrary, openLibrary } from "./library.js";
+import { initFiles } from "./files.js";
 import { initResolve, openSizes } from "./resolve.js";
 import { initFurther, pollFurther } from "./further.js";
 import { initLock } from "./lock.js";
@@ -61,6 +62,7 @@ async function refreshRootPot() {
     const n = p.nodes[0];
     app.rootPot = (n.pot || []).reduce((a, b) => a + (b || 0), 0);
     app.bb = bigBlindOf(n);   // a preflop tree (#492): its exploitability is told in bb/100
+    return n;
   } catch (e) { app.rootPot = 0; app.bb = 0; }
 }
 
@@ -137,40 +139,27 @@ function setPill(kind, text) {
 
 /* ------------------------------------------------------------------ open / save */
 
-function fileDialog(mode) {
-  const dlg = $("file-dialog");
-  $("file-title").textContent = mode === "open" ? "Open a saved tree" : "Save tree";
-  $("file-ok").textContent = mode === "open" ? "Open" : "Save";
-  $("save-opts").classList.toggle("hidden", mode === "open");
-  $("save-hint").classList.toggle("hidden", mode === "open");
-  const lastPath = prefs.get("path", "tree.cfr");
-  $("file-path").value = typeof lastPath === "string" ? lastPath : "tree.cfr";  // a damaged pref (#392)
-  dlg.returnValue = "";
-  dlg.onclose = async () => {
-    if (dlg.returnValue !== "ok") return;
-    if (app.fileBusy) { toast("A load or save is still running", "err"); return; }  // (#386)
-    app.fileBusy = true;
-    const path = $("file-path").value.trim();
-    prefs.set("path", path);
-    try {
-      if (mode === "open") {
-        await post("/api/load", { path });
-        app.tree = true;
-        freshTree();
-        treeLoadedElsewhere();
-        await refreshRootPot();
-        toast("Opened " + path + " — later streets load as you browse");
-        setView("study");
-        study.reset();
-      } else {
-        const m = document.querySelector('input[name="savemode"]:checked').value;
-        await post("/api/save", { path, no_rivers: m === "no_rivers", no_turns: m === "no_turns" });
-        toast("Saved " + path);
-      }
-    } catch (e) { fail(e); } finally { app.fileBusy = false; }
-  };
-  dlg.showModal();
-  $("file-path").select();
+async function openTree(name) {
+  if (app.fileBusy) throw new Error("A load or save is still running");
+  app.fileBusy = true;
+  try {
+    await post("/api/library/open", { name });
+    app.tree = true;
+    freshTree();
+    treeLoadedElsewhere();
+    await refreshRootPot();
+    setView("study");
+    await study.reset();
+  } finally { app.fileBusy = false; }
+}
+
+async function saveDialog() {
+  try {
+    const path = await get("/api/path?id=r:0");
+    const node = path.nodes[0];
+    await openLibrary({ kind: "sim", mode: "save", suggest: node.board.replace(/\s/g, "") || "Simulation",
+      content: { board: node.board, pot: node.pot.reduce((sum, value) => sum + value, 0), stack: path.eff_stack } });
+  } catch (error) { fail(error); }
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -179,9 +168,10 @@ async function boot() {
   document.querySelectorAll(".view-tab").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
   document.querySelectorAll("[data-goto]").forEach((b) => (b.onclick = () => setView(b.dataset.goto)));
   $("btn-theme").onclick = toggleTheme;
-  $("btn-open").onclick = () => fileDialog("open");
-  $("empty-open").onclick = () => fileDialog("open");
-  $("btn-save").onclick = () => { if (!app.tree) toast("Nothing to save yet — build a tree first"); else fileDialog("save"); };
+  const openSimulations = () => openLibrary({ kind: "sim", mode: "load", onLoad: (_, name) => openTree(name) });
+  $("btn-open").onclick = openSimulations;
+  $("empty-open").onclick = openSimulations;
+  $("btn-save").onclick = () => { if (!app.tree) toast("Nothing to save yet — build a tree first"); else saveDialog(); };
   $("solve-pill").onclick = () => setView("build");
 
   try {
@@ -189,6 +179,7 @@ async function boot() {
   } catch (e) { fail("Cannot reach the viewer server: " + e.message); return; }
   initStudy();
   initLibrary();
+  initFiles();
   initResolve();
   initFurther();
   initLock({ changed: () => study.refresh() });

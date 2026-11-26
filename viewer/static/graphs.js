@@ -53,3 +53,22 @@ export function shareAbove(c, v) {
   for (const p of c.pts) if (p.v >= v) s += p.r;
   return s / c.total;
 }
+
+export function mixingCurve(reach, frequencies, order) {
+  const values = new Array(reach.length).fill(null);
+  const strategies = new Array(reach.length);
+  let nearlyPure = 0;
+  for (let i = 0; i < reach.length; i++) {
+    if (!(reach[i] > 0)) continue;
+    const weights = frequencies.map((row) => row[i]);
+    const total = weights.reduce((sum, p) => sum + p, 0);
+    if (!(total > 0)) continue;
+    const strategy = weights.map((p) => p / total);
+    values[i] = Math.max(1, 1 / strategy.reduce((sum, p) => sum + p * p, 0));
+    strategies[i] = strategy;
+    if (Math.max(...strategy) >= 0.9 - 1e-9) nearlyPure += reach[i];
+  }
+  const result = curve(reach, values, null, order);
+  for (const point of result.pts) point.strategy = strategies[point.i];
+  return { ...result, nearlyPure: result.total > 0 ? nearlyPure / result.total : null };
+}

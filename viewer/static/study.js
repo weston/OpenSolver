@@ -7,6 +7,7 @@ import { prepare as prepareBlockers, comboReport, classReport, shareChanges, car
 import { curves as rangeCurves, at as rangeAt, shareAbove } from "./graphs.js";
 import { sideCache } from "./sidecache.js";
 import { renderRunouts, forgetRunouts } from "./beta.js";
+import { renderMixing } from "./mixing.js";
 import { nodeShown, whenReleased } from "./preview.js";
 import { get, q, fail, toast, showTip, hideTip, fmt, fmtChips, fmtEvPct, prefs } from "./api.js";
 import { rebuildWithBoard } from "./build.js";
@@ -39,6 +40,7 @@ const S = {
   blkRemovedOpen: false,  // the blocked-combos list is unfolded
   grMetric: prefs.get("graph-metric", "eq") === "ev" ? "ev" : "eq",
   side: "hand",
+  experimental: prefs.get("experimental-view", "mixing") === "runouts" ? "runouts" : "mixing",
   seq: 0,            // navigation sequence, drops stale responses
   loaded: false,
   base: "/api",
@@ -798,11 +800,41 @@ function renderSide() {
 /** Beta, runout lines (beta.js): the lines the pinned class takes on every runout from this node, for
  *  the player whose hands the matrix shows. */
 function renderBetaPanel() {
+  const box = $("side-beta");
+  if (!box.querySelector(".experimental-tabs")) {
+    const tabs = el("div", "seg small experimental-tabs");
+    for (const [key, label] of [["mixing", "Mixing"], ["runouts", "Runouts"]]) {
+      const button = el("button", "", label);
+      button.dataset.experiment = key;
+      button.onclick = () => {
+        S.experimental = key;
+        prefs.set("experimental-view", key);
+        hideTip();
+        renderBetaPanel();
+      };
+      tabs.appendChild(button);
+    }
+    box.replaceChildren(tabs, el("div", "experimental-mixing"), el("div", "experimental-runouts"));
+  }
+  box.querySelectorAll("[data-experiment]").forEach((button) => {
+    const selected = button.dataset.experiment === S.experimental;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  const mixing = box.querySelector(".experimental-mixing");
+  const runouts = box.querySelector(".experimental-runouts");
+  mixing.classList.toggle("hidden", S.experimental !== "mixing");
+  runouts.classList.toggle("hidden", S.experimental !== "runouts");
+  if (S.experimental === "mixing") {
+    const pi = S.path.findIndex((p) => p.id === S.decId);
+    renderMixing(mixing, S.dec, S.dec?.freq ? actionsOf(S.dec, pi) : []);
+    return;
+  }
   const seq = S.seq, n = S.path[S.path.length - 1];
-  renderRunouts($("side-beta"), {
+  renderRunouts(runouts, {
     base: S.base, id: S.id, board: boardOf(n), cls: S.pinned,
     player: S.mode === "strategy" && S.dec ? S.dec.actor : viewPlayer(),
-    current: () => seq === S.seq && S.side === "beta",
+    current: () => seq === S.seq && S.side === "beta" && S.experimental === "runouts",
     goto: gotoNode,
   });
 }

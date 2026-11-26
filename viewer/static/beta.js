@@ -79,6 +79,7 @@ const cache = sideCache(get, (e) => { B.err = e; });
 export function forgetRunouts() {
   cache.invalidate();
   B.reach.clear();
+  if (B.el) B.el.box.dataset.key = "";
 }
 
 /* ------------------------------------------------------------------ colours */

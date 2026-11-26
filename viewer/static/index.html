@@ -92,7 +92,7 @@
         <button data-side="cats">Cats</button>
         <button data-side="blockers">Blockers</button>
         <button data-side="graphs" title="Each range sorted by eq or EV">Graphs</button>
-        <button data-side="beta" title="Runout lines: the lines a hand takes on every turn and river">Experimental</button>
+        <button data-side="beta">Experimental</button>
       </div>
       <div id="side-hand" class="side-page"></div>
       <div id="side-cats" class="side-page hidden"></div>
@@ -448,20 +448,30 @@
 
 <dialog id="file-dialog" class="dialog">
   <form method="dialog" id="file-form">
-    <h2 id="file-title">Open</h2>
-    <label class="field"><span>Path</span><input id="file-path" value="tree.cfr" spellcheck="false"></label>
-    <p class="hint">Resolved by the solver process, relative to the folder the viewer was started in.</p>
-    <div id="save-opts" class="radio-row">
-      <label><input type="radio" name="savemode" value="full" checked> Full tree</label>
-      <label><input type="radio" name="savemode" value="no_rivers"> No rivers</label>
-      <label><input type="radio" name="savemode" value="no_turns"> Flop only</label>
-    </div>
-    <p class="hint" id="save-hint">Smaller saves re-solve later streets on demand while you browse.</p>
+    <h2 id="file-title">Back up simulation</h2>
+    <label class="field"><span>Backup file</span><input id="file-path" value="tree.cfr" spellcheck="false"></label>
     <div class="btn-row end">
       <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
-      <button value="ok" id="file-ok" class="btn primary">Open</button>
+      <button value="ok" id="file-ok" class="btn primary">Back up</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="open-dialog" class="dialog save-browser" aria-labelledby="open-title">
+  <div class="open-head"><h2 id="open-title">Import simulation</h2><button class="btn ghost small" id="open-close" aria-label="Close">✕</button></div>
+  <div class="open-body">
+    <nav id="open-places" aria-label="Save locations"></nav>
+    <section class="open-main">
+      <div class="open-toolbar"><input id="open-search" type="search" placeholder="Search saves" aria-label="Search saves"><select id="open-sort" aria-label="Sort saves"><option value="recent">Newest first</option><option value="name">Name</option></select></div>
+      <nav id="open-breadcrumbs" aria-label="Folder"></nav>
+      <div id="open-list" role="group" aria-label="Saved simulations"></div>
+      <div id="open-pages" class="session-pagination"></div>
+    </section>
+  </div>
+  <div class="open-foot">
+    <details class="open-path"><summary>Enter a path</summary><form id="open-path-form"><input id="open-path" aria-label="File or folder path" spellcheck="false"><button class="btn small" type="submit">Go</button></form></details>
+    <div id="open-selection" class="muted"></div><button id="open-submit" class="btn primary" disabled>Select</button>
+  </div>
 </dialog>
 
 <dialog id="lib-dialog" class="dialog lib">
@@ -474,16 +484,31 @@
     <div id="lib-preview" class="lib-preview"></div>
   </div>
   <div id="lib-save-row" class="lib-save-row">
-    <label class="field"><span>Name — use / for folders</span><input id="lib-name" placeholder="BTN vs BB/SRP/BB call" spellcheck="false"></label>
+    <label class="field"><span id="lib-name-label">Name — use / for folders</span><input id="lib-name" placeholder="BTN vs BB/SRP/BB call" spellcheck="false"></label>
+    <label id="lib-folder-field" class="field hidden"><span>Folder</span><input id="lib-folder" list="sim-folders" placeholder="Library root" spellcheck="false"></label>
+    <label id="lib-sim-mode-field" class="field hidden"><span>Saved streets</span><select id="lib-sim-mode"><option value="full">Full tree</option><option value="no_rivers">Through turn</option><option value="no_turns">Flop only</option></select></label>
   </div>
   <div class="lib-foot">
     <button id="lib-rename" class="btn ghost small">Rename</button>
     <button id="lib-delete" class="btn ghost small">Delete</button>
+    <button id="lib-import" class="btn ghost small hidden">Import…</button>
+    <button id="lib-backup" class="btn ghost small hidden">Back up…</button>
     <span class="lib-where muted">Stored on this computer</span>
     <div class="topbar-spacer"></div>
     <button id="lib-cancel" class="btn ghost">Cancel</button>
     <button id="lib-ok" class="btn primary">Load</button>
   </div>
+</dialog>
+
+<datalist id="sim-folders"></datalist>
+<dialog id="sim-edit-dialog" class="dialog" aria-labelledby="sim-edit-title">
+  <form id="sim-edit-form">
+    <h2 id="sim-edit-title">Simulation</h2>
+    <label class="field"><span>Name</span><input id="sim-edit-name" required spellcheck="false"></label>
+    <label class="field"><span>Folder</span><input id="sim-edit-folder" list="sim-folders" placeholder="Library root" spellcheck="false"></label>
+    <div id="sim-edit-error" class="rerr"></div>
+    <div class="btn-row end"><button id="sim-edit-cancel" type="button" class="btn ghost">Cancel</button><button id="sim-edit-ok" type="submit" class="btn primary">Save</button></div>
+  </form>
 </dialog>
 
 <dialog id="card-dialog" class="dialog cards-dlg" aria-labelledby="cd-title">

@@ -18,11 +18,12 @@ symlink escapes (checked with os.path.realpath) are all rejected.
 
 import json
 import os
+import shutil
 import tempfile
 import time
 
 SCHEMA = 1
-KINDS = {"range": "ranges", "config": "configs"}
+KINDS = {"range": "ranges", "config": "configs", "sim": "simulations"}
 def _replace(src, dst):
     """os.replace, retried for ~2 s on Windows sharing violations: there a file another thread is replacing
     or reading at that moment can't be replaced, which is a wait, not a failure (#369)."""
@@ -35,7 +36,7 @@ def _replace(src, dst):
             time.sleep(0.02)
 
 
-EXT = {"range": ".txt", "config": ".json"}
+EXT = {"range": ".txt", "config": ".json", "sim": ".cfr"}
 MAX_NAME = 200
 MAX_COMPONENT = 100
 MAX_CONTENT = 1 << 20  # 1 MB; ranges and configs are far smaller
@@ -152,7 +153,7 @@ class Library:
             return out
         for dirpath, dirnames, filenames in os.walk(section):
             dirnames[:] = [d for d in dirnames
-                           if not os.path.islink(os.path.join(dirpath, d))]
+                           if not os.path.islink(os.path.join(dirpath, d)) and not (kind == "sim" and d.startswith(".open-"))]
             for f in sorted(filenames):
                 full = os.path.join(dirpath, f)
                 if not f.endswith(EXT[kind]) or os.path.islink(full) or not os.path.isfile(full):
@@ -166,13 +167,19 @@ class Library:
                     self._check_name(name)
                 except LibraryError:
                     continue
-                out.append({"name": name, "bytes": st.st_size, "mtime": int(st.st_mtime)})
+                entry = {"name": name, "bytes": st.st_size, "mtime": int(st.st_mtime)}
+                if kind == "sim":
+                    entry.update(self.simulation_metadata(full))
+                out.append(entry)
         out.sort(key=lambda e: e["name"])
         return out
 
     def get(self, kind, name):
         """Range content as text, or config content as a parsed JSON object."""
         path = self._existing_file(kind, name)
+        if kind == "sim":
+            stat = os.stat(path)
+            return {**self.simulation_metadata(path), "bytes": stat.st_size, "mtime": int(stat.st_mtime)}
         with open(path, "r", encoding="utf-8") as f:
             text = f.read()
         if kind == "config":
@@ -186,6 +193,8 @@ class Library:
     def save(self, kind, name, content):
         """Create or overwrite an entry, creating folders as needed."""
         path = self._resolve(kind, name)
+        if kind == "sim":
+            raise LibraryError("use the simulation save operation")
         if kind == "config":
             text = self._config_text(content)
         else:
@@ -220,10 +229,77 @@ class Library:
             raise LibraryError("target already exists")
         os.makedirs(os.path.dirname(dpath), exist_ok=True)
         os.rename(spath, dpath)
+        if kind == "sim" and os.path.isfile(spath + ".json"):
+            _replace(spath + ".json", dpath + ".json")
         self._prune_empty_dirs(self._section(kind), os.path.dirname(spath))
         return dst
 
     def delete(self, kind, name):
         path = self._existing_file(kind, name)
         os.remove(path)
+        if kind == "sim" and os.path.isfile(path + ".json"):
+            os.remove(path + ".json")
         self._prune_empty_dirs(self._section(kind), os.path.dirname(path))
+
+    def simulation_metadata(self, path):
+        try:
+            with open(path + ".json", encoding="utf-8") as file:
+                data = json.load(file)
+            stat = os.stat(path)
+            if data["bytes"] == stat.st_size and data["mtime_ns"] == stat.st_mtime_ns:
+                return {key: data["metadata"][key] for key in ("board", "pot", "stack", "big_blind", "save_mode") if key in data["metadata"]}
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return {}
+
+    def update_simulation_metadata(self, name, metadata):
+        path = self._existing_file("sim", name)
+        stat = os.stat(path)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".metadata-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as file:
+                json.dump({"bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns, "metadata": metadata}, file)
+            _replace(tmp, path + ".json")
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    def save_simulation(self, name, write_tree, metadata, overwrite=False):
+        path = self._resolve("sim", name)
+        if os.path.exists(path) and not overwrite:
+            raise LibraryError("a simulation with that name already exists")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=self._section("sim"), prefix=".simulation-", suffix=".tmp")
+        os.close(fd)
+        try:
+            write_tree(tmp)
+            _replace(tmp, path)
+            self.update_simulation_metadata(name, metadata)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        return name
+
+    def simulation_path(self, name):
+        return self._existing_file("sim", name)
+
+    def simulation_snapshot(self, name):
+        source = self.simulation_path(name)
+        snapshot = tempfile.TemporaryDirectory(prefix=".open-", dir=self._section("sim"))
+        try:
+            target = os.path.join(snapshot.name, "tree.cfr")
+            os.link(source, target)
+            return snapshot, target
+        except Exception:
+            snapshot.cleanup()
+            raise
+
+    def export_simulation(self, name, destination):
+        source = self.simulation_path(name)
+        destination = os.path.abspath(os.path.expanduser(destination))
+        with open(source, "rb") as src, open(destination, "xb") as dst:
+            try:
+                shutil.copyfileobj(src, dst, 1024 * 1024)
+            except Exception:
+                os.remove(destination)
+                raise

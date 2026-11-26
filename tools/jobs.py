@@ -1363,7 +1363,8 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
                     log(f"{tag} {pt['t']:.0f} s, exploitable for {pt['explo']:.3f} "
                         f"({100 * pt['explo'] / pot:.3f}% of pot)")
                     last_report = time.time()
-            time.sleep(0.2)
+            with s.progress_cv:
+                s.progress_cv.wait_for(lambda: s.events != st["events"] or s.dead, timeout=0.2)
         if stopping:
             return requeue("stopped")
         if phase:

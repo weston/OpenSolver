@@ -139,7 +139,7 @@ class Upi {
   void start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub = nullptr);
   void prepare_solve();
   void solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
-                          const std::string& endl_str);
+                          const std::string& endl_str, bool gpu);
   void start_subtree_solve(const NodeRef& r, double seconds, long long steps);
   std::string stats_block(const RootStats& st, double running_time);
   std::string fmt(double v) const;
@@ -225,7 +225,6 @@ class Upi {
   // solver run state
   std::thread solver_thread_;
   std::atomic<bool> solving_{false};
-  bool gpu_device_ = false;
   std::atomic<bool> stop_flag_{false};
   std::string stop_reason_;
   std::mutex tree_mu_;

@@ -391,8 +391,9 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   solving_ = true;
   // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)
   std::string endl_str = end_string_.empty() ? "END" : end_string_;
-  solver_thread_ = std::thread([this, seconds, steps, sub = std::move(sub), endl_str = std::move(endl_str)] {
-    solver_thread_main(seconds, steps, std::move(sub), endl_str);
+  const bool gpu = algorithm_ == "v4_metal";
+  solver_thread_ = std::thread([this, seconds, steps, gpu, sub = std::move(sub), endl_str = std::move(endl_str)] {
+    solver_thread_main(seconds, steps, std::move(sub), endl_str, gpu);
   });
 }
 
@@ -411,7 +412,7 @@ void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps)
 }
 
 void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
-                             const std::string& endl_str) {
+                             const std::string& endl_str, bool gpu) {
   out_raw("SOLVER: started\n");
   double best_e = std::numeric_limits<double>::infinity();  // 16-bit stall detection (#182)
   int stalled = 0;
@@ -464,7 +465,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       }
       // DCFR discount clock: the tree's own counter for a whole solve (restarted when the payoff
       // model changes), a fresh 1..N for a subtree solve (exactly what solve_partial does).
-      if (gpu_device_ && (done == 0 || metal)) {
+      if (gpu && (done == 0 || metal)) {
         const char* fallback = nullptr;
         if (sub || tree_->cfg.preflop) fallback = "subtree and preflop iterations use CPU";
         else if (tree_->compressed || solver_->predictive || !tree_->preds.empty() || tree_->payoff().icm.enabled)
@@ -656,7 +657,7 @@ void Upi::plan_outcome_tables(GameTree& t, uint64_t avail, bool compress) const 
   t.table_limit = outcome_tables_ == "auto" ? avail * 9 / 10 : 0;
   t.limit_compress = compress;
   t.limit_preds = predictive_;
-  t.gpu_tables = gpu_device_;
+  t.gpu_tables = algorithm_ == "v4_metal";
   t.allin_plan = outcome_tables_ == "fast" ? 3 : -1;
 }
 
@@ -987,15 +988,6 @@ void Upi::register_commands() {
   };
   H["solver_time"] = [this](const Args&) {  // seconds since this process started, like Pio
     return pfmt("%f", std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count());
-  };
-  H["list_devices"] = [](const Args&) { return std::string(metal_available() ? "cpu gpu" : "cpu"); };
-  H["show_device"] = [this](const Args&) { return std::string(gpu_device_ ? "gpu" : "cpu"); };
-  H["set_device"] = [this](const Args& a) {
-    if (a.size() != 1 || (a[0] != "cpu" && a[0] != "gpu")) throw CmdError{"incorrect or missing argument"};
-    if (solving_) throw CmdError{"stop the solver first"};
-    if (a[0] == "gpu" && !metal_available()) throw CmdError{"GPU unavailable"};
-    gpu_device_ = a[0] == "gpu";
-    return std::string("set_device ok!");
   };
   H["set_threads"] = [this](const Args& a) {
     long long n = arg_int(a, 0, "threads");
@@ -1333,17 +1325,23 @@ void Upi::register_commands() {
   };
   H["build_tree"] = [this](const Args& a) { return cmd_build_tree(a); };
   H["list_algorithms"] = [](const Args&) {
-    return std::string(
+    std::string algorithms(
         "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4); this solver uses one algorithm for every code\n"
         "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
         "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
         "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)");
+    if (metal_available()) algorithms += "\nv4_metal,DCFR,Apple GPU (Metal), unpruned postflop traversal";
+    return algorithms;
   };
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
     static const char* valid[] = {"auto", "v4_small", "v4_large", "pio_cfr", "original_pio"};
-    if (std::find_if(std::begin(valid), std::end(valid), [&](const char* v) { return a[0] == v; }) == std::end(valid))
+    if (a[0] == "v4_metal") {
+      if (!metal_available()) throw CmdError{"GPU unavailable"};
+    } else if (std::find(std::begin(valid), std::end(valid), a[0]) == std::end(valid))
       throw CmdError{"incorrect or missing argument"};
+    if (solving_ && a[0] != algorithm_ && (a[0] == "v4_metal" || algorithm_ == "v4_metal"))
+      throw CmdError{"stop the solver first"};
     algorithm_ = a[0];
     return std::string("set_algorithm ok!");
   };

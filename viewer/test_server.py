@@ -80,7 +80,7 @@ class ViewerTest(unittest.TestCase):
             try:
                 status, data = self.req("/api/device", "POST", {"device": "gpu"})
                 self.assertEqual(status, 200, data)
-                self.assertEqual(self.solver.cmd("show_device"), "gpu")
+                self.assertIn("algorithm:v4_metal", self.solver.cmd("show_settings"))
                 self.assertEqual(self.req("/api/progress")[1]["device"], "gpu")
             finally:
                 self.req("/api/device", "POST", {"device": "cpu"})

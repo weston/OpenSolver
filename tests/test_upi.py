@@ -2382,9 +2382,9 @@ def check_save_robustness(exe):
 def check_solve_device(exe):
     u = Upi(exe)
     try:
-        check(u.cmd("show_device") == "cpu", "CPU is the default solve device")
-        if "gpu" not in u.cmd("list_devices").split():
-            check(u.cmd("set_device gpu").startswith("ERROR"), "unavailable GPU refused")
+        check("algorithm:auto" in u.cmd("show_settings"), "CPU is the default solve device")
+        if "v4_metal," not in u.cmd("list_algorithms"):
+            check(u.cmd("set_algorithm v4_metal").startswith("ERROR"), "unavailable GPU refused")
             return
 
         setup = ("set_board Kh9h4h2c", "set_pot 0 0 100", "set_eff_stack 400",
@@ -2395,7 +2395,7 @@ def check_solve_device(exe):
             assert "ERROR" not in u.cmd(cmd), cmd
 
         def run(device):
-            assert "ok!" in u.cmd("set_device " + device)
+            assert "ok!" in u.cmd("set_algorithm " + ("v4_metal" if device == "gpu" else "auto"))
             assert "ok!" in u.cmd("build_tree")
             u.solver_msgs.clear()
             u.cmd("go 8 steps")
@@ -2412,18 +2412,29 @@ def check_solve_device(exe):
             check("ok!" in u.cmd("dump_tree " + path + " lossless") and
                   "ok!" in u.cmd("load_tree " + path) and floats(u.cmd("show_strategy r:0")) == gpu,
                   "lossless save and lazy load retain Metal strategies")
+            u.solver_msgs.clear()
+            u.cmd("go")
+            deadline = time.monotonic() + 10
+            while int(u.cmd("show_iters")) == 8 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            u.cmd("hold")
             u.cmd("lock_node r:0")
             locked = u.cmd("show_strategy r:0")
-            u.solver_msgs.clear()
-            u.cmd("go 2 steps")
-            u.cmd("wait_for_solver")
-            check(any(m[0].startswith("SOLVER: device cpu") for m in u.solver_msgs) and
-                  u.cmd("show_strategy r:0") == locked, "a GPU session honors the locked strategy on CPU")
+            tick = int(u.cmd("show_iters"))
+            u.cmd("release")
+            deadline = time.monotonic() + 10
+            while int(u.cmd("show_iters")) == tick and time.monotonic() < deadline:
+                time.sleep(0.005)
+            u.cmd("stop")
+            check(["SOLVER: device gpu"] in u.solver_msgs and
+                  any(m[0].startswith("SOLVER: device cpu") for m in u.solver_msgs) and
+                  u.cmd("show_strategy r:0") == locked, "a live lock switches Metal to CPU and preserves its strategy")
             u.cmd("unlock_node r:0")
-            u.cmd("set_device cpu")
+            tick = int(u.cmd("show_iters"))
+            u.cmd("set_algorithm auto")
             u.cmd("go 1 steps")
             u.cmd("wait_for_solver")
-            check(u.cmd("show_iters") == "11", "continue a Metal save on CPU")
+            check(int(u.cmd("show_iters")) == tick + 1, "continue a Metal save on CPU")
     finally:
         u.close()
 

@@ -120,7 +120,8 @@ class Solver:
         self._read_response()  # banner lines, skipped until the first END
         self.version = self.cmd("show_version")
         try:
-            self.devices = self.cmd("list_devices").split()
+            algorithms = self.cmd("list_algorithms").splitlines()
+            self.devices = ["cpu", "gpu"] if any(a.startswith("v4_metal,") for a in algorithms) else ["cpu"]
         except SolverError:
             self.devices = ["cpu"]
         self.device = "cpu"
@@ -650,7 +651,12 @@ def _api_main(solver, lib, method, path, query, body):
         with solver.cmd_lock:
             if device not in solver.devices:
                 raise SolverError("unknown solve device")
-            solver.cmd("set_device " + device)
+            if device == "gpu" and solver.device != "gpu":
+                settings = solver.cmd("show_settings")
+                solver.cpu_algorithm = next((line.split(":", 1)[1].strip() for line in settings.splitlines()
+                                             if line.startswith("algorithm:")), "auto")
+            if device != solver.device:
+                solver.cmd("set_algorithm " + ("v4_metal" if device == "gpu" else solver.cpu_algorithm))
             with solver.state_lock:
                 solver.device = device
         return 200, {"device": device}

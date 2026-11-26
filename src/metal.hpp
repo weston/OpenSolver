@@ -12,7 +12,7 @@ struct AllinRunouts;
 class MetalSolve {
  public:
   virtual ~MetalSolve() = default;
-  virtual void iterate(GameTree& tree, Solver& solver, int iteration) = 0;
+  virtual void iterate(GameTree& tree, Solver& solver, int iteration, bool refresh_reach) = 0;
 };
 
 #if defined(__APPLE__) && defined(__aarch64__)

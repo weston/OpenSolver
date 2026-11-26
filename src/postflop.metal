@@ -1,44 +1,43 @@
 #include <metal_stdlib>
 using namespace metal;
-#define TRAVERSAL_BUFFERS                                                                                                  \
-  device const TraversalNode *nodes [[buffer(0)]], device const uint *ids [[buffer(1)]],                         \
-      constant IterationParams &q [[buffer(2)]], device float *oop_reach [[buffer(3)]], device float *ip_reach [[buffer(4)]], \
-      device float *values [[buffer(5)]], device float *regrets [[buffer(6)]], device float *strategy_sums [[buffer(7)]],           \
+#define TRAVERSAL_BUFFERS                                                                \
+  device const TraversalNode *nodes [[buffer(0)]], device const uint *ids [[buffer(1)]], \
+      constant IterationParams &q [[buffer(2)]], device float *oop_reach [[buffer(3)]],  \
+      device float *ip_reach [[buffer(4)]], device float *values [[buffer(5)]],          \
+      device float *regrets [[buffer(6)]], device float *strategy_sums [[buffer(7)]],    \
       device const uchar2 *cards [[buffer(8)]]
-#define NODE_THREADS                                                                      \
+#define NODE_THREADS                                                                 \
   uint k [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
       uint width [[threads_per_threadgroup]]
 bool dead(uchar2 c, uint card) { return c.x == card || c.y == card; }
-kernel void propagate_reach(TRAVERSAL_BUFFERS, NODE_THREADS) {
-  uint i = ids[k];
-  TraversalNode n = nodes[i];
-  uint H = n.actor ? q.hands1 : q.hands0;
-  for (uint h = tid; h < q.stride; h += width) {
-    float x = oop_reach[n.row[0] * q.stride + h], y = ip_reach[n.row[1] * q.stride + h];
-    float total = 0;
-    if (n.kind == Decision && h < H)
-      for (uint a = 0; a < n.count; ++a) total += max(regrets[n.storage + a * H + h], 0.f);
-    for (uint a = 0; a < n.count; ++a) {
-      uint child = n.child + a;
-      float u = x, z = y;
-      if (n.kind == Decision && h < H) {
-        float s = total > 0 ? max(0.f, regrets[n.storage + a * H + h]) / total : 1.f / n.count;
-        if (n.actor)
-          z *= s;
-        else
-          u *= s;
-      } else if (n.kind == Deal) {
-        uint c = nodes[child].card;
-        if (dead(cards[h], c)) u = 0;
-        if (dead(cards[q.stride + h], c)) z = 0;
+kernel void propagate_reach(TRAVERSAL_BUFFERS, device const float* old_regrets [[buffer(12)]], NODE_THREADS) {
+  uint task = ids[k], player = task & 1;
+  TraversalNode n = nodes[task >> 1];
+  uint hands = player ? q.hands1 : q.hands0;
+  device float* reach = player ? ip_reach : oop_reach;
+  device const float* strategy_regrets = q.phase ? regrets : old_regrets;
+  for (uint h = tid; h < hands; h += width) {
+    float parent = reach[n.row[player] * q.stride + h];
+    if (n.kind == Deal) {
+      uchar2 hand = cards[player * q.stride + h];
+      for (uint a = 0; a < n.count; ++a) {
+        device const TraversalNode& child = nodes[n.child + a];
+        reach[child.row[player] * q.stride + h] = dead(hand, child.card) ? 0.f : parent;
       }
-      if (nodes[child].row[0] != n.row[0]) oop_reach[nodes[child].row[0] * q.stride + h] = u;
-      if (nodes[child].row[1] != n.row[1]) ip_reach[nodes[child].row[1] * q.stride + h] = z;
+    } else {
+      float total = 0;
+      for (uint a = 0; a < n.count; ++a) total += max(strategy_regrets[n.storage + a * hands + h], 0.f);
+      for (uint a = 0; a < n.count; ++a) {
+        float prob = total > 0 ? max(strategy_regrets[n.storage + a * hands + h], 0.f) / total : 1.f / n.count;
+        reach[nodes[n.child + a].row[player] * q.stride + h] = parent * prob;
+      }
     }
   }
 }
 kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)]],
-                          device const ushort* perms [[buffer(10)]], NODE_THREADS) {
+                          device const ushort* perms [[buffer(10)]],
+                          device const float* old_regrets [[buffer(12)]],
+                          device const float* old_sums [[buffer(13)]], NODE_THREADS) {
   uint i = ids[k];
   TraversalNode n = nodes[i];
   uint H = q.p ? q.hands1 : q.hands0;
@@ -47,7 +46,7 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
     float sum = 0;
     bool updating = n.kind == Decision && n.actor == q.p;
     if (updating)
-      for (uint a = 0; a < n.count; ++a) sum += max(regrets[n.storage + a * H + h], 0.f);
+      for (uint a = 0; a < n.count; ++a) sum += max(old_regrets[n.storage + a * H + h], 0.f);
     float node_value = 0;
     if (n.kind == Deal) {
       for (uint a = 0; a < n.deal_count; ++a) {
@@ -59,17 +58,20 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
     } else
       for (uint a = 0; a < n.count; ++a) {
         float val = values[(n.child + a) * q.stride + h];
-        float w = updating ? (sum > 0 ? max(regrets[n.storage + a * H + h], 0.f) / sum : 1.f / n.count) : 1.f;
+        float w = updating ? (sum > 0 ? max(old_regrets[n.storage + a * H + h], 0.f) / sum : 1.f / n.count) : 1.f;
         node_value = fma(w, val, node_value);
       }
     values[i * q.stride + h] = node_value;
     if (updating)
       for (uint a = 0; a < n.count; ++a) {
         uint j = n.storage + a * H + h;
-        float r = regrets[j];
+        float r = old_regrets[j];
         float s = sum > 0 ? max(r, 0.f) / sum : 1.f / n.count;
-        regrets[j] = r * (r > 0 ? q.positive_discount : q.negative_discount) + (values[(n.child + a) * q.stride + h] - node_value);
-        if (q.accumulate) strategy_sums[j] = fma(own_reach[n.row[q.p] * q.stride + h], s, strategy_sums[j] * q.average_discount);
+        regrets[j] = r * (r > 0 ? q.positive_discount : q.negative_discount) +
+                     (values[(n.child + a) * q.stride + h] - node_value);
+        strategy_sums[j] = q.accumulate
+                               ? fma(own_reach[n.row[q.p] * q.stride + h], s, old_sums[j] * q.average_discount)
+                               : old_sums[j];
       }
   }
 }
@@ -131,13 +133,13 @@ kernel void terminal(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buf
     float compat = prefix[m.end[0]] - prefix[m.end[1]] - prefix[m.end[2]] + same;
     float weaker = prefix[m.lo[0]] - prefix[m.lo[1]] - prefix[m.lo[2]];
     float weaker_or_tied = prefix[m.hi[0]] - prefix[m.hi[1]] - prefix[m.hi[2]] + same;
-    values[i * q.stride + h] = fma(n.win[q.p] - n.tie[q.p], weaker,
-                              fma(n.tie[q.p] - n.loss[q.p], weaker_or_tied, n.loss[q.p] * compat));
+    values[i * q.stride + h] =
+        fma(n.win[q.p] - n.tie[q.p], weaker, fma(n.tie[q.p] - n.loss[q.p], weaker_or_tied, n.loss[q.p] * compat));
   }
 }
-kernel void allin(TRAVERSAL_BUFFERS, device const uint* offsets [[buffer(9)]], device const float* eq [[buffer(10)]],
-                  uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
-                  ushort lane [[thread_index_in_simdgroup]]) {
+kernel void allin(TRAVERSAL_BUFFERS, device const uint* offsets [[buffer(9)]],
+                  device const float* eq [[buffer(10)]], uint2 group [[threadgroup_position_in_grid]],
+                  uint tid [[thread_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
   uint i = ids[group.x];
   TraversalNode n = nodes[i];
   uint h = group.y * 4 + tid / 32;

@@ -1,6 +1,8 @@
 #include "metal.hpp"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#include <malloc/malloc.h>
+#include <unistd.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -28,7 +30,8 @@ struct Metal {
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
     if (@available(macOS 15.0, *)) options.mathMode = MTLMathModeSafe;
 #if __MAC_OS_X_VERSION_MIN_REQUIRED < 150000
-    else options.fastMathEnabled = NO;
+    else
+      options.fastMathEnabled = NO;
 #endif
 #else
     options.fastMathEnabled = NO;
@@ -75,6 +78,48 @@ Metal& metal() {
   static Metal result;
   return result;
 }
+struct MetalRows {
+  ZVec<float> staging;
+  id<MTLBuffer> input, output;
+
+  static id<MTLBuffer> shared(Metal& metal, ZVec<float>& rows) {
+    const size_t page = getpagesize();
+    const size_t bytes = (rows.size() * sizeof(float) + page - 1) & ~(page - 1);
+    if (!bytes || uintptr_t(rows.data()) % page || bytes > metal.dev.maxBufferLength ||
+        malloc_size(rows.data()) < bytes)
+      return nil;
+    return [metal.dev newBufferWithBytesNoCopy:rows.data()
+                                        length:bytes
+                                       options:MTLResourceStorageModeShared
+                                   deallocator:nil];
+  }
+
+  void bind(Metal& metal, ZVec<float>& current) {
+    input = shared(metal, current);
+    if (input) {
+      staging.resize(current.size());
+      output = shared(metal, staging);
+      if (output) return;
+      ZVec<float>().swap(staging);
+    }
+    input = output = metal.buffer(current.size() * sizeof(float));
+  }
+
+  void prepare(const ZVec<float>& current) {
+    if (input == output && !current.empty())
+      memcpy(input.contents, current.data(), current.size() * sizeof(float));
+  }
+
+  void publish(ZVec<float>& current) {
+    if (input != output) {
+      current.swap(staging);
+      std::swap(input, output);
+    } else if (!current.empty()) {
+      memcpy(current.data(), output.contents, current.size() * sizeof(float));
+    }
+  }
+};
+
 struct BoardTables {
   vector<BoardPrefixes> boards;
   vector<uint16_t> indices;
@@ -125,12 +170,14 @@ class PostflopSolve final : public MetalSolve {
  public:
   Metal& m = metal();
   id<MTLComputePipelineState> propagate_reach, update_values, terminals, allins;
-  id<MTLBuffer> nodes, node_ids, r[2], v, regrets, strategy_sums, cards, iso, perms[2], boards[2], indices[2],
-      heroes[2], equity[2], offsets[2];
+  id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], equity[2],
+      offsets[2];
+  MetalRows regrets, strategy_sums;
   struct Range {
     size_t start, count;
   };
   vector<Range> levels;
+  vector<array<Range, 2>> reach_levels;
   Range terminal_range, allin_range;
   size_t stride, state_bytes;
   template <class V>
@@ -180,8 +227,8 @@ class PostflopSolve final : public MetalSolve {
     stride = (std::max(g.num_hands(0), g.num_hands(1)) + 31) & ~size_t(31);
     state_bytes = g.storage_floats * sizeof(float);
     check_workspace(g, available);
-    regrets = m.buffer(state_bytes);
-    strategy_sums = m.buffer(state_bytes);
+    regrets.bind(m, g.regrets);
+    strategy_sums.bind(m, g.strat);
     pack_hands(g);
     pack_nodes(g);
   }
@@ -287,6 +334,19 @@ class PostflopSolve final : public MetalSolve {
       if (list.size() > start) levels.push_back({start, list.size() - start});
       frontier = std::move(next);
     }
+    for (Range level : levels) {
+      array<Range, 2> by_player;
+      for (unsigned p = 0; p < 2; ++p) {
+        size_t start = list.size();
+        for (size_t j = level.start; j < level.start + level.count; ++j) {
+          unsigned index = list[j];
+          const auto& node = packed_nodes[index];
+          if (node.kind == Deal || (node.actor == p && node.count > 1)) list.push_back(2 * index + p);
+        }
+        by_player[p] = {start, list.size() - start};
+      }
+      reach_levels.push_back(by_player);
+    }
     terminal_range = {list.size(), terminal_ids.size()};
     list.insert(list.end(), terminal_ids.begin(), terminal_ids.end());
     allin_range = {list.size(), allin_ids.size()};
@@ -300,11 +360,9 @@ class PostflopSolve final : public MetalSolve {
     iso = copy_buffer(deals_by_node);
   }
 
-  void iterate(GameTree& g, Solver& s, int t) override {
-    if (state_bytes) {
-      memcpy(regrets.contents, g.regrets.data(), state_bytes);
-      memcpy(strategy_sums.contents, g.strat.data(), state_bytes);
-    }
+  void iterate(GameTree& g, Solver& s, int t, bool refresh_reach) override {
+    regrets.prepare(g.regrets);
+    strategy_sums.prepare(g.strat);
     auto disc = [](double z) { return float(z / (1 + z)); };
     for (unsigned phase = 0; phase < 2; ++phase) @autoreleasepool {
         unsigned p = phase ^ s.first_player;
@@ -315,7 +373,8 @@ class PostflopSolve final : public MetalSolve {
                                 disc(pow(t, s.params.alpha)),
                                 disc(pow(t, s.params.beta_at(t))),
                                 float(pow(t / (t + 1.), s.params.gamma)),
-                                unsigned(s.avg_reset || t > s.avg_delay)};
+                                unsigned(s.avg_reset || t > s.avg_delay),
+                                phase};
         if (s.avg_reset && s.avg_delay > 0 && t == s.avg_delay + 1) args.average_discount = 0.f;
         auto cmd = m.command();
         auto enc = m.encoder(cmd);
@@ -323,8 +382,10 @@ class PostflopSolve final : public MetalSolve {
         [enc setBytes:&args length:sizeof(args) atIndex:2];
         for (int j = 0; j < 2; ++j) [enc setBuffer:r[j] offset:0 atIndex:3 + j];
         [enc setBuffer:v offset:0 atIndex:5];
-        [enc setBuffer:regrets offset:0 atIndex:6];
-        [enc setBuffer:strategy_sums offset:0 atIndex:7];
+        [enc setBuffer:regrets.output offset:0 atIndex:6];
+        [enc setBuffer:regrets.input offset:0 atIndex:12];
+        [enc setBuffer:strategy_sums.output offset:0 atIndex:7];
+        [enc setBuffer:strategy_sums.input offset:0 atIndex:13];
         [enc setBuffer:cards offset:0 atIndex:8];
         auto dispatch = [&](id<MTLComputePipelineState> pipe, Range span, unsigned y = 1) {
           if (!span.count) return;
@@ -333,7 +394,11 @@ class PostflopSolve final : public MetalSolve {
           [enc dispatchThreadgroups:MTLSizeMake(span.count, y, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
           [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
         };
-        for (auto l : levels) dispatch(propagate_reach, l);
+        for (const auto& reach : reach_levels) {
+          Range span = reach[1 - p];
+          if (phase == 0 && refresh_reach) span = {reach[0].start, reach[0].count + reach[1].count};
+          dispatch(propagate_reach, span);
+        }
         [enc setBuffer:boards[p] offset:0 atIndex:9];
         [enc setBuffer:indices[p] offset:0 atIndex:10];
         [enc setBuffer:heroes[p] offset:0 atIndex:11];
@@ -348,13 +413,11 @@ class PostflopSolve final : public MetalSolve {
         [enc endEncoding];
         m.finish(cmd);
         if (t % 4 == 0)
-          s.symmetrize_root_street(p, static_cast<float*>(regrets.contents),
-                                   static_cast<float*>(strategy_sums.contents));
+          s.symmetrize_root_street(p, static_cast<float*>(regrets.output.contents),
+                                   static_cast<float*>(strategy_sums.output.contents));
       }
-    if (state_bytes) {
-      memcpy(g.regrets.data(), regrets.contents, state_bytes);
-      memcpy(g.strat.data(), strategy_sums.contents, state_bytes);
-    }
+    regrets.publish(g.regrets);
+    strategy_sums.publish(g.strat);
   }
 };
 

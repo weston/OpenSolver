@@ -13,5 +13,5 @@ struct BoardPrefixes {
 struct IterationParams {
   unsigned hands0, hands1, stride, p;
   float positive_discount, negative_discount, average_discount;
-  unsigned accumulate;
+  unsigned accumulate, phase;
 };

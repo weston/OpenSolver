@@ -436,7 +436,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   const bool tune_threads = !sub && threads_ == 0 && hw_threads >= 4;
 #endif
   std::unique_ptr<MetalSolve> metal;
-  uint64_t metal_payoff_version = 0;
+  uint64_t metal_payoff_version = 0, metal_generation = 0;
   bool pool_set = !tune_threads;  // set under tree_mu_ below: a command may be using the pool now
   try {
   for (;;) {
@@ -445,9 +445,9 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       break;
     }
     // Let pending commands run between iterations.
-    if (pause_requests_.load() > 0) {
+    if (pause_requests_.pending.load() > 0) {
       std::unique_lock<std::mutex> lk(pause_mu_);
-      pause_cv_.wait(lk, [&] { return pause_requests_.load() == 0 || stop_flag_.load(); });
+      pause_cv_.wait(lk, [&] { return pause_requests_.pending.load() == 0 || stop_flag_.load(); });
       continue;
     }
     bool report = false;
@@ -465,7 +465,8 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       }
       // DCFR discount clock: the tree's own counter for a whole solve (restarted when the payoff
       // model changes), a fresh 1..N for a subtree solve (exactly what solve_partial does).
-      if (gpu && (done == 0 || metal)) {
+      const bool refresh_reach = done == 0 || metal_generation != pause_requests_.generation;
+      if (gpu && refresh_reach && (done == 0 || metal)) {
         const char* fallback = nullptr;
         if (sub || tree_->cfg.preflop) fallback = "subtree and preflop iterations use CPU";
         else if (tree_->compressed || solver_->predictive || !tree_->preds.empty() || tree_->payoff().icm.enabled)
@@ -500,8 +501,12 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
         if (trial) pool().set_threads(tree_->tune_k % 2 == 0 ? hw_threads : hw_threads / 2);
         const auto it0 = std::chrono::steady_clock::now();
         const int tick = static_cast<int>(tree_->iterations + 1 - discount_restart_);
-        if (metal) metal->iterate(*tree_, *solver_, tick);
-        else solver_->iterate(tick);
+        if (metal) {
+          metal->iterate(*tree_, *solver_, tick, refresh_reach);
+          metal_generation = pause_requests_.generation;
+        } else {
+          solver_->iterate(tick);
+        }
         ++tree_->iterations;
         ++iterations_;
         if (trial) {
@@ -602,7 +607,7 @@ void Upi::release_hold() {
   held_ = false;
   {
     std::lock_guard<std::mutex> g(pause_mu_);  // see TreePause: no lost wake-up
-    pause_requests_.fetch_sub(1);
+    pause_requests_.pending.fetch_sub(1);
   }
   pause_cv_.notify_all();
 }
@@ -966,7 +971,7 @@ void Upi::register_commands() {
   H["hold"] = [this](const Args&) {
     if (!held_) {
       held_ = true;
-      pause_requests_.fetch_add(1);
+      pause_requests_.pending.fetch_add(1);
     }
     std::lock_guard<std::mutex> lk(tree_mu_);  // iterations run under tree_mu_
     return std::string("hold ok!");

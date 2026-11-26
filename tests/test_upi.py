@@ -2394,6 +2394,13 @@ def check_solve_device(exe):
         for cmd in setup:
             assert "ERROR" not in u.cmd(cmd), cmd
 
+        def wait_for_iterations(minimum):
+            deadline = time.monotonic() + 10
+            while int(u.cmd("show_iters")) < minimum:
+                if time.monotonic() >= deadline:
+                    raise AssertionError(f"solver did not reach iteration {minimum}")
+                time.sleep(0.002)
+
         def run(device):
             assert "ok!" in u.cmd("set_algorithm " + ("v4_metal" if device == "gpu" else "auto"))
             assert "ok!" in u.cmd("build_tree")
@@ -2412,19 +2419,34 @@ def check_solve_device(exe):
             check("ok!" in u.cmd("dump_tree " + path + " lossless") and
                   "ok!" in u.cmd("load_tree " + path) and floats(u.cmd("show_strategy r:0")) == gpu,
                   "lossless save and lazy load retain Metal strategies")
+            u.cmd("go")
+            wait_for_iterations(9)
+            u.cmd("hold")
+            tick = int(u.cmd("show_iters"))
+            edited = " ".join(["1"] * 1326 + ["0"] * 1326)
+            assert tick > 8 and "ok!" in u.cmd("set_strategy r:0 " + edited)
+            snapshot = os.path.join(tmp, "edited.cfr")
+            assert "ok!" in u.cmd("dump_tree " + snapshot + " lossless")
+            u.cmd("release")
+            wait_for_iterations(tick + 3)
+            u.cmd("stop")
+            remaining = int(u.cmd("show_iters")) - tick
+            live = u.cmd("show_strategy r:0:c:b50")
+            assert remaining > 0 and not live.startswith("ERROR") and "ok!" in u.cmd("load_tree " + snapshot)
+            u.cmd(f"go {remaining} steps")
+            u.cmd("wait_for_solver")
+            check(u.cmd("show_strategy r:0:c:b50") == live,
+                  "Metal refreshes reach after a live edit exactly as it does on reload")
+            tick = int(u.cmd("show_iters"))
             u.solver_msgs.clear()
             u.cmd("go")
-            deadline = time.monotonic() + 10
-            while int(u.cmd("show_iters")) == 8 and time.monotonic() < deadline:
-                time.sleep(0.005)
+            wait_for_iterations(tick + 1)
             u.cmd("hold")
             u.cmd("lock_node r:0")
             locked = u.cmd("show_strategy r:0")
             tick = int(u.cmd("show_iters"))
             u.cmd("release")
-            deadline = time.monotonic() + 10
-            while int(u.cmd("show_iters")) == tick and time.monotonic() < deadline:
-                time.sleep(0.005)
+            wait_for_iterations(tick + 1)
             u.cmd("stop")
             check(["SOLVER: device gpu"] in u.solver_msgs and
                   any(m[0].startswith("SOLVER: device cpu") for m in u.solver_msgs) and

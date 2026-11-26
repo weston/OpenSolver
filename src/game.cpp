@@ -886,6 +886,7 @@ void GameTree::build_allin_tables() {
         for (int o = 0; o < H1; ++o) compat[static_cast<size_t>(h) * H1 + o] = (combo_mask(hands[1][o]) & mh) == 0;
       }
     }
+  const bool use_gpu = gpu_tables && metal_available();
   std::function<void(int)> fn = [&](int k) {
     AllinRunouts& ar = allins[todo[static_cast<size_t>(k)]];
     ar.valid = static_cast<int>(std::lround(1.0 / static_cast<double>(ar.scale)));
@@ -899,7 +900,7 @@ void GameTree::build_allin_tables() {
       ar.live.clear();
       for (int h = 0; h < H0; ++h)
         if (!(combo_mask(hands[0][h]) & mask)) ar.live.push_back(static_cast<uint16_t>(h));
-      if (gpu_tables && ar.boards.empty() && ar.cards.size() == 3) {
+      if (use_gpu && ar.boards.empty() && ar.cards.size() == 3) {
         std::vector<std::array<uint32_t, 4>> boards;
         boards.reserve(ar.runouts);
         for_each_runout(ar, [&](const std::vector<int>& cards) {

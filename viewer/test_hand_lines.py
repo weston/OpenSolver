@@ -431,6 +431,15 @@ class ApiTest(unittest.TestCase):
         """A runout the hand never sees (its pot always ends first) has a box too, without lines,
         and counts in the averages (#472): the node's figure is the same over the runouts and over
         the pots, and a turn's is the average of its rivers."""
+        snapshot = tempfile.TemporaryDirectory()
+        self.addCleanup(snapshot.cleanup)
+        path = os.path.join(snapshot.name, "original.cfr")
+        self.solver.cmd(f'dump_tree "{path}" lossless')
+        self.addCleanup(self.solver.cmd, f'load_tree "{path}" full')
+        for node, action in (("r:0:b24", "c"), ("r:0:b24:c:7d", "b60")):
+            children = vsrv.parse_children(self.solver.cmd("show_children " + node))
+            freq = ["1" if c["id"] == node + ":" + action else "0" for c in children]
+            self.solver.cmd("set_strategy " + node + " " + " ".join(f for f in freq for _ in range(1326)))
         left, bare = 52 - 3, []
         for node, player, hand, takes in (("r:0:b24", "IP", "99", 0), ("r:0", "OOP", "JJ", 0), ("r:0:b24", "IP", "KsKd", 2)):
             d = self.lines(node, player, hand)

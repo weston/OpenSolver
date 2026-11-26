@@ -201,11 +201,14 @@ def money(levels, part="put"):
         lv = levels[cards]
         kids = below.get(cards)
         if not kids:
-            if exact:
+            seen_cost = seen(cards)
+            if not cards:
+                v = seen_cost
+            elif exact:
                 v = (lv.get(early_of, 0.0) + lv[part]) / lv["base"] if lv["base"] > 0 else 0.0
             else:
-                v = early + reach * seen(cards)
-            out[cards] = (v, seen(cards))
+                v = early + reach * seen_cost
+            out[cards] = (v, seen_cost)
             return v, lv["base"]
         # What a pot that ends on this street has cost. With none ending here (the chance of seeing
         # the next card can still be under one: lines too rare to be listed), what the pots that go

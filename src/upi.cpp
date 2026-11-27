@@ -537,6 +537,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           tree_->train_missing_rivers = false;
         }
         ++tree_->iterations;
+        solver_->update_flop_opening();
         ++iterations_;
         if (trial) {
           tree_->tune_s[tree_->tune_k % 2] += std::chrono::duration<double>(std::chrono::steady_clock::now() - it0).count();
@@ -704,12 +705,13 @@ static bool flop_ip_opens_betting(const GameTree& tree) {
 }
 
 std::string Upi::cmd_build_tree(const Args& a) {
-  bool auto_flop_order = false;
+  bool auto_flop_order = false, sqrt_opening = false;
   bool mem_ignore = ignore_mem_check_;
   bool pessimistic = false;
   GameConfig c = cfg_;
   for (auto& s : a) {
     if (s == "auto_flop_order") auto_flop_order = true;
+    else if (s == "sqrt_flop_opening") sqrt_opening = true;
     else if (s == "mem_ignore") mem_ignore = true;
     else if (s == "mem_pessimistic") pessimistic = true;
     else if (auto sizing = river_sizing_option(s); sizing != RiverSizing::Full) c.river_sizing = sizing;
@@ -722,6 +724,8 @@ std::string Upi::cmd_build_tree(const Args& a) {
   c.subset.clear();
   auto result = build_from(c, mem_ignore, pessimistic, "build_tree ok!");
   solver_->flop_ip_first = auto_flop_order && !first_player_ && flop_ip_opens_betting(*tree_);
+  if (sqrt_opening && solver_->uses_flop_ip_first())
+    solver_->set_flop_opening(FlopOpening::SquareRoot);
   return result;
 }
 
@@ -817,6 +821,7 @@ void Upi::apply_pcfr_settings() {
   if (!solver_) return;
   cached_root_stats_.reset();
   solver_->predictive = predictive_;
+  solver_->update_flop_opening();
   solver_->avg_delay = avg_delay_;
   // Costs storage_floats * 4 bytes, committed immediately. ZeroAlloc::allocate does use
   // calloc, so the pages start out lazy, but vector::resize then value-initializes every
@@ -1223,6 +1228,8 @@ void Upi::register_commands() {
     if (solver_) {
       solver_->first_player = p;
       solver_->flop_ip_first = false;
+      solver_->set_flop_opening(FlopOpening::Ordinary);
+      cached_root_stats_.reset();
     }
     return std::string("set_first_iteration_player ok!");
   };

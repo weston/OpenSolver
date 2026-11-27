@@ -44,10 +44,17 @@ struct Metal {
   [[noreturn]] static void fail(NSError* error) {
     throw std::runtime_error(error ? error.localizedDescription.UTF8String : "Metal command failed");
   }
-  id<MTLComputePipelineState> pipeline(NSString* name, bool replay = false) {
+  id<MTLComputePipelineState> pipeline(NSString* name, bool replay = false, bool early = false) {
     NSError* error = nil;
     auto descriptor = [MTLComputePipelineDescriptor new];
-    descriptor.computeFunction = [library newFunctionWithName:name];
+    descriptor.label = name;
+    if (replay) {
+      auto constants = [MTLFunctionConstantValues new];
+      [constants setConstantValue:&early type:MTLDataTypeBool atIndex:0];
+      descriptor.computeFunction = [library newFunctionWithName:name constantValues:constants error:&error];
+      if (!descriptor.computeFunction) fail(error);
+    } else
+      descriptor.computeFunction = [library newFunctionWithName:name];
     descriptor.supportIndirectCommandBuffers = replay;
     auto state = [dev newComputePipelineStateWithDescriptor:descriptor
                                                     options:MTLPipelineOptionNone
@@ -247,6 +254,8 @@ class PostflopSolve final : public MetalSolve {
     NSUInteger count = 0;
   };
   Replay replays[2][2][2];
+  bool early_replay = false;
+  NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* early_pipelines = [NSMutableDictionary new];
   id<MTLBuffer> params[2];
   unsigned state_slot = 0;
   template <class V>
@@ -745,7 +754,16 @@ class PostflopSolve final : public MetalSolve {
     auto dispatch = [&](id<MTLComputePipelineState> pipe, Range span, size_t scratch = 0, unsigned y = 1) {
       if (!span.count) return;
       auto c = [plan.commands indirectComputeCommandAtIndex:plan.count++];
-      [c setComputePipelineState:pipe];
+      id<MTLComputePipelineState> selected = pipe;
+      if (early_replay && pipe != terminals && pipe != allins && pipe != advance_forced) {
+        auto name = pipe.label;
+        selected = early_pipelines[name];
+        if (!selected) {
+          selected = m.pipeline(name, true, true);
+          early_pipelines[name] = selected;
+        }
+      }
+      [c setComputePipelineState:selected];
       for (unsigned i = 0; i < 15; ++i)
         if (buffers[i]) [c setKernelBuffer:buffers[i] offset:i == 1 ? span.start * 4 : 0 atIndex:i];
       if (scratch) [c setThreadgroupMemoryLength:(scratch + 15) & ~size_t(15) atIndex:0];
@@ -797,6 +815,14 @@ class PostflopSolve final : public MetalSolve {
   }
 
   id<MTLCommandBuffer> submit(GameTree& g, Solver& s, int t, bool refresh_reach) {
+    const bool early = s.sqrt_regret_weights();
+    const bool policy_changed = early != early_replay;
+    if (policy_changed) {
+      early_replay = early;
+      for (auto& slot : replays)
+        for (auto& player : slot)
+          for (auto& plan : player) plan = {};
+    }
     regrets.prepare(g.regrets, refresh_reach);
     strategy_sums.prepare(g.strat, refresh_reach);
     auto disc = [](double z) { return float(z / (1 + z)); };
@@ -816,8 +842,9 @@ class PostflopSolve final : public MetalSolve {
                                 phase};
         if (s.avg_reset && s.avg_delay > 0 && t == s.avg_delay + 1) args.average_discount = 0.f;
         memcpy(params[p].contents, &args, sizeof(args));
-        auto& plan = replays[state_slot][p][phase == 0 && refresh_reach];
-        if (!plan.commands) plan = record(g, p, phase == 0 && refresh_reach);
+        const bool refresh_both = phase == 0 && (refresh_reach || policy_changed);
+        auto& plan = replays[state_slot][p][refresh_both];
+        if (!plan.commands) plan = record(g, p, refresh_both);
         auto enc = m.encoder(cmd);
         id<MTLResource> read[] = {nodes, node_ids, params[p], cards, boards[p], indices[p], heroes[p], rounds,
                                   bet_check_nodes, two_bet_nodes, lead_check_nodes, allin_batches, equity_tables, equity[p], iso, perms[p],

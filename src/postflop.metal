@@ -8,6 +8,11 @@ using namespace metal;
 #define NODE_THREADS                                                                 \
   uint k [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
       uint width [[threads_per_threadgroup]]
+constant bool sqrt_regret_weights [[function_constant(0)]];
+template <class T> T regret_weight(T value) {
+  const T positive = max(value, T(0.f));
+  return sqrt_regret_weights ? sqrt(positive) : positive;
+}
 bool dead(uchar2 c, uint card) { return c.x == card || c.y == card; }
 bool blocked(uchar2 c, uint board) { return board && (dead(c, (board & 255) - 1) || dead(c, (board >> 8) - 1)); }
 
@@ -20,9 +25,9 @@ kernel void propagate_reach(TRAVERSAL_BUFFERS, device const float* old_regrets [
   for (uint h = tid; h < hands; h += width) {
     float parent = reach[n.reach_offset[player] + h];
     float total = 0;
-    for (uint a = 0; a < n.count; ++a) total += max(strategy_regrets[n.storage + a * hands + h], 0.f);
+    for (uint a = 0; a < n.count; ++a) total += regret_weight(strategy_regrets[n.storage + a * hands + h]);
     for (uint a = 0; a < n.count; ++a) {
-      float prob = total > 0 ? max(strategy_regrets[n.storage + a * hands + h], 0.f) / total : 1.f / n.count;
+      float prob = total > 0 ? regret_weight(strategy_regrets[n.storage + a * hands + h]) / total : 1.f / n.count;
       reach[nodes[n.child + a].reach_offset[player] + h] = parent * prob;
     }
   }
@@ -38,7 +43,7 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
     float sum = 0;
     bool updating = n.kind == Decision && n.actor == q.p;
     if (updating)
-      for (uint a = 0; a < n.count; ++a) sum += max(old_regrets[n.storage + a * H + h], 0.f);
+      for (uint a = 0; a < n.count; ++a) sum += regret_weight(old_regrets[n.storage + a * H + h]);
     float node_value = 0;
     if (n.kind == Deal) {
       for (uint a = 0; a < n.deal_count; ++a) {
@@ -51,14 +56,14 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
     } else
       for (uint a = 0; a < n.count; ++a) {
         float val = values[(a == 0 ? n.value_row : n.child_value + a - 1) * q.stride + h];
-        float w = updating ? (sum > 0 ? max(old_regrets[n.storage + a * H + h], 0.f) / sum : 1.f / n.count) : 1.f;
+        float w = updating ? (sum > 0 ? regret_weight(old_regrets[n.storage + a * H + h]) / sum : 1.f / n.count) : 1.f;
         node_value = fma(w, val, node_value);
       }
     if (updating)
       for (uint a = 0; a < n.count; ++a) {
         uint j = n.storage + a * H + h;
         float r = old_regrets[j];
-        float s = sum > 0 ? max(r, 0.f) / sum : 1.f / n.count;
+        float s = sum > 0 ? regret_weight(r) / sum : 1.f / n.count;
         regrets[j] = r * (r > 0 ? q.positive_discount : q.negative_discount) +
                      (values[(a == 0 ? n.value_row : n.child_value + a - 1) * q.stride + h] - node_value);
         strategy_sums[j] =
@@ -204,7 +209,7 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
   } else {
     device const float* r = q.phase ? regrets : old_regrets;
     for (uint j = tid; j < O; j += width) {
-      float c = max(r[n.storage + j], 0.f), f = max(r[n.storage + O + j], 0.f);
+      float c = regret_weight(r[n.storage + j]), f = regret_weight(r[n.storage + O + j]);
       float total = c + f;
       float mass = blocked(cards[(1 - q.p) * q.stride + j], n.public_cards) ? 0.f : opp[j];
       call_reach[j] = mass * (total > 0 ? c / total : .5f);
@@ -224,8 +229,8 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
       float fv = fold_pay * compat;
       uint j = n.storage + h;
       float rc = old_regrets[j], rf = old_regrets[j + H];
-      float total = max(rc, 0.f) + max(rf, 0.f);
-      float sc = total > 0 ? max(rc, 0.f) / total : .5f, sf = total > 0 ? max(rf, 0.f) / total : .5f;
+      float total = regret_weight(rc) + regret_weight(rf);
+      float sc = total > 0 ? regret_weight(rc) / total : .5f, sf = total > 0 ? regret_weight(rf) / total : .5f;
       v = fma(sf, fv, sc * cv);
       regrets[j] = rc * (rc > 0 ? q.positive_discount : q.negative_discount) + (cv - v);
       regrets[j + H] = rf * (rf > 0 ? q.positive_discount : q.negative_discount) + (fv - v);
@@ -286,13 +291,13 @@ kernel void allin(TRAVERSAL_BUFFERS, device const AllinTable* tables [[buffer(9)
 }
 
 float2 binary_strategy(device const float* r, uint j, uint H) {
-  float2 pos = max(float2(r[j], r[j + H]), 0.f);
+  float2 pos = regret_weight(float2(r[j], r[j + H]));
   float total = pos.x + pos.y;
   return total > 0 ? pos / total : float2(.5f);
 }
 
 float3 raise_strategy(device const float* r, uint j, uint H) {
-  float3 pos = max(float3(r[j], r[j + H], r[j + 2 * H]), 0.f);
+  float3 pos = regret_weight(float3(r[j], r[j + H], r[j + 2 * H]));
   float sum = pos.x + pos.y + pos.z;
   return sum > 0 ? pos / sum : float3(1.f / 3.f);
 }
@@ -431,7 +436,7 @@ kernel void river_bet_check(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
 float4 two_bet_strategy(device const float* r, uint j, uint H, bool can_fold, bool has_big_bet) {
   if (!has_big_bet) return float4(0.f, raise_strategy(r, j, H));
   if (!can_fold) return float4(raise_strategy(r, j, H), 0.f);
-  float4 positive = max(float4(r[j], r[j + H], r[j + 2 * H], r[j + 3 * H]), 0.f);
+  float4 positive = regret_weight(float4(r[j], r[j + H], r[j + 2 * H], r[j + 3 * H]));
   float sum = positive.x + positive.y + positive.z + positive.w;
   return sum > 0 ? positive / sum : float4(.25f);
 }

@@ -889,6 +889,7 @@ void Upi::set_node_strategy(uint32_t ni, const float* strat, bool persist) {
   // solving (it is written as a dominant regret); under original_pio / pio_cfr it is only a start.
   // persist = false: only a start under every algorithm (eliminate_path, #421).
   cached_root_stats_.reset();
+  solver_->cancel_flop_opening();
   const float regret_scale = (!persist || tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
   const GNode& n = tree_->nodes[ni];
   int A = n.num_children, H = tree_->num_hands(n.player);
@@ -966,6 +967,7 @@ std::string Upi::cmd_set_mes(const Args& a) {
   std::vector<float> out(Hp);
   // Like set_strategy (set_node_strategy): under the v4 algorithms Pio's written best response persists
   // through further solving, under original_pio / pio_cfr it is a start (#423, paired probes).
+  solver_->cancel_flop_opening();
   solver_->br_regret_scale = (tree_alg_ == "original_pio" || tree_alg_ == "pio_cfr") ? 1.0f : 1e7f;
   cached_root_stats_.reset();
   solver_->write_best_response = true;
@@ -1089,6 +1091,7 @@ void Upi::ensure_recalced(const NodeRef& r) {
   double pot = an.dead + an.inv[0] + an.inv[1];
   double acc = recalc_accuracy_[std::clamp(street - 3, 0, 2)] * pot;
   double secs = always_recalc_ms_ > 0 ? always_recalc_ms_ / 1000.0 : 0.0;
+  solver_->cancel_flop_opening();
   if (!solve_metal_river(sub, acc, secs)) solve_subtree(sub, acc, 5000, secs);
   tree_->recalced.insert(sub.node);
 }
@@ -1130,6 +1133,7 @@ std::string Upi::cmd_solve_all_splits(const Args& a) {
       locked.push_back(ni);
     }
   }
+  solver_->cancel_flop_opening();
   double acc = recalc_accuracy_[street - 3];
   double target = acc > 0 ? acc * tree_->cfg.start_pot() / 100.0 : 0.0;
   double prev = 1e30;
@@ -1350,6 +1354,7 @@ void Upi::register_node_commands() {
     std::fill(tree_->rscale.begin(), tree_->rscale.end(), 0.0f);
     std::fill(tree_->preds.begin(), tree_->preds.end(), 0.0f);
     tree_->iterations = 0;
+    solver_->restart_flop_opening();
     iterations_ = 0;
     discount_restart_ = 0;
     return std::string("rebuild_tree ok!");
@@ -1532,6 +1537,7 @@ void Upi::register_node_commands() {
     // A fresh start, as in Pio (show_iters 0; 60 iterations later it is exactly a fresh 60-iteration solve,
     // #425): the DCFR discounts and the average's weighting restart with the count.
     tree_->iterations = 0;
+    solver_->restart_flop_opening();
     iterations_ = 0;
     discount_restart_ = 0;
     return std::string("set_equal_strats ok!");

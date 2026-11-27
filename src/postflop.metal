@@ -123,10 +123,11 @@ Sum compatible_mass(threadgroup const Entry* prefix, uchar2 cards, Sum same) {
          Sum(prefix[first_card_prefix + cards.y]) + same;
 }
 
-float showdown_payoff(HandPrefixes m, threadgroup const float* prefix, float same, float mass, float win, float loss, float tie) {
-  float compat = m.live ? mass : 0.f;
-  float weaker = prefix[m.lo[0]] - prefix[m.lo[1]] - prefix[m.lo[2]];
-  float weaker_or_tied = prefix[m.hi[0]] - prefix[m.hi[1]] - prefix[m.hi[2]] + same;
+template <typename Sum, typename Entry>
+Sum showdown_payoff(HandPrefixes m, threadgroup const Entry* prefix, Sum same, Sum mass, Sum win, Sum loss, Sum tie) {
+  Sum compat = m.live ? mass : Sum(0);
+  Sum weaker = Sum(prefix[m.lo[0]]) - Sum(prefix[m.lo[1]]) - Sum(prefix[m.lo[2]]);
+  Sum weaker_or_tied = Sum(prefix[m.hi[0]]) - Sum(prefix[m.hi[1]]) - Sum(prefix[m.hi[2]]) + same;
   return fma(win - tie, weaker, fma(tie - loss, weaker_or_tied, loss * compat));
 }
 
@@ -399,13 +400,46 @@ kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* b
     float3 same = m.same >= 0 ? float3(reaches[m.same]) : 0.f;
     uchar2 c = cards[p * q.stride + h];
     float3 mass = compatible_mass(prefix, c, same);
-    float3 live = m.live ? mass : float3(0);
-    float3 lo = float3(prefix[m.lo[0]]) - float3(prefix[m.lo[1]]) - float3(prefix[m.lo[2]]);
-    float3 hi = float3(prefix[m.hi[0]]) - float3(prefix[m.hi[1]]) - float3(prefix[m.hi[2]]) + same;
-    float3 sd = fma(win - tie, lo, fma(tie - loss, hi, loss * live));
+    float3 sd = showdown_payoff(m, prefix, same, mass, win, loss, tie);
     float reach = blocked(c, n.public_cards) ? 0.f : own[h];
     values[n.value_row * q.stride + h] =
         update_river_round(r, q, old_r, old_s, regrets, strategy_sums, h, H, reach, leading, sd, mass);
+  }
+}
+
+kernel void river_bet_check(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
+                            device const PrefixEntry* indices [[buffer(10)]],
+                            device const HandPrefixes* heroes [[buffer(11)]], device const float* old_r [[buffer(12)]],
+                            device const float* old_s [[buffer(13)]], device const RiverRound* rounds [[buffer(14)]],
+                            threadgroup float2* prefix [[threadgroup(0)]], NODE_THREADS) {
+  device const RiverRound& r = rounds[k];
+  TraversalNode n = nodes[r.root];
+  device const BoardPrefixes& b = boards[r.board];
+  uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
+  bool bettor = n.actor == p;
+  device const float* opp = (p ? oop_reach : ip_reach) + n.reach_offset[1 - p];
+  device const float* own = (p ? ip_reach : oop_reach) + n.reach_offset[p];
+  device const float* opp_regrets = q.phase ? regrets : old_r;
+  threadgroup float2* reaches = prefix + b.prefix_count;
+  for (uint j = tid; j < O; j += width) {
+    float2 policy = binary_strategy(opp_regrets, r.storage[bettor ? 1 : 0] + j, O);
+    reaches[j] = opp[j] * (bettor ? float2(policy.x, 1.f) : policy);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  river_prefixes<float2>(b, indices, reaches, prefix, tid);
+  float2 win = {r.win[0][p], r.win[1][p]}, loss = {r.loss[0][p], r.loss[1][p]}, tie = {r.tie[0][p], r.tie[1][p]};
+  for (uint h = tid; h < H; h += width) {
+    HandPrefixes m = heroes[b.hand_offset + h];
+    float2 same = m.same >= 0 ? reaches[m.same] : float2(0);
+    uchar2 c = cards[p * q.stride + h];
+    float2 mass = compatible_mass(prefix, c, same);
+    float2 sd = showdown_payoff(m, prefix, same, mass, win, loss, tie);
+    uint j = r.storage[bettor ? 0 : 1] + h;
+    float2 policy = binary_strategy(old_r, j, H);
+    float reach = blocked(c, n.public_cards) ? 0.f : own[h];
+    float2 cfv = bettor ? float2(sd.x + r.fold[0][p] * (mass.y - mass.x), sd.y) : float2(sd.x, r.fold[0][p] * mass.x);
+    float value = update_binary(regrets, strategy_sums, old_r, old_s, q, j, H, reach, policy, cfv);
+    values[n.value_row * q.stride + h] = bettor ? value : value + sd.y;
   }
 }
 

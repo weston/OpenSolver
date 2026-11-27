@@ -1265,7 +1265,7 @@ static bool smart_river_spr() {
   for (int bet : {350, 475, 600, 700}) lines.add.push_back({0, 0, 300, 300, bet});
   std::string err;
   auto root = build_action_tree(params, lines, err);
-  if (!root || !simplify_rivers(*root, params.eff_stack)) return false;
+  if (!root || !simplify_rivers(*root, params.eff_stack, RiverSizing::Smart)) return false;
   std::vector<ActionNode*> nodes;
   index_action_tree(root.get(), nodes);
   auto bets = [&](const std::vector<int32_t>& line) {
@@ -1276,9 +1276,14 @@ static bool smart_river_spr() {
           if (a.kind == ActKind::Bet) out.push_back(a.total);
     return out;
   };
-  return bets({0, 0, 0, 0}) == std::vector<int>({700, 150, 25}) &&
-         bets({0, 0, 300, 300}) == std::vector<int>({700}) &&
-         bets({0, 0}) == std::vector<int>({300});
+  if (bets({0, 0, 0, 0}) != std::vector<int>({700, 150, 25}) ||
+      bets({0, 0, 300, 300}) != std::vector<int>({700}) || bets({0, 0}) != std::vector<int>({300})) return false;
+  lines.add.push_back({0, 0, 0, 0, 75, 300, 700});
+  root = build_action_tree(params, lines, err);
+  if (!root || !simplify_rivers(*root, params.eff_stack, RiverSizing::Single)) return false;
+  index_action_tree(root.get(), nodes);
+  return bets({0, 0, 0, 0}) == std::vector<int>({75}) && bets({0, 0, 0, 0, 75}) == std::vector<int>({300}) &&
+         bets({0, 0, 0, 0, 75, 300}).empty() && bets({0, 0}) == std::vector<int>({300});
 }
 
 int main(int argc, char** argv) {

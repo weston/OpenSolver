@@ -7,6 +7,7 @@ Builds a tiny tree (a few MB), solves it briefly and exercises the whole JSON AP
 static files, hand order, generate/estimate/build, browsing, strategy grid data,
 range/EV views, live solving progress, save + load. Runs in well under 20 s.
 """
+import itertools
 import json
 import os
 import subprocess
@@ -674,10 +675,13 @@ class ViewerTest(unittest.TestCase):
         deep = river + ":b75"
         self.assertIn(deep, expected)
         replies = children(deep)
-        for device in self.solver.devices:
-            with self.subTest(device=device):
+        adaptive = build(True)
+        self.assertLess(adaptive, full)
+        self.assertLess(build("single"), adaptive)
+        for device, mode in itertools.product(self.solver.devices, (True, "single")):
+            with self.subTest(device=device, mode=mode):
                 self.assertEqual(self.req("/api/device", "POST", {"device": device})[0], 200)
-                self.assertLess(build(True), full)
+                build(mode)
                 self.solver.cmds(["set_accuracy 0", "go 12 steps", "wait_for_solver"])
                 self.assertEqual(self.solver.state()["active_device"], device)
                 before = self.solver.cmd("show_strategy r:0:c")
@@ -699,7 +703,7 @@ class ViewerTest(unittest.TestCase):
                     self.solver.cmd("stop")
                     self.solver.unhold("test")
                 stats = self.solver.cmd("calc_results")
-                name = "Smart tree " + device
+                name = f"Smart tree {device} {mode}"
                 self.assertEqual(self.req("/api/library/save", "POST", {"kind": "sim", "name": name,
                                       "content": {"save_mode": "full"}})[0], 200)
                 entries = self.req("/api/library/list?kind=sim")[1]["entries"]

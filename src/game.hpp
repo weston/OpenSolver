@@ -68,7 +68,7 @@ struct SubsetFlop {
 };
 
 struct GameConfig {
-  bool smart_rivers = false;
+  RiverSizing river_sizing = RiverSizing::Full;
   bool preflop = false;            // preflop tree (board empty): lines are preflop lines
   std::vector<Schematic> schematics;
   std::vector<SubsetFlop> subset;  // used only when schematics are attached (full preflop tree)

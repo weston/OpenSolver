@@ -369,7 +369,7 @@ class Queue:
 
     def add_batch(self, name: str, setup: list[str], flops: list[tuple[str, float]], accuracy: float,
                   max_iters: int | None, max_seconds: float | None, save: str, out_dir: str | None,
-                  source: str = "", smart_tree: bool = False) -> list[dict]:
+                  source: str = "", smart_tree: bool | str = False) -> list[dict]:
         if not NAME_RE.match(name):
             raise JobError("batch names: letters, digits, space, _ . + - (max 100), not ending in . or space")
         if save not in SAVE_MODES:
@@ -1226,7 +1226,7 @@ def close_solver(s) -> None:
             pass
 
 
-def check_tree(solver_exe: str, setup: list[str], board: str, smart_tree: bool = False) -> str:
+def check_tree(solver_exe: str, setup: list[str], board: str, smart_tree: bool | str = False) -> str:
     """Validate a batch's tree on one board without building it; returns the size estimate.
 
     estimate_schematic_tree expands every line, so a bad tree fails here at `add` instead of failing

@@ -680,8 +680,8 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   ap.dead = cfg.pot[2];
   aroot = build_action_tree(ap, cfg.lines, err);
   if (!aroot) return false;
-  cfg.smart_rivers = cfg.smart_rivers && bl == 3 && simplify_rivers(*aroot, cfg.eff_stack);
-  smart_turns = cfg.smart_rivers;
+  smart_turns = bl == 3 && cfg.river_sizing != RiverSizing::Full && simplify_rivers(*aroot, cfg.eff_stack, cfg.river_sizing);
+  if (!smart_turns) cfg.river_sizing = RiverSizing::Full;
   schematic_roots.clear();
   if (cfg.full_preflop()) {
     if (cfg.subset.empty()) {

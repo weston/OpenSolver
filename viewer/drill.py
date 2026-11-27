@@ -494,7 +494,7 @@ class DrillService:
             tree = live_tree(body)
             config["spot"] = str(body.get("spot", ""))
             config.update(board_plan(body, tree))
-            config["smart_tree"] = tree.get("smart_tree") is True
+            config["smart_tree"] = vsrv.smart_tree_mode(tree.get("smart_tree"))
             config["setup"], _ = vsrv.setup_from_body({**tree, "board": config["board"]})
         for key, default, limit in (("accuracy", 0.5, 100), ("seconds", 60, 3600)):
             value = body.get(key, default)

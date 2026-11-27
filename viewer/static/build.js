@@ -546,6 +546,7 @@ export function updateProgress(st, series, rootPot, bb = 0, rootCardCount = 0) {
 
 export function initBuild({ built }) {
   $("smart-tree").addEventListener("change", markDirty);
+  $("river-sizing").addEventListener("change", markDirty);
   $("flop-stability").addEventListener("change", syncAccuracy);
   onBuilt = built || onBuilt;
   editors.OOP = new RangeEditor(document.querySelector('.editor[data-player="OOP"]'), "OOP", saveForm);

@@ -2417,6 +2417,91 @@ def check_save_robustness(exe):
               f"go / go_partial on an unreadable lazy tree answer once each ({blocks[:3]})")
 
 
+def check_flop_update_order(exe, test_metal=True):
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "viewer"))
+    from server import tree_build_command
+
+    medium = "build_tree smart_rivers"
+    automatic = tree_build_command("build_tree", True)
+
+    def solve(build=automatic, *, board="Ah3cQd", lines=("0 30 90",), first=None, storage="off",
+              override=None, load=None, save=None, go="go 4 steps", algorithm="auto", predictive=False):
+        u = Upi(exe)
+        try:
+            def run(command):
+                reply = u.cmd(command)
+                assert not reply.startswith("ERROR"), (command, reply)
+                return reply
+            for cmd in ("set_algorithm " + algorithm, "set_threads 1", "small_strats " + storage,
+                        "set_avg_delay 0", "set_accuracy 0", "set_collapse_checkdowns on"):
+                run(cmd)
+            if first:
+                run("set_first_iteration_player " + first)
+            if load:
+                if predictive:
+                    run("set_predictive on")
+                run("load_tree " + load + " full")
+            else:
+                for cmd in ("set_board " + board, "set_pot 0 0 100", "set_eff_stack 300",
+                            "set_range OOP KK,JJ,87s", "set_range IP QQ,TT,AQs"):
+                    run(cmd)
+                for line in (*lines, "0 0 0 0 10", "0 0 0 0 30", "0 0 0 0 65"):
+                    run("add_line " + line)
+                run(build)
+                if predictive:
+                    run("set_predictive on")
+            if override:
+                run("set_first_iteration_player " + override)
+            run(go)
+            run("wait_for_solver")
+            if algorithm == "v4_metal":
+                assert ["SOLVER: device gpu"] in u.solver_msgs
+            if save:
+                run("dump_tree " + save + " lossless")
+            return floats(run("show_strategy r:0:c"))
+        finally:
+            u.close()
+
+    ip = solve(medium, first="IP")
+    oop = solve(medium, first="OOP")
+    check(ip != oop and solve(medium) == oop and solve() == ip,
+          "the app's forced-check rainbow flop starts IP, ordinary UPI starts OOP")
+    check(solve(first="OOP") == oop and solve(override="OOP") == oop,
+          "an explicit OOP order wins before and after the automatic build")
+    for setup in (dict(board="Ah3hQd"), dict(board="AhAcQd"), dict(lines=("0 30 90", "25")),
+                  dict(lines=("0 300",)), dict(predictive=True),
+                  dict(storage="on"), dict(build="build_tree auto_flop_order"),
+                  dict(build="build_tree single_river_size auto_flop_order")):
+        check(solve(**setup) == solve(first="OOP", **setup), "retains the standard order for " + str(setup))
+    extra = ("0 30 90", "0 50 110")
+    check(solve(lines=extra) == solve(first="IP", lines=extra), "two opening IP bet sizes also start IP")
+    partial = "go_partial r:0:c 4 steps"
+    check(solve(go=partial) == solve(medium, go=partial), "a subtree solve keeps its own update order")
+    with tempfile.TemporaryDirectory() as tmp:
+        marked, unmarked = (os.path.join(tmp, n + ".cfr") for n in ("auto", "standard"))
+        solve(save=marked)
+        solve(medium, save=unmarked)
+        resumed = solve(load=marked)
+        check(resumed == solve(load=marked, first="IP") and resumed != solve(load=marked, first="OOP"),
+              "a lossless fresh-session resume honors the automatic order and an explicit override")
+        for mode in (dict(predictive=True), dict(storage="on")):
+            default = solve(load=marked, **mode)
+            check(default == solve(load=marked, first="OOP", **mode) and default != solve(load=marked, first="IP", **mode),
+                  "a marked save respects the current solve mode and explicit order for " + str(mode))
+        check(solve(load=unmarked) == solve(load=unmarked, first="OOP"),
+              "a save without an ordering flag retains the UPI default")
+    if test_metal:
+        probe = Upi(exe)
+        try:
+            available = "v4_metal," in probe.cmd("list_algorithms")
+        finally:
+            probe.close()
+        if available:
+            gpu = solve(algorithm="v4_metal")
+            check(max(abs(a - b) for a, b in zip(ip, gpu)) < 0.002,
+                  "Metal and CPU agree on the app's forced-check flop")
+
+
 def check_solve_device(exe):
     u = Upi(exe)
     try:
@@ -2591,6 +2676,7 @@ def check_solve_device(exe):
 
 def main(exe, big=False):
     check_solve_device(exe)
+    check_flop_update_order(exe)
     check_framing(exe)
     check_save_robustness(exe)
     check_tree_construction_edges(exe)

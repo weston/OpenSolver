@@ -804,7 +804,7 @@ class PostflopSolve final : public MetalSolve {
       auto cmd = m.command();
       const bool symmetrize = t % 4 == 0 && g.perm_all.size() > 1;
       for (unsigned phase = 0; phase < 2; ++phase) {
-        unsigned p = phase ^ s.first_player;
+        unsigned p = phase ^ s.whole_tree_first_player();
         IterationParams args = {unsigned(g.num_hands(0)),
                                 unsigned(g.num_hands(1)),
                                 unsigned(stride),
@@ -847,7 +847,7 @@ class PostflopSolve final : public MetalSolve {
 
   void finish_iteration(id<MTLCommandBuffer> cmd, GameTree& g, Solver& s, int t) {
     m.wait(cmd);
-    if (t % 4 == 0 && g.perm_all.size() > 1) symmetrize_output(s, 1 - s.first_player);
+    if (t % 4 == 0 && g.perm_all.size() > 1) symmetrize_output(s, 1 - s.whole_tree_first_player());
   }
 
   RootStats evaluate_and_prepare(GameTree& g, Solver& s, int next) override {

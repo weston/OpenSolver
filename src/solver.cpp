@@ -2190,7 +2190,7 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
   }
 }
 
-void Solver::iterate(int t) {
+void Solver::iterate(int t, int first) {
   g_.round_seed = static_cast<uint32_t>(t) * 0x27D4EB2Fu + 0x165667B1u;  // stochastic rounding (game.hpp)
   double td = static_cast<double>(t);
   double pa = std::pow(td, params.alpha);
@@ -2209,7 +2209,7 @@ void Solver::iterate(int t) {
   // destroys convergence (flop_3bet to 0.2% pot: 50 -> 230 iterations at period 32).
   prune_this_iter_ = pruning && prune_period > 1 && t > 2 * prune_period && t % prune_period != 0;  // #380
   for (int k = 0; k < 2; ++k) {
-    int p = k == 0 ? first_player : 1 - first_player;
+    int p = k == 0 ? first : 1 - first;
     ArenaScope sc;
     float* out = sc.a.alloc(g_.num_hands(p));
     walk_t<Walk::CFR>(0, p, g_.init_reach[p].data(), g_.init_reach[1 - p].data(), out);

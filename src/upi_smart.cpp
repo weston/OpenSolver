@@ -66,7 +66,8 @@ Upi& Upi::river_view() {
   view.predictive_ = solver_->predictive;
   view.apply_pcfr_settings();
   view.solver_->avg_reset = solver_->avg_reset;
-  view.solver_->first_player = first_player_;
+  view.solver_->first_player = solver_->first_player;
+  view.solver_->flop_ip_first = solver_->uses_flop_ip_first();
   view.solver_->pruning = pruning_;
   view.solver_->prune_period = prune_period_;
   std::copy_n(recalc_accuracy_, 3, view.recalc_accuracy_);

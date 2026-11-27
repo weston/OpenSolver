@@ -279,7 +279,7 @@ class Upi {
   bool ignore_mem_check_ = false;
   int compression_precision_ = 11, compression_level_ = 11;
   int display_perm_ = IDENTITY_PERM;
-  int first_player_ = 0;
+  std::optional<int> first_player_;
   bool icm_tables_defined_ = false;
   long long discount_restart_ = 0;  // tree iteration at which the DCFR discount clock restarted
   std::chrono::steady_clock::time_point start_time_;

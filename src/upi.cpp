@@ -529,7 +529,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
             release_metal_memory();
           }
         }
-        if (!metal) solver_->iterate(tick);
+        if (!metal) solver_->iterate(tick, solver_->whole_tree_first_player());
         if (tree_->train_missing_rivers) {
           tree_->missing_street = 0;
           tree_->incomplete = false;
@@ -685,12 +685,32 @@ void Upi::stop_solver(const char* reason) {
 
 // ------------------------------------------------------------------------------------------------
 
+static bool flop_ip_opens_betting(const GameTree& tree) {
+  const auto& board = tree.cfg.board;
+  if (tree.cfg.river_sizing != RiverSizing::Smart || board.size() != 3) return false;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = i + 1; j < 3; ++j) {
+      if (card_suit(board[i]) == card_suit(board[j]) || card_rank(board[i]) == card_rank(board[j])) return false;
+    }
+  }
+  const auto& oop = *tree.aroot;
+  if (oop.kind != ANodeKind::Decision || oop.player != 0 || oop.actions.size() != 1 ||
+      oop.actions[0].kind != ActKind::Check) return false;
+  const auto& ip = *oop.children[0];
+  if (ip.kind != ANodeKind::Decision || ip.player != 1 || ip.actions.back().kind != ActKind::Check) return false;
+  return std::any_of(ip.actions.begin(), ip.actions.end(), [&](const Action& action) {
+    return action.kind == ActKind::Bet && action.total < tree.cfg.eff_stack;
+  });
+}
+
 std::string Upi::cmd_build_tree(const Args& a) {
+  bool auto_flop_order = false;
   bool mem_ignore = ignore_mem_check_;
   bool pessimistic = false;
   GameConfig c = cfg_;
   for (auto& s : a) {
-    if (s == "mem_ignore") mem_ignore = true;
+    if (s == "auto_flop_order") auto_flop_order = true;
+    else if (s == "mem_ignore") mem_ignore = true;
     else if (s == "mem_pessimistic") pessimistic = true;
     else if (auto sizing = river_sizing_option(s); sizing != RiverSizing::Full) c.river_sizing = sizing;
     else throw CmdError{"incorrect or missing argument"};
@@ -700,7 +720,9 @@ std::string Upi::cmd_build_tree(const Args& a) {
   c.preflop = false;
   c.schematics.clear();
   c.subset.clear();
-  return build_from(c, mem_ignore, pessimistic, "build_tree ok!");
+  auto result = build_from(c, mem_ignore, pessimistic, "build_tree ok!");
+  solver_->flop_ip_first = auto_flop_order && !first_player_ && flop_ip_opens_betting(*tree_);
+  return result;
 }
 
 // The outcome tables of a preflop tree's runout sets (#494, #496) are the faster way to value them and,
@@ -771,7 +793,7 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
   payoff_ = pm;
   solver_ = std::make_unique<Solver>(*tree_);
   solver_->river_batch = Solver::river_batch_for(*tree_);
-  solver_->first_player = first_player_;
+  solver_->first_player = first_player_.value_or(0);
   solver_->params = dcfr_;
   apply_pcfr_settings();
   solver_->pruning = pruning_;
@@ -1198,7 +1220,10 @@ void Upi::register_commands() {
       throw CmdError{"incorrect or missing argument"};  // Pio: not "incorrect player" here
     int p = player_arg(a[0]);
     first_player_ = p;
-    if (solver_) solver_->first_player = p;
+    if (solver_) {
+      solver_->first_player = p;
+      solver_->flop_ip_first = false;
+    }
     return std::string("set_first_iteration_player ok!");
   };
 

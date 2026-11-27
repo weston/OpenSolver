@@ -116,6 +116,9 @@ class Solver {
 
   DcfrParams params;
   int first_player = 0;  // set_first_iteration_player
+  bool flop_ip_first = false;
+  bool uses_flop_ip_first() const { return flop_ip_first && !predictive && !g_.compressed; }
+  int whole_tree_first_player() const { return uses_flop_ip_first() ? 1 : first_player; }
   bool parallel = true;
   bool write_best_response = false;  // BestResponse walks store the pure BR strategy (set_mes)
   float br_regret_scale = 1.0f;      // ...with the best action's regret this large (set_strategy's, #423)
@@ -264,7 +267,8 @@ class Solver {
   void iterate_subtree(uint32_t ni, int t, const float* r0, const float* r1);
 
   // One full iteration (both players). `t` is the 1-based iteration number.
-  void iterate(int t);
+  void iterate(int t) { iterate(t, first_player); }
+  void iterate(int t, int first);
 
   // Generic traversal from node `ni` for player p. reach vectors are in the canonical frame of the
   // node, of length H[p] and H[1-p]. out has length H[p] (counterfactual values).

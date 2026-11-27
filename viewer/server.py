@@ -1615,6 +1615,8 @@ def tree_build_command(command, smart_tree):
     mode = smart_tree_mode(smart_tree)
     if mode == "single":
         return command + " single_river_size"
+    if mode and command == "build_tree":
+        return command + " smart_rivers auto_flop_order"
     return command + (" smart_rivers" if mode else "")
 
 

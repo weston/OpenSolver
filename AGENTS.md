@@ -170,25 +170,36 @@ with a duplicated job key passes a naive local parse and is then rejected by Git
 ## GPU solve
 
 `set_algorithm v4_gpu` runs whole-tree postflop solves on a GPU (README, "GPU solving"): Metal on
-Apple Silicon (`src/metal.mm`, `src/postflop.metal`), OpenCL 2.0 elsewhere (`src/opencl.cpp`,
-`src/postflop.cl`, tree packing in `src/gpu_pack.hpp`). The two kernel sets are the same passes: a
-change to one is a change to both, and `tests/test_upi.py`'s `check_solve_device` compares either
-against the CPU (it runs only where `list_algorithms` shows `v4_gpu`). The OpenCL backend was
-written and measured on an AMD Radeon RX 9060 XT under Windows 11 (MSYS2 UCRT64 build).
+Apple Silicon (`src/metal.mm`, `src/postflop.metal`), and everywhere else CUDA on NVIDIA
+(`src/cuda.cpp`) or OpenCL on AMD and other GPUs (`src/opencl.cpp`), both through
+`src/gpu_solve.cpp` (the solve, `MetalSolve` for a discrete GPU) and `src/gpu_pack.hpp` (the tree
+packing, a copy of metal.mm's). The CUDA and OpenCL kernels are one source, `src/postflop.cl` and
+`src/flop_table.cl`, in a macro dialect (`src/gpu_opencl.h`, `src/gpu_cuda.h`): OpenCL C 1.2 with no
+SIMD-group or 2.0 features, so it also compiles as CUDA C++ under NVRTC.
 
-- **Profiling.** `WSOLVER_GPU_PROFILE=1` in the solver's environment (OpenCL only; a developer switch,
-  in no user document) prints the plan's shape, each kernel's GPU time from queue events, and the
-  wall time of setup and of every state copy to stderr at exit. It waits for every command, so read
+- **Keep the backends in step.** postflop.metal and postflop.cl are the same passes: a change to one
+  is a change to the other, and the record layouts in `src/metal_layout.h` are shared.
+  `tests/test_upi.py` (`check_solve_device`, `check_flop_update_order`, `check_sampled_averaging`)
+  compares whichever GPU `list_algorithms` shows as `v4_gpu` against the CPU, exact equality
+  included; it is skipped where there is none.
+- **Testing without the hardware.** The OpenCL path was written and measured on an AMD Radeon RX
+  9060 XT under Windows 11 (MSYS2 UCRT64). The CUDA path has never run on an NVIDIA GPU: only its
+  kernel compile was checked, with NVRTC 12.9 from PyPI (`pip install nvidia-cuda-nvrtc-cu12`) on
+  build/cuda_kernels.inc for compute_52 to compute_90 and all three state variants.
+  `WSOLVER_GPU_BACKEND=opencl` (or `cuda`) forces one backend, so an NVIDIA machine can compare them.
+- **Profiling.** `WSOLVER_GPU_PROFILE=1` in the solver's environment (CUDA and OpenCL; a developer
+  switch, in no user document) prints the plan's shape, each kernel's GPU time, and the wall time of
+  setup, kernel compiles and every state copy to stderr at exit. It waits for every command, so read
   the shares, not the total.
 - **Where OpenCL time went (RX 9060 XT vs 32 Zen 5 threads, 2026-11-26).** A full copy of regrets and
-  sums to the tree after each iteration was 40% of GPU time, so the state stays on the device and
-  is copied when the CPU reads it (reports, a TreePause, the end; `MetalSolve::sync`,
-  `TreePauseRequests::sync`). After that the river kernels are 60-75%: they are latency-bound, not
-  bandwidth-bound (work-group width 64/128/256, correctly rounded division and the one-channel
-  round variant were each measured and changed nothing or lost). A whole-group serial scan beat the
-  52 serial card spans of the Metal design only by 25% on terminals.
+  sums to the tree after each iteration was 40% of GPU time, so the state stays on the device and is
+  copied when the CPU reads it (`publish_for_cpu`: reports, a TreePause, the end). The river kernels
+  are then most of it, latency-bound rather than bandwidth-bound (work-group width 64/128/256 and
+  correctly rounded division were measured and changed nothing). The river prefix sums scan a
+  whole board table with the whole work-group, where Metal gives each card span to one SIMD lane.
 - **Discrete GPU memory.** The tree must fit the card: `small_strats auto` keeps float32 under
-  `v4_gpu` only when it should (a 16-bit tree solves on the CPU).
+  `v4_gpu` only when it should (a 16-bit tree solves on the CPU). Discrete GPUs are not the default
+  device (`gpu_preferred`), Metal is.
 
 ## Layout
 
@@ -204,6 +215,8 @@ written and measured on an AMD Radeon RX 9060 XT under Windows 11 (MSYS2 UCRT64 
 | `src/equity.*`, `src/categories.*` | calc_eq family, range explorer |
 | `src/pfh2h.*` | exact preflop hand-vs-hand win/tie table (suit-isomorphic generation, cached in ~/.cache/wsolver) |
 | `src/upi*.cpp` | command processor, node queries, save/load |
+| `src/metal.mm`, `src/postflop.metal` | the GPU solve on Apple Silicon (Metal) |
+| `src/gpu_solve.cpp`, `src/gpu_pack.hpp`, `src/postflop.cl` | the GPU solve on CUDA (`src/cuda.cpp`) and OpenCL (`src/opencl.cpp`) |
 | `tests/pio_compare/` | black-box comparison harness against a real PioSOLVER |
 
 Key invariants:

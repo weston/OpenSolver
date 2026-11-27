@@ -634,8 +634,8 @@ static bool allin_tables_match() {
   return bad == 0 && terminals > 0;
 }
 
-static bool metal_postflop_allin_table_matches() {
-  if (!metal_available()) return true;
+static bool gpu_postflop_allin_table_matches() {
+  if (!gpu_available()) return true;
   GameConfig cfg;
   parse_cards("KhQs7d", cfg.board);
   std::string err;
@@ -654,7 +654,7 @@ static bool metal_postflop_allin_table_matches() {
   counts.clear();
   tree.gpu_tables = true;
   tree.build_allin_tables();
-  std::printf("[Metal postflop flop all-in] %zu hand pairs, counts %s\n", expected.size(),
+  std::printf("[GPU postflop flop all-in] %zu hand pairs, counts %s\n", expected.size(),
               counts == expected ? "identical" : "differ");
   return !expected.empty() && counts == expected;
 }
@@ -1440,7 +1440,7 @@ int main(int argc, char** argv) {
   fails += !decompress_midsolve();
   fails += !stochastic_sums();
   fails += !allin_tables_match();
-  fails += !metal_postflop_allin_table_matches();
+  fails += !gpu_postflop_allin_table_matches();
   fails += !flop_deal_adds_up();
   fails += !reach_digits_sums();
   fails += !preflop_runout_tables();

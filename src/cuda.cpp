@@ -166,8 +166,23 @@ struct Nvrtc {
     for (const char* v : {"/usr/local/cuda/lib64/libnvrtc.so"}) names.push_back(v);
 #endif
     Library lib = nullptr;
-    for (const auto& name : names)
+    for (const auto& name : names) {
+#if defined(_WIN32)
+      // NVRTC loads its builtins (nvrtc-builtins64_<version>.dll) by name when it compiles: from a
+      // toolkit folder that is not on the search path, load them first, from beside it.
+      const size_t slash = name.rfind('\\');
+      if (slash != std::string::npos) {
+        WIN32_FIND_DATAA found;
+        HANDLE h = FindFirstFileA((name.substr(0, slash + 1) + "nvrtc-builtins64_*.dll").c_str(), &found);
+        if (h != INVALID_HANDLE_VALUE) {
+          do open_library((name.substr(0, slash + 1) + found.cFileName).c_str());
+          while (FindNextFileA(h, &found));
+          FindClose(h);
+        }
+      }
+#endif
       if ((lib = open_library(name.c_str()))) break;
+    }
     if (!lib) return false;
     bool ok = true;
     auto get = [&](auto& fn, const char* name) {

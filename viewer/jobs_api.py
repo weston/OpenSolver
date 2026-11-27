@@ -207,7 +207,7 @@ class JobsService:
         max_iters = num("max_iters", int, 1)
         save = str(b.get("save", "no_rivers"))
         try:
-            smart = tree.get("smart_tree") is True
+            smart = vsrv.smart_tree_mode(tree.get("smart_tree"))
             est = jobs.check_tree(self.solver_exe, setup, flops[0][0], smart)
             added = self.q.add_batch(name, setup, flops, accuracy, max_iters, None, save, None,
                                      source="viewer Tree form", smart_tree=smart)

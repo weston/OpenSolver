@@ -331,7 +331,7 @@ void index_action_tree(ActionNode* root, std::vector<ActionNode*>& out) {
   }
 }
 
-bool simplify_rivers(ActionNode& node, int32_t stack) {
+bool simplify_rivers(ActionNode& node, int32_t stack, RiverSizing sizing) {
   bool reduced = false;
   if (node.board_len == 5 && node.kind == ANodeKind::Decision &&
       std::any_of(node.actions.begin(), node.actions.end(), [](auto a) { return a.kind != ActKind::Bet; })) {
@@ -344,7 +344,7 @@ bool simplify_rivers(ActionNode& node, int32_t stack) {
     for (size_t i = 0; i < node.actions.size(); ++i) {
       const auto& action = node.actions[i];
       if (action.kind != ActKind::Bet) continue;
-      if (action.total == stack && (mine != facing || spr > 1)) jam = true;
+      if (sizing == RiverSizing::Smart && action.total == stack && (mine != facing || spr > 1)) jam = true;
       else {
         keep[i] = false;
         sizes.push_back(i);
@@ -357,7 +357,9 @@ bool simplify_rivers(ActionNode& node, int32_t stack) {
       keep[*std::min_element(sizes.begin(), sizes.end(),
                              [&](size_t a, size_t b) { return distance(a) < distance(b); })] = true;
     };
-    if (mine == facing) {
+    if (sizing == RiverSizing::Single) {
+      if (mine == node.street_start[node.player]) closest(0.75);
+    } else if (mine == facing) {
       closest(spr <= 2 || node.player == 1 ? 0.75 : 0.25);
       if (spr > 2) closest(1.5);
     } else if (!jam || (spr > 3 && mine == node.street_start[node.player])) {
@@ -370,7 +372,7 @@ bool simplify_rivers(ActionNode& node, int32_t stack) {
       node.children.erase(node.children.begin() + i);
     }
   }
-  for (auto& child : node.children) reduced |= simplify_rivers(*child, stack);
+  for (auto& child : node.children) reduced |= simplify_rivers(*child, stack, sizing);
   return reduced;
 }
 

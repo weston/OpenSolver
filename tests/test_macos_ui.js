@@ -12,6 +12,15 @@ await wait(() => $('drill-ahead').oninput);
 check([...document.querySelectorAll('.view-tab')].map(b => b.textContent).join(',') === 'Tree,Browse,Drill,Jobs,Settings', 'missing app tabs');
 
 tab('settings');
+const { smartTree } = await import('/settings.js');
+check(smartTree() === true, 'smart tree should start with adaptive sizing');
+$('river-sizing').value = 'single';
+$('river-sizing').dispatchEvent(new Event('change', { bubbles: true }));
+check(smartTree() === 'single', 'single river sizing was not selected');
+$('smart-tree').click();
+check(smartTree() === false && $('river-sizing-field').classList.contains('hidden'), 'full tree should use configured sizes');
+$('smart-tree').click();
+check(smartTree() === 'single', 'enabling Smart tree should restore the selected sizing');
 $('drill-ahead').value = '4';
 $('drill-ahead').dispatchEvent(new Event('input', {bubbles: true}));
 check(localStorage.getItem('ws-drill-ahead') === '4', 'settings could not be stored');

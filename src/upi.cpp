@@ -60,6 +60,12 @@ std::vector<std::string> tokenize(const std::string& line) {
   return out;
 }
 
+RiverSizing river_sizing_option(const std::string& option) {
+  if (option == "smart_rivers") return RiverSizing::Smart;
+  if (option == "single_river_size") return RiverSizing::Single;
+  return RiverSizing::Full;
+}
+
 bool parse_int(const std::string& s, long long& v) {
   if (s.empty()) return false;
   char* end = nullptr;
@@ -352,7 +358,7 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
     TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     return it->second(args);
   }
-  if (tree_ && tree_->cfg.smart_rivers) return smart_command(cmd, args, it->second);
+  if (tree_ && tree_->cfg.river_sizing != RiverSizing::Full) return smart_command(cmd, args, it->second);
   return it->second(args);
 }
 
@@ -668,17 +674,16 @@ void Upi::stop_solver(const char* reason) {
 
 std::string Upi::cmd_build_tree(const Args& a) {
   bool mem_ignore = ignore_mem_check_;
-  bool pessimistic = false, smart_rivers = false;
+  bool pessimistic = false;
+  GameConfig c = cfg_;
   for (auto& s : a) {
     if (s == "mem_ignore") mem_ignore = true;
     else if (s == "mem_pessimistic") pessimistic = true;
-    else if (s == "smart_rivers") smart_rivers = true;
+    else if (auto sizing = river_sizing_option(s); sizing != RiverSizing::Full) c.river_sizing = sizing;
     else throw CmdError{"incorrect or missing argument"};
   }
   // Pio 3.10.1: no board, or no lines added, is "missing/incorrect tree" (probe 19)
   if (cfg_.board.size() < 3 || cfg_.lines.add.empty()) throw CmdError{"missing/incorrect tree"};
-  GameConfig c = cfg_;
-  c.smart_rivers = smart_rivers;
   c.preflop = false;
   c.schematics.clear();
   c.subset.clear();
@@ -794,7 +799,8 @@ std::string Upi::estimate_text(const Args& args) {
   t.set_payoff(payoff_);
   std::string err;
   GameConfig config = cfg_;
-  config.smart_rivers = std::find(args.begin(), args.end(), "smart_rivers") != args.end();
+  for (const auto& arg : args)
+    if (auto sizing = river_sizing_option(arg); sizing != RiverSizing::Full) config.river_sizing = sizing;
   if (!t.build(config, err, false)) throw CmdError{err};
   uint64_t b = t.memory_bytes_for(false, predictive_), bs = t.memory_bytes_for(true, predictive_);
   // Pio prints both algorithms; here v4_large = float32 storage, v4_small = 16-bit (small_strats).

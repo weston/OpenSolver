@@ -25,13 +25,22 @@ export function updateDevice(st) {
 }
 
 export function smartTree() {
-  return prefs.get("smart-tree", true) === true;
+  if (prefs.get("smart-tree", true) !== true) return false;
+  return prefs.get("river-sizing", "adaptive") === "single" ? "single" : true;
 }
 
 export function initSettings() {
   const smart = document.getElementById("smart-tree");
-  smart.checked = smartTree();
-  smart.onchange = () => prefs.set("smart-tree", smart.checked);
+  const sizing = document.getElementById("river-sizing");
+  smart.checked = Boolean(smartTree());
+  sizing.value = prefs.get("river-sizing", "adaptive");
+  const sizingField = document.getElementById("river-sizing-field");
+  sizingField.classList.toggle("hidden", !smart.checked);
+  smart.onchange = () => {
+    prefs.set("smart-tree", smart.checked);
+    sizingField.classList.toggle("hidden", !smart.checked);
+  };
+  sizing.onchange = () => prefs.set("river-sizing", sizing.value);
   const device = document.getElementById("solve-device");
   device.onchange = async () => {
     savingDevice = true;

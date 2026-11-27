@@ -1594,8 +1594,15 @@ def tree_config_from_body(b):
         raise SolverError(f"bad sizes: {e}")
 
 
+def smart_tree_mode(value):
+    return "single" if value == "single" else value is True
+
+
 def tree_build_command(command, smart_tree):
-    return command + (" smart_rivers" if smart_tree is True else "")
+    mode = smart_tree_mode(smart_tree)
+    if mode == "single":
+        return command + " single_river_size"
+    return command + (" smart_rivers" if mode else "")
 
 
 def setup_from_body(b):

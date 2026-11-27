@@ -9,7 +9,7 @@ namespace pio {
 Upi& Upi::river_view() {
   if (!river_view_) {
     GameConfig full = tree_->cfg;
-    full.smart_rivers = false;
+    full.river_sizing = RiverSizing::Full;
     auto view = std::make_unique<Upi>();
     view->tree_ = std::make_unique<GameTree>();
     std::string err;

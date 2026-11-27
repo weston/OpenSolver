@@ -410,7 +410,7 @@ std::string Upi::cmd_show_hand_lines(const Args& a) {
   std::vector<float> own0, opp0;
   if (hero == 0) node_reach(r, own0, opp0); else node_reach(r, opp0, own0);
   std::vector<float> own = own0, opp = opp0;
-  int stop = tree_->cfg.smart_rivers ? 5 : tree_->missing_street;  // first street without strategies to read (4 = turn, 5 = river)
+  int stop = tree_->cfg.river_sizing != RiverSizing::Full ? 5 : tree_->missing_street;  // first street without strategies to read (4 = turn, 5 = river)
   if (always_recalc_street_ >= 3 && (stop == 0 || always_recalc_street_ < stop)) stop = always_recalc_street_;
 
   std::string out = "combos:";

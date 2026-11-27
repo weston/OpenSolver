@@ -318,8 +318,10 @@ class JobsApiTest(unittest.TestCase):
         original = self.solver.state()["device"]
         self.addCleanup(self.req, "/api/device", "POST", {"device": original})
         name = "device-selection"
-        status, body = self.req("/api/jobs/add", "POST", {"name": name, "tree": TREE, "flops": "Kh9h4h", "max_iters": 5})
+        tree = dict(TREE, smart_tree="single", river_bet="25,75,150", stack=200, allin_threshold=100)
+        status, body = self.req("/api/jobs/add", "POST", {"name": name, "tree": tree, "flops": "Kh9h4h", "max_iters": 5})
         self.assertEqual(status, 200, body)
+        self.assertEqual(self.service.q.batch(name)["smart_tree"], "single")
         job = self.service.q.jobs(name)[0]
         for device in ("cpu", "gpu"):
             if device == "gpu":
@@ -330,6 +332,7 @@ class JobsApiTest(unittest.TestCase):
             finished = self.service.q.job(job["id"])
             self.assertEqual(finished["status"], "done", finished)
             self.assertEqual(finished["result"]["device"], device)
+            self.assertEqual(finished["result"]["save_mode"], "no_rivers")
 
     def test_04_static(self):
         with urllib.request.urlopen(self.base + "/jobs.js", timeout=10) as f:

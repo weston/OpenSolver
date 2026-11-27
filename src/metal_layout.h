@@ -15,10 +15,12 @@ enum : unsigned { empty_prefix = 0, total_prefix = 1, first_card_prefix = 2, fir
 struct BoardPrefixes {
   unsigned index_offset, hand_offset, start[54], prefix_count;
 };
+enum AverageMode : unsigned { DenseAverage, WeightedAverage, SkipAverage };
 struct IterationParams {
   unsigned hands0, hands1, stride, p;
   float positive_discount, negative_discount, average_discount;
   unsigned accumulate, phase;
+  float sample_weight;
 };
 
 enum RiverRoundKind : unsigned { BetBothSides, FinalRaise, BetWithRaise, BetThenCheck };

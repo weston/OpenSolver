@@ -1,4 +1,5 @@
 #include "metal.hpp"
+#include "average_sampling.hpp"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <malloc/malloc.h>
@@ -44,13 +45,15 @@ struct Metal {
   [[noreturn]] static void fail(NSError* error) {
     throw std::runtime_error(error ? error.localizedDescription.UTF8String : "Metal command failed");
   }
-  id<MTLComputePipelineState> pipeline(NSString* name, bool replay = false, bool early = false) {
+  id<MTLComputePipelineState> pipeline(NSString* name, bool replay = false, bool early = false,
+                                       AverageMode average_mode = DenseAverage) {
     NSError* error = nil;
     auto descriptor = [MTLComputePipelineDescriptor new];
     descriptor.label = name;
     if (replay) {
       auto constants = [MTLFunctionConstantValues new];
       [constants setConstantValue:&early type:MTLDataTypeBool atIndex:0];
+      [constants setConstantValue:&average_mode type:MTLDataTypeUInt atIndex:1];
       descriptor.computeFunction = [library newFunctionWithName:name constantValues:constants error:&error];
       if (!descriptor.computeFunction) fail(error);
     } else
@@ -100,6 +103,7 @@ Metal& metal() {
   return result;
 }
 struct MetalRows {
+  unsigned slot = 0;
   bool copied = false;
   ZVec<float> staging;
   id<MTLBuffer> input, output;
@@ -138,6 +142,7 @@ struct MetalRows {
     if (input != output) {
       current.swap(staging);
       std::swap(input, output);
+      slot ^= 1;
     } else if (!current.empty()) {
       memcpy(current.data(), output.contents, current.size() * sizeof(float));
     }
@@ -253,11 +258,13 @@ class PostflopSolve final : public MetalSolve {
     id<MTLIndirectCommandBuffer> commands;
     NSUInteger count = 0;
   };
-  Replay replays[2][2][2];
+  struct {
+    Replay plans[3][2][2][2][2];  // average mode, regret slot, strategy slot, updating player, refreshed reach
+  } replays;
+  bool write_sums = true;
   bool early_replay = false;
-  NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* early_pipelines = [NSMutableDictionary new];
+  NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* specialized_pipelines[2][3]{};
   id<MTLBuffer> params[2];
-  unsigned state_slot = 0;
   template <class V>
   id<MTLBuffer> copy_buffer(const V& x) {
     auto n = x.size() * sizeof(x[0]);
@@ -737,7 +744,7 @@ class PostflopSolve final : public MetalSolve {
     iso = copy_buffer(deals_by_node);
   }
 
-  Replay record(const GameTree& g, unsigned p, bool refresh_reach) {
+  Replay record(const GameTree& g, unsigned p, bool refresh_reach, AverageMode mode) {
     auto descriptor = [MTLIndirectCommandBufferDescriptor new];
     descriptor.commandTypes = MTLIndirectCommandTypeConcurrentDispatch;
     descriptor.inheritPipelineState = NO;
@@ -755,12 +762,16 @@ class PostflopSolve final : public MetalSolve {
       if (!span.count) return;
       auto c = [plan.commands indirectComputeCommandAtIndex:plan.count++];
       id<MTLComputePipelineState> selected = pipe;
-      if (early_replay && pipe != terminals && pipe != allins && pipe != advance_forced) {
-        auto name = pipe.label;
-        selected = early_pipelines[name];
+      const bool policy = early_replay && pipe != terminals && pipe != allins && pipe != advance_forced;
+      const bool writes_strategy = pipe != terminals && pipe != allins && pipe != propagate_reach;
+      const AverageMode average = writes_strategy ? mode : DenseAverage;
+      if (policy || average != DenseAverage) {
+        auto& variants = specialized_pipelines[policy][average];
+        if (!variants) variants = [NSMutableDictionary new];
+        selected = variants[pipe.label];
         if (!selected) {
-          selected = m.pipeline(name, true, true);
-          early_pipelines[name] = selected;
+          selected = m.pipeline(pipe.label, true, policy, average);
+          variants[pipe.label] = selected;
         }
       }
       [c setComputePipelineState:selected];
@@ -819,10 +830,11 @@ class PostflopSolve final : public MetalSolve {
     const bool policy_changed = early != early_replay;
     if (policy_changed) {
       early_replay = early;
-      for (auto& slot : replays)
-        for (auto& player : slot)
-          for (auto& plan : player) plan = {};
+      replays = {};
     }
+    const auto average = average_step(t, s.params.gamma, s.avg_delay, s.avg_reset, s.uses_sampled_averaging());
+    const AverageMode mode = average.weight == 1.f ? DenseAverage : average.weight == 0.f ? SkipAverage : WeightedAverage;
+    write_sums = mode != SkipAverage;
     regrets.prepare(g.regrets, refresh_reach);
     strategy_sums.prepare(g.strat, refresh_reach);
     auto disc = [](double z) { return float(z / (1 + z)); };
@@ -837,14 +849,14 @@ class PostflopSolve final : public MetalSolve {
                                 p,
                                 disc(pow(t, s.params.alpha)),
                                 disc(pow(t, s.params.beta_at(t))),
-                                float(pow(t / (t + 1.), s.params.gamma)),
+                                average.reset ? 0.f : average.discount,
                                 unsigned(s.avg_reset || t > s.avg_delay),
-                                phase};
-        if (s.avg_reset && s.avg_delay > 0 && t == s.avg_delay + 1) args.average_discount = 0.f;
+                                phase,
+                                average.weight};
         memcpy(params[p].contents, &args, sizeof(args));
         const bool refresh_both = phase == 0 && (refresh_reach || policy_changed);
-        auto& plan = replays[state_slot][p][refresh_both];
-        if (!plan.commands) plan = record(g, p, refresh_both);
+        auto& plan = replays.plans[mode][regrets.slot][strategy_sums.slot][p][refresh_both];
+        if (!plan.commands) plan = record(g, p, refresh_both, mode);
         auto enc = m.encoder(cmd);
         id<MTLResource> read[] = {nodes, node_ids, params[p], cards, boards[p], indices[p], heroes[p], rounds,
                                   bet_check_nodes, two_bet_nodes, lead_check_nodes, allin_batches, equity_tables, equity[p], iso, perms[p],
@@ -902,8 +914,7 @@ class PostflopSolve final : public MetalSolve {
     }
     prepared_iteration = 0;
     regrets.publish(g.regrets);
-    strategy_sums.publish(g.strat);
-    state_slot ^= 1;
+    if (write_sums) strategy_sums.publish(g.strat);
   }
 };
 

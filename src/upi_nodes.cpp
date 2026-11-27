@@ -920,6 +920,7 @@ void Upi::lock_node_impl(uint32_t ni, bool lock) {
   cached_root_stats_.reset();
   if (lock) {
     if (n.flags & GF_LOCKED) return;
+    solver_->set_average_sampling(AverageSampling::Dense);
     int A = n.num_children, H = tree_->num_hands(n.player);
     std::vector<float> sig(static_cast<size_t>(A) * H);
     solver_->average_strategy(ni, sig.data());
@@ -1498,6 +1499,7 @@ void Upi::register_node_commands() {
       tree_->combo_lock_s.erase(r.node);
     tree_->strat_commit(n, S);
     if (any) {
+      solver_->set_average_sampling(AverageSampling::Dense);
       tree_->combo_lock[r.node] = mask;
       n.flags |= GF_COMBO_LOCKED;
     } else {
@@ -1608,6 +1610,7 @@ void Upi::register_node_commands() {
     if (n.kind != ANodeKind::Decision) throw CmdError{"incorrect node"};
     if (v.size() != n.num_children) throw CmdError{"incorrect or missing argument"};
     cached_root_stats_.reset();
+    solver_->set_average_sampling(AverageSampling::Dense);
     tree_->incentives[ni] = v;
     n.flags |= GF_INCENTIVES;
   };

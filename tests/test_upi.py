@@ -2549,6 +2549,109 @@ def check_flop_update_order(exe, test_metal=True):
               "Metal and CPU agree when the opening order first changes the average strategy")
 
 
+def check_sampled_averaging(exe):
+    import gzip
+    import struct
+    from pathlib import Path
+
+    u = Upi(exe)
+    try:
+        def run(cmd):
+            reply = u.cmd(cmd)
+            assert not reply.startswith("ERROR"), (cmd, reply)
+            return reply
+
+        def steps(n):
+            run(f"go {n} steps")
+            run("wait_for_solver")
+            return run("show_strategy r:0:c")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old, sampled, awaiting, mid = (Path(tmp, name) for name in ("legacy", "sampled", "awaiting", "middle"))
+            for cmd in ("set_threads 1", "set_union_hands on", "set_collapse_checkdowns on",
+                        "set_board Ah3cQd", "set_pot 0 0 100", "set_eff_stack 300",
+                        "set_range OOP KK,JJ,87s,AQs,98s,TT,44,22,AKo", "set_range IP 99,77,TT,AQs,KJs,55,66,ATo",
+                        "add_line 0 30 90", "add_line 0 0 0 0 10", "add_line 0 0 0 0 30", "add_line 0 0 0 0 65", "build_tree",
+                        f'dump_tree "{old}" lossless', "set_info_freq 8", "set_accuracy 0"):
+                run(cmd)
+            # Put the lossless config flags of a large eligible tree on this small fixture.
+            raw = bytearray(gzip.decompress(old.read_bytes()))
+            flags = 22 + struct.unpack_from("<I", raw, 18)[0] - 1
+            assert raw[flags] == 1  # union hands
+            raw[flags] |= 2 | 4  # automatic IP first and square-root opening
+            for path, mode in ((old, 0), (sampled, 16), (awaiting, 32)):
+                raw[flags] = 7 | mode
+                path.write_bytes(gzip.compress(raw))
+
+            def saved_mode(path):
+                data = gzip.decompress(path.read_bytes())
+                return data[21 + struct.unpack_from("<I", data, 18)[0]] & (16 | 32)
+
+            run(f'load_tree "{sampled}" full')
+            run(f'dump_tree "{mid}"')
+            check(saved_mode(mid) == 0, "frequency-only saves omit the averaging schedule")
+
+            devices = ["v4_large"]
+            if "v4_metal," in run("list_algorithms"):
+                devices.append("v4_metal")
+            results = []
+            for device in devices:
+                run("set_algorithm " + device)
+                run(f'load_tree "{old}" full')
+                dense = steps(33)
+                check(steps(1) != dense, "historical lossless saves update the strategy on step 34 on " + device)
+                run(f'load_tree "{awaiting}" full')
+                run(f'dump_tree "{mid}" lossless')
+                run(f'load_tree "{mid}" full')
+                run("set_accuracy 0.003 fraction")
+                run("go")
+                run("wait_for_solver")
+                run(f'dump_tree "{mid}" lossless')
+                check(saved_mode(mid) == 16,
+                      "an eligible pre-go lossless save elects sampling at 0.3% on " + device)
+                run(f'load_tree "{awaiting}" full')
+                run("set_accuracy 1e-10")
+                steps(33)
+                check(steps(1) != dense, "fixed-step first go elects dense averaging on " + device)
+                run("set_accuracy 0")
+                run(f'load_tree "{sampled}" full')
+                eight = steps(8)
+                check(steps(1) == eight, "early sampling holds the published strategy at step 9 on " + device)
+                reset = steps(24)
+                check(reset == dense and steps(2) == reset, "step 33 resets the average before sampling on " + device)
+                run(f'dump_tree "{mid}" lossless')
+                published = steps(2)
+                stats = run("calc_results")
+                check(published != reset, "step 37 publishes a new sampled average on " + device)
+                run(f'load_tree "{mid}" full')
+                check(steps(2) == published and run("calc_results") == stats,
+                      "off-grid lossless continuation reproduces the published policy and best response on " + device)
+                last = steps(60)
+                check(steps(1) != last, "dense strategy updates resume at step 98 on " + device)
+                if device == "v4_metal":
+                    assert ["SOLVER: device gpu"] in u.solver_msgs
+                results.append(floats(published))
+            run("set_algorithm v4_large")
+            for initial, accuracy in ((old, "0.3"), (awaiting, "0.4")):
+                run(f'load_tree "{initial}" full')
+                run("set_accuracy " + accuracy)
+                run("go")
+                run("wait_for_solver")
+                run(f'dump_tree "{mid}" lossless')
+                check(saved_mode(mid) == 0, "legacy saves and loose targets stay dense on an unrestricted go")
+            run(f'load_tree "{sampled}" full')
+            run("set_accuracy 0")
+            steps(11)
+            run("set_dcfr 1.3 0 2 .5 50")
+            run(f'dump_tree "{mid}" lossless')
+            check(saved_mode(mid) == 0, "changing discount parameters ends the sampled trajectory")
+            if len(results) == 2:
+                check(max(abs(a - b) for a, b in zip(*results)) < .01,
+                      "CPU and Metal agree on the sampled flop strategy after the reset")
+    finally:
+        u.close()
+
+
 def check_solve_device(exe):
     u = Upi(exe)
     try:
@@ -2724,6 +2827,7 @@ def check_solve_device(exe):
 def main(exe, big=False):
     check_solve_device(exe)
     check_flop_update_order(exe)
+    check_sampled_averaging(exe)
     check_framing(exe)
     check_save_robustness(exe)
     check_tree_construction_edges(exe)

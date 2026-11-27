@@ -1,5 +1,6 @@
 // Vector-form Discounted CFR over a GameTree, plus best-response and evaluation traversals.
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -12,6 +13,8 @@ namespace pio {
 enum class Walk { CFR, BestResponse, Evaluate };
 
 struct DcfrParams {
+  bool operator==(const DcfrParams&) const = default;
+
   // Tuned on the benchmark suite (#52; bench/dcfr_sweep.md), not DCFR's published 1.5 / 0 / 2:
   // alpha 1.3, gamma 4 reaches every target (1% .. 0.05% of the pot) in no more iterations than
   // 1.5 / 0 / 3 on every bench tree, and far fewer on deep and wide trees (0.05%: deep 260 -> 180,
@@ -111,6 +114,7 @@ struct RootStats {
 };
 
 enum class FlopOpening : uint8_t { Ordinary, SquareRoot, Edited };
+enum class AverageSampling : uint8_t { Dense, AwaitingFirstGo, Bounded };
 
 class Solver {
  public:
@@ -124,6 +128,7 @@ class Solver {
   bool sqrt_regret_weights() const { return sqrt_weights_; }
   void set_flop_opening(FlopOpening opening) {
     opening_ = opening;
+    if (opening != FlopOpening::SquareRoot) set_average_sampling(AverageSampling::Dense);
     update_flop_opening();
   }
   void update_flop_opening() {
@@ -133,7 +138,28 @@ class Solver {
     if (opening_ == FlopOpening::SquareRoot) set_flop_opening(FlopOpening::Edited);
   }
   void restart_flop_opening() {
+    const bool previously_eligible = average_sampling_ != AverageSampling::Dense;
+    set_average_sampling(AverageSampling::Dense);
     set_flop_opening(opening_ == FlopOpening::Edited ? FlopOpening::SquareRoot : opening_);
+    if ((g_.cfg.river_sizing == RiverSizing::Smart || previously_eligible) && opening_ == FlopOpening::SquareRoot &&
+        std::none_of(g_.nodes.begin(), g_.nodes.end(), [](const GNode& n) { return n.flags != 0; }))
+      prepare_sampled_averaging();
+  }
+  void prepare_sampled_averaging() {
+    constexpr uint64_t min_strategy_floats = (uint64_t{1} << 30) / sizeof(float);
+    if (g_.storage_floats >= min_strategy_floats) set_average_sampling(AverageSampling::AwaitingFirstGo);
+  }
+  void select_sampled_averaging(double target_chips) {
+    if (average_sampling_ != AverageSampling::AwaitingFirstGo) return;
+    const bool tight_target = target_chips > 0 && target_chips <= 0.003 * g_.cfg.start_pot();
+    set_average_sampling(g_.iterations == 0 && tight_target ? AverageSampling::Bounded : AverageSampling::Dense);
+  }
+  AverageSampling average_sampling() const { return average_sampling_; }
+  bool uses_sampled_averaging() const { return average_sampling_ == AverageSampling::Bounded; }
+  void set_average_sampling(AverageSampling mode) {
+    const bool eligible = opening_ == FlopOpening::SquareRoot && uses_flop_ip_first() &&
+                          params == DcfrParams{} && avg_reset && avg_delay == 32 && !g_.payoff().icm.enabled;
+    average_sampling_ = eligible ? mode : AverageSampling::Dense;
   }
   int whole_tree_first_player() const { return uses_flop_ip_first() ? 1 : first_player; }
   bool parallel = true;
@@ -337,6 +363,7 @@ class Solver {
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;
   bool accumulate_ = true;  // t > avg_delay: whether this iteration feeds the strategy sum
   FlopOpening opening_ = FlopOpening::Ordinary;
+  AverageSampling average_sampling_ = AverageSampling::Dense;
   bool sqrt_weights_ = false;
   bool prune_this_iter_ = false;  // set by iterate/iterate_subtree; read-only during walks
 };

@@ -9,6 +9,16 @@ using namespace metal;
   uint k [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
       uint width [[threads_per_threadgroup]]
 constant bool sqrt_regret_weights [[function_constant(0)]];
+constant uint average_mode [[function_constant(1)]];
+float average_reach(float reach, constant IterationParams& q) {
+  return average_mode == WeightedAverage ? reach * q.sample_weight : reach;
+}
+void update_average(device float* sums, device const float* old, uint index, float reach, float probability,
+                    constant IterationParams& q) {
+  if (average_mode != SkipAverage) {
+    sums[index] = q.accumulate ? fma(average_reach(reach, q), probability, old[index] * q.average_discount) : old[index];
+  }
+}
 template <class T> T regret_weight(T value) {
   const T positive = max(value, T(0.f));
   return sqrt_regret_weights ? sqrt(positive) : positive;
@@ -66,11 +76,8 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
         float s = sum > 0 ? regret_weight(r) / sum : 1.f / n.count;
         regrets[j] = r * (r > 0 ? q.positive_discount : q.negative_discount) +
                      (values[(a == 0 ? n.value_row : n.child_value + a - 1) * q.stride + h] - node_value);
-        strategy_sums[j] =
-            q.accumulate
-                ? fma(blocked(cards[q.p * q.stride + h], n.public_cards) ? 0.f : own_reach[n.reach_offset[q.p] + h],
-                      s, old_sums[j] * q.average_discount)
-                : old_sums[j];
+        float reach = blocked(cards[q.p * q.stride + h], n.public_cards) ? 0.f : own_reach[n.reach_offset[q.p] + h];
+        update_average(strategy_sums, old_sums, j, reach, s, q);
       }
     values[n.value_row * q.stride + h] = node_value;
   }
@@ -86,7 +93,8 @@ kernel void advance_forced(TRAVERSAL_BUFFERS, device const float* old_regrets [[
     regrets[j] = r * (r > 0 ? q.positive_discount : q.negative_discount);
     float weight = reach[h];
     if (blocked(cards[q.p * q.stride + h], n.public_cards)) weight = 0;
-    strategy_sums[j] = q.accumulate ? fma(old_sums[j], q.average_discount, weight) : old_sums[j];
+    if (average_mode != SkipAverage)
+      strategy_sums[j] = q.accumulate ? fma(old_sums[j], q.average_discount, average_reach(weight, q)) : old_sums[j];
   }
 }
 template <typename Sum = float, typename Reach, typename Entry>
@@ -235,8 +243,8 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
       regrets[j] = rc * (rc > 0 ? q.positive_discount : q.negative_discount) + (cv - v);
       regrets[j + H] = rf * (rf > 0 ? q.positive_discount : q.negative_discount) + (fv - v);
       float reach = blocked(c, n.public_cards) ? 0.f : (q.p ? ip_reach : oop_reach)[n.reach_offset[q.p] + h];
-      strategy_sums[j] = q.accumulate ? fma(reach, sc, old_sums[j] * q.average_discount) : old_sums[j];
-      strategy_sums[j + H] = q.accumulate ? fma(reach, sf, old_sums[j + H] * q.average_discount) : old_sums[j + H];
+      update_average(strategy_sums, old_sums, j, reach, sc, q);
+      update_average(strategy_sums, old_sums, j + H, reach, sf, q);
     } else {
       float fv = fold_pay * compatible_fold_reach(fold_mass, fold_reach, c, m.same);
       v = cv + fv;
@@ -311,7 +319,7 @@ float update_actions(device float* regrets, device float* sums, device const flo
     uint k = j + a * H;
     float r = old_r[k];
     regrets[k] = r * (r > 0 ? q.positive_discount : q.negative_discount) + (cfv[a] - value);
-    sums[k] = q.accumulate ? fma(reach, policy[a], old_s[k] * q.average_discount) : old_s[k];
+    update_average(sums, old_s, k, reach, policy[a], q);
   }
   return value;
 }

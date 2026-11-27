@@ -7,11 +7,9 @@ OpenSolver helps you study heads-up no-limit Texas Hold’em hands.
 Install and run OpenSolver on an **Apple Silicon Mac (M1 or newer)** with **macOS 13.3 or later**.
 To check your Mac, choose **Apple menu → About This Mac**.
 
-1. In Finder, double-click the **OpenSolver** installer (the file ending in **.pkg**).
-2. Follow the onscreen installation steps.
+1. [Download the OpenSolver installer](https://github.com/weston/OpenSolver/raw/refs/heads/main/installers/macos/OpenSolver-0.1.0-macos-arm64.pkg).
+2. Open **Downloads** in Finder, double-click the installer, and follow the onscreen steps.
 3. Open **Finder → Applications** and double-click **OpenSolver**.
-
-The installer is currently [built from this repository](#macos-installer).
 
 If your Mac says it can’t verify the installer or app, and you trust where it came from, open
 **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
@@ -96,7 +94,8 @@ uncommitted or untracked files are being left out.
 `make macos-pkg` writes `dist/OpenSolver-<version>-macos-arm64.pkg` and a matching `.sha256`: an
 installer that puts **OpenSolver.app** in `/Applications` (#479). The app is the solver and the
 [viewer](#viewer) with everything they need, so the Mac it is installed on needs no compiler, no
-Python and no checkout. For Apple Silicon Macs with macOS 13.3 or later.
+Python and no checkout. For Apple Silicon Macs with macOS 13.3 or later. The ready-to-install
+copy and its checksum are checked into [`installers/macos`](installers/macos/).
 
 ```sh
 make macos-pkg

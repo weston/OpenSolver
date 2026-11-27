@@ -598,7 +598,6 @@ export function updateProgress(st, series, rootPot, bb = 0) {
 
 export function initBuild({ built }) {
   $("smart-tree").addEventListener("change", markDirty);
-  $("river-sizing").addEventListener("change", markDirty);
   $("flop-stability").addEventListener("change", syncSolveMode);
   syncSolveMode();
   onBuilt = built || onBuilt;

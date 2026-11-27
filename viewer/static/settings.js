@@ -24,9 +24,17 @@ export function updateDevice(st) {
   field.disabled = savingDevice || st.solving || st.dead;
 }
 
+const smartTreeModes = { off: false, medium: true, strong: "single" };
+
+function smartTreeLevel() {
+  const level = prefs.get("smart-tree-level", null);
+  if (Object.hasOwn(smartTreeModes, level)) return level;
+  if (prefs.get("smart-tree", true) !== true) return "off";
+  return prefs.get("river-sizing", "adaptive") === "single" ? "strong" : "medium";
+}
+
 export function smartTree() {
-  if (prefs.get("smart-tree", true) !== true) return false;
-  return prefs.get("river-sizing", "adaptive") === "single" ? "single" : true;
+  return smartTreeModes[smartTreeLevel()];
 }
 
 export function flopStability() {
@@ -38,16 +46,23 @@ export function initSettings() {
   stability.checked = flopStability();
   stability.onchange = () => prefs.set("flop-stability", stability.checked);
   const smart = document.getElementById("smart-tree");
-  const sizing = document.getElementById("river-sizing");
-  smart.checked = Boolean(smartTree());
-  sizing.value = prefs.get("river-sizing", "adaptive");
-  const sizingField = document.getElementById("river-sizing-field");
-  sizingField.classList.toggle("hidden", !smart.checked);
-  smart.onchange = () => {
-    prefs.set("smart-tree", smart.checked);
-    sizingField.classList.toggle("hidden", !smart.checked);
+  smart.value = smartTreeLevel();
+  smart.onchange = () => prefs.set("smart-tree-level", smart.value);
+  const help = document.getElementById("smart-tree-help");
+  const tip = document.getElementById("smart-tree-tip");
+  const row = help.parentElement;
+  let pinned = false;
+  const showHelp = (open) => {
+    if (!open) pinned = false;
+    tip.hidden = !open;
+    help.setAttribute("aria-expanded", String(open));
   };
-  sizing.onchange = () => prefs.set("river-sizing", sizing.value);
+  row.onpointerenter = (e) => { if (e.pointerType !== "touch") showHelp(true); };
+  row.onpointerleave = () => { if (!row.contains(document.activeElement)) showHelp(false); };
+  row.addEventListener("focusin", () => showHelp(true));
+  row.addEventListener("focusout", (e) => { if (!row.contains(e.relatedTarget)) showHelp(false); });
+  help.onclick = () => { help.focus(); pinned = !pinned; showHelp(pinned); };
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !tip.hidden) showHelp(false); });
   const device = document.getElementById("solve-device");
   device.onchange = async () => {
     savingDevice = true;

@@ -51,7 +51,8 @@ static NSString *baseURL, *scriptPath, *snapshotPath;
       completionHandler:^(id result, NSError *error) {
     (void)result;
     if (error) [self failed:error.description];
-    [NSApp sendAction:@selector(selectAll:) to:nil from:self];
+    if (![NSApp sendAction:@selector(selectAll:) to:window.firstResponder from:self])
+      [self failed:@"the test window could not perform Select All"];
     NSEvent *key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
         timestamp:0 windowNumber:window.windowNumber context:nil characters:@"5" charactersIgnoringModifiers:@"5"
         isARepeat:NO keyCode:23];
@@ -80,6 +81,7 @@ static NSString *baseURL, *scriptPath, *snapshotPath;
   NSString *script = _reloaded
       ? @"while (!document.querySelector('#drill-ahead')?.oninput) await new Promise(r => setTimeout(r, 50));"
          "if (document.querySelector('#drill-ahead').value !== '4') throw Error('settings did not survive reload');"
+         "if (document.querySelector('#smart-tree').value !== 'strong') throw Error('tree level did not survive reload');"
          "document.querySelector('[data-view=drill]').click();"
          "return 'settings survive reload';"
       : [NSString stringWithContentsOfFile:scriptPath encoding:NSUTF8StringEncoding error:nil];

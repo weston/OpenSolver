@@ -209,8 +209,18 @@
     <section class="card">
       <div class="card-head"><h2>Interactive solver</h2></div>
       <div class="settings-fields">
-        <label class="check" title="Flop solves use fewer river bet sizes to save memory, especially at low stack-to-pot ratios. Opening a turn or river solves it with your full set of sizes. The turn strategy updates in place when ready."><input id="smart-tree" type="checkbox">Smart tree building</label>
-        <label class="field" id="river-sizing-field"><span>River sizing</span><select id="river-sizing"><option value="adaptive">Adaptive</option><option value="single">One size, one raise</option></select></label>
+        <div class="setting-help">
+          <label class="field"><span>Smart tree building</span>
+            <select id="smart-tree" aria-describedby="smart-tree-tip"><option value="off">Off</option><option value="medium">Medium</option><option value="strong">Strong</option></select>
+          </label>
+          <button id="smart-tree-help" type="button" aria-label="About Smart tree building" aria-controls="smart-tree-tip" aria-expanded="false" aria-describedby="smart-tree-tip">?</button>
+          <span id="smart-tree-tip" class="tip" role="tooltip" hidden>
+            <b>Off</b> uses all configured sizes.<br>
+            <b>Medium</b> picks river sizes based on the stack-to-pot ratio and the betting action.<br>
+            <b>Strong</b> keeps one river bet size and allows one raise. Both use the configured size closest to 75% pot, measured after calling for a raise.<br>
+            Medium and Strong keep all flop and turn actions. Fewer river options speed up flop solves and can change how often individual hands bet. Opening a turn or river solves that spot with all configured sizes.
+          </span>
+        </div>
         <label class="check"><input id="flop-stability" type="checkbox">Stop when flop strategy is stable</label>
         <label id="device-settings" class="field hidden"><span>Compute device</span><select id="solve-device"><option value="cpu">CPU</option><option value="gpu">GPU (Metal)</option></select></label>
       </div>

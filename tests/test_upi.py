@@ -2528,6 +2528,12 @@ def check_solve_device(exe):
         compare_strategies(("r:0", "r:0:c:c:2c", "r:0:c:c:2c:b100", "r:0:b30:c:2c:b90"),
                            "a full OOP range matches CPU through both Metal river passes")
         assert "ok!" in u.cmd("set_range OOP 22+,AJs:0.4,AKo")
+        for cmd in ("clear_lines", "set_board Js8h4d7c2s", "add_line 0 60"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+        for first in ("OOP", "IP"):
+            u.cmd("set_first_iteration_player " + first)
+            compare_strategies(["r:0:c", "r:0:c:b60"], f"river bet/check and call/fold match CPU with {first} first")
+
         for cmd in ("clear_lines", "set_board Js8h4d", "add_line 0 0 0 0 100", "add_line 0 0 0 0 0 100",
                     "add_line 60", "add_line 240"):
             assert "ERROR" not in u.cmd(cmd), cmd

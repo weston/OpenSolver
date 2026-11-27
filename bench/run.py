@@ -51,6 +51,27 @@ DEFAULT_INFO_FREQ = 5
 # Trees that are too heavy for the default suite; added only via their --include-* flag.
 # preflop_full is a real file under trees/ but needs several GB and minutes per run.
 HEAVY_TREES = {"preflop_full", "srp_big"}
+HUNL_PRESETS = {
+    "hunl_srp": "HUNL SRP",
+    "hunl_srp_mono": "HUNL SRP",
+    "hunl_3bp": "HUNL 3BP",
+    "hunl_3bp_extra": "HUNL 3BP",
+}
+
+
+def preset_setup(name: str) -> list[str]:
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from viewer.server import setup_from_body
+
+    with open(os.path.join(ROOT, "viewer", "defaults", "configs", HUNL_PRESETS[name] + ".json")) as fh:
+        config = json.load(fh)
+    if name == "hunl_srp_mono":
+        config["board"] = "AsQs5s"
+    if name == "hunl_3bp_extra":
+        for key in ("flop_bet", "flop_bet_ip"):
+            config[key] += ",50"
+    return setup_from_body(config)[0]
 
 
 def tree_names() -> list[str]:
@@ -80,7 +101,7 @@ def peak_rss_sampler(proc: subprocess.Popen, out: dict, interval: float = 0.05) 
     out["peak_rss"] = peak
 
 
-def build_script(name: str, threads: int, target: float, info_freq: int,
+def build_script(name: str, threads: int, target: float, info_freq: int | str,
                  max_seconds: int, extra: tuple[str, ...] = (),
                  pre: tuple[str, ...] = ()) -> str:
     """Tree definition plus the commands that drive one measured solve."""
@@ -100,8 +121,11 @@ def build_script(name: str, threads: int, target: float, info_freq: int,
         setup[idx:idx] = ins
         body = setup
     else:
-        with open(os.path.join(TREES, f"{name}.upi")) as fh:
-            setup = [l.rstrip() for l in fh if l.strip() and not l.startswith("#")]
+        if name in HUNL_PRESETS:
+            setup = preset_setup(name)
+        else:
+            with open(os.path.join(TREES, f"{name}.upi")) as fh:
+                setup = [l.rstrip() for l in fh if l.strip() and not l.startswith("#")]
         # A file may carry its own build command when commands must follow it (e.g.
         # preflop_full attaches schematic trees after build_preflop_tree). set_threads
         # and --pre-build settings still have to come first, so they are inserted
@@ -142,7 +166,7 @@ def parse_progress(out: str) -> list[tuple[float, float]]:
 
 
 def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
-            info_freq: int, max_seconds: int, extra: tuple[str, ...] = (),
+            info_freq: int | str, max_seconds: int, extra: tuple[str, ...] = (),
             pre: tuple[str, ...] = ()) -> dict:
     script = build_script(name, threads, min(targets), info_freq, max_seconds, extra, pre)
     proc = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -164,9 +188,11 @@ def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
     iters = int(m[-1]) if m else 0
 
     # First report at or below each target.
+    pot_line = next((line for line in script.splitlines() if line.startswith("set_pot ")), "")
+    pot = sum(float(x) for x in pot_line.split()[1:4]) or 1.0
     reached: dict[str, float | None] = {}
     for t in sorted(targets, reverse=True):
-        hit = next((sec for sec, e in progress if e <= t * pot_of(name)), None)
+        hit = next((sec for sec, e in progress if e <= t * pot), None)
         reached[f"{t}"] = hit
 
     return {
@@ -174,6 +200,7 @@ def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
         "threads": threads,
         "wall_seconds": round(wall, 3),
         "iterations": iters,
+        "device_reports": re.findall(r"^SOLVER: device (.+)$", out, re.M),
         "final_exploitability": final,
         "peak_rss_mb": round(rss.get("peak_rss", 0) / 2**20, 1),
         "reached": reached,
@@ -181,24 +208,6 @@ def run_one(exe: str, name: str, threads: int, targets: tuple[float, ...],
         "pre": list(pre),
         "error": next((l for l in out.splitlines() if l.startswith("ERROR")), None),
     }
-
-
-_POT_CACHE: dict[str, float] = {}
-
-
-def pot_of(name: str) -> float:
-    """Starting pot, so the fraction targets can be compared against printed chips."""
-    if name in _POT_CACHE:
-        return _POT_CACHE[name]
-    path = FIXTURE_25BB if name == "fixture25bb" else os.path.join(TREES, f"{name}.upi")
-    pot = 0.0
-    with open(path) as fh:
-        for line in fh:
-            if line.startswith("set_pot"):
-                pot = sum(float(x) for x in line.split()[1:4])
-                break
-    _POT_CACHE[name] = pot or 1.0
-    return _POT_CACHE[name]
 
 
 def markdown(rows: list[dict], targets: tuple[float, ...], meta: dict) -> str:
@@ -234,10 +243,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", default=os.path.join(ROOT, "solver"))
-    ap.add_argument("--trees", default="", help="comma-separated subset (default: all)")
+    ap.add_argument("--trees", default="", help="comma-separated trees, including " + ", ".join(HUNL_PRESETS))
     ap.add_argument("--threads", default="", help="comma-separated modes (default: 1 and all)")
     ap.add_argument("--targets", default=",".join(str(t) for t in DEFAULT_TARGETS))
-    ap.add_argument("--info-freq", type=int, default=DEFAULT_INFO_FREQ)
+    ap.add_argument("--info-freq", type=lambda s: s if s == "auto" else int(s), default=DEFAULT_INFO_FREQ)
     ap.add_argument("--max-seconds", type=int, default=300,
                     help="per-run cap; 0 means no cap (default 300)")
     ap.add_argument("--include-25bb", action="store_true",

@@ -2663,11 +2663,13 @@ def check_sampled_averaging(exe):
                 check(continued == uninterrupted and continued != full37 and run("calc_results") == reported,
                       "compact reports and a lossless restart reproduce the uninterrupted solve on " + device)
                 packed_results.append(floats(continued))
-                run("set_accuracy 0.1")
-                run("go")
-                run("wait_for_solver")
-                run(f'dump_tree "{mid}" lossless')
-                check(saved_mode(mid) == 16, "tightening the target returns to full-precision regrets on " + device)
+                for go in ("go", "go 1 steps", "go 0 seconds"):
+                    run(f'load_tree "{packed}" full')
+                    run("set_accuracy 0.1")
+                    run(go)
+                    run("wait_for_solver")
+                    run(f'dump_tree "{mid}" lossless')
+                    check(saved_mode(mid) == 16, f"{go} honors a tighter target with full-precision regrets on {device}")
             if len(packed_results) == 2:
                 check(max(abs(a - b) for a, b in zip(*packed_results)) < .02,
                       "the CPU continuation policy and Metal agree with compact regrets")

@@ -406,7 +406,8 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   if (stable_flop || algorithm_ == "original_pio" || algorithm_ == "pio_cfr")
     solver_->set_average_sampling(AverageSampling::Dense);
   solver_->select_sampled_averaging(accuracy_solve ? target : 0., algorithm_ == "v4_metal");
-  if (accuracy_solve && !solver_->is_bfloat_target(target)) solver_->set_bfloat_regrets(false);
+  if (!sub && (accuracy_solve || target > 0.) && !solver_->is_bfloat_target(target))
+    solver_->set_bfloat_regrets(false);
   stop_flag_ = false;
   solving_ = true;
   // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)

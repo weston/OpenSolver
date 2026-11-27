@@ -11,7 +11,11 @@ Usage: python3 viewer/test_device_bench.py [path-to-solver]
 - the HTTP routes answer;
 - the Auto device's pick interpolates the measured speed-up by tree size, sends trees at least as
   large as one the GPU could not take to the CPU, and is made at /api/build from the tree's size;
-- a finished profile is saved, and read back only for the same GPU.
+- a finished profile is saved, and read back only for the same GPU;
+- a tree larger than the GPU takes (the solver's show_gpu) goes to the CPU;
+- the benchmark steps aside for a solve on the main tree: a manual run stops with a note, a background
+  run waits, and under Auto with no profile it runs by itself once nothing solves;
+- switching to Auto with a tree built picks a device for it.
 """
 import json
 import os
@@ -75,6 +79,9 @@ class RecommendTest(unittest.TestCase):
         self.assertEqual(vbench.predict(results, 9000)["device"], "gpu")     # above: the nearest holds
         self.assertEqual(vbench.predict(results, 20000)["device"], "cpu")    # did not fit
         self.assertEqual(vbench.predict([], 500)["device"], "cpu")           # nothing measured
+        self.assertEqual(vbench.predict(results, 6000, limit_mb=5500)["device"], "cpu")   # over the GPU's memory
+        self.assertIn("too large", vbench.predict(results, 6000, limit_mb=5500)["why"])
+        self.assertEqual(vbench.predict(results, 5000, limit_mb=5500)["device"], "gpu")
         self.assertEqual(vbench.tree_megabytes("estimated tree size (v4_large): 2580 MB"), 2580)
 
     def test_nothing_timed(self):
@@ -195,6 +202,86 @@ class BenchmarkTest(unittest.TestCase):
             self.assertIn("algorithm:" + self.main.cpu_algorithm, self.main.cmd("show_settings"))
         finally:
             self.main.device, self.main.auto_choice = saved
+            self.main.cmd("set_algorithm " + self.main.device_algorithm())
+            vsrv.set_bench(None)
+
+    def test_gpu_limit_reported(self):
+        if "gpu" not in self.main.devices:
+            self.skipTest("no GPU here")
+        text = self.main.cmd("show_gpu")
+        self.assertIn("gpu: " + self.main.gpu_name, text)
+        self.assertTrue(self.main.gpu_tree_limit_mb is None or self.main.gpu_tree_limit_mb > 0)
+
+    def long_solve_on_main(self):
+        self.main.cmds(vsrv.setup_from_body(SMALL)[0])
+        self.main.cmd("build_tree")
+        self.main.cmds(["set_accuracy 0", "set_info_freq 1000", "go"])
+        deadline = time.monotonic() + 10
+        while not self.main.state()["solving"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def run_until_solving(self, b):
+        deadline = time.monotonic() + 60
+        while b.state()["step"] in (None, "Starting a solver", "Preparing the GPU") and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+    def test_steps_aside_for_a_solve(self):
+        if "gpu" not in self.main.devices:
+            self.skipTest("no GPU here")
+        for automatic in (False, True):
+            with self.subTest(automatic=automatic):
+                b = self.bench((("small", SMALL, {}, 0),))   # a target never reached
+                b.start({}, automatic=automatic)
+                self.run_until_solving(b)
+                try:
+                    self.long_solve_on_main()
+                    st = wait_done(b, 30)
+                finally:
+                    self.main.cmd("stop")
+                    self.main.cmd("wait_for_solver")
+                if automatic:
+                    self.assertIsNone(st["error"])
+                    self.assertTrue(st["waiting"])
+                else:
+                    self.assertIn("a solve started", st["error"])
+                self.assertFalse(st["profiled"])
+
+    def test_measures_by_itself_under_auto(self):
+        if "gpu" not in self.main.devices:
+            self.skipTest("no GPU here")
+        saved_idle, saved_device = vbench.IDLE_SECONDS, self.main.device
+        vbench.IDLE_SECONDS = 0.5
+        b = self.bench()
+        try:
+            self.main.device = "auto"
+            b.watch()
+            deadline = time.monotonic() + 120
+            while not b.state()["profiled"] and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertTrue(b.state()["profiled"], "the background run made a profile")
+        finally:
+            b.close()
+            vbench.IDLE_SECONDS = saved_idle
+            self.main.device = saved_device
+
+    def test_switch_to_auto_picks_for_the_tree(self):
+        if "gpu" not in self.main.devices:
+            self.skipTest("no GPU here")
+        b = self.bench()
+        vsrv.set_bench(b)
+        saved = (self.main.device, self.main.auto_choice, self.main.tree_present, self.main.loaded_file)
+        try:
+            self.main.device, self.main.auto_choice = "cpu", None
+            self.main.cmds(vsrv.setup_from_body(SMALL)[0])
+            vsrv.api(self.main, None, "POST", "/api/build", {}, b"{}")
+            self.assertIsNone(self.main.auto_choice, "no pick on the CPU")
+            mb = vbench.tree_megabytes(self.main.cmd(vsrv.tree_build_command("estimate_schematic_tree", None)))
+            b.profile = {"results": [{"megabytes": mb, "cpu": 3.0, "gpu": 1.0}], "gpu_name": self.main.gpu_name}
+            vsrv.api(self.main, None, "POST", "/api/device", {}, {"device": "auto"})
+            self.assertEqual(self.main.auto_choice["device"], "gpu")
+            self.assertIn("algorithm:" + self.main.gpu_algorithm, self.main.cmd("show_settings"))
+        finally:
+            self.main.device, self.main.auto_choice, self.main.tree_present, self.main.loaded_file = saved
             self.main.cmd("set_algorithm " + self.main.device_algorithm())
             vsrv.set_bench(None)
 

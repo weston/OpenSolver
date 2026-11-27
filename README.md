@@ -993,13 +993,15 @@ the algorithm's first name, is still accepted.
   viewer's Compute device setting switches between them. The CUDA backend has not been measured
   (it has not yet run on an NVIDIA GPU).
 - **Auto device (viewer).** With a discrete GPU the viewer's Compute device starts on **Auto: the
-  faster for each tree**. Settings → **Benchmark CPU and GPU** solves four trees from 46 MB to 7 GB
-  (32-bit storage) on each device, in a solver of its own so your open tree is left alone, and saves
-  the times (`~/.wsolver/device_profile.json`, for that GPU only). Each time you build a tree, Auto
-  reads the solver's size estimate for it, interpolates the measured speed-up at that size, and builds
-  and solves on the faster device; a tree too large for the GPU solves on the CPU either way. Until
-  there is a benchmark Auto uses the CPU (choosing Auto runs one). Loaded trees keep the device of the
-  last build. On the RX 9060 XT above the CPU was faster at every size, so Auto picks it there.
+  faster for each tree**. When you build a tree, Auto reads the solver's estimate of its size: a tree
+  larger than the GPU takes (`show_gpu`) goes to the CPU, and any other to whichever device measured
+  faster on trees that size on this machine. It picks again when you switch to Auto with a tree built.
+  The measurements come from a benchmark that solves four trees from 46 MB to 7 GB (32-bit storage) on
+  each device, in a solver of its own so your open tree is left alone. Under Auto it runs by itself
+  the first time nothing has been solving for a few seconds (about a minute; it stops for any solve
+  and tries again later), or from Settings → **Benchmark CPU and GPU**. It is saved
+  (`~/.wsolver/device_profile.json`) and used only with that GPU. Until then Auto uses the CPU. On the
+  RX 9060 XT above, the CPU was faster at every size the card holds, so Auto picks the CPU there.
 - The CPU still runs everything the GPU does not: preflop trees, `go_partial`, node locks and other
   node edits, 16-bit storage, predictive CFR, ICM. The solve says which device it is using
   (`SOLVER: device gpu`, or `SOLVER: device cpu (<reason>)`).

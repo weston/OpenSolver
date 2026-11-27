@@ -4,7 +4,9 @@ Whether the GPU or the CPU is faster depends on the machine and on the tree: Met
 CPU cores, while an RX 9060 XT loses most trees to 32 Zen 5 threads (README, "GPU solving"), and a
 tree too large for the GPU's memory solves on the CPU whatever is set. So the Settings page can time
 both devices here on trees of several sizes, and the Auto device then picks, for each tree it builds,
-the one this profile says is faster at that tree's size.
+the one this profile says is faster at that tree's size, or the CPU when the GPU cannot hold it.
+Under Auto with no profile yet, the benchmark runs by itself in the background (watch) once nothing
+has been solving for a few seconds, and steps aside the moment a solve starts, to run again later.
 
 The benchmark runs in a solver process of its own, so the tree being browsed is left alone. Each tree
 is built afresh for each device (the GPU algorithm changes the storage the build picks), with Smart
@@ -46,6 +48,11 @@ TREES = (
 SMART = True          # Medium: the viewer's default
 MAX_SECONDS = 90      # per solve: one that takes longer on a device counts as this long there
 CLOSE_RATIO = 1.05    # within 5%: about the same
+IDLE_SECONDS = 10     # the background run waits for this long without a solve
+
+
+class Yielded(Exception):
+    """A solve started on the main tree: the benchmark stopped so as not to slow it down."""
 ESTIMATE = re.compile(r"estimated tree size \(v4_large\):\s*([0-9.]+)\s*MB")
 
 
@@ -72,21 +79,25 @@ def recommend(results, current):
             "cpu": round(cpu, 2), "gpu": round(gpu, 2)}
 
 
-def predict(results, megabytes):
+def predict(results, megabytes, limit_mb=None):
     """The Auto device's pick for a tree of `megabytes` (32-bit): {"device", "speedup", "why"}, where
     speedup is how many times faster the GPU should be (below 1: the CPU is faster).
 
     Between two measured sizes the GPU's speed-up is interpolated on log scales; outside them the
     nearest measurement holds. A tree at least as large as one the GPU could not take goes to the CPU,
-    as does any tree when nothing was timed on both. Ties (within 5%) go to the CPU, which needs
-    no setup and takes every tree."""
+    as does any tree larger than `limit_mb` (the largest the GPU takes, from the solver's show_gpu) and
+    any tree when nothing was timed on both. Ties (within 5%) go to the CPU, which needs no setup and
+    takes every tree."""
+    if limit_mb and megabytes and megabytes > limit_mb:
+        return {"device": "cpu", "speedup": None,
+                "why": f"it is too large for the GPU's memory (up to {limit_mb / 1000:.1f} GB)"}
     timed = sorted((r for r in results if r.get("cpu") and r.get("gpu") and r.get("megabytes")),
                    key=lambda r: r["megabytes"])
     unfit = [r["megabytes"] for r in results if r.get("gpu_note") and r.get("megabytes")]
     if megabytes is None or not timed:
-        return {"device": "cpu", "speedup": None, "why": "no benchmark of both devices yet"}
+        return {"device": "cpu", "speedup": None, "why": "the CPU and GPU have not been measured here yet"}
     if unfit and megabytes >= min(unfit):
-        return {"device": "cpu", "speedup": None, "why": "too large for the GPU's memory"}
+        return {"device": "cpu", "speedup": None, "why": "it is too large for the GPU's memory"}
     x = math.log(max(megabytes, 1e-3))
     pts = [(math.log(r["megabytes"]), math.log(r["cpu"] / r["gpu"])) for r in timed]
     if x <= pts[0][0]:
@@ -101,7 +112,10 @@ def predict(results, megabytes):
     speedup = math.exp(y)
     if speedup > CLOSE_RATIO:
         return {"device": "gpu", "speedup": round(speedup, 2), "why": "the GPU is faster on trees this size here"}
-    why = "the CPU is faster on trees this size here" if speedup < 1 / CLOSE_RATIO         else "about as fast on trees this size here; the CPU needs no setup"
+    if speedup < 1 / CLOSE_RATIO:
+        why = "the CPU is faster on trees this size here"
+    else:
+        why = "the two are about as fast on trees this size here, and the CPU needs no setup"
     return {"device": "cpu", "speedup": round(speedup, 2), "why": why}
 
 
@@ -116,8 +130,10 @@ class DeviceBenchmark:
         self.bench = None        # the benchmark's own solver, while it runs
         self.thread = None
         self.cancelled = False
+        self.closed = False
+        self.on_profile = None   # called after a run saves a profile (main(): Auto's pick for the open tree)
         self.st = {"running": False, "step": None, "done": 0, "total": 0, "results": [], "error": None,
-                   "recommendation": None, "finished": None}
+                   "recommendation": None, "finished": None, "automatic": False, "waiting": False}
         self.profile = self._load()   # the last finished benchmark: {"results", "finished", "gpu_name"}
 
     # ---- the saved profile ----
@@ -152,7 +168,34 @@ class DeviceBenchmark:
         """The Auto device's pick for a tree of this size (see predict)."""
         with self.mu:
             results = list(self.profile["results"]) if self.profile else []
-        return predict(results, megabytes)
+        return predict(results, megabytes, self.main.gpu_tree_limit_mb)
+
+    # ---- measuring by itself ----
+
+    def watch(self):
+        """Under Auto with no profile, run the benchmark in the background once nothing has solved for
+        IDLE_SECONDS; it steps aside for any solve (Yielded) and tries again later."""
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def _watch(self):
+        idle_since = None
+        while not self.closed:
+            time.sleep(1)
+            with self.mu:
+                done, running = self.profile is not None, self.st["running"]
+            if done:
+                return
+            st = self.main.state()
+            if self.main.device != "auto" or "gpu" not in self.main.devices or running or st["solving"] or st["dead"]:
+                idle_since = None
+                continue
+            idle_since = idle_since or time.monotonic()
+            if time.monotonic() - idle_since >= IDLE_SECONDS:
+                idle_since = None
+                try:
+                    self.start({}, automatic=True)
+                except vsrv.SolverError:
+                    pass
 
     # ---- state ----
 
@@ -173,7 +216,7 @@ class DeviceBenchmark:
 
     # ---- running ----
 
-    def start(self, body=None):
+    def start(self, body=None, automatic=False):
         if "gpu" not in self.main.devices:
             raise vsrv.SolverError("no GPU to compare with the CPU")
         if self.main.state()["solving"]:
@@ -183,7 +226,8 @@ class DeviceBenchmark:
                 raise vsrv.SolverError("the benchmark is already running")
             self.cancelled = False
             self.st = {"running": True, "step": "Starting a solver", "done": 0, "total": 2 * len(self.trees),
-                       "results": [], "error": None, "recommendation": None, "finished": None}
+                       "results": [], "error": None, "recommendation": None, "finished": None,
+                       "automatic": automatic, "waiting": False}
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
         return self.state()
@@ -200,6 +244,7 @@ class DeviceBenchmark:
         return self.state()
 
     def close(self):
+        self.closed = True
         self.cancel()
 
     @staticmethod
@@ -238,7 +283,21 @@ class DeviceBenchmark:
                 bench.cmd("wait_for_solver", timeout=600)
                 reason = message[len("device cpu"):].strip(" ()")
                 return None, reason or "the GPU could not take this tree"
-        bench.cmd("wait_for_solver", timeout=MAX_SECONDS + 600)
+        # wait for it to stop, stepping aside at once if the main tree starts solving
+        while True:
+            with bench.progress_cv:
+                bench.progress_cv.wait_for(lambda: bench.solver_status.startswith("stopped") or bench.dead,
+                                           timeout=0.25)
+                stopped, dead = bench.solver_status.startswith("stopped"), bench.dead
+            if dead:
+                raise vsrv.SolverError("the benchmark's solver stopped working")
+            if stopped:
+                break
+            if self.main.state()["solving"]:
+                bench.cmd("stop")
+                bench.cmd("wait_for_solver", timeout=600)
+                raise Yielded()
+        bench.cmd("wait_for_solver", timeout=600)
         with bench.state_lock:
             block = list(bench.progress)
         seconds = next((float(line.split(":", 1)[1]) for line in block if line.startswith("running time:")), None)
@@ -274,7 +333,7 @@ class DeviceBenchmark:
                             self.st["done"] += 1
                         continue
                     if self.main.state()["solving"]:
-                        raise vsrv.SolverError("a solve started during the benchmark: run it again when nothing is solving")
+                        raise Yielded()
                     self._set(step=f"{label} on the {device.upper()}")
                     seconds, note = self._solve(bench, setup, algorithm, target)
                     row[device] = None if seconds is None else round(seconds, 3)
@@ -289,6 +348,17 @@ class DeviceBenchmark:
                 self.profile = profile
             self._save(profile)
             self._set(recommendation=recommend(results, self.main.device))
+            if self.on_profile is not None:
+                try:
+                    self.on_profile()
+                except Exception:  # noqa: BLE001 - the pick is made again at the next build
+                    pass
+        except Yielded:
+            with self.mu:
+                if self.st["automatic"]:   # it runs again once the solve is over
+                    self.st.update(waiting=True, results=[], done=0)
+                else:
+                    self.st["error"] = "a solve started, and the benchmark stopped so as not to slow it down"
         except Exception as e:  # noqa: BLE001 - reported on the page
             if not self.cancelled:
                 self._set(error=str(e) or e.__class__.__name__)

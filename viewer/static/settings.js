@@ -39,7 +39,12 @@ function autoChoice(st) {
   const line = $("auto-choice"), c = st.auto_choice;
   let text = "";
   if (st.device === "auto" && benchShown) {
-    if (!benchShown.profiled && !benchRunning) text = "Auto has no measurements yet, so it uses the CPU. Run the benchmark below to let it choose.";
+    if (!benchShown.profiled) {
+      text = benchRunning && benchShown.automatic
+        ? "Auto is measuring this PC's CPU and GPU in the background. Until it has, it uses the CPU."
+        : benchRunning ? "Auto uses the CPU until the benchmark below finishes."
+        : "Auto measures this PC's CPU and GPU by itself once nothing has been solving for a few seconds, and stops for any solve. Until then it uses the CPU.";
+    }
     else if (c && st.tree) {
       const size = c.megabytes != null ? ` (${megabytes(c.megabytes)})` : "";
       const by = c.speedup != null && c.device === "gpu" ? `, about ${c.speedup.toFixed(2)}× faster`

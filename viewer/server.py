@@ -121,6 +121,7 @@ class Solver:
         self._read_response()  # banner lines, skipped until the first END
         self.version = self.cmd("show_version")
         self.gpu_algorithm, self.gpu_name = None, None
+        self.gpu_tree_limit_mb = None
         try:
             algorithms = self.cmd("list_algorithms").splitlines()
             # v4_gpu (Metal, CUDA or OpenCL), or v4_metal from a solver that predates it
@@ -132,6 +133,13 @@ class Solver:
                 fields = gpu.split(",")
                 self.gpu_algorithm = fields[0]
                 self.gpu_name = fields[2].strip() if len(fields) > 2 else "GPU"
+                # the largest tree (32-bit MB) a discrete GPU takes; None: no limit of its own (Metal shares
+                # the CPU's memory) or a solver without show_gpu
+                try:
+                    m = re.search(r"^largest tree: (\d+) MB", self.cmd("show_gpu"), re.M)
+                    self.gpu_tree_limit_mb = int(m.group(1)) if m else None
+                except SolverError:
+                    pass
         except SolverError:
             self.devices = ["cpu"]
         self.cpu_algorithm = "auto"
@@ -583,6 +591,28 @@ def set_bench(bench):
     _bench = bench
 
 
+def auto_decide(solver):
+    """The Auto device's pick (#569) for the tree the Build form set up: its 32-bit size from the
+    solver's estimate, then the faster device at that size by the benchmark profile, or the CPU where
+    the GPU cannot hold it. Sets the algorithm; solver.auto_choice says what and why."""
+    import device_bench as vbench
+    smart = (solver.built_sizes or {}).get("smart_tree")
+    try:
+        megabytes = vbench.tree_megabytes(solver.cmd(tree_build_command("estimate_schematic_tree", smart)))
+    except SolverError:
+        megabytes = None
+    if _bench is not None:
+        choice = _bench.choose(megabytes)
+    else:
+        choice = vbench.predict([], megabytes, solver.gpu_tree_limit_mb)
+    choice = dict(choice, megabytes=megabytes)
+    with solver.state_lock:
+        solver.auto_choice = choice
+    if solver.device == "auto":
+        solver.cmd("set_algorithm " + solver.device_algorithm("auto"))
+    return choice
+
+
 def set_refiner(refiner):
     global _refiner, _preview
     _refiner = refiner
@@ -706,6 +736,9 @@ def _api_main(solver, lib, method, path, query, body):
                 settings = solver.cmd("show_settings")
                 solver.cpu_algorithm = next((line.split(":", 1)[1].strip() for line in settings.splitlines()
                                              if line.startswith("algorithm:")), "auto")
+            if device == "auto" and solver.device != "auto" and solver.tree_present and not solver.loaded_file \
+                    and not solver.preflop:
+                auto_decide(solver)   # the tree built already: Auto's pick for it
             if device != solver.device:
                 solver.cmd("set_algorithm " + solver.device_algorithm(device))
                 if _refiner is not None and solver is _refiner.main:
@@ -908,15 +941,8 @@ def _api_main(solver, lib, method, path, query, body):
         if _resolver is not None:
             _resolver.main_tree_changed()  # #357: its subgame came from the old tree
         smart = (solver.built_sizes or {}).get("smart_tree")
-        if solver.device == "auto" and _bench is not None:
-            # Auto (#569): the tree's 32-bit size, then the device the benchmark profile says is faster
-            # at that size, set before the build, whose storage depends on it
-            import device_bench as vbench
-            megabytes = vbench.tree_megabytes(solver.cmd(tree_build_command("estimate_schematic_tree", smart)))
-            choice = dict(_bench.choose(megabytes), megabytes=megabytes)
-            with solver.state_lock:
-                solver.auto_choice = choice
-            solver.cmd("set_algorithm " + solver.device_algorithm("auto"))
+        if solver.device == "auto":
+            auto_decide(solver)   # before the build, whose storage depends on the device
         solver.cmd(tree_build_command("build_tree", smart))
         solver.forget_locks()
         solver.tree_present = True
@@ -1955,6 +1981,15 @@ def main(argv=None):
     import device_bench
     set_bench(device_bench.DeviceBenchmark(solver, Solver, os.path.abspath(args.solver),
                                            profile_path=os.path.join("~", ".wsolver", "device_profile.json")))
+    _bench.watch()   # under Auto with no profile: measure in the background whenever nothing solves
+
+    def pick_for_open_tree():
+        # new measurements: Auto's pick for the tree built already, unless it solves or came from a file
+        with solver.cmd_lock:
+            if (solver.device == "auto" and solver.tree_present and not solver.loaded_file
+                    and not solver.preflop and not solver.state()["solving"]):
+                auto_decide(solver)
+    _bench.on_profile = pick_for_open_tree
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     srv.solver = solver

@@ -405,7 +405,9 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   const double target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
   if (stable_flop || algorithm_ == "original_pio" || algorithm_ == "pio_cfr")
     solver_->set_average_sampling(AverageSampling::Dense);
-  solver_->select_sampled_averaging(accuracy_solve ? target : 0.0);
+  solver_->select_sampled_averaging(accuracy_solve ? target : 0., algorithm_ == "v4_metal");
+  if (!sub && (accuracy_solve || target > 0.) && !solver_->is_bfloat_target(target))
+    solver_->set_bfloat_regrets(false);
   stop_flag_ = false;
   solving_ = true;
   // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)
@@ -456,8 +458,13 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   const bool tune_threads = !sub && threads_ == 0 && hw_threads >= 4;
 #endif
   std::unique_ptr<MetalSolve> metal;
-  auto release_metal_memory = [&] {
+  auto release_metal = [&] {
+    if (metal) metal->publish_for_cpu(*tree_);
+    pause_requests_.sync_regrets = {};
     metal.reset();
+  };
+  auto release_metal_memory = [&] {
+    release_metal();
     out_raw("SOLVER: device cpu (Metal ran out of memory)\n");
   };
   uint64_t metal_payoff_version = 0, metal_generation = 0;
@@ -502,11 +509,12 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
                                       [](const AllinRunouts& ar) { return ar.e2.empty() && ar.e2b.empty(); }))
           fallback = "all-in outcome tables unavailable";
         if (fallback) {
-          metal.reset();
+          release_metal();
           out_raw(std::string("SOLVER: device cpu (") + fallback + ")\n");
         } else if (!metal) {
           try {
             metal = make_metal_solve(*tree_, available_memory_bytes() * 9 / 10);
+            pause_requests_.sync_regrets = [&] { metal->publish_for_cpu(*tree_); };
             metal_payoff_version = tree_->payoff_version;
             out_raw("SOLVER: device gpu\n");
           } catch (const std::exception& e) {
@@ -570,6 +578,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       // there; ours never reported, so a target never stopped the solve)
       if (!info_auto_ && sub_freq == 0 && el - last_report_t >= 0.5) report = true;
       if (report) last_report_t = el;
+      if (stable_flop && metal) metal->publish_for_cpu(*tree_);
       const auto stage = stable_flop ? stability.observe(tick - discount_restart_, *tree_, *solver_)
                                      : FlopStability::Stage::Sampling;
       const bool stable = stage == FlopStability::Stage::Stable;
@@ -594,7 +603,10 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
               release_metal_memory();
             }
           }
-          if (!metal || final_report) st = solver_->root_stats();
+          if (!metal || final_report) {
+            if (metal) metal->publish_for_cpu(*tree_);
+            st = solver_->root_stats();
+          }
           cached_root_stats_ = st;
           std::string stats = stats_block(st, solve_seconds_);
           if (stable_flop) stats += "Flop stability stage: " + std::to_string(static_cast<int>(stage)) + "\n";
@@ -648,6 +660,10 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
     reason = "out of memory";  // #364: the process used to abort here
   } catch (const std::exception& e) {
     reason = std::string("error: ") + e.what();
+  }
+  {
+    std::lock_guard<std::mutex> lk(tree_mu_);
+    release_metal();
   }
   // Not solving any more *before* "stopped" is printed: a go sent on seeing it must start a new solve,
   // not find this thread still flagged as solving and be dropped (#364).
@@ -1076,6 +1092,7 @@ void Upi::register_commands() {
       pause_requests_.pending.fetch_add(1);
     }
     std::lock_guard<std::mutex> lk(tree_mu_);  // iterations run under tree_mu_
+    if (pause_requests_.sync_regrets) pause_requests_.sync_regrets();
     return std::string("hold ok!");
   };
   H["release"] = [this](const Args&) {
@@ -1118,6 +1135,10 @@ void Upi::register_commands() {
     if (a.size() > 1 && a[1] != "fraction" && a[1] != "chips") throw CmdError{"incorrect or missing argument"};
     accuracy_ = acc;
     accuracy_fraction_ = a.size() > 1 && a[1] == "fraction";
+    if (solving_ && solver_->bfloat_regrets()) {
+      const double target = accuracy_fraction_ ? acc * tree_->cfg.start_pot() : acc;
+      if (!solver_->is_bfloat_target(target)) solver_->set_bfloat_regrets(false);
+    }
     return std::string("set_accuracy ok!");
   };
   H["set_recalc_accuracy"] = [this](const Args& a) {

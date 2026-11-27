@@ -1,4 +1,5 @@
 #include "solver.hpp"
+#include "bfloat_regrets.hpp"
 #include "average_sampling.hpp"
 #include "compact_rows.hpp"
 
@@ -1085,6 +1086,9 @@ bool Solver::call_with_opp_fold(const GNode& sd, const GNode& fold, int p, const
   return true;
 }
 
+static float expand_regret(float value) { return value; }
+static float expand_regret(uint16_t value) { return std::bit_cast<float>(bfloat_regret_bits(value)); }
+
 void Solver::current_strategy(uint32_t ni, float* out) const {
   const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
@@ -1100,6 +1104,14 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   // Predictive (PCFR+-style, #71): match on R + the last instantaneous regret as an
   // optimistic guess of the next one. Preds are transient solver state (zero until the
   // node's first update), so this reduces to plain regret matching at t=1.
+  auto float_regrets = [&]() -> const float* {
+    if (!report_bfloat16_regrets_) return g_.regrets.data() + n.storage;
+    const auto* source = report_bfloat16_regrets_ + n.storage;
+    const size_t size = static_cast<size_t>(A) * H;
+    auto* decoded = sc.a.alloc(size);
+    for (size_t i = 0; i < size; ++i) decoded[i] = expand_regret(source[i]);
+    return decoded;
+  };
   const float* P = (predictive && !g_.preds.empty()) ? g_.preds.data() + n.storage : nullptr;
 #if PIO_SHOWDOWN_AVX512
   if (!P && !sqrt_weights_ && A <= 16) {
@@ -1109,7 +1121,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     // the floats are identical; no arena sum/add rows, and 16-bit regrets decode in registers.
     g_.ensure_loaded(n);
     const bool q16 = g_.compressed;
-    const float* R = q16 ? nullptr : g_.regrets.data() + n.storage;
+    const float* R = q16 ? nullptr : float_regrets();
     const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
 #if PIO_COMPACT_ROWS
     // Compact rows (#239): row a starts at a * L, and each 16 hands take popcount of their kept bits. An
@@ -1172,7 +1184,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     const bool q16 = g_.compressed && !n.pad;
     const float* R = q16 ? nullptr
                          : g_.compressed ? g_.regrets_ro(n, sc.a.alloc(static_cast<size_t>(A) * H))
-                                         : g_.regrets.data() + n.storage;
+                                         : float_regrets();
     const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
     const __m256 qs = _mm256_set1_ps(q16 ? g_.rscale[n.aux] : 0.0f), z = _mm256_setzero_ps(),
                  one = _mm256_set1_ps(1.0f), uni = _mm256_set1_ps(1.0f / static_cast<float>(A));
@@ -1223,7 +1235,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     const bool q16 = g_.compressed && !n.pad;
     const float* R = q16 ? nullptr
                          : g_.compressed ? g_.regrets_ro(n, sc.a.alloc(static_cast<size_t>(A) * H))
-                                         : g_.regrets.data() + n.storage;
+                                         : float_regrets();
     const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
     const float qs = q16 ? g_.rscale[n.aux] : 0.0f;
     const float32x4_t z = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), uni = vdupq_n_f32(1.0f / static_cast<float>(A));
@@ -1260,7 +1272,8 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   } else
 #endif
   {
-  const float* R = g_.regrets_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+  const float* R = report_bfloat16_regrets_ ? float_regrets()
+      : g_.regrets_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
   float* sum = sc.a.alloc_zero(H);
   for (int a = 0; a < A; ++a) {
     const float* r = R + static_cast<size_t>(a) * H;
@@ -1324,8 +1337,8 @@ void Solver::apply_elimination(uint32_t ni, float* out) const {
   }
 }
 
-template <int actions>
-static void average_float_strategy(const float* sums, const float* regrets, float* out, int hands) {
+template <int actions, class Regret>
+static void average_float_strategy(const float* sums, const Regret* regrets, float* out, int hands) {
   uint32_t max_sum_bits = 0;
   for (int h = 0; h < hands; ++h) {
     float sum = 0;
@@ -1341,7 +1354,7 @@ static void average_float_strategy(const float* sums, const float* regrets, floa
     } else {
       float pos[actions], sum = 0;
       for (int a = 0; a < actions; ++a) {
-        pos[a] = std::max(0.f, regrets[a * hands + h]);
+        pos[a] = std::max(0.f, expand_regret(regrets[a * hands + h]));
         sum += pos[a];
       }
       const float inv = sum > 0 ? 1.f / sum : 0.f;
@@ -1362,13 +1375,16 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
     return;
   }
   if (!n.flags && !g_.compressed && !predictive && !sqrt_weights_ && A <= 4) {
-    const float* regrets = g_.regrets.data() + n.storage;
-    switch (A) {
-      case 1: return average_float_strategy<1>(S, regrets, out, H);
-      case 2: return average_float_strategy<2>(S, regrets, out, H);
-      case 3: return average_float_strategy<3>(S, regrets, out, H);
-      case 4: return average_float_strategy<4>(S, regrets, out, H);
-    }
+    const auto read_average = [&](const auto* regrets) {
+      switch (A) {
+        case 1: return average_float_strategy<1>(S, regrets, out, H);
+        case 2: return average_float_strategy<2>(S, regrets, out, H);
+        case 3: return average_float_strategy<3>(S, regrets, out, H);
+        case 4: return average_float_strategy<4>(S, regrets, out, H);
+      }
+    };
+    if (report_bfloat16_regrets_) return read_average(report_bfloat16_regrets_ + n.storage);
+    return read_average(g_.regrets.data() + n.storage);
   }
   float* sum = sc.a.alloc_zero(H);
   for (int a = 0; a < A; ++a) {
@@ -2199,6 +2215,13 @@ void Solver::iterate(int t, int first) {
   double pb = std::pow(td, params.beta_at(t));
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
+  auto round_regrets = [&] {
+    if (!uses_bfloat_regrets(t)) return;
+    for (float& x : g_.regrets) {
+      x = expand_regret(bfloat_regret_word(std::bit_cast<uint32_t>(x)));
+    }
+  };
+  if (t == 9) round_regrets();
   const auto average = average_step(t, params.gamma, avg_delay, avg_reset, uses_sampled_averaging());
   strat_mult_ = average.discount;
   accumulate_ = average.weight != 0.f && (avg_reset || t > avg_delay);
@@ -2218,6 +2241,7 @@ void Solver::iterate(int t, int first) {
       own = scaled;
     }
     walk_t<Walk::CFR>(0, p, own, g_.init_reach[1 - p].data(), out);
+    round_regrets();
     // every 4th iteration (before the other player's walk reads p's strategies): rounding asymmetry grows
     // about 3x per iteration where hands are near-indifferent, so it stays near 1e-5 between resets, at a
     // quarter of the cost (3.5% per iteration on threebet_mono's monotone flop when done every iteration)
@@ -2804,6 +2828,12 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
   }
 }
 
+
+RootStats Solver::root_stats_from_bfloat16(const uint16_t* committed_regrets) const {
+  Solver reader = *this;
+  reader.report_bfloat16_regrets_ = committed_regrets;
+  return reader.root_stats();
+}
 
 RootStats Solver::root_stats() {
   RootStats st;

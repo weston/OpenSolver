@@ -1,4 +1,5 @@
 #include "metal.hpp"
+#include "bfloat_regrets.hpp"
 #include "average_sampling.hpp"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -6,9 +7,11 @@
 #include <unistd.h>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <mutex>
 #include <vector>
 #include <unordered_map>
 #include "solver.hpp"
@@ -25,9 +28,9 @@ const char kernel_source[] =
 struct Metal {
   id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
   id<MTLCommandQueue> queue = [dev newCommandQueue];
-  id<MTLLibrary> library;
-  Metal() {
-    if (!queue) throw std::runtime_error("Metal command queue unavailable");
+  id<MTLLibrary> library, compact_library;
+  std::once_flag compact_once;
+  id<MTLLibrary> compile(bool compact) {
     NSError* error = nil;
     auto options = [MTLCompileOptions new];
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
@@ -39,14 +42,22 @@ struct Metal {
 #else
     options.fastMathEnabled = NO;
 #endif
-    library = [dev newLibraryWithSource:[NSString stringWithUTF8String:kernel_source] options:options error:&error];
-    if (!library) fail(error);
+    if (compact) options.preprocessorMacros = @{@"WSOLVER_BFLOAT": @1};
+    auto result = [dev newLibraryWithSource:[NSString stringWithUTF8String:kernel_source] options:options error:&error];
+    if (!result) fail(error);
+    return result;
+  }
+  Metal() {
+    if (!queue) throw std::runtime_error("Metal command queue unavailable");
+    library = compile(false);
   }
   [[noreturn]] static void fail(NSError* error) {
     throw std::runtime_error(error ? error.localizedDescription.UTF8String : "Metal command failed");
   }
   id<MTLComputePipelineState> pipeline(NSString* name, bool replay = false, bool early = false,
-                                       AverageMode average_mode = DenseAverage) {
+                                       AverageMode average_mode = DenseAverage, bool compact = false) {
+    if (compact) std::call_once(compact_once, [&] { compact_library = compile(true); });
+    auto selected_library = compact ? compact_library : library;
     NSError* error = nil;
     auto descriptor = [MTLComputePipelineDescriptor new];
     descriptor.label = name;
@@ -54,10 +65,10 @@ struct Metal {
       auto constants = [MTLFunctionConstantValues new];
       [constants setConstantValue:&early type:MTLDataTypeBool atIndex:0];
       [constants setConstantValue:&average_mode type:MTLDataTypeUInt atIndex:1];
-      descriptor.computeFunction = [library newFunctionWithName:name constantValues:constants error:&error];
+      descriptor.computeFunction = [selected_library newFunctionWithName:name constantValues:constants error:&error];
       if (!descriptor.computeFunction) fail(error);
     } else
-      descriptor.computeFunction = [library newFunctionWithName:name];
+      descriptor.computeFunction = [selected_library newFunctionWithName:name];
     descriptor.supportIndirectCommandBuffers = replay;
     auto state = [dev newComputePipelineStateWithDescriptor:descriptor
                                                     options:MTLPipelineOptionNone
@@ -245,6 +256,21 @@ class PostflopSolve final : public MetalSolve {
   id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], rounds;
   id<MTLBuffer> equity[2], equity_tables, allin_batches, bet_check_nodes, two_bet_nodes, lead_check_nodes;
   MetalRows regrets, strategy_sums;
+  bool compact_regrets = false, regrets_current_on_cpu = true;
+  void publish_for_cpu(GameTree& g) override {
+    if (regrets_current_on_cpu) return;
+    const auto* source = static_cast<const uint16_t*>(regrets.input.contents);
+    for (size_t i = 0; i < g.regrets.size(); ++i)
+      g.regrets[i] = std::bit_cast<float>(bfloat_regret_bits(source[i]));
+    regrets_current_on_cpu = true;
+  }
+  void prepare_regrets(const GameTree& g) {
+    auto* dest = static_cast<uint16_t*>(regrets.input.contents);
+    for (size_t i = 0; i < g.regrets.size(); ++i) {
+      auto bits = std::bit_cast<uint32_t>(g.regrets[i]);
+      dest[i] = bfloat_regret_word(bits);
+    }
+  }
   struct Range {
     size_t start, count;
   };
@@ -263,7 +289,7 @@ class PostflopSolve final : public MetalSolve {
   } replays;
   bool write_sums = true;
   bool early_replay = false;
-  NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* specialized_pipelines[2][3]{};
+  NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* specialized_pipelines[2][2][3]{};
   id<MTLBuffer> params[2];
   template <class V>
   id<MTLBuffer> copy_buffer(const V& x) {
@@ -765,12 +791,13 @@ class PostflopSolve final : public MetalSolve {
       const bool policy = early_replay && pipe != terminals && pipe != allins && pipe != advance_forced;
       const bool writes_strategy = pipe != terminals && pipe != allins && pipe != propagate_reach;
       const AverageMode average = writes_strategy ? mode : DenseAverage;
-      if (policy || average != DenseAverage) {
-        auto& variants = specialized_pipelines[policy][average];
+      const bool compact = compact_regrets && pipe != terminals && pipe != allins;
+      if (compact || policy || average != DenseAverage) {
+        auto& variants = specialized_pipelines[compact][policy][average];
         if (!variants) variants = [NSMutableDictionary new];
         selected = variants[pipe.label];
         if (!selected) {
-          selected = m.pipeline(pipe.label, true, policy, average);
+          selected = m.pipeline(pipe.label, true, policy, average, compact);
           variants[pipe.label] = selected;
         }
       }
@@ -826,6 +853,21 @@ class PostflopSolve final : public MetalSolve {
   }
 
   id<MTLCommandBuffer> submit(GameTree& g, Solver& s, int t, bool refresh_reach) {
+    const bool compact = s.uses_bfloat_regrets(t);
+    const bool precision_changed = compact != compact_regrets;
+    if (precision_changed) {
+      publish_for_cpu(g);
+      replays = {};
+      regrets = {};
+      compact_regrets = compact;
+      if (compact) {
+        regrets.input = m.buffer(state_bytes / 2);
+        regrets.output = m.buffer(state_bytes / 2);
+      } else {
+        regrets.bind(m, g.regrets, stage_regrets);
+      }
+      refresh_reach = true;
+    }
     const bool early = s.sqrt_regret_weights();
     const bool policy_changed = early != early_replay;
     if (policy_changed) {
@@ -835,7 +877,11 @@ class PostflopSolve final : public MetalSolve {
     const auto average = average_step(t, s.params.gamma, s.avg_delay, s.avg_reset, s.uses_sampled_averaging());
     const AverageMode mode = average.weight == 1.f ? DenseAverage : average.weight == 0.f ? SkipAverage : WeightedAverage;
     write_sums = mode != SkipAverage;
-    regrets.prepare(g.regrets, refresh_reach);
+    if (compact_regrets) {
+      if (refresh_reach) prepare_regrets(g);
+    } else {
+      regrets.prepare(g.regrets, refresh_reach);
+    }
     strategy_sums.prepare(g.strat, refresh_reach);
     auto disc = [](double z) { return float(z / (1 + z)); };
     @autoreleasepool {
@@ -891,10 +937,15 @@ class PostflopSolve final : public MetalSolve {
 
   RootStats evaluate_and_prepare(GameTree& g, Solver& s, int next) override {
     @autoreleasepool {
+      const uint16_t* committed = nullptr;
+      if (compact_regrets && s.uses_bfloat_regrets(next))
+        committed = static_cast<const uint16_t*>(regrets.input.contents);
+      else
+        publish_for_cpu(g);
       auto cmd = submit(g, s, next, false);
       RootStats stats;
       try {
-        stats = s.root_stats();
+        stats = committed ? s.root_stats_from_bfloat16(committed) : s.root_stats();
       } catch (...) {
         [cmd waitUntilCompleted];
         throw;
@@ -913,7 +964,13 @@ class PostflopSolve final : public MetalSolve {
       }
     }
     prepared_iteration = 0;
-    regrets.publish(g.regrets);
+    if (compact_regrets) {
+      std::swap(regrets.input, regrets.output);
+      regrets.slot ^= 1;
+      regrets_current_on_cpu = false;
+    } else {
+      regrets.publish(g.regrets);
+    }
     if (write_sums) strategy_sums.publish(g.strat);
   }
 };

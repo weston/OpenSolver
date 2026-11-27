@@ -2,6 +2,8 @@
 #pragma once
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <limits>
 #include <cstdint>
 #include <vector>
 
@@ -139,20 +141,37 @@ class Solver {
   }
   void restart_flop_opening() {
     const bool previously_eligible = average_sampling_ != AverageSampling::Dense;
+    const bool allow_bfloat = g_.cfg.river_sizing == RiverSizing::Smart || bfloat_regrets_;
     set_average_sampling(AverageSampling::Dense);
     set_flop_opening(opening_ == FlopOpening::Edited ? FlopOpening::SquareRoot : opening_);
     if ((g_.cfg.river_sizing == RiverSizing::Smart || previously_eligible) && opening_ == FlopOpening::SquareRoot &&
         std::none_of(g_.nodes.begin(), g_.nodes.end(), [](const GNode& n) { return n.flags != 0; }))
-      prepare_sampled_averaging();
+      prepare_sampled_averaging(allow_bfloat);
   }
-  void prepare_sampled_averaging() {
+  void prepare_sampled_averaging(bool allow_bfloat = true) {
     constexpr uint64_t min_strategy_floats = (uint64_t{1} << 30) / sizeof(float);
-    if (g_.storage_floats >= min_strategy_floats) set_average_sampling(AverageSampling::AwaitingFirstGo);
+    if (g_.storage_floats >= min_strategy_floats) {
+      set_average_sampling(AverageSampling::AwaitingFirstGo);
+      set_bfloat_regrets(allow_bfloat);
+    }
   }
-  void select_sampled_averaging(double target_chips) {
+  bool is_bfloat_target(double target_chips) const {
+    const double target = 0.003 * g_.cfg.start_pot();
+    return target > 0 && target_chips >= std::nextafter(target, 0.) &&
+           target_chips <= std::nextafter(target, std::numeric_limits<double>::infinity());
+  }
+  void select_sampled_averaging(double target_chips, bool metal = false) {
     if (average_sampling_ != AverageSampling::AwaitingFirstGo) return;
+    const bool compact = bfloat_regrets_ && metal && is_bfloat_target(target_chips);
     const bool tight_target = target_chips > 0 && target_chips <= 0.003 * g_.cfg.start_pot();
-    set_average_sampling(g_.iterations == 0 && tight_target ? AverageSampling::Bounded : AverageSampling::Dense);
+    set_average_sampling(g_.iterations == 0 && (tight_target || compact) ? AverageSampling::Bounded : AverageSampling::Dense);
+    set_bfloat_regrets(compact);
+  }
+  bool bfloat_regrets() const { return bfloat_regrets_; }
+  bool uses_bfloat_regrets(int t) const { return t > 8 && bfloat_regrets_ && uses_sampled_averaging(); }
+  void set_bfloat_regrets(bool enabled) {
+    bfloat_regrets_ = enabled && average_sampling_ != AverageSampling::Dense &&
+                      g_.root_board_len() == 3 && g_.perm_all.size() <= 1;
   }
   AverageSampling average_sampling() const { return average_sampling_; }
   bool uses_sampled_averaging() const { return average_sampling_ == AverageSampling::Bounded; }
@@ -160,6 +179,7 @@ class Solver {
     const bool eligible = opening_ == FlopOpening::SquareRoot && uses_flop_ip_first() &&
                           params == DcfrParams{} && avg_reset && avg_delay == 32 && !g_.payoff().icm.enabled;
     average_sampling_ = eligible ? mode : AverageSampling::Dense;
+    if (average_sampling_ == AverageSampling::Dense) bfloat_regrets_ = false;
   }
   int whole_tree_first_player() const { return uses_flop_ip_first() ? 1 : first_player; }
   bool parallel = true;
@@ -319,6 +339,7 @@ class Solver {
 
   // Stats from the tree root.
   RootStats root_stats();
+  RootStats root_stats_from_bfloat16(const uint16_t* committed_regrets) const;
 
   // Strategies at decision node (A * H[acting]): current (regret matching) / average.
   void current_strategy(uint32_t ni, float* out) const;
@@ -360,6 +381,8 @@ class Solver {
   bool call_and_fold(const GNode& sd, const GNode& fold, int p, const float* ro, float* sd_out, float* fold_out) const;
 
   GameTree& g_;
+  const uint16_t* report_bfloat16_regrets_ = nullptr;
+  bool bfloat_regrets_ = false;
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;
   bool accumulate_ = true;  // t > avg_delay: whether this iteration feeds the strategy sum
   FlopOpening opening_ = FlopOpening::Ordinary;

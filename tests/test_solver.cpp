@@ -24,6 +24,53 @@ static bool same_bytes(const V& a, const V& b) {
          (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0);
 }
 
+static bool bfloat_regret_reports() {
+  GameConfig cfg;
+  std::string error;
+  parse_cards("Ah3cQd", cfg.board);
+  if (!parse_range("KK,JJ,87s,AKs", cfg.range[0], error) || !parse_range("QQ,TT,AQs,KQs", cfg.range[1], error))
+    return false;
+  cfg.collapse_checkdowns = true;
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 300;
+  cfg.lines.add = {{0, 25, 100}, {0, 45, 120}, {0, 65, 160}, {0, 90, 200}, {0, 0, 0, 0, 30}};
+  GameTree game;
+  if (!game.build(cfg, error)) return false;
+  Solver solver(game);
+  solver.parallel = false;
+  solver.flop_ip_first = true;
+  solver.avg_delay = 32;
+  solver.set_flop_opening(FlopOpening::SquareRoot);
+  solver.set_average_sampling(AverageSampling::AwaitingFirstGo);
+  solver.set_bfloat_regrets(true);
+  solver.select_sampled_averaging(std::nextafter(.3, 1.), true);
+  if (solver.uses_bfloat_regrets(8) || !solver.uses_bfloat_regrets(9)) return false;
+  game.iterations = 9;
+  solver.update_flop_opening();
+  std::vector<uint16_t> words(game.storage_floats);
+  for (size_t i = 0; i < words.size(); ++i) {
+    game.regrets[i] = (static_cast<int>(i % 43) - 21) * .5f;
+    words[i] = static_cast<uint16_t>(std::bit_cast<uint32_t>(game.regrets[i]) >> 16);
+    game.strat[i] = (i % 4 == 0) ? static_cast<float>(i % 53) : 0.f;
+  }
+  const auto expected = solver.root_stats();
+  std::fill(game.regrets.begin(), game.regrets.end(), 17.f);
+  const auto stale = solver.root_stats();
+  const auto reported = solver.root_stats_from_bfloat16(words.data());
+  if (std::memcmp(&expected, &reported, sizeof(expected)) || !std::memcmp(&stale, &reported, sizeof(stale))) return false;
+
+  parse_cards("Ah3hQh", cfg.board);
+  GameTree symmetric;
+  if (!symmetric.build(cfg, error) || symmetric.perm_all.size() <= 1) return false;
+  Solver restored(symmetric);
+  restored.flop_ip_first = true;
+  restored.avg_delay = 32;
+  restored.set_flop_opening(FlopOpening::SquareRoot);
+  restored.set_average_sampling(AverageSampling::Bounded);
+  restored.set_bfloat_regrets(true);
+  return !restored.uses_bfloat_regrets(9);
+}
+
 static bool sampled_averaging_election() {
   GameTree game;
   game.cfg.river_sizing = RiverSizing::Smart;
@@ -1321,6 +1368,7 @@ int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
   int fails = 0;
+  fails += !bfloat_regret_reports();
   fails += !sampled_averaging_election();
   fails += !low_reach_average_strategy();
   fails += !parallel_equivalence();

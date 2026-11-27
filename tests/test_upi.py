@@ -2579,13 +2579,14 @@ def check_sampled_averaging(exe):
             flags = 22 + struct.unpack_from("<I", raw, 18)[0] - 1
             assert raw[flags] == 1  # union hands
             raw[flags] |= 2 | 4  # automatic IP first and square-root opening
-            for path, mode in ((old, 0), (sampled, 16), (awaiting, 32)):
+            packed, eligible = Path(tmp, "packed"), Path(tmp, "packed-ready")
+            for path, mode in ((old, 0), (sampled, 16), (awaiting, 32), (packed, 16 | 64), (eligible, 32 | 64)):
                 raw[flags] = 7 | mode
                 path.write_bytes(gzip.compress(raw))
 
             def saved_mode(path):
                 data = gzip.decompress(path.read_bytes())
-                return data[21 + struct.unpack_from("<I", data, 18)[0]] & (16 | 32)
+                return data[21 + struct.unpack_from("<I", data, 18)[0]] & (16 | 32 | 64)
 
             run(f'load_tree "{sampled}" full')
             run(f'dump_tree "{mid}"')
@@ -2631,6 +2632,76 @@ def check_sampled_averaging(exe):
                 if device == "v4_metal":
                     assert ["SOLVER: device gpu"] in u.solver_msgs
                 results.append(floats(published))
+            packed_results = []
+            for device in devices:
+                run("set_algorithm " + device)
+                run(f'load_tree "{eligible}" full')
+                run("set_accuracy 0.3")
+                run("go")
+                run("wait_for_solver")
+                run(f'dump_tree "{mid}" lossless')
+                expected_mode = 16 | 64 if device == "v4_metal" else 16
+                check(saved_mode(mid) == expected_mode, "only a new Metal target solve elects compact regrets on " + device)
+
+                run("set_accuracy 0")
+                run(f'load_tree "{sampled}" full')
+                full8 = steps(8)
+                full37 = steps(29)
+                run(f'load_tree "{packed}" full')
+                run("set_info_freq 1000")
+                uninterrupted = steps(37)
+                run(f'load_tree "{packed}" full')
+                run("set_info_freq 1")
+                check(steps(8) == full8, "the compact trajectory has eight full-precision opening sweeps on " + device)
+                steps(1)
+                run(f'dump_tree "{mid}" lossless')
+                check(saved_mode(mid) == (16 | 64), "a compact solve saves its precision at iteration nine on " + device)
+                run(f'load_tree "{mid}" full')
+                continued = steps(28)
+                reported = run("calc_results")
+                run("clear_cache")
+                check(continued == uninterrupted and continued != full37 and run("calc_results") == reported,
+                      "compact reports and a lossless restart reproduce the uninterrupted solve on " + device)
+                packed_results.append(floats(continued))
+                for go in ("go", "go 1 steps", "go 0 seconds"):
+                    run(f'load_tree "{packed}" full')
+                    run("set_accuracy 0.1")
+                    run(go)
+                    run("wait_for_solver")
+                    run(f'dump_tree "{mid}" lossless')
+                    check(saved_mode(mid) == 16, f"{go} honors a tighter target with full-precision regrets on {device}")
+            if len(packed_results) == 2:
+                check(max(abs(a - b) for a, b in zip(*packed_results)) < .02,
+                      "the CPU continuation policy and Metal agree with compact regrets")
+
+                run("set_algorithm v4_metal")
+                run("set_accuracy 0")
+                run(f'load_tree "{packed}" full')
+                u.solver_msgs.clear()
+                run("go 64 steps")
+                deadline = time.monotonic() + 15
+                while int(run("show_iters")) < 12:
+                    if time.monotonic() >= deadline:
+                        raise AssertionError("compact Metal solve did not reach the hold")
+                    time.sleep(.001)
+                run("hold")
+                held = int(run("show_iters"))
+                assert 12 <= held < 64
+                run(f'dump_tree "{mid}" lossless')
+                original = run("calc_results")
+                run("lock_node r:0:c:b30")
+                run("release")
+                run("wait_for_solver")
+                fallback = run("show_strategy r:0:c"), run("calc_results")
+                check(any(m[0].startswith("SOLVER: device cpu") for m in u.solver_msgs),
+                      "editing a held compact Metal solve uses CPU for the remaining sweeps")
+                run("set_algorithm v4_large")
+                run(f'load_tree "{mid}" full')
+                check(run("calc_results") == original, "the held lossless checkpoint contains the committed regrets")
+                run("lock_node r:0:c:b30")
+                resumed = steps(64 - held), run("calc_results")
+                check(resumed == fallback, "a CPU reload and the live Metal fallback finish identically")
+
             run("set_algorithm v4_large")
             for initial, accuracy in ((old, "0.3"), (awaiting, "0.4")):
                 run(f'load_tree "{initial}" full')

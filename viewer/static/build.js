@@ -4,6 +4,7 @@
 import { H, RANKS, SUITS, GLYPH, el, cardEl } from "./cards.js";
 import { startPreview, previewOn } from "./preview.js";
 import { parseRange, formatRange, rangeStats } from "./ranges.js";
+import { smartTree } from "./settings.js";
 import { get, post, toast, fail, prefs, fmt, fmtChips, fmtEvPct } from "./api.js";
 import { drawChart } from "./chart.js";
 import { openLibrary } from "./library.js";
@@ -354,7 +355,7 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 async function saveSpot() {
   const suggest = spot.name || (board.length ? `Spots/${board.join("")}` : "");
   const content = spotContent();
-  if (treeReady && builtSig === sig(readForm())) {
+  if (treeReady && builtSig === sig(buildForm())) {
     try {
       const r = await get("/api/lock/export");
       if (r.locks && r.locks.length) content.locks = r.locks;
@@ -380,7 +381,7 @@ function syncResume() {
 function markDirty() {
   const tag = $("build-state");
   if (!builtSig) { tag.textContent = "not built"; tag.className = "tag"; return; }
-  const same = builtSig === sig(readForm());
+  const same = builtSig === sig(buildForm());
   tag.textContent = same ? "built" : "changed — rebuild";
   tag.className = same ? "tag ok" : "tag";
 }
@@ -419,12 +420,14 @@ function memLine(text) {
   return m ? `${m[1]} ${m[2].toUpperCase()}` : "";
 }
 
+function buildForm() { return { ...readForm(), smart_tree: smartTree() }; }
+
 async function build() {
   if (!validateSizes()) { info("Fix the highlighted sizes: 33 (% pot), 2e (geometric), 3x (raises only), a (all-in).", true); return false; }
   if (board.length < 3) { info("Pick at least a flop (3 cards).", true); return false; }
   const bad = badNumbers(["f-pot", "f-stack", "f-allin-threshold", "f-allin-limit", "f-merge-threshold"]);
   if (bad.length) { info(`Fix ${bad.join(", ")}.`, true); return false; }
-  const f = readForm();
+  const f = buildForm();
   setBusy(true, "Generating the tree…");
   try {
     const g = await post("/api/generate", f);
@@ -526,6 +529,7 @@ export function updateProgress(st, series, rootPot, bb = 0) {
 /* ------------------------------------------------------------------ init */
 
 export function initBuild({ built }) {
+  $("smart-tree").addEventListener("change", markDirty);
   onBuilt = built || onBuilt;
   editors.OOP = new RangeEditor(document.querySelector('.editor[data-player="OOP"]'), "OOP", saveForm);
   editors.IP = new RangeEditor(document.querySelector('.editor[data-player="IP"]'), "IP", saveForm);
@@ -594,5 +598,5 @@ export function currentTree(withBoard = false) {
   if (bad.length) throw new Error(`Fix ${bad.join(", ")} on the Tree tab first.`);
   const f = readForm();
   if (!f.range_oop || !f.range_ip) throw new Error("Set both ranges on the Tree tab first.");
-  return { ...f, board: withBoard ? f.board : "" };
+  return { ...f, smart_tree: smartTree(), board: withBoard ? f.board : "" };
 }

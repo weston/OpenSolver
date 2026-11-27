@@ -164,7 +164,7 @@ class JobsService:
             stack = next((int(float(line.split()[1])) for line in reversed(batch["setup"]) if line.startswith("set_eff_stack ")), None)
             simulations.append({"name": f'{job["batch"]}/{job["board"]}', "path": job["out"],
                                 "metadata": {"board": job["board"], "pot": jobs.start_pot(batch["setup"]),
-                                             "stack": stack, "big_blind": 100, "save_mode": batch["save"]}})
+                                             "stack": stack, "big_blind": 100, "save_mode": (job.get("result") or {}).get("save_mode", batch["save"])}})
         return simulations
 
     def _flop_file_text(self, name):
@@ -207,9 +207,10 @@ class JobsService:
         max_iters = num("max_iters", int, 1)
         save = str(b.get("save", "no_rivers"))
         try:
-            est = jobs.check_tree(self.solver_exe, setup, flops[0][0])
+            smart = tree.get("smart_tree") is True
+            est = jobs.check_tree(self.solver_exe, setup, flops[0][0], smart)
             added = self.q.add_batch(name, setup, flops, accuracy, max_iters, None, save, None,
-                                     source="viewer Tree form")
+                                     source="viewer Tree form", smart_tree=smart)
         except jobs.JobError as e:
             raise vsrv.SolverError(str(e))
         return {"added": len(added), "estimate": est.splitlines()}

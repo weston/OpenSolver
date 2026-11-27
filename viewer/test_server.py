@@ -607,7 +607,7 @@ class ViewerTest(unittest.TestCase):
     def test_10d_turn_and_river_boards(self):
         # a 4- or 5-card board starts the tree on that street (builder lines must not run past it)
         for board, first_kid in (("QhQc2c5d", "r:0:b"), ("QhQc2c5d9s", "r:0:b")):
-            st, d = self.req("/api/generate", "POST", dict(CFG, board=board))
+            st, d = self.req("/api/generate", "POST", dict(CFG, board=board, smart_tree=True))
             self.assertEqual(st, 200, d)
             st, d = self.req("/api/build", "POST", {})
             self.assertEqual(st, 200, d)
@@ -615,6 +615,62 @@ class ViewerTest(unittest.TestCase):
             self.assertEqual(st, 200, d)
             self.assertEqual(d["node"]["board"].replace(" ", ""), board)
             self.assertTrue(any(c["id"].startswith(first_kid) for c in d["children"]), d["children"])
+
+    def test_smart_flop_solve_browses_and_saves_the_configured_river(self):
+        cfg = dict(CFG, board="Kh9h4h", pot=100, stack=700, flop_bet="", flop_bet_ip="40",
+                   turn_bet="", turn_bet_ip="100", river_bet="25,75,150,300", river_raise="50",
+                   river_bet_ip="75", river_allin=False, river_allin_ip=False, allin_threshold=100)
+        river = "r:0:c:c:2d:c:c:3s"
+        def build(smart):
+            self.assertEqual(self.req("/api/generate", "POST", dict(cfg, smart_tree=smart))[0], 200)
+            status, result = self.req("/api/build", "POST")
+            self.assertEqual(status, 200, result)
+            return int(result["node_count"].split("TOTAL: ")[1])
+        def children(node):
+            status, result = self.req("/api/node?id=" + node)
+            self.assertEqual(status, 200, result)
+            return [c["id"] for c in result["children"]]
+
+        full = build(False)
+        expected = children(river)
+        deep = river + ":b75"
+        self.assertIn(deep, expected)
+        replies = children(deep)
+        for device in self.solver.devices:
+            with self.subTest(device=device):
+                self.assertEqual(self.req("/api/device", "POST", {"device": device})[0], 200)
+                self.assertLess(build(True), full)
+                self.solver.cmds(["set_accuracy 0", "go 12 steps", "wait_for_solver"])
+                self.assertEqual(self.solver.state()["active_device"], device)
+                before = self.solver.cmd("show_strategy r:0:c")
+                self.assertEqual(children(deep), replies)
+                status, strategy = self.req("/api/strategy?id=" + deep)
+                self.assertEqual(status, 200, strategy.get("error"))
+                self.assertEqual(len(strategy["freq"]), len(replies))
+                self.assertIn("ALREADY_RECALCED", self.solver.cmd("show_node " + river))
+                self.assertLessEqual(float(self.solver.cmd("explo_partial " + river)), 0.05001)
+                self.assertEqual(children(river), expected)
+                self.assertEqual(self.solver.cmd("show_strategy r:0:c"), before)
+                self.solver.cmd("go")
+                self.solver.hold("test")
+                try:
+                    frozen = self.solver.cmd("show_strategy r:0:c")
+                    self.assertEqual(children(river), expected)
+                    self.assertEqual(self.solver.cmd("show_strategy r:0:c"), frozen)
+                finally:
+                    self.solver.cmd("stop")
+                    self.solver.unhold("test")
+                stats = self.solver.cmd("calc_results")
+                name = "Smart tree " + device
+                self.assertEqual(self.req("/api/library/save", "POST", {"kind": "sim", "name": name,
+                                      "content": {"save_mode": "full"}})[0], 200)
+                entries = self.req("/api/library/list?kind=sim")[1]["entries"]
+                self.assertEqual(next(e["save_mode"] for e in entries if e["name"] == name), "no_rivers")
+                self.assertEqual(self.req("/api/library/open", "POST", {"name": name})[0], 200)
+                self.assertEqual(self.solver.cmd("calc_results"), stats)
+                self.assertEqual(children(river), expected)
+                self.assertEqual(self.req("/api/strategy?id=" + deep)[0], 200)
+        self.req("/api/device", "POST", {"device": "cpu"})
 
     def test_10e_oop_needs_donk_sizes_to_lead(self):
         # #152 (owner's rule): after OOP calls the flop bet, OOP can lead the turn only

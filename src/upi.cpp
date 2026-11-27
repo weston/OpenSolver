@@ -352,6 +352,7 @@ std::string Upi::dispatch(const std::string& cmd, const Args& args, bool& is_exi
     TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
     return it->second(args);
   }
+  if (tree_ && tree_->cfg.smart_rivers) return smart_command(cmd, args, it->second);
   return it->second(args);
 }
 
@@ -514,6 +515,12 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
         } else {
           solver_->iterate(tick);
         }
+        if (tree_->train_missing_rivers) {
+          tree_->missing_street = 0;
+          tree_->incomplete = false;
+          tree_->recalced.clear();
+          tree_->train_missing_rivers = false;
+        }
         ++tree_->iterations;
         ++iterations_;
         if (trial) {
@@ -648,15 +655,17 @@ void Upi::stop_solver(const char* reason) {
 
 std::string Upi::cmd_build_tree(const Args& a) {
   bool mem_ignore = ignore_mem_check_;
-  bool pessimistic = false;
+  bool pessimistic = false, smart_rivers = false;
   for (auto& s : a) {
     if (s == "mem_ignore") mem_ignore = true;
     else if (s == "mem_pessimistic") pessimistic = true;
+    else if (s == "smart_rivers") smart_rivers = true;
     else throw CmdError{"incorrect or missing argument"};
   }
   // Pio 3.10.1: no board, or no lines added, is "missing/incorrect tree" (probe 19)
   if (cfg_.board.size() < 3 || cfg_.lines.add.empty()) throw CmdError{"missing/incorrect tree"};
   GameConfig c = cfg_;
+  c.smart_rivers = smart_rivers;
   c.preflop = false;
   c.schematics.clear();
   c.subset.clear();
@@ -678,6 +687,7 @@ void Upi::plan_outcome_tables(GameTree& t, uint64_t avail, bool compress) const 
 
 std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, const char* okmsg) {
   stop_solver();
+  river_view_.reset();
   auto t = std::make_unique<GameTree>();
   // Rake and ICM belong to a tree in Pio (probed): a new tree starts with both off, while the ICM
   // points stay defined. set_rake / set_icm need a tree, so a script sets them after build_tree.
@@ -765,12 +775,14 @@ void Upi::apply_pcfr_settings() {
     tree_->preds.resize(tree_->storage_floats);
 }
 
-std::string Upi::estimate_text() {
+std::string Upi::estimate_text(const Args& args) {
   if (cfg_.board.size() < 3) throw CmdError{"incorrect or missing argument"};
   GameTree t;
   t.set_payoff(payoff_);
   std::string err;
-  if (!t.build(cfg_, err, false)) throw CmdError{err};
+  GameConfig config = cfg_;
+  config.smart_rivers = std::find(args.begin(), args.end(), "smart_rivers") != args.end();
+  if (!t.build(config, err, false)) throw CmdError{err};
   uint64_t b = t.memory_bytes_for(false, predictive_), bs = t.memory_bytes_for(true, predictive_);
   // Pio prints both algorithms; here v4_large = float32 storage, v4_small = 16-bit (small_strats).
   return "estimated tree size (v4_large): " + std::to_string(b >> 20) + " MB\nestimated tree size (v4_small): " +
@@ -1388,7 +1400,7 @@ void Upi::register_commands() {
     outcome_tables_ = a[0];
     return std::string("set_outcome_tables ok!");
   };
-  H["estimate_schematic_tree"] = [this](const Args&) { return estimate_text(); };
+  H["estimate_schematic_tree"] = [this](const Args& a) { return estimate_text(a); };
   H["estimate_tree"] = [this](const Args&) {
     // Preflop tree with the current subset and schematic trees (or the pure preflop tree). Without a
     // preflop config, Pio 3.10.1 (probe 26) needs a built tree and answers one line for it; the postflop
@@ -1506,6 +1518,7 @@ void Upi::register_commands() {
   // ---- Save / load ----
   H["free_tree"] = [this](const Args&) {
     stop_solver();
+    river_view_.reset();
     solver_.reset();
     tree_.reset();
     return std::string("free_tree ok!");

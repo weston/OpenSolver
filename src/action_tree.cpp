@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <cmath>
 
 namespace pio {
 
@@ -328,6 +329,49 @@ void index_action_tree(ActionNode* root, std::vector<ActionNode*>& out) {
     out.push_back(n);
     for (auto it = n->children.rbegin(); it != n->children.rend(); ++it) stack.push_back(it->get());
   }
+}
+
+bool simplify_rivers(ActionNode& node, int32_t stack) {
+  bool reduced = false;
+  if (node.board_len == 5 && node.kind == ANodeKind::Decision &&
+      std::any_of(node.actions.begin(), node.actions.end(), [](auto a) { return a.kind != ActKind::Bet; })) {
+    const int mine = node.inv[node.player], facing = node.inv[1 - node.player];
+    const double pot = double(node.dead) + node.street_start[0] + node.street_start[1];
+    const double spr = (stack - node.street_start[node.player]) / std::max(1.0, pot);
+    std::vector<bool> keep(node.actions.size(), true);
+    std::vector<size_t> sizes;
+    bool jam = false;
+    for (size_t i = 0; i < node.actions.size(); ++i) {
+      const auto& action = node.actions[i];
+      if (action.kind != ActKind::Bet) continue;
+      if (action.total == stack && (mine != facing || spr > 1)) jam = true;
+      else {
+        keep[i] = false;
+        sizes.push_back(i);
+      }
+    }
+    auto closest = [&](double fraction) {
+      if (sizes.empty()) return;
+      const double target = facing + fraction * (double(node.dead) + 2.0 * facing);
+      auto distance = [&](size_t i) { return std::abs(node.actions[i].total - target); };
+      keep[*std::min_element(sizes.begin(), sizes.end(),
+                             [&](size_t a, size_t b) { return distance(a) < distance(b); })] = true;
+    };
+    if (mine == facing) {
+      closest(spr <= 2 || node.player == 1 ? 0.75 : 0.25);
+      if (spr > 2) closest(1.5);
+    } else if (!jam || (spr > 3 && mine == node.street_start[node.player])) {
+      closest(0.5);
+    }
+    for (size_t i = keep.size(); i-- > 0;) {
+      if (keep[i]) continue;
+      reduced = true;
+      node.actions.erase(node.actions.begin() + i);
+      node.children.erase(node.children.begin() + i);
+    }
+  }
+  for (auto& child : node.children) reduced |= simplify_rivers(*child, stack);
+  return reduced;
 }
 
 }  // namespace pio

@@ -68,6 +68,7 @@ struct SubsetFlop {
 };
 
 struct GameConfig {
+  bool smart_rivers = false;
   bool preflop = false;            // preflop tree (board empty): lines are preflop lines
   std::vector<Schematic> schematics;
   std::vector<SubsetFlop> subset;  // used only when schematics are attached (full preflop tree)
@@ -373,6 +374,7 @@ class GameTree {
   int tune_k = 0;
   double tune_s[2] = {0, 0};
   bool incomplete = false;
+  bool train_missing_rivers = false;
   int missing_street = 0;     // first street without saved strategies (4 = turn, 5 = river); 0 = none
   bool fast_loaded = false;   // loaded without `full` (Pio: some commands need load_all_nodes)
   bool loaded_compressed = false;
@@ -394,6 +396,7 @@ class GameTree {
   // once the feature is on; the flag is for the check that runs *before* allocation.
   uint64_t memory_bytes_for(bool compress, bool with_preds = false, bool compact = false) const;
   void allocate_storage();  // uses `compressed`
+  void allocate_strategy_storage();
   void fill_term_pay();     // term_pay_ from payoff_ and anodes
 
   // Payoff for player p at a terminal given outcome (1 win, 0 tie, -1 lose).

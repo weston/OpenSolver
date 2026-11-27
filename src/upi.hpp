@@ -194,7 +194,9 @@ class Upi {
   std::string cmd_show_metadata(const Args& a);
   std::string cmd_show_nuts(const Args& a);
   std::string cmd_calc_eq_preflop(const Args& a);
-  std::string estimate_text();
+  std::string estimate_text(const Args& args);
+  Upi& river_view();
+  std::string smart_command(const std::string& cmd, const Args& args, const Handler& handler);
   std::string build_from(GameConfig c, bool mem_ignore, bool pessimistic, const char* okmsg);
   void apply_pcfr_settings();  // pushes predictive_/avg_delay_ into the solver (+preds alloc)
   void register_preflop_commands();
@@ -208,6 +210,7 @@ class Upi {
   // Re-solve the street subtree containing r if its strategies are missing (truncated save) or
   // set_always_recalc asks for it. Call before reading strategies of r.
   void ensure_recalced(const NodeRef& r);
+  bool solve_metal_river(const NodeRef& root, double accuracy, double seconds);
 
   // ---- state ----
   GameConfig cfg_;            // global state (set_* commands)
@@ -219,6 +222,7 @@ class Upi {
   PayoffModel payoff_;
   std::unique_ptr<GameTree> tree_;
   std::unique_ptr<Solver> solver_;
+  std::unique_ptr<Upi> river_view_;
   std::vector<std::string> tree_info_;
   // Pio's legacy set_bet_sizes / set_donk_bet: stored and shown by show_tree_params, never used
   // for building (Pio's build_tree ignores them too; trees come from add_line).

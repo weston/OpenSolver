@@ -24,7 +24,14 @@ export function updateDevice(st) {
   field.disabled = savingDevice || st.solving || st.dead;
 }
 
+export function smartTree() {
+  return prefs.get("smart-tree", false) === true;
+}
+
 export function initSettings() {
+  const smart = document.getElementById("smart-tree");
+  smart.checked = smartTree();
+  smart.onchange = () => prefs.set("smart-tree", smart.checked);
   const device = document.getElementById("solve-device");
   device.onchange = async () => {
     savingDevice = true;

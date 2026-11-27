@@ -494,6 +494,7 @@ class DrillService:
             tree = live_tree(body)
             config["spot"] = str(body.get("spot", ""))
             config.update(board_plan(body, tree))
+            config["smart_tree"] = tree.get("smart_tree") is True
             config["setup"], _ = vsrv.setup_from_body({**tree, "board": config["board"]})
         for key, default, limit in (("accuracy", 0.5, 100), ("seconds", 60, 3600)):
             value = body.get(key, default)
@@ -572,7 +573,7 @@ class DrillService:
                 self.remove_job(job)
         board = self.rng.choice(config["board_pool"]) if config["board_pool"] else "".join(self.rng.sample(DECK, 3))
         job = self.q.add_batch("next-" + uuid.uuid4().hex, config["setup"], [(board, 1)], config["accuracy"], None,
-                               config["seconds"], "full", None)[0]
+                               config["seconds"], "full", None, smart_tree=config.get("smart_tree", False))[0]
         status = jobs.run_job(self.q, job, self.solver_exe, 0, log=lambda _: None,
                               progress=self._progress, phase=self._phase)
         job = self.q.job(job["id"])

@@ -369,7 +369,7 @@ class Queue:
 
     def add_batch(self, name: str, setup: list[str], flops: list[tuple[str, float]], accuracy: float,
                   max_iters: int | None, max_seconds: float | None, save: str, out_dir: str | None,
-                  source: str = "") -> list[dict]:
+                  source: str = "", smart_tree: bool = False) -> list[dict]:
         if not NAME_RE.match(name):
             raise JobError("batch names: letters, digits, space, _ . + - (max 100), not ending in . or space")
         if save not in SAVE_MODES:
@@ -381,16 +381,16 @@ class Queue:
         if max_seconds is not None and not max_seconds > 0:
             raise JobError("max seconds must be > 0")
         with self.edit():
-            return self._add_batch(name, setup, flops, accuracy, max_iters, max_seconds, save, out_dir, source)
+            return self._add_batch(name, setup, flops, accuracy, max_iters, max_seconds, save, out_dir, source, smart_tree)
 
-    def _add_batch(self, name, setup, flops, accuracy, max_iters, max_seconds, save, out_dir, source):
+    def _add_batch(self, name, setup, flops, accuracy, max_iters, max_seconds, save, out_dir, source, smart_tree):
         if os.path.exists(os.path.join(self.batches_dir, name + ".json")) and self.jobs(name):
             raise JobError(f"batch {name!r} exists (remove it first, or pick another name)")
         # (a batch file with no jobs is left from a crash between the writes below: reused, #362)
         out_dir = os.path.abspath(os.path.expanduser(out_dir)) if out_dir else \
             os.path.join(self.root, "saves", name)
         _write_json(os.path.join(self.batches_dir, name + ".json"),
-                    {"name": name, "setup": setup, "accuracy_pct": accuracy, "max_iters": max_iters,
+                    {"name": name, "setup": setup, "smart_tree": smart_tree, "accuracy_pct": accuracy, "max_iters": max_iters,
                      "max_seconds": max_seconds, "save": save, "out_dir": out_dir, "source": source,
                      "created": time.time()})
         existing = self.jobs()
@@ -1226,7 +1226,7 @@ def close_solver(s) -> None:
             pass
 
 
-def check_tree(solver_exe: str, setup: list[str], board: str) -> str:
+def check_tree(solver_exe: str, setup: list[str], board: str, smart_tree: bool = False) -> str:
     """Validate a batch's tree on one board without building it; returns the size estimate.
 
     estimate_schematic_tree expands every line, so a bad tree fails here at `add` instead of failing
@@ -1236,7 +1236,7 @@ def check_tree(solver_exe: str, setup: list[str], board: str) -> str:
     try:
         s.cmds(setup)
         s.cmd(f"set_board {board}")
-        return s.cmd("estimate_schematic_tree", timeout=600)
+        return s.cmd(vserver.tree_build_command("estimate_schematic_tree", smart_tree), timeout=600)
     except vserver.SolverError as e:
         raise JobError(f"the tree does not build on {board}: {e}") from None
     finally:
@@ -1329,7 +1329,7 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
             if algorithm is not None and (algorithm != "auto" or "gpu" in s.devices):
                 s.cmd("set_algorithm " + algorithm)
             s.cmd(f"set_board {job['board']}")
-            s.cmd("build_tree", timeout=7200)
+            s.cmd(vserver.tree_build_command("build_tree", b.get("smart_tree")), timeout=7200)
         if watch.hit:  # the build finished just as the stop landed
             return requeue("stopped")
         s.cmd(f"set_accuracy {b['accuracy_pct'] / 100.0:.10g} fraction")
@@ -1386,7 +1386,11 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
         res["seconds"] = round(time.time() - t0, 3)
         os.makedirs(os.path.dirname(job["out"]), exist_ok=True)
         mode = "" if b["save"] == "full" else " " + b["save"]
-        s.cmd(f'dump_tree "{job["out"]}"{mode}', timeout=7200)
+        cmd = f'dump_tree "{job["out"]}"{mode}'
+        if b.get("smart_tree"):
+            res["save_mode"] = s.cmd(cmd + " report_mode", timeout=7200)
+        else:
+            s.cmd(cmd, timeout=7200)
         q.update(jid, status="done", finished=time.time(), result=res, runner_pid=None)
         expl = res.get("exploitability")
         log(f"{tag} done in {res['seconds']:.1f} s, {res.get('iterations', '?')} iterations, exploitable "

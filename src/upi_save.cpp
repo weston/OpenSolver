@@ -743,12 +743,13 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   require_tree();
   if (a.empty()) throw CmdError{"incorrect or missing argument"};
   uint32_t truncate = 0;
-  bool compress = true, lossless = false;
+  bool compress = true, lossless = false, report_mode = false;
   for (size_t i = 1; i < a.size(); ++i) {
     if (a[i] == "full") truncate = 0;
     else if (a[i] == "no_rivers") truncate = 4;
     else if (a[i] == "no_turns") truncate = 3;
     else if (a[i] == "no_compress") compress = false;
+    else if (a[i] == "report_mode") report_mode = true;
     else if (a[i] == "lossless") lossless = true;   // ours: exact records (v4 layout)
     else throw CmdError{"incorrect or missing argument"};
   }
@@ -834,6 +835,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   tail_member(index_off, tail);
   out.write_raw(tail, kTailSize);
   out.close();
+  if (report_mode) return truncate == 3 ? "no_turns" : truncate == 4 ? "no_rivers" : "full";
   return "dump_tree ok!";
 }
 
@@ -843,6 +845,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
     if (a[i] != "full" && a[i] != "fast" && a[i] != "auto") throw CmdError{"incorrect or missing argument"};
   bool full_load = a.size() > 1 && a[1] == "full";
   stop_solver();
+  river_view_.reset();
   std::unique_ptr<GzIn> inp;
   try {
     inp = std::make_unique<GzIn>(a[0]);

@@ -680,6 +680,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   ap.dead = cfg.pot[2];
   aroot = build_action_tree(ap, cfg.lines, err);
   if (!aroot) return false;
+  cfg.smart_rivers = cfg.smart_rivers && bl == 3 && simplify_rivers(*aroot, cfg.eff_stack);
   schematic_roots.clear();
   if (cfg.full_preflop()) {
     if (cfg.subset.empty()) {
@@ -964,6 +965,10 @@ void GameTree::allocate_storage() {
   // The all-in outcome tables belong with the storage: built only for a tree that will be solved,
   // not for estimate_tree's throwaway build or a build the memory check rejects (#185 review).
   build_allin_tables();
+  allocate_strategy_storage();
+}
+
+void GameTree::allocate_strategy_storage() {
   regrets.clear();
   regrets.shrink_to_fit();
   strat.clear();

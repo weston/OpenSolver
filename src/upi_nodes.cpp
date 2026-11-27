@@ -409,7 +409,7 @@ std::string Upi::cmd_show_hand_lines(const Args& a) {
   std::vector<float> own0, opp0;
   if (hero == 0) node_reach(r, own0, opp0); else node_reach(r, opp0, own0);
   std::vector<float> own = own0, opp = opp0;
-  int stop = tree_->missing_street;  // first street without strategies to read (4 = turn, 5 = river)
+  int stop = tree_->cfg.smart_rivers ? 5 : tree_->missing_street;  // first street without strategies to read (4 = turn, 5 = river)
   if (always_recalc_street_ >= 3 && (stop == 0 || always_recalc_street_ < stop)) stop = always_recalc_street_;
 
   std::string out = "combos:";
@@ -810,6 +810,7 @@ double Upi::line_matchups(const std::string& line_id) {
       total += solver_->root_matchups();
       return;
     }
+    ensure_recalced(r);
     std::vector<float> r0, r1;
     node_reach(r, r0, r1);
     std::vector<float> m(tree_->num_hands(0));
@@ -1087,7 +1088,7 @@ void Upi::ensure_recalced(const NodeRef& r) {
   double pot = an.dead + an.inv[0] + an.inv[1];
   double acc = recalc_accuracy_[std::clamp(street - 3, 0, 2)] * pot;
   double secs = always_recalc_ms_ > 0 ? always_recalc_ms_ / 1000.0 : 0.0;
-  solve_subtree(sub, acc, 5000, secs);
+  if (!solve_metal_river(sub, acc, secs)) solve_subtree(sub, acc, 5000, secs);
   tree_->recalced.insert(sub.node);
 }
 
@@ -1182,6 +1183,7 @@ std::string Upi::cmd_print_all_strats() {
     s += r.id + "\n";
     const GNode& n = tree_->nodes[r.node];
     if (n.kind == ANodeKind::Decision) {
+      ensure_recalced(r);
       int A = n.num_children, H = tree_->num_hands(n.player);
       std::vector<float> sig(static_cast<size_t>(A) * H), line(NUM_COMBOS);
       solver_->average_strategy(r.node, sig.data());
@@ -1241,6 +1243,7 @@ void Upi::register_node_commands() {
       r0 = tree_->init_reach[0];
       r1 = tree_->init_reach[1];
     } else {
+      ensure_recalced(r);
       node_reach(r, r0, r1);
     }
     to_1326(p, r.frame, (p == 0 ? r0 : r1).data(), out.data());

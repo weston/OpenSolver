@@ -131,6 +131,13 @@ share the library and the job queue. What the viewer prints goes to
   `sudo rm -rf /Applications/OpenSolver.app && sudo pkgutil --forget com.wsolver.WSolver.pkg`.
   `~/.wsolver` and `~/Library/Logs/OpenSolver` are yours to keep or delete.
 
+### Windows installer
+
+`make windows-installer`, in an MSYS2 UCRT64 shell on Windows, writes
+`dist/WSolver-<version>-windows-x64-setup.exe` and a matching `.sha256`: a per-user installer for
+the solver and the viewer with a Python of their own (#565). See [Windows](#windows) for installing
+it and for building it.
+
 `make release` leaves the default build untouched and produces a second binary,
 `./solver-release`, with link-time optimization. Results are identical to the
 default build.
@@ -865,6 +872,49 @@ independent brute force on a small river spot.
 
 ## Windows
 
+### Installing on Windows
+
+Download `WSolver-<version>-windows-x64-setup.exe` from the
+[Releases](https://github.com/weston/WSolver/releases) page and run it. It installs the solver and
+the [viewer](#viewer) with everything they need, a Python of their own included, so the PC needs no
+compiler, no Python and no checkout. For 64-bit Windows 10 or 11 on a CPU with AVX2 (Intel Haswell,
+AMD Excavator or Ryzen, and later). About 9 MB to download, 37 MB installed.
+
+- **Checking the download (optional).** Next to each setup is a `.sha256` file. In PowerShell,
+  `(Get-FileHash .\WSolver-0.1.0-windows-x64-setup.exe).Hash` must match the hex string in it
+  (case aside).
+- **It is not code-signed.** The project has no code-signing certificate, so the first time the
+  setup runs, Windows SmartScreen says *Windows protected your PC*: click **More info**, then
+  **Run anyway**. The browser may also call the download uncommon; keep it (in Edge: **...** next
+  to the download, then **Keep**).
+- **Where it goes.** For you only, with no administrator rights: into
+  `%LOCALAPPDATA%\Programs\WSolver` (the setup lets you choose another folder, which must be empty
+  or a WSolver install), with **WSolver** in the Start menu and, if you tick it, on the desktop.
+  Installing a newer version over an older one replaces the program and nothing else.
+- **Running it.** WSolver starts the viewer and opens it in your default browser. A small window
+  shows the address, with **Open in Browser**, **Show Log** and **Quit**. Closing that window quits
+  WSolver, which stops the viewer and its solvers; it asks first while a solve or the job queue is
+  running. Opening WSolver again while it runs brings the page back. The viewer takes port 8765
+  when that is free and any free port otherwise (when a viewer from a checkout is already running,
+  say), and remembers the port it got. It listens on 127.0.0.1 only, so Windows Firewall does not
+  ask about it.
+- **Your data is not in the program folder.** Ranges, tree configs and the job queue stay in
+  `%USERPROFILE%\.wsolver`, as for a viewer run from a checkout. What the viewer prints goes to
+  `%LOCALAPPDATA%\WSolver\Logs\viewer.log` (**Show Log**).
+- **GPU.** The setup ships the solver as the build makes it, and does not bring a GPU runtime
+  along. Once the GPU solve for Windows is available, AMD, NVIDIA and Intel GPUs whose drivers
+  provide OpenCL 2.0 can use it. The OpenCL runtime comes with the graphics driver, so there is
+  nothing more to install; keep the driver up to date.
+- **Uninstalling:** Settings > Apps > Installed apps > WSolver > **Uninstall**, or
+  `Uninstall WSolver.exe` in the install folder. Quit WSolver first. This removes the program, its
+  shortcuts, its log and the solver's cached preflop table (in `%LOCALAPPDATA%\WSolver`).
+  `%USERPROFILE%\.wsolver` is yours to keep or delete.
+- **Without a window:** `WSolver-<version>-windows-x64-setup.exe /S` installs silently (add
+  `/D=<folder>` as the last argument, without quotes, for another folder), and
+  `"%LOCALAPPDATA%\Programs\WSolver\Uninstall WSolver.exe" /S` uninstalls.
+
+### Building on Windows
+
 `solver.exe` runs natively on Windows (verified on Windows 11 / Zen 5: all unit tests pass and every
 UPI probe matches the macOS build up to floating-point rounding).
 
@@ -875,6 +925,24 @@ UPI probe matches the macOS build up to floating-point rounding).
   (`make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32- libz.a` in zlib's source), then
   `make windows ZLIB_DIR=/path/to/zlib` -> `build/win/solver.exe` (static, no DLLs; AVX2 by default,
   `WIN_ARCH=-march=x86-64` for older CPUs).
+- **The installer** (#565): in the MSYS2 UCRT64 shell, also `pacman -S mingw-w64-ucrt-x86_64-nsis`
+  (the NSIS compiler), then `make windows-installer`. It writes
+  `dist/WSolver-<version>-windows-x64-setup.exe` and a matching `.sha256`; `make windows-app` only
+  stages the app in `build/windows/stage/WSolver` and runs it. The app is a launcher
+  (`packaging/windows/launcher.cpp`, a small Win32 program), the static `build/win/solver.exe` of
+  `make windows` (`WIN_INSTALLER_SOLVER=<exe>` packages another build), the viewer's files and the
+  three tools it uses (the same list as the macOS app's), and a Python to run them: a
+  [python-build-standalone](https://github.com/astral-sh/python-build-standalone) build of CPython
+  3.13, pinned by checksum in `packaging/windows/build.sh`, downloaded on the first build into
+  `build/windows/cache/` and trimmed like the macOS one. To build offline, set `PYTHON_TARBALL` to
+  a copy of that file. The installer itself is `packaging/windows/installer.nsi`.
+- **Before it is packed, the app is run.** `build.sh` starts the staged app's own launcher, which
+  starts the viewer with the app's Python, and builds and solves a small tree through it. It checks
+  that closing the launcher's window while a solve runs asks first, that quitting leaves no viewer
+  or solver running, and that a launcher killed outright leaves none either: everything it starts
+  is in a Windows job object that ends with it (`packaging/windows/smoke.py`). The installer is
+  written only when that passes. `make test` checks, without building anything, that the app gets
+  the same files as the macOS one and that the uninstaller removes each of its folders.
 
 ## GPU solving
 
@@ -1126,6 +1194,7 @@ src/upi*.cpp       command processor, node queries, save/load
 tests/             unit tests (eval, range, categories, solver, flop subsets, tree builder) + end-to-end UPI test
 flops/             flop subsets for preflop trees and the job queue (wsolver_<N>.txt; README.md)
 packaging/macos/   what `make macos-pkg` builds OpenSolver.app and its installer from
+packaging/windows/ what `make windows-installer` builds the Windows app and its setup program from
 tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue;
                    fuzz.py: randomised invariant / concurrency / save / preflop / lock / truncated-save checks over UPI;
                    flop_subsets.cpp/.hpp: chooses the flops and weights in flops/, `make flop-subsets`;

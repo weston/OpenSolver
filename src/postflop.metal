@@ -660,3 +660,36 @@ RIVER_ROUND_KERNEL(river_betting_round, false, RiverRound, rounds + k, float3, p
 RIVER_ROUND_KERNEL(river_betting_round_wide, false, RiverRound, rounds + k, float, float, 1)
 RIVER_ROUND_KERNEL(river_lead_check, true, PairedRiverRound, rounds[k].branches, float3, packed_float3, 3)
 RIVER_ROUND_KERNEL(river_lead_check_wide, true, PairedRiverRound, rounds[k].branches, float, float, 1)
+
+kernel void checkpoint_sums(device const uint* sums [[buffer(0)]], device uint* masks [[buffer(1)]],
+                            device uint* offsets [[buffer(2)]], device uint* literals [[buffer(3)]],
+                            device atomic_uint& used [[buffer(4)]], constant uint2& limits [[buffer(5)]],
+                            uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+                            uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
+  threadgroup uint counts[32], prefix[32], base;
+  uint words[8], masks_in_registers[8];
+  for (uint k = 0; k < 8; ++k) {
+    uint i = group * 1024 + k * 128 + tid;
+    words[k] = i < limits.x ? sums[i] : 0u;
+    uint mask = simd_sum(words[k] ? 1u << lane : 0u);
+    masks_in_registers[k] = mask;
+    if (!lane) {
+      masks[group * 32 + k * 4 + simd] = mask;
+      counts[k * 4 + simd] = popcount(mask);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (tid < 32) {
+    prefix[tid] = simd_prefix_exclusive_sum(counts[tid]);
+    uint count = simd_sum(counts[tid]);
+    if (!tid) {
+      base = atomic_fetch_add_explicit(&used, count, memory_order_relaxed);
+      offsets[group] = base;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint k = 0; k < 8; ++k) {
+    uint dest = base + prefix[k * 4 + simd] + popcount(masks_in_registers[k] & ((1u << lane) - 1u));
+    if (words[k] && dest < limits.y) literals[dest] = words[k];
+  }
+}

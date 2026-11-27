@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -137,6 +138,53 @@ struct MetalRows {
   }
 };
 
+struct SumCheckpoint {
+  id<MTLComputePipelineState> pipeline;
+  id<MTLBuffer> masks, offsets, literals, used;
+  uint32_t count = 0, capacity = 0;
+
+  static size_t groups(size_t words) { return (words + 1023) / 1024; }
+  static size_t directory_bytes(size_t words) { return (33 * groups(words) + 1) * sizeof(uint32_t); }
+
+  void allocate(Metal& m, size_t words, size_t budget) {
+    count = uint32_t(words);
+    capacity = uint32_t((budget - directory_bytes(words)) / sizeof(uint32_t));
+    pipeline = m.pipeline(@"checkpoint_sums");
+    masks = m.buffer(32 * groups(words) * sizeof(uint32_t));
+    offsets = m.buffer(groups(words) * sizeof(uint32_t));
+    literals = m.buffer(size_t(capacity) * sizeof(uint32_t));
+    used = m.buffer(sizeof(uint32_t));
+  }
+
+  void capture(Metal& m, id<MTLBuffer> source) {
+    *static_cast<uint32_t*>(used.contents) = 0;
+    auto cmd = m.command();
+    auto enc = m.encoder(cmd);
+    [enc setComputePipelineState:pipeline];
+    id<MTLBuffer> buffers[] = {source, masks, offsets, literals, used};
+    for (unsigned i = 0; i < 5; ++i) [enc setBuffer:buffers[i] offset:0 atIndex:i];
+    const uint32_t limits[] = {count, capacity};
+    [enc setBytes:limits length:sizeof(limits) atIndex:5];
+    [enc dispatchThreadgroups:MTLSizeMake(groups(count), 1, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+    [enc endEncoding];
+    m.finish(cmd);
+    if (*static_cast<uint32_t*>(used.contents) > capacity) throw std::bad_alloc();
+  }
+
+  void restore(float* sums) const {
+    const auto* bits = static_cast<const uint32_t*>(masks.contents);
+    const auto* positions = static_cast<const uint32_t*>(offsets.contents);
+    const auto* words = static_cast<const uint32_t*>(literals.contents);
+    std::fill_n(sums, count, 0.0f);
+    for (size_t g = 0; g < groups(count); ++g) {
+      uint32_t pos = positions[g];
+      for (unsigned k = 0; k < 32; ++k)
+        for (uint32_t mask = bits[g * 32 + k]; mask; mask &= mask - 1)
+          sums[g * 1024 + k * 32 + std::countr_zero(mask)] = std::bit_cast<float>(words[pos++]);
+    }
+  }
+};
+
 struct BoardTables {
   vector<BoardPrefixes> boards;
   vector<PrefixEntry> indices;
@@ -241,6 +289,8 @@ class PostflopSolve final : public MetalSolve {
   Range terminal_range, pair_range, round_range, bet_check_range, two_bet_range, lead_check_range, allin_range, forced_range[2];
   size_t stride, state_bytes, round_bytes[2]{};
   bool stage_regrets = false, stage_sums = false;
+  size_t checkpoint_bytes = 0;
+  SumCheckpoint checkpoint;
   int prepared_iteration = 0;
   struct Replay {
     id<MTLIndirectCommandBuffer> commands;
@@ -272,8 +322,15 @@ class PostflopSolve final : public MetalSolve {
     if (mappings > UINT32_MAX || (g.showdowns.size() + 1) * (3 * stride + 53) > UINT32_MAX)
       throw std::runtime_error("tree exceeds Metal board index limits");
     const uint64_t limit = m.dev.recommendedMaxWorkingSetSize;
-    if (peak > available || peak > limit)
-      throw std::runtime_error("Metal workspace exceeds available memory");
+    if (peak > available || peak > limit) {
+      const uint64_t reduced = peak - state_bytes;
+      if (g.iterations > 0 && available > reduced && limit > peak)
+        checkpoint_bytes = std::min(available - reduced, limit - peak);
+      if (checkpoint_bytes <= SumCheckpoint::directory_bytes(g.storage_floats))
+        throw std::runtime_error("Metal workspace exceeds available memory");
+      stage_regrets = peak + checkpoint_bytes + state_bytes > limit;
+      return;
+    }
     // Zero-copy rows also bind the published CPU arrays for the duration of each command.
     stage_sums = peak + 2 * state_bytes > limit;
     stage_regrets = peak + state_bytes > limit;
@@ -326,7 +383,13 @@ class PostflopSolve final : public MetalSolve {
         wide_rounds = m.pipeline(@"river_betting_round_wide", true);
     }
     regrets.bind(m, g.regrets, stage_regrets);
-    strategy_sums.bind(m, g.strat, stage_sums);
+    if (checkpoint_bytes) {
+      strategy_sums.input = strategy_sums.output = MetalRows::shared(m, g.strat);
+      if (!strategy_sums.input) throw std::runtime_error("Metal workspace exceeds available memory");
+      checkpoint.allocate(m, g.strat.size(), checkpoint_bytes);
+    } else {
+      strategy_sums.bind(m, g.strat, stage_sums);
+    }
     pack_allins(g, tables, table_words);
     for (auto& b : params) b = m.buffer(sizeof(IterationParams));
   }
@@ -798,7 +861,7 @@ class PostflopSolve final : public MetalSolve {
 
   id<MTLCommandBuffer> submit(GameTree& g, Solver& s, int t, bool refresh_reach) {
     regrets.prepare(g.regrets, refresh_reach);
-    strategy_sums.prepare(g.strat, refresh_reach);
+    if (!checkpoint_bytes) strategy_sums.prepare(g.strat, refresh_reach);
     auto disc = [](double z) { return float(z / (1 + z)); };
     @autoreleasepool {
       auto cmd = m.command();
@@ -851,6 +914,7 @@ class PostflopSolve final : public MetalSolve {
   }
 
   RootStats evaluate_and_prepare(GameTree& g, Solver& s, int next) override {
+    if (checkpoint_bytes) return s.root_stats();
     @autoreleasepool {
       auto cmd = submit(g, s, next, false);
       RootStats stats;
@@ -869,13 +933,19 @@ class PostflopSolve final : public MetalSolve {
   void iterate(GameTree& g, Solver& s, int t, bool refresh_reach) override {
     if (refresh_reach || prepared_iteration != t) {
       @autoreleasepool {
-        auto cmd = submit(g, s, t, refresh_reach);
-        finish_iteration(cmd, g, s, t);
+        if (checkpoint_bytes) checkpoint.capture(m, strategy_sums.input);
+        try {
+          auto cmd = submit(g, s, t, refresh_reach);
+          finish_iteration(cmd, g, s, t);
+        } catch (...) {
+          if (checkpoint_bytes) checkpoint.restore(g.strat.data());
+          throw;
+        }
       }
     }
     prepared_iteration = 0;
     regrets.publish(g.regrets);
-    strategy_sums.publish(g.strat);
+    if (!checkpoint_bytes) strategy_sums.publish(g.strat);
     state_slot ^= 1;
   }
 };

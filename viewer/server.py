@@ -252,7 +252,9 @@ class Solver:
             partial = dict(self.partial) if self.partial else None
             if partial:
                 partial["progress"] = list(partial["progress"])
-            return {"solving": self.solving, "flop_stability": self.flop_stability, "suspended": "refine" in self.holds,
+            latest = self.series[-1] if self.flop_stability and self.progress and self.series else {}
+            return {"solving": self.solving, "flop_stability": self.flop_stability,
+                    "stability_stage": latest.get("stability_stage"), "suspended": "refine" in self.holds,
                     "devices": self.devices, "device": self.device, "active_device": self.active_device,
                     "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
@@ -430,8 +432,11 @@ def parse_progress_point(block):
             continue
     if "running time" not in vals or "Exploitable for" not in vals:
         return None
-    return {"t": vals["running time"], "explo": vals["Exploitable for"],
-            "ev_oop": vals.get("EV OOP"), "ev_ip": vals.get("EV IP")}
+    point = {"t": vals["running time"], "explo": vals["Exploitable for"],
+             "ev_oop": vals.get("EV OOP"), "ev_ip": vals.get("EV IP")}
+    if "Flop stability stage" in vals:
+        point["stability_stage"] = int(vals["Flop stability stage"])
+    return point
 
 
 def parse_floats(line, expect=None):

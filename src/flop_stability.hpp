@@ -10,7 +10,8 @@ class Solver;
 
 class FlopStability {
  public:
-  bool observe(long long iteration, const GameTree& tree, const Solver& solver);
+  enum class Stage { Sampling, Comparing, Confirming, Stable };
+  Stage observe(long long iteration, const GameTree& tree, const Solver& solver);
 
  private:
   struct Decision {
@@ -24,6 +25,7 @@ class FlopStability {
 
   std::array<long long, 4> next_{40, 50, 60, 75};
   std::array<std::optional<Snapshot>, 4> prior_;
+  Stage stage_ = Stage::Sampling;
   unsigned slot_ = 0;
   long long first_pass_ = 0, last_iteration_ = 0;
   int average_delay_ = 0;

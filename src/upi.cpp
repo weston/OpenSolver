@@ -564,7 +564,9 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       // there; ours never reported, so a target never stopped the solve)
       if (!info_auto_ && sub_freq == 0 && el - last_report_t >= 0.5) report = true;
       if (report) last_report_t = el;
-      const bool stable = stable_flop && stability.observe(tick - discount_restart_, *tree_, *solver_);
+      const auto stage = stable_flop ? stability.observe(tick - discount_restart_, *tree_, *solver_)
+                                     : FlopStability::Stage::Sampling;
+      const bool stable = stage == FlopStability::Stage::Stable;
       const bool final_report = limit || stable;
       if (final_report) report = true;
       if (report) {
@@ -588,7 +590,9 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           }
           if (!metal || final_report) st = solver_->root_stats();
           cached_root_stats_ = st;
-          out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
+          std::string stats = stats_block(st, solve_seconds_);
+          if (stable_flop) stats += "Flop stability stage: " + std::to_string(static_cast<int>(stage)) + "\n";
+          out_raw("SOLVER:\n" + stats + endl_str + "\n");
           target = accuracy_fraction_ ? accuracy * tree_->cfg.start_pot() : accuracy;
         }
         if (stable) {

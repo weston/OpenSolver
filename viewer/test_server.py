@@ -645,8 +645,14 @@ class ViewerTest(unittest.TestCase):
                     self.assertEqual(progress["solver_status"], "stopped (flop strategy stable)")
                     self.assertEqual(progress["active_device"], device)
                     self.assertGreaterEqual(progress["iters"], 100)
-                    self.assertTrue(progress["progress"])
+                    points = self.req("/api/convergence")[1]["points"]
+                    stages = [point["stability_stage"] for point in points]
+                    self.assertEqual(stages[0], 0)
+                    self.assertIn(1, stages)
+                    self.assertEqual(stages[-1], 3)
+                    self.assertEqual(progress["stability_stage"], 3)
                     self.assertEqual(solve(False)["solver_status"], "stopped (required accuracy reached)")
+                    self.assertNotIn("stability_stage", self.req("/api/convergence")[1]["points"][-1])
             for later_board in ("QhQc2c4d", "QhQc2c4d5s"):
                 build(later_board)
                 progress = solve(True)

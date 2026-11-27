@@ -22,9 +22,17 @@ check(smartTree() === false && $('river-sizing-field').classList.contains('hidde
 $('smart-tree').click();
 check(smartTree() === 'single', 'enabling Smart tree should restore the selected sizing');
 const stability = $('flop-stability');
+const accuracy = $('f-accuracy').value;
 stability.click();
-check(localStorage.getItem('ws-flop-stability') === String(stability.checked), 'flop stopping preference was not saved');
+check(localStorage.getItem('ws-flop-stability') === 'true', 'flop stopping preference was not saved');
+tab('build');
+const visible = id => $(id).getClientRects().length > 0;
+check(visible('solve-progress') && !visible('target-exploitability') && !visible('solve-details') && !visible('preview-info'), 'the Tree tab should show a single progress bar for stability');
+tab('settings');
 stability.click();
+tab('build');
+check(!visible('solve-progress') && visible('target-exploitability') && visible('solve-details') && $('f-accuracy').value === accuracy, 'the Tree tab should restore the saved target and convergence chart');
+tab('settings');
 $('drill-ahead').value = '4';
 $('drill-ahead').dispatchEvent(new Event('input', {bubbles: true}));
 check(localStorage.getItem('ws-drill-ahead') === '4', 'settings could not be stored');

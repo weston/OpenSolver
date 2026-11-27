@@ -73,30 +73,31 @@ bool FlopStability::within_limits(const Snapshot& before, const Snapshot& now, d
   return range_change <= 0.01 * total && hand_change <= 0.03 * total;
 }
 
-bool FlopStability::observe(long long iteration, const GameTree& tree, const Solver& solver) {
+FlopStability::Stage FlopStability::observe(long long iteration, const GameTree& tree, const Solver& solver) {
   if (iteration <= last_iteration_ || average_delay_ != solver.avg_delay) {
     *this = FlopStability{};
     average_delay_ = solver.avg_delay;
   }
   last_iteration_ = iteration;
-  if (iteration < next_[slot_]) return false;
+  if (iteration < next_[slot_]) return stage_;
   while (next_[slot_] < iteration) {
     next_[slot_] *= 2;
     prior_[slot_].reset();
     slot_ = (slot_ + 1) % next_.size();
   }
-  if (iteration != next_[slot_]) return false;
+  if (iteration != next_[slot_]) return stage_;
   const unsigned slot = slot_;
   next_[slot] *= 2;
   slot_ = (slot + 1) % next_.size();
-  if (iteration <= solver.avg_delay) return false;
+  if (iteration <= solver.avg_delay) return stage_;
   auto current = capture(tree, solver);
   if (prior_[slot]) {
     if (!within_limits(*prior_[slot], current, solver.root_matchups())) first_pass_ = 0;
     else if (first_pass_ == 0) first_pass_ = iteration;
-    else if (5 * iteration >= 6 * first_pass_) return true;
+    else if (5 * iteration >= 6 * first_pass_) return Stage::Stable;
   }
+  stage_ = first_pass_ ? Stage::Confirming : Stage::Comparing;
   prior_[slot] = std::move(current);
-  return false;
+  return stage_;
 }
 }  // namespace pio

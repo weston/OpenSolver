@@ -19,7 +19,7 @@ import { initSettings, updateDevice } from "./settings.js";
 
 const $ = (id) => document.getElementById(id);
 
-const app = { view: "study", tree: false, solving: false, rootPot: 0, rootCards: 0, bb: 0, series: [], lastEvents: -1, loadedPath: null, loadedBatch: null };
+const app = { view: "study", tree: false, solving: false, rootPot: 0, bb: 0, series: [], lastEvents: -1, loadedPath: null, loadedBatch: null };
 
 /* ------------------------------------------------------------------ views */
 
@@ -61,10 +61,9 @@ async function refreshRootPot() {
     const p = await get("/api/path?id=r:0");
     const n = p.nodes[0];
     app.rootPot = (n.pot || []).reduce((a, b) => a + (b || 0), 0);
-    app.rootCards = (n.board || "").replace(/\s/g, "").length / 2;
     app.bb = bigBlindOf(n);   // a preflop tree (#492): its exploitability is told in bb/100
     return n;
-  } catch (e) { app.rootPot = 0; app.rootCards = 0; app.bb = 0; }
+  } catch (e) { app.rootPot = 0; app.bb = 0; }
 }
 
 /** The main solve's exploitability in the tree's own unit: % of the root's pot, bb/100 for a preflop tree. */
@@ -113,7 +112,7 @@ async function pollOnce() {
   else if (last) setPill("done", `Solved · ${exploText(last.explo, "% pot") || "—"}`);
   else setPill("", app.tree ? "Tree ready" : "Idle");
   drawSpark($("pill-spark"), app.series, app.rootPot);
-  updateProgress(st, app.series, app.rootPot, app.bb, app.rootCards);
+  updateProgress(st, app.series, app.rootPot, app.bb);
   pollFurther(st, app.series);
   // the open save's job batch, for Study's Report button (#331); asked again only when the file changes
   if ((st.loaded_path || null) !== app.loadedPath) {

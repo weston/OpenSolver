@@ -2428,7 +2428,7 @@ def check_flop_update_order(exe, test_metal=True):
     if test_metal:
         probe = Upi(exe)
         try:
-            metal_available = "v4_metal," in probe.cmd("list_algorithms")
+            metal_available = "v4_gpu," in probe.cmd("list_algorithms")
         finally:
             probe.close()
 
@@ -2469,7 +2469,7 @@ def check_flop_update_order(exe, test_metal=True):
             for command in go.splitlines():
                 run(command)
                 run("wait_for_solver")
-            if algorithm == "v4_metal":
+            if algorithm == "v4_gpu":
                 assert ["SOLVER: device gpu"] in u.solver_msgs
             if save:
                 run("dump_tree " + save + " lossless")
@@ -2523,7 +2523,7 @@ def check_flop_update_order(exe, test_metal=True):
                   "training a missing river ends the opening on " + algorithm)
         check_recalc("auto")
         if metal_available:
-            check_recalc("v4_metal")
+            check_recalc("v4_gpu")
         solve(save=marked)
         solve(medium, save=unmarked)
         resumed = solve(load=marked)
@@ -2536,17 +2536,17 @@ def check_flop_update_order(exe, test_metal=True):
         check(solve(load=unmarked) == solve(load=unmarked, first="OOP"),
               "a save without an ordering flag retains the UPI default")
     if metal_available:
-        opening_gpu = check_opening("v4_metal")
+        opening_gpu = check_opening("v4_gpu")
         check(max(abs(a - b) for a, b in zip(opening_cpu, opening_gpu)) < .002,
-              "CPU and Metal agree after switching to ordinary regret weights")
-        gpu = solve(algorithm="v4_metal")
-        check(gpu == solve(medium, first="IP", algorithm="v4_metal") and
-              gpu != solve(medium, first="OOP", algorithm="v4_metal"),
-              "Metal applies the automatic flop order on every iteration")
+              "CPU and GPU agree after switching to ordinary regret weights")
+        gpu = solve(algorithm="v4_gpu")
+        check(gpu == solve(medium, first="IP", algorithm="v4_gpu") and
+              gpu != solve(medium, first="OOP", algorithm="v4_gpu"),
+              "the GPU applies the automatic flop order on every iteration")
         cpu = solve(go="go 2 steps")
-        gpu = solve(go="go 2 steps", algorithm="v4_metal")
+        gpu = solve(go="go 2 steps", algorithm="v4_gpu")
         check(max(abs(a - b) for a, b in zip(cpu, gpu)) < 0.002,
-              "Metal and CPU agree when the opening order first changes the average strategy")
+              "GPU and CPU agree when the opening order first changes the average strategy")
 
 
 def check_sampled_averaging(exe):
@@ -2613,8 +2613,8 @@ def check_sampled_averaging(exe):
             check(saved_mode(mid) == 0, "frequency-only saves omit the averaging schedule")
 
             devices = ["v4_large"]
-            if "v4_metal," in run("list_algorithms"):
-                devices.append("v4_metal")
+            if "v4_gpu," in run("list_algorithms"):
+                devices.append("v4_gpu")
             results = []
             for device in devices:
                 run("set_algorithm " + device)
@@ -2649,7 +2649,7 @@ def check_sampled_averaging(exe):
                       "off-grid lossless continuation reproduces the published policy and best response on " + device)
                 last = steps(60)
                 check(steps(1) != last, "dense strategy updates resume at step 98 on " + device)
-                if device == "v4_metal":
+                if device == "v4_gpu":
                     assert ["SOLVER: device gpu"] in u.solver_msgs
                 results.append(floats(published))
             packed_results, paired_results = [], []
@@ -2660,8 +2660,8 @@ def check_sampled_averaging(exe):
                 run("go")
                 run("wait_for_solver")
                 run(f'dump_tree "{mid}" lossless')
-                expected_mode = 16 | 64 if device == "v4_metal" else 16
-                check(saved_mode(mid) == expected_mode, "only a new Metal target solve elects compact regrets on " + device)
+                expected_mode = 16 | 64 if device == "v4_gpu" else 16
+                check(saved_mode(mid) == expected_mode, "only a new GPU target solve elects compact regrets on " + device)
 
                 run("set_accuracy 0")
                 run(f'load_tree "{sampled}" full')
@@ -2720,7 +2720,7 @@ def check_sampled_averaging(exe):
                 offset = root_record(saved)
                 check(saved[offset:offset + len(history)] == history,
                       "the forced check retains both historical rows through packed sweeps, resume and reset on " + device)
-                if device == "v4_metal":
+                if device == "v4_gpu":
                     assert ["SOLVER: device gpu"] in u.solver_msgs
                 expected = [float(weight > 0 and "2s" not in (hand[:2], hand[2:])) for weight, hand in zip(oop, order)]
                 check(floats(run("show_strategy r:0:c:c:2s")) == expected,
@@ -2741,11 +2741,11 @@ def check_sampled_averaging(exe):
                     check(saved_mode(mid) == 16, f"{go} honors a tighter target with full-precision regrets on {device}")
             if len(packed_results) == 2:
                 check(max(abs(a - b) for a, b in zip(*packed_results)) < .02,
-                      "the CPU continuation policy and Metal agree with compact regrets")
+                      "the CPU continuation policy and the GPU agree with compact regrets")
 
                 check(max(abs(a - b) for a, b in zip(*paired_results)) < .02,
-                      "CPU and Metal agree on the resumed FP16 flop strategy")
-                run("set_algorithm v4_metal")
+                      "CPU and GPU agree on the resumed FP16 flop strategy")
+                run("set_algorithm v4_gpu")
                 run("set_accuracy 0")
                 run(f'load_tree "{paired}" full')
                 u.solver_msgs.clear()
@@ -2754,7 +2754,7 @@ def check_sampled_averaging(exe):
                 deadline = time.monotonic() + 15
                 while int(run("show_iters")) < 98:
                     if time.monotonic() >= deadline:
-                        raise AssertionError("compact Metal solve did not reach the hold")
+                        raise AssertionError("compact GPU solve did not reach the hold")
                     time.sleep(.001)
                 run("hold")
                 held = int(run("show_iters"))
@@ -2766,13 +2766,13 @@ def check_sampled_averaging(exe):
                 run("wait_for_solver")
                 fallback = run("show_strategy r:0:c"), run("calc_results")
                 check(any(m[0].startswith("SOLVER: device cpu") for m in u.solver_msgs),
-                      "editing a held compact Metal solve uses CPU for the remaining sweeps")
+                      "editing a held compact GPU solve uses CPU for the remaining sweeps")
                 run("set_algorithm v4_large")
                 run(f'load_tree "{mid}" full')
                 check(run("calc_results") == original, "the held lossless checkpoint contains the committed regrets")
                 run("lock_node r:0:c:b30")
                 resumed = steps(124 - held), run("calc_results")
-                check(resumed == fallback, "a CPU reload and the live Metal fallback finish identically")
+                check(resumed == fallback, "a CPU reload and the live GPU fallback finish identically")
 
             run("set_algorithm v4_large")
             for initial, accuracy in ((old, "0.3"), (awaiting, "0.4")):
@@ -2790,7 +2790,7 @@ def check_sampled_averaging(exe):
             check(saved_mode(mid) == 0, "changing discount parameters ends the sampled trajectory")
             if len(results) == 2:
                 check(max(abs(a - b) for a, b in zip(*results)) < .01,
-                      "CPU and Metal agree on the sampled flop strategy after the reset")
+                      "CPU and GPU agree on the sampled flop strategy after the reset")
     finally:
         u.close()
 
@@ -2798,9 +2798,9 @@ def check_sampled_averaging(exe):
 def check_solve_device(exe):
     u = Upi(exe)
     try:
-        if "v4_metal," not in u.cmd("list_algorithms"):
-            check("algorithm:auto" in u.cmd("show_settings"), "CPU is the default without Metal")
-            check(u.cmd("set_algorithm v4_metal").startswith("ERROR"), "unavailable GPU refused")
+        if "v4_gpu," not in u.cmd("list_algorithms"):
+            check("algorithm:auto" in u.cmd("show_settings"), "CPU is the default without a GPU")
+            check(u.cmd("set_algorithm v4_gpu").startswith("ERROR"), "unavailable GPU refused")
             return
 
         setup = ("set_board Kh9h4h2c", "set_pot 0 0 100", "set_eff_stack 400",
@@ -2827,19 +2827,23 @@ def check_solve_device(exe):
             assert u.cmd("show_iters") == "8"
             return floats(u.cmd("show_strategy r:0"))
 
-        gpu = run()
-        check(["SOLVER: device gpu"] in u.solver_msgs, "a fresh postflop solve runs on Metal by default")
+        # Metal is the default where it is; a discrete GPU (CUDA, OpenCL) is chosen explicitly
+        settings = [line.strip() for line in u.cmd("show_settings").splitlines()]
+        gpu_default = "algorithm:v4_metal" in settings or "algorithm:v4_gpu" in settings
+        gpu = run() if gpu_default else run("v4_gpu")
+        check(["SOLVER: device gpu"] in u.solver_msgs,
+              "a fresh postflop solve runs on the GPU" + (" by default" if gpu_default else ""))
         cpu = run("auto")
         check(["SOLVER: device gpu"] not in u.solver_msgs, "explicit CPU selection runs on CPU")
         check(len(cpu) == len(gpu) and max(abs(a-b) for a, b in zip(cpu, gpu)) < 0.002,
-              "Metal turn strategies match CPU through symmetry and average reset")
+              "GPU turn strategies match CPU through symmetry and average reset")
         u.cmd("set_info_freq 1")
-        check(run("v4_metal") == gpu, "checking exploitability every step preserves the accepted Metal iterations")
+        check(run("v4_gpu") == gpu, "checking exploitability every step preserves the accepted GPU iterations")
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "gpu.cfr")
             check("ok!" in u.cmd("dump_tree " + path + " lossless") and
                   "ok!" in u.cmd("load_tree " + path) and floats(u.cmd("show_strategy r:0")) == gpu,
-                  "lossless save and lazy load retain Metal strategies")
+                  "lossless save and lazy load retain GPU strategies")
             u.cmd("go")
             wait_for_iterations(9)
             u.cmd("hold")
@@ -2857,7 +2861,7 @@ def check_solve_device(exe):
             u.cmd(f"go {remaining} steps")
             u.cmd("wait_for_solver")
             check(u.cmd("show_strategy r:0:c:b50") == live,
-                  "Metal refreshes reach after a live edit exactly as it does on reload")
+                  "the GPU refreshes reach after a live edit exactly as it does on reload")
             tick = int(u.cmd("show_iters"))
             u.solver_msgs.clear()
             u.cmd("go")
@@ -2871,13 +2875,13 @@ def check_solve_device(exe):
             u.cmd("stop")
             check(["SOLVER: device gpu"] in u.solver_msgs and
                   any(m[0].startswith("SOLVER: device cpu") for m in u.solver_msgs) and
-                  u.cmd("show_strategy r:0") == locked, "a live lock switches Metal to CPU and preserves its strategy")
+                  u.cmd("show_strategy r:0") == locked, "a live lock switches the GPU to CPU and preserves its strategy")
             u.cmd("unlock_node r:0")
             tick = int(u.cmd("show_iters"))
             u.cmd("set_algorithm auto")
             u.cmd("go 1 steps")
             u.cmd("wait_for_solver")
-            check(int(u.cmd("show_iters")) == tick + 1, "continue a Metal save on CPU")
+            check(int(u.cmd("show_iters")) == tick + 1, "continue a GPU save on CPU")
 
         for cmd in ("clear_lines", "set_board Js8h4d7c", "set_eff_stack 240", "set_avg_delay 0",
                     "set_first_iteration_player IP", "set_range OOP 22+,AJs:0.4,AKo",
@@ -2890,13 +2894,13 @@ def check_solve_device(exe):
             for cmd in ("set_algorithm " + algorithm, "build_tree", "set_rake .05 10", "set_accuracy 0",
                         "set_info_freq 2", "go 4 steps", "wait_for_solver"):
                 assert "ERROR" not in u.cmd(cmd), cmd
-            if algorithm == "v4_metal":
+            if algorithm == "v4_gpu":
                 assert ["SOLVER: device gpu"] in u.solver_msgs
             return [floats(u.cmd("show_strategy " + path)) for path in paths]
 
         def compare_strategies(paths, message):
             reference = strategies("auto", paths)
-            actual = strategies("v4_metal", paths)
+            actual = strategies("v4_gpu", paths)
             check(all(len(x) == len(y) and max(abs(a - b) for a, b in zip(x, y)) < .002
                       for x, y in zip(reference, actual)), message)
 
@@ -2904,7 +2908,7 @@ def check_solve_device(exe):
                            "raked river bets and raises match CPU with IP updating first")
         assert "ok!" in u.cmd("set_range OOP " + " ".join(["1"] * 1326))
         compare_strategies(("r:0", "r:0:c:c:2c", "r:0:c:c:2c:b100", "r:0:b30:c:2c:b90"),
-                           "a full OOP range matches CPU through both Metal river passes")
+                           "a full OOP range matches CPU through both GPU river passes")
         assert "ok!" in u.cmd("set_range OOP 22+,AJs:0.4,AKo")
         for cmd in ("clear_lines", "set_board Js8h4d7c2s", "add_line 0 60"):
             assert "ERROR" not in u.cmd(cmd), cmd
@@ -2953,7 +2957,7 @@ def check_solve_device(exe):
         stopped = u.cmd("show_strategy r:0")
         reported = u.cmd("calc_results")
         u.cmd("clear_cache")
-        check(u.cmd("calc_results") == reported, "Metal's accuracy stop reports the exact published strategy")
+        check(u.cmd("calc_results") == reported, "the GPU's accuracy stop reports the exact published strategy")
         assert u.cmd("show_iters") == "1"
         for cmd in ("build_tree", "set_accuracy 0", "go 1 steps", "wait_for_solver"):
             assert "ERROR" not in u.cmd(cmd), cmd

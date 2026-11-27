@@ -21,6 +21,15 @@ METAL_OBJ := metal.o
 LDLIBS += -framework Metal -framework Foundation
 endif
 endif
+# Everywhere else the GPU solve is CUDA or OpenCL (src/gpu_solve.cpp), both loaded at run time: no SDK
+# or driver is needed to build, and without one the solver simply offers no GPU algorithm.
+ifeq ($(METAL_OBJ),)
+GPU_SRC  := src/gpu_solve.cpp src/opencl.cpp src/cuda.cpp
+SRC      += $(GPU_SRC)
+ifeq ($(shell uname -s),Linux)
+LDLIBS += -ldl
+endif
+endif
 OBJ      := $(SRC:src/%.cpp=build/%.o) $(addprefix build/,$(METAL_OBJ))
 
 all: solver
@@ -288,6 +297,16 @@ build/macos/obj/%.o: src/%.cpp $(wildcard src/*.hpp) | build/macos/obj
 
 build/macos/solver: $(MACOS_OBJ)
 	$(CXX) $(MACOS_CXXFLAGS) $^ -o $@ $(LDLIBS)
+
+# The CUDA and OpenCL kernels: one source (postflop.cl, flop_table.cl) behind each API's header,
+# compiled by the driver (OpenCL) or NVRTC (CUDA) when the solver first uses the GPU.
+GPU_KERNELS := src/metal_layout.h src/postflop.cl src/flop_table.cl
+build/opencl_kernels.inc: src/gpu_opencl.h $(GPU_KERNELS) | build
+	{ echo 'R"CLC('; cat $^; echo ')CLC"'; } > $@
+build/cuda_kernels.inc: src/gpu_cuda.h $(GPU_KERNELS) | build
+	{ echo 'R"CUDA('; cat $^; echo ')CUDA"'; } > $@
+GPU_SOLVE_OBJ := build/gpu_solve.o build/win/gpu_solve.o $(PGO_DIR)/gen/gpu_solve.o $(PGO_DIR)/opt/gpu_solve.o
+$(GPU_SOLVE_OBJ): build/opencl_kernels.inc build/cuda_kernels.inc
 
 build/metal_kernels.inc: src/bfloat_regrets.hpp src/metal_layout.h src/postflop.metal src/flop_table.metal | build
 	{ echo 'R"MSL('; cat $^; echo ')MSL"'; } > $@

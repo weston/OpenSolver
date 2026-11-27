@@ -1,5 +1,5 @@
 #include "upi.hpp"
-#include "metal.hpp"
+#include "gpu.hpp"
 
 #include <set>
 #include <sstream>
@@ -113,7 +113,7 @@ std::string Upi::smart_command(const std::string& cmd, const Args& args, const H
     const uint64_t available = available_memory_bytes() + tree_->memory_bytes();
     if (!ignore_mem_check_ && view.tree_->memory_bytes_for(false, predictive_) > available)
       throw CmdError{"not enough memory for the full configured tree"};
-    view.tree_->gpu_tables = algorithm_ == "v4_metal";
+    view.tree_->gpu_tables = gpu_algorithm(algorithm_);
     view.tree_->build_allin_tables();
     view.tree_->smart_turns = false;
     view.tree_->train_missing_rivers = true;
@@ -236,7 +236,7 @@ std::string Upi::turn_build_commands(const std::string& node_id) {
 
 bool Upi::solve_metal_river(const NodeRef& root, double accuracy, double seconds) {
   const auto& base = tree_->nodes[root.node];
-  if (algorithm_ != "v4_metal" || tree_->missing_street != 5 || tree_->cfg.preflop ||
+  if (!gpu_algorithm(algorithm_) || tree_->missing_street != 5 || tree_->cfg.preflop ||
       tree_->payoff().icm.enabled || solver_->predictive || base.board_len != 5) return false;
 
   const auto& start = tree_->an(base);
@@ -286,13 +286,17 @@ bool Upi::solve_metal_river(const NodeRef& root, double accuracy, double seconds
   engine.avg_delay = solver_->avg_reset ? 0 : solver_->avg_delay;
   const auto t0 = std::chrono::steady_clock::now();
   try {
-    auto gpu = make_metal_solve(river, available_memory_bytes() * 9 / 10);
+    auto gpu = make_gpu_solve(river, available_memory_bytes() * 9 / 10);
     if (!gpu) return false;
     for (int t = 1; t <= 5000; ++t) {
       gpu->iterate(river, engine, t, t == 1);
-      if (t % 25 == 0 && accuracy > 0 && engine.root_stats().exploitability <= accuracy) break;
+      if (t % 25 == 0 && accuracy > 0) {
+        gpu->publish_for_cpu(river);  // a discrete GPU holds the state until the CPU reads it
+        if (engine.root_stats().exploitability <= accuracy) break;
+      }
       if (seconds > 0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() >= seconds) break;
     }
+    gpu->publish_for_cpu(river);
   } catch (const std::exception&) {
     return false;
   }

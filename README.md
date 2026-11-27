@@ -869,11 +869,48 @@ independent brute force on a small river spot.
 UPI probe matches the macOS build up to floating-point rounding).
 
 - **Native (MSYS2 UCRT64):** `pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-python make`,
-  then `make` (produces `solver.exe`) and `make test`.
+  then `make` (produces `solver.exe`) and `make test`. That `solver.exe` needs MSYS2's DLLs on `PATH`;
+  `make LDLIBS="-static -lz -lpthread"` builds one that runs from any Windows shell (and the viewer).
 - **Cross-compile from macOS/Linux:** install mingw-w64 (`brew install mingw-w64`), build zlib for it
   (`make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32- libz.a` in zlib's source), then
   `make windows ZLIB_DIR=/path/to/zlib` -> `build/win/solver.exe` (static, no DLLs; AVX2 by default,
   `WIN_ARCH=-march=x86-64` for older CPUs).
+
+## GPU solving
+
+`set_algorithm v4_gpu` (the viewer's **Compute device: GPU**) runs whole-tree postflop solves on the
+GPU, with one of three backends:
+
+| GPU | Backend | Needs |
+|---|---|---|
+| Apple Silicon | Metal | macOS; the default device there |
+| NVIDIA (Maxwell or later) | CUDA | the NVIDIA driver, and NVRTC, the CUDA runtime compiler: `nvrtc64_*.dll` / `libnvrtc.so` from the [CUDA toolkit](https://developer.nvidia.com/cuda-downloads) (found through `CUDA_PATH`) or next to the solver. Without NVRTC the NVIDIA driver's own OpenCL is used |
+| AMD Radeon, Intel, others | OpenCL 1.2 | the GPU driver (AMD Adrenalin ships OpenCL); 32 KB of work-group memory |
+
+`list_algorithms` shows a `v4_gpu` line naming the device when there is one, e.g.
+`v4_gpu,DCFR,AMD Radeon RX 9060 XT (OpenCL), unpruned postflop traversal`. CUDA is tried before
+OpenCL; `WSOLVER_GPU_BACKEND=opencl` or `=cuda` in the solver's environment picks one. `v4_metal`,
+the algorithm's first name, is still accepted.
+
+- The tree is compiled once into flat per-level passes (one kernel launch per tree depth and pass,
+  the static-dataflow idea of GPU-CFR, arXiv:2609.11923), with whole river betting rounds fused into
+  one pass, and every iteration replays them. Results match the CPU to floating-point rounding; the
+  GPU does not prune, so the CPU can still win on trees where pruning skips most of the work.
+- CUDA and OpenCL are loaded at run time: building needs no SDK, and a machine without the driver
+  just has no `v4_gpu`. The kernels are compiled for the device the first time it is used.
+- Large Medium flop solves use bfloat16 regrets and fp16 strategy sums on the GPU as on the CPU
+  (`small_strats` is separate: 16-bit *storage* solves on the CPU).
+- A discrete GPU holds the regrets and strategy sums in its own memory and copies them to the tree
+  when the CPU needs them (an exploitability report, a command between iterations, the end), so the
+  tree has to fit in GPU memory (`SOLVER: device cpu (GPU memory too small for this tree)` otherwise).
+- **Speed depends on the machine.** Metal beat 18 CPU cores on an M5 Pro (25bb fixture to 0.2% of
+  pot: 40 s vs 55 s). On a Radeon RX 9060 XT against 32 Zen 5 threads, OpenCL is not faster yet
+  (seconds to 0.2% of pot, CPU vs GPU, `bench/run.py --threads 32`, 2026-11-27: flop_3bet 0.12 vs **0.09**, flop_srp_2 0.20 vs 0.41, flop_srp_4 0.34 vs 0.67, deep 0.61 vs 0.79, threebet_mono 3.31 vs 4.12, 25bb fixture 41.6 vs 48.4 with float32 state on the GPU; a new process also compiles the kernels once, about 0.3 s), so a discrete GPU is not the default device: try both on your own trees, the
+  viewer's Compute device setting switches between them. The CUDA backend has not been measured
+  (it has not yet run on an NVIDIA GPU).
+- The CPU still runs everything the GPU does not: preflop trees, `go_partial`, node locks and other
+  node edits, 16-bit storage, predictive CFR, ICM. The solve says which device it is using
+  (`SOLVER: device gpu`, or `SOLVER: device cpu (<reason>)`).
 
 ## Interface conventions (as implemented)
 

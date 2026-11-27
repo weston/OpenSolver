@@ -1,4 +1,25 @@
-enum NodeKind : unsigned { Decision, Deal, RiverShowdown, Fold, AllIn };
+// Shared by the host, Metal (C++) and OpenCL C, which has no enum base types or bare struct names.
+#ifdef __OPENCL_VERSION__
+#define WSOLVER_ENUM(name) enum name
+#define WSOLVER_ANON_ENUM enum
+typedef struct TraversalNode TraversalNode;
+typedef struct HandPrefixes HandPrefixes;
+typedef struct PrefixEntry PrefixEntry;
+typedef struct BoardPrefixes BoardPrefixes;
+typedef struct IterationParams IterationParams;
+typedef struct RiverRound RiverRound;
+typedef struct PairedRiverRound PairedRiverRound;
+typedef struct TwoBetRiver TwoBetRiver;
+typedef struct AllinTable AllinTable;
+typedef struct AllinBatch AllinBatch;
+typedef uint RiverRoundKind;  // the enum below is RiverRoundKinds: a struct member of enum type would be int
+#define WSOLVER_ROUND_KIND RiverRoundKinds
+#else
+#define WSOLVER_ENUM(name) enum name : unsigned
+#define WSOLVER_ANON_ENUM enum : unsigned
+#define WSOLVER_ROUND_KIND RiverRoundKind
+#endif
+WSOLVER_ENUM(NodeKind) { Decision, Deal, RiverShowdown, Fold, AllIn };
 struct TraversalNode {
   unsigned child, count, kind, actor, storage, aux, card, deals, deal_count, reach_offset[2], value_row, child_value,
       public_cards;
@@ -11,19 +32,23 @@ struct HandPrefixes {
 struct PrefixEntry {
   unsigned short hand, slot;
 };
-enum : unsigned { empty_prefix = 0, total_prefix = 1, first_card_prefix = 2, first_rank_prefix = first_card_prefix + 52 };
+WSOLVER_ANON_ENUM { empty_prefix = 0, total_prefix = 1, first_card_prefix = 2, first_rank_prefix = first_card_prefix + 52 };
 struct BoardPrefixes {
   unsigned index_offset, hand_offset, start[54], prefix_count;
 };
-enum AverageMode : unsigned { DenseAverage, WeightedAverage, SkipAverage };
+WSOLVER_ENUM(AverageMode) { DenseAverage, WeightedAverage, SkipAverage };
 struct IterationParams {
   unsigned hands0, hands1, stride, p;
   float positive_discount, negative_discount, average_discount;
   unsigned accumulate, phase;
   float sample_weight;
+#ifdef WSOLVER_GPU_OPTIONS
+  // OpenCL and CUDA (gpu_pack.hpp): what Metal makes function constants
+  unsigned sqrt_regret_weights, average_mode;
+#endif
 };
 
-enum RiverRoundKind : unsigned { BetBothSides, FinalRaise, BetWithRaise, BetThenCheck };
+WSOLVER_ENUM(WSOLVER_ROUND_KIND) { BetBothSides, FinalRaise, BetWithRaise, BetThenCheck };
 struct RiverRound {
   unsigned root, board, storage[4];
   RiverRoundKind kind;

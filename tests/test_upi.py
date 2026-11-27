@@ -2569,9 +2569,9 @@ def check_sampled_averaging(exe):
         with tempfile.TemporaryDirectory() as tmp:
             old, sampled, awaiting, mid = (Path(tmp, name) for name in ("legacy", "sampled", "awaiting", "middle"))
             for cmd in ("set_threads 1", "set_union_hands on", "set_collapse_checkdowns on",
-                        "set_board Ah3cQd", "set_pot 0 0 100", "set_eff_stack 200",
-                        "set_range OOP KK,JJ,87s,AQs,98s,TT", "set_range IP 99,77,TT,AQs,KJs,55",
-                        "add_line 0 30 90", "add_line 0 0 30 30 80", "build_tree",
+                        "set_board Ah3cQd", "set_pot 0 0 100", "set_eff_stack 300",
+                        "set_range OOP KK,JJ,87s,AQs,98s,TT,44,22,AKo", "set_range IP 99,77,TT,AQs,KJs,55,66,ATo",
+                        "add_line 0 30 90", "add_line 0 0 0 0 10", "add_line 0 0 0 0 30", "add_line 0 0 0 0 65", "build_tree",
                         f'dump_tree "{old}" lossless', "set_info_freq 8", "set_accuracy 0"):
                 run(cmd)
             # Put the lossless config flags of a large eligible tree on this small fixture.
@@ -2582,6 +2582,14 @@ def check_sampled_averaging(exe):
             for path, mode in ((old, 0), (sampled, 16), (awaiting, 32)):
                 raw[flags] = 7 | mode
                 path.write_bytes(gzip.compress(raw))
+
+            def saved_mode(path):
+                data = gzip.decompress(path.read_bytes())
+                return data[21 + struct.unpack_from("<I", data, 18)[0]] & (16 | 32)
+
+            run(f'load_tree "{sampled}" full')
+            run(f'dump_tree "{mid}"')
+            check(saved_mode(mid) == 0, "frequency-only saves omit the averaging schedule")
 
             devices = ["v4_large"]
             if "v4_metal," in run("list_algorithms"):
@@ -2599,8 +2607,7 @@ def check_sampled_averaging(exe):
                 run("go")
                 run("wait_for_solver")
                 run(f'dump_tree "{mid}" lossless')
-                selected = gzip.decompress(mid.read_bytes())
-                check(selected[21 + struct.unpack_from("<I", selected, 18)[0]] & 16,
+                check(saved_mode(mid) == 16,
                       "an eligible pre-go lossless save elects sampling at 0.3% on " + device)
                 run(f'load_tree "{awaiting}" full')
                 run("set_accuracy 1e-10")
@@ -2624,6 +2631,20 @@ def check_sampled_averaging(exe):
                 if device == "v4_metal":
                     assert ["SOLVER: device gpu"] in u.solver_msgs
                 results.append(floats(published))
+            run("set_algorithm v4_large")
+            for initial, accuracy in ((old, "0.3"), (awaiting, "0.4")):
+                run(f'load_tree "{initial}" full')
+                run("set_accuracy " + accuracy)
+                run("go")
+                run("wait_for_solver")
+                run(f'dump_tree "{mid}" lossless')
+                check(saved_mode(mid) == 0, "legacy saves and loose targets stay dense on an unrestricted go")
+            run(f'load_tree "{sampled}" full')
+            run("set_accuracy 0")
+            steps(11)
+            run("set_dcfr 1.3 0 2 .5 50")
+            run(f'dump_tree "{mid}" lossless')
+            check(saved_mode(mid) == 0, "changing discount parameters ends the sampled trajectory")
             if len(results) == 2:
                 check(max(abs(a - b) for a, b in zip(*results)) < .01,
                       "CPU and Metal agree on the sampled flop strategy after the reset")

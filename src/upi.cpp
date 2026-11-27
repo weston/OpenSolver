@@ -403,7 +403,8 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   if (!sub) tree_->has_saved_stats = false;
   const bool accuracy_solve = !sub && !stable_flop && steps == 0 && seconds == 0;
   const double target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
-  if (stable_flop) solver_->set_average_sampling(AverageSampling::Dense);
+  if (stable_flop || algorithm_ == "original_pio" || algorithm_ == "pio_cfr")
+    solver_->set_average_sampling(AverageSampling::Dense);
   solver_->select_sampled_averaging(accuracy_solve ? target : 0.0);
   stop_flag_ = false;
   solving_ = true;

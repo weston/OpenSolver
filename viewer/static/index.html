@@ -222,7 +222,28 @@
           </span>
         </div>
         <label class="check"><input id="flop-stability" type="checkbox">Stop when flop strategy is stable</label>
-        <label id="device-settings" class="field hidden"><span>Compute device</span><select id="solve-device"><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
+        <div id="device-settings" class="device-settings hidden">
+          <label class="field"><span>Compute device</span><select id="solve-device"><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
+          <div class="bench" id="device-bench">
+            <p class="muted bench-intro">Not sure which is faster here? The benchmark times how long the HUNL 4BP, 3BP and SRP default trees take to reach 1% of pot on each device, built with your Smart tree setting, in a solver of its own, so your tree stays open. It usually takes under a minute.</p>
+            <div class="btn-row">
+              <button id="bench-start" class="btn" type="button">Benchmark CPU and GPU</button>
+              <button id="bench-cancel" class="btn ghost hidden" type="button">Cancel</button>
+            </div>
+            <div id="bench-progress" class="bench-progress hidden" role="status" aria-live="polite">
+              <div class="bench-bar"><i id="bench-bar-fill"></i></div>
+              <span id="bench-step" class="muted"></span>
+            </div>
+            <table id="bench-table" class="bench-table hidden">
+              <thead><tr><th>Tree</th><th>CPU</th><th>GPU</th><th>Faster</th></tr></thead>
+              <tbody id="bench-rows"></tbody>
+            </table>
+            <p id="bench-unfit" class="muted bench-intro hidden"></p>
+            <p id="bench-verdict" class="bench-verdict hidden" role="status"></p>
+            <button id="bench-apply" class="btn primary hidden" type="button"></button>
+            <p id="bench-error" class="bench-error hidden" role="alert"></p>
+          </div>
+        </div>
       </div>
     </section>
   </div>

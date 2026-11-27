@@ -143,6 +143,7 @@ class Solver:
                 self.cmd("set_algorithm " + self.gpu_algorithm)
                 self.device = "gpu"
         self.active_device = None
+        self.device_message = None
 
     def _pump(self, generation, stream, q):
         """Demux solver stdout: SOLVER: blocks go to state, everything else to the response queue."""
@@ -181,6 +182,7 @@ class Solver:
                             self.progress = []
                         elif msg.startswith("device "):
                             self.active_device = msg.split()[1]
+                            self.device_message = msg   # "device cpu (<why not the GPU>)"
                         elif msg.startswith("stopped"):
                             self.solving = False
                             if self.partial:
@@ -564,6 +566,14 @@ def set_jobs(service):
     _jobs = service
 
 
+_bench = None  # device_bench.DeviceBenchmark (#569): CPU vs GPU on this machine, in a solver of its own
+
+
+def set_bench(bench):
+    global _bench
+    _bench = bench
+
+
 def set_refiner(refiner):
     global _refiner, _preview
     _refiner = refiner
@@ -609,6 +619,10 @@ def _api(solver, lib, method, path, query, body):
         return _jobs.api(solver, method, path, query, body)
     if path == "/api/files" and method == "GET":
         return 200, saved_files(query.get("path", ["~"])[0])
+    if path == "/api/device/benchmark" or path.startswith("/api/device/benchmark/"):
+        if _bench is None:
+            raise SolverError("the device benchmark is not initialized")
+        return _bench.api(method, path, body)
     if path == "/api/refine" or path.startswith("/api/refine/"):
         if _refiner is None:
             raise SolverError("fast preview not initialized")
@@ -1919,6 +1933,8 @@ def main(argv=None):
     set_drill(drill.DrillService(solver, os.path.abspath(args.solver), _jobs.q))
     import refine as vrefine
     set_refiner(vrefine.RefineManager(solver, Solver, os.path.abspath(args.solver)))
+    import device_bench
+    set_bench(device_bench.DeviceBenchmark(solver, Solver, os.path.abspath(args.solver)))
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     srv.solver = solver
@@ -1954,6 +1970,8 @@ def main(argv=None):
         try:
             if _drill:
                 _drill.close()
+            if _bench:
+                _bench.close()
         finally:
             for s in ([solver] + ([_resolver.rsolver] if _resolver else []) + ([_refiner.rsolver] if _refiner else [])):
                 try:

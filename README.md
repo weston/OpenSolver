@@ -991,7 +991,11 @@ the algorithm's first name, is still accepted.
   pot: 40 s vs 55 s). On a Radeon RX 9060 XT against 32 Zen 5 threads, OpenCL is not faster yet
   (seconds to 0.2% of pot, CPU vs GPU, `bench/run.py --threads 32`, 2026-11-27: flop_3bet 0.12 vs **0.09**, flop_srp_2 0.20 vs 0.41, flop_srp_4 0.34 vs 0.67, deep 0.61 vs 0.79, threebet_mono 3.31 vs 4.12, 25bb fixture 41.6 vs 48.4 with float32 state on the GPU; a new process also compiles the kernels once, about 0.3 s), so a discrete GPU is not the default device: try both on your own trees, the
   viewer's Compute device setting switches between them. The CUDA backend has not been measured
-  (it has not yet run on an NVIDIA GPU).
+  (it has not yet run on an NVIDIA GPU). To find out on your own machine, press **Benchmark CPU and
+  GPU** under Compute device on the viewer's Settings page: it times the HUNL 4BP, 3BP and SRP default
+  trees to 1% of pot on each device, in a solver of its own so your open tree is left alone, says which
+  was faster and offers to switch to it. A tree too large for the GPU's memory is noted: it solves on
+  the CPU whichever device is set.
 - The CPU still runs everything the GPU does not: preflop trees, `go_partial`, node locks and other
   node edits, 16-bit storage, predictive CFR, ICM. The solve says which device it is using
   (`SOLVER: device gpu`, or `SOLVER: device cpu (<reason>)`).

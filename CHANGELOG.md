@@ -16,6 +16,7 @@ documentation; contains no PioSOLVER code.
 - **GPU solving** (`set_algorithm v4_gpu`, the viewer's Compute device): whole-tree postflop solves on
   Metal (Apple Silicon), CUDA (NVIDIA) or OpenCL (AMD Radeon and other GPUs), one kernel source for
   CUDA and OpenCL, drivers loaded at run time. Matches the CPU to rounding; README "GPU solving".
+  Settings has a benchmark that times both devices on the default trees and recommends one.
 - Vector-form **Discounted CFR** with exact card removal and no abstraction. Defaults α=1.3, γ=4,
   β=0 then 0.5 after iteration 50; `set_dcfr` overrides the exponents.
 - **Regret-based pruning** on by default (`set_pruning`). Skips traverser actions whose current

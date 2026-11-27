@@ -100,6 +100,11 @@ documentation; contains no PioSOLVER code.
   `/Applications`, holding the solver, the viewer and a Python to run it, so that it needs nothing
   else installed. Opening the app starts the viewer and opens it in the browser; quitting stops it.
   Not signed with a Developer ID (#479).
+- `make windows-installer` (MSYS2 UCRT64, NSIS) produces a per-user setup program for 64-bit Windows
+  10 and 11: `OpenSolver.exe` in `%LOCALAPPDATA%\Programs\OpenSolver` with the static solver, the viewer and
+  a Python to run it, a Start menu entry and an uninstaller. OpenSolver.exe starts the viewer and opens it
+  in the browser; quitting, or the launcher ending in any way, stops the viewer and its solvers. Not
+  code-signed (#565).
 - Cross-compiles to Windows via MinGW (`make windows`).
 
 ### Fixed late in development

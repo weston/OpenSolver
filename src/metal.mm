@@ -837,16 +837,16 @@ class PostflopSolve final : public MetalSolve {
     if (rows.input == rows.output) return;
     const auto* input = static_cast<const uint8_t*>(rows.input.contents);
     auto* output = static_cast<uint8_t*>(rows.output.contents);
-    parallel_state_blocks(g.nodes.size(), [&](size_t begin, size_t end) {
-      for (size_t i = begin; i < end; ++i) {
-        const auto& n = g.nodes[i];
-        if (n.kind != ANodeKind::Decision || n.num_children != 1) continue;
-        const size_t offset = word_size * n.storage;
-        const size_t bytes = word_size * g.num_hands(n.player);
-        if (memcmp(output + offset, input + offset, bytes) != 0)
-          memcpy(output + offset, input + offset, bytes);
-      }
-    });
+    // Every one-action decision of a player reads that player's one shared row (#567): two rows to seed.
+    bool seeded[2] = {false, false};
+    for (const auto& n : g.nodes) {
+      if (n.kind != ANodeKind::Decision || !GameTree::shares_row(n) || seeded[n.player]) continue;
+      seeded[n.player] = true;
+      const size_t offset = word_size * n.storage;
+      const size_t bytes = word_size * g.num_hands(n.player);
+      if (memcmp(output + offset, input + offset, bytes) != 0) memcpy(output + offset, input + offset, bytes);
+      if (seeded[0] && seeded[1]) break;
+    }
   }
 
   id<MTLCommandBuffer> submit(GameTree& g, Solver& s, int t, bool refresh_reach) {

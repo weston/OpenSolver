@@ -2721,8 +2721,10 @@ def check_sampled_averaging(exe):
                 run(f'dump_tree "{mid}" lossless')
                 saved = gzip.decompress(mid.read_bytes())
                 offset = root_record(saved)
-                check(saved[offset:offset + len(history)] == history,
-                      "the forced check retains both historical rows through packed sweeps, resume and reset on " + device)
+                # #567: a decision with one action stores nothing (its strategy is 1 whatever its rows hold), so
+                # the historical rows are read past and a save writes the zeros of the shared row there.
+                check(saved[offset:offset + len(history)] == bytes(len(history)),
+                      "the forced check's historical rows are read past and saved as zeros on " + device)
                 if device == "v4_gpu":
                     assert ["SOLVER: device gpu"] in u.solver_msgs
                 expected = [float(weight > 0 and "2s" not in (hand[:2], hand[2:])) for weight, hand in zip(oop, order)]

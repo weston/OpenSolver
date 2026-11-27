@@ -548,7 +548,8 @@ static bool stochastic_sums() {
   GameTree g;
   g.compressed = true;
   if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
-  const GNode& n = g.nodes[0];
+  // IP's decision after the check: the root (OOP can only check) has one action and stores nothing (#567)
+  const GNode& n = g.nodes[g.nodes[0].first_child];
   const size_t len = g.node_size(n);
   std::vector<float> buf(len);
   auto run = [&](int iters) {
@@ -1295,6 +1296,120 @@ static bool checkdowns_collapse() {
   return ok;
 }
 
+// #567: every decision with one action reads its player's one shared row, which nothing writes. The layout
+// (one row per player, the per-node count saves record, the rounding keys of the old layout) and the row's
+// zeros through solving, best-response writes (set_mes), resets, symmetrisation and direct writes, in
+// float32 and 16-bit storage.
+static bool one_action_rows() {
+  bool ok = true;
+  for (int compressed = 0; compressed < 2; ++compressed) {
+    GameConfig cfg;
+    parse_cards("KhQs7d", cfg.board);
+    std::string err;
+    RangeWeights w;
+    if (!parse_range("AA,KK,QQ,JJ,TT,99,77,44,AK,AQ,AJ,KQ,KJ,QJ,JT,T9s,98s,87s,A5s,K5s", w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+    if (!parse_range("AA,KK,QQ,JJ,TT,88,77,55,AK,AQ,KQ,KT,QJ,QT,JT,J9s,T9s,65s,A4s", w, err)) return false;
+    for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+    cfg.pot[2] = 100;
+    cfg.eff_stack = 400;
+    // A checked-down turn and river after the flop raise, no donk bets after the flop bet, and a check-down
+    // from the root: one-action decisions of both players on every later street.
+    cfg.lines.add = {{0, 50, 150, 150}, {50, 150, 400}, {0, 0}, {50, 50, 50, 100, 100}};
+    GameTree g;
+    if (!g.build(cfg, err, false)) { std::printf("build: %s\n", err.c_str()); return false; }
+    g.compressed = compressed;
+    g.allocate_storage();
+    // Layout
+    uint64_t shared[2] = {UINT64_MAX, UINT64_MAX}, shared_q[2] = {UINT64_MAX, UINT64_MAX}, own = 0, all = 0,
+             forced[2] = {0, 0};
+    bool layout = g.round_key.size() == g.num_decisions;  // (empty in a tree where every decision has a choice)
+    std::vector<uint32_t> forced_nodes, by_aux(g.num_decisions);
+    for (uint32_t ni = 0; ni < g.nodes.size(); ++ni)
+      if (g.nodes[ni].kind == ANodeKind::Decision) by_aux[g.nodes[ni].aux] = ni;
+    for (uint32_t ni : by_aux) {  // the build's order, in which each decision's rows used to follow the last's
+      const GNode& n = g.nodes[ni];
+      layout &= g.round_key[n.aux] == static_cast<uint32_t>(all);
+      all += g.node_size(n);
+      if (!GameTree::shares_row(n)) {
+        own += g.node_size(n);
+        continue;
+      }
+      ++forced[n.player];
+      forced_nodes.push_back(ni);
+      if (shared[n.player] == UINT64_MAX) {
+        shared[n.player] = n.storage;
+        shared_q[n.player] = g.qo(n);
+      }
+      layout &= n.storage == shared[n.player] && g.qo(n) == shared_q[n.player];
+    }
+    const uint64_t shared_floats = (forced[0] ? g.num_hands(0) : 0) + (forced[1] ? g.num_hands(1) : 0);
+    layout &= forced[0] > 0 && forced[1] > 0 && g.node_floats == all && g.storage_floats == own + shared_floats &&
+              (compressed ? g.regrets_q.size() : g.regrets.size()) == g.storage_floats;
+    auto zero = [&] {
+      for (int p = 0; p < 2; ++p) {
+        const size_t H = g.num_hands(p);
+        for (size_t i = 0; i < H; ++i) {
+          if (compressed ? g.regrets_q[shared_q[p] + i] != 0 || g.strat_q[shared_q[p] + i] != 0
+                         : g.regrets[shared[p] + i] != 0.0f || g.strat[shared[p] + i] != 0.0f)
+            return false;
+        }
+      }
+      if (compressed)
+        for (uint32_t ni : forced_nodes)
+          if (g.rscale[g.nodes[ni].aux] != 0.0f || g.sscale[g.nodes[ni].aux] != 0.0f) return false;
+      return true;
+    };
+    Solver s(g);
+    for (int t = 1; t <= 40; ++t) s.iterate(t);  // pruning is on from t > 16
+    bool zeros = zero();
+    // set_mes: best-response walks that store the pure best response at every decision of the player
+    s.write_best_response = true;
+    for (int p = 0; p < 2; ++p) {
+      std::vector<float> out(g.num_hands(p));
+      s.walk(Walk::BestResponse, 0, p, g.init_reach[p].data(), g.init_reach[1 - p].data(), out.data());
+    }
+    s.write_best_response = false;
+    zeros &= zero();
+    s.reset_strategy_sums();
+    s.symmetrize_root_street(0);
+    s.symmetrize_root_street(1);
+    for (int t = 41; t <= 50; ++t) s.iterate(t);
+    // A writer that goes through the accessors (set_strategy, lock_node, combo_lock_node do) changes nothing.
+    {
+      const GNode& n = g.nodes[forced_nodes.front()];
+      std::vector<float> a(g.node_size(n)), b(g.node_size(n));
+      float* R = g.regrets_rw(n, compressed ? a.data() : nullptr);
+      float* S = g.strat_rw(n, compressed ? b.data() : nullptr);
+      std::fill_n(R, g.node_size(n), 1e7f);
+      std::fill_n(S, g.node_size(n), 0.25f);
+      g.regrets_commit(n, R);
+      g.strat_commit(n, S);
+      g.regrets_store(n, R);
+      g.strat_store(n, S);
+    }
+    zeros &= zero();
+    bool ones = true;
+    for (uint32_t ni : forced_nodes) {
+      const GNode& n = g.nodes[ni];
+      std::vector<float> c(g.num_hands(n.player)), a(c.size());
+      s.current_strategy(ni, c.data());
+      s.average_strategy(ni, a.data());
+      for (size_t h = 0; h < c.size(); ++h) ones &= c[h] == 1.0f && a[h] == 1.0f;
+    }
+    const double e = s.root_stats().exploitability;  // after the best-response writes and the reset: a number only
+    const bool good = layout && zeros && ones && std::isfinite(e);
+    ok &= good;
+    std::printf("[one-action rows] %s: %llu + %llu one-action decisions share 2 rows, rows %llu -> %llu floats, "
+                "layout %s, shared rows %s, strategies %s, exploitability %.3f: %s\n",
+                compressed ? "16-bit" : "float32", static_cast<unsigned long long>(forced[0]),
+                static_cast<unsigned long long>(forced[1]), static_cast<unsigned long long>(g.node_floats),
+                static_cast<unsigned long long>(g.storage_floats), layout ? "ok" : "WRONG", zeros ? "zero" : "WRITTEN",
+                ones ? "1" : "WRONG", e, good ? "ok" : "FAILED");
+  }
+  return ok;
+}
+
 // #186: the two-phase river walk (river_cfr) must reproduce walk_t exactly: same regrets and
 // strategy sums, bit for bit, after many iterations with pruning, fold pairing, the opponent's fused
 // fold and all-in tables in play. Forced on here so scalar builds test the walk logic too.
@@ -1446,6 +1561,7 @@ int main(int argc, char** argv) {
   fails += !preflop_runout_tables();
   fails += !river_batch_matches();
   fails += !checkdowns_collapse();
+  fails += !one_action_rows();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

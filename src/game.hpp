@@ -120,7 +120,7 @@ struct GNode {
   uint16_t num_children;
   uint16_t pad;        // decision: 1 + its GameTree::keep_sets entry when 16-bit rows are compact (#239), else 0
   uint32_t aux;        // chance: ChanceInfo index; showdown: board id; decision: decision index
-  uint64_t storage;    // decision: float offset into regrets/strat arrays (size A * H[player])
+  uint64_t storage;    // decision: float offset into regrets/strat arrays (size A * H[player]; one action: shared, #567)
 };
 
 struct ChanceInfo {
@@ -287,6 +287,19 @@ class GameTree {
   ZVec<uint16_t> strat_q;
   std::vector<float> rscale, sscale;
   uint64_t storage_floats = 0;
+  // Every decision's A x H, as if each had rows of its own: what storage_floats was before the decisions with
+  // one action shared a row (#567). Saves record this figure, so their files do not change.
+  uint64_t node_floats = 0;
+  // A decision with one action has one strategy, 1 for every hand (Solver::current_strategy and
+  // average_strategy answer that without reading anything). Its rows are the player's one shared row of H
+  // floats, which nothing writes, so it stays zero, as the node's own rows did once the solver stopped
+  // updating them (#563): regrets_rw / strat_rw hand out zeros to overwrite, the commits and stores keep
+  // nothing, and the loaders skip their records. On flop_srp_4 they were 55% of all rows (#567).
+  static bool shares_row(const GNode& n) { return n.num_children == 1; }
+  // Per decision (GNode::aux): the low 32 bits of where its rows began when every decision had its own (the
+  // running node_floats). The stochastic rounding of 16-bit strategy sums hashes it to pick its uniforms,
+  // so sharing rows changed no rounding (#567). Empty when no decision shares a row: GNode::storage is the key.
+  std::vector<uint32_t> round_key;
   uint64_t num_decisions = 0;
   uint64_t checkdowns = 0;  // subtrees without a decision that the build made one showdown node (cfg.collapse_checkdowns)
   // Compact 16-bit rows (#239). At a river decision node, a hand holding a card dealt after the root board

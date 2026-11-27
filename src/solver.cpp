@@ -24,6 +24,8 @@ namespace pio {
 
 namespace {
 
+// A decision with one action that the walks may pass straight through: no lock, incentive or elimination
+// to apply on the way. Its strategy is 1 whatever its flags, and it stores nothing (GameTree::shares_row).
 inline bool forced_action(const GNode& n) {
   return n.num_children == 1 && !n.flags;
 }
@@ -1098,7 +1100,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
   const int H = g_.num_hands(n.player);
-  if (forced_action(n)) {
+  if (GameTree::shares_row(n)) {
     g_.ensure_loaded(n);
     std::fill_n(out, H, 1.f);
     return;
@@ -1386,7 +1388,7 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
   const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
   const int H = g_.num_hands(n.player);
-  if (forced_action(n)) {
+  if (GameTree::shares_row(n)) {
     g_.ensure_loaded(n);
     std::fill_n(out, H, 1.f);
     return;
@@ -1454,7 +1456,7 @@ void Solver::walk(Walk mode, uint32_t ni, int p, const float* rp, const float* r
 // two-phase river walk, #186, runs exactly the same code). out is the node's value under sigma.
 void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* rp, const float* ro, const float* sigma,
                               const float* cfv, const uint8_t* pruned, const float* out) {
-  if (forced_action(n)) return;
+  if (GameTree::shares_row(n)) return;
   const int A = n.num_children;
   const int Hp = g_.num_hands(p);
   ArenaScope sc;
@@ -2122,7 +2124,8 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
   ArenaScope sc;
   float* sigma = sc.a.alloc(static_cast<size_t>(A) * Hp);
   current_strategy(ni, sigma);
-  if (!(n.flags & GF_LOCKED)) {
+  // (one action, flagged or lazily loaded: nothing to update, and its shared rows, preds too, stay zero: #567)
+  if (!(n.flags & GF_LOCKED) && !GameTree::shares_row(n)) {
     float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
     float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
     // An unreached node had zero counterfactual values this round, so its instantaneous
@@ -2335,7 +2338,7 @@ void Solver::symmetrize_root_street(int p, float* regrets, float* strategy) {
   const auto& ends = sym_orbit_end_[p];
   auto task = [&](int k) {
     const GNode& n = g_.nodes[sym_nodes_[p][static_cast<size_t>(k)]];
-    if (forced_action(n) || (n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) return;
+    if (GameTree::shares_row(n) || (n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) return;
     const int A = n.num_children;
     ArenaScope sc;
     float* R = regrets ? regrets + n.storage : g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
@@ -2377,7 +2380,7 @@ void Solver::reset_strategy_sums() {
     const int hi = static_cast<int>(static_cast<int64_t>(N) * (chunk + 1) / nchunks);
     for (int ni = lo; ni < hi; ++ni) {
       const GNode& n = g_.nodes[ni];
-      if (n.kind != ANodeKind::Decision || forced_action(n) || (n.flags & GF_LOCKED)) continue;
+      if (n.kind != ANodeKind::Decision || GameTree::shares_row(n) || (n.flags & GF_LOCKED)) continue;
       const int A = n.num_children, H = g_.num_hands(n.player);
       ArenaScope sc;
       float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);

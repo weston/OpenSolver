@@ -29,8 +29,10 @@ Upi& Upi::river_view() {
       auto clear = [&](auto&& self, uint32_t i) -> void {
         const auto& n = full.nodes[i];
         if (n.kind != ANodeKind::Decision) return;
-        std::fill_n(full.regrets.data() + n.storage, full.node_size(n), 0.0f);
-        std::fill_n(full.strat.data() + n.storage, full.node_size(n), 0.0f);
+        if (!GameTree::shares_row(n)) {  // a shared row (#567) is zero already, and others read it
+          std::fill_n(full.regrets.data() + n.storage, full.node_size(n), 0.0f);
+          std::fill_n(full.strat.data() + n.storage, full.node_size(n), 0.0f);
+        }
         for (unsigned k = 0; k < n.num_children; ++k) self(self, n.first_child + k);
       };
       clear(clear, river);
@@ -44,9 +46,11 @@ Upi& Upi::river_view() {
         to.flags = from.flags;
         if (from.flags & GF_COMBO_LOCKED) full.combo_lock[dst] = tree_->combo_lock.at(src);
         if (from.flags & GF_INCENTIVES) full.incentives[dst] = tree_->incentives.at(src);
-        row.resize(tree_->node_size(from));
-        std::copy_n(tree_->regrets_ro(from, row.data()), row.size(), full.regrets.data() + to.storage);
-        std::copy_n(tree_->strat_ro(from, row.data()), row.size(), full.strat.data() + to.storage);
+        if (!GameTree::shares_row(to)) {  // #567: one action, nothing stored
+          row.resize(tree_->node_size(from));
+          std::copy_n(tree_->regrets_ro(from, row.data()), row.size(), full.regrets.data() + to.storage);
+          std::copy_n(tree_->strat_ro(from, row.data()), row.size(), full.strat.data() + to.storage);
+        }
       } else if (from.kind != ANodeKind::Chance || from.board_len == 4) return;
       for (unsigned k = 0; k < from.num_children; ++k) self(self, from.first_child + k, to.first_child + k);
     };
@@ -303,6 +307,7 @@ bool Upi::solve_metal_river(const NodeRef& root, double accuracy, double seconds
   for (auto [i, j] : decisions) {
     const auto& src = river.nodes[i];
     const auto& dst = tree_->nodes[j];
+    if (GameTree::shares_row(dst)) continue;  // one action: nothing stored (#567)
     const auto& hands = parent_hand[src.player];
     std::vector<float> regrets(tree_->node_size(dst)), sums(regrets.size());
     for (unsigned k = 0; k < src.num_children; ++k) {

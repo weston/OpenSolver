@@ -38,6 +38,14 @@
 
 namespace pio {
 
+// The largest float32 tree (memory_bytes_for(false)) that the GPU solve keeps on a discrete GPU: its
+// rows and tables add about a quarter to the state, and a tenth of the card stays free. 0 for no
+// discrete GPU (none, or Metal, which shares the CPU's memory).
+static uint64_t gpu_tree_limit_bytes() {
+  const uint64_t gpu_mem = gpu_available() ? gpu_memory_bytes() : 0;
+  return gpu_mem / 10 * 9 / 5 * 4;
+}
+
 // The 169 preflop classes in PioSOLVER's order (show_preflop_order, calc_eq_preflop).
 const char* const kPreflopOrder = "AA AKs AKo KK AQs AQo KQo KQs QQ AJs AJo KJo KJs QJo QJs JJ ATo ATs KTs KTo QTs QTo JTs JTo TT A9o A9s K9s K9o Q9s Q9o J9s J9o T9s T9o 99 A8s A8o K8s K8o Q8s Q8o J8s J8o T8o T8s 98o 98s 88 A7o A7s K7s K7o Q7s Q7o J7s J7o T7o T7s 97s 97o 87o 87s 77 A6o A6s K6s K6o Q6s Q6o J6s J6o T6o T6s 96o 96s 86o 86s 76o 76s 66 A5o A5s K5s K5o Q5s Q5o J5s J5o T5o T5s 95s 95o 85o 85s 75s 75o 65o 65s 55 A4o A4s K4s K4o Q4s Q4o J4s J4o T4o T4s 94s 94o 84o 84s 74s 74o 64o 64s 54o 54s 44 A3s A3o K3s K3o Q3o Q3s J3o J3s T3o T3s 93o 93s 83s 83o 73o 73s 63o 63s 53s 53o 43o 43s 33 A2s A2o K2s K2o Q2o Q2s J2o J2s T2o T2s 92o 92s 82s 82o 72o 72s 62o 62s 52o 52s 42o 42s 32o 32s 22 ";
 
@@ -812,8 +820,8 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
     // and tables add about a quarter to the state) stays float32; one that would not keeps the CPU's choice.
     const uint64_t th = threads_ > 0 ? static_cast<uint64_t>(threads_)
                                      : std::max<uint64_t>(1, std::thread::hardware_concurrency());
-    const uint64_t gpu_mem = gpu_algorithm(algorithm_) && gpu_available() ? gpu_memory_bytes() : 0;
-    const bool for_gpu = gpu_mem && full / 4 * 5 <= gpu_mem / 10 * 9;
+    const uint64_t gpu_limit = gpu_algorithm(algorithm_) ? gpu_tree_limit_bytes() : 0;
+    const bool for_gpu = gpu_limit && full <= gpu_limit;
     t->compressed = c.preflop || full > avail * 9 / 10 || (!for_gpu && full * th >= (uint64_t(2) << 30));
 #endif
   }
@@ -1475,6 +1483,13 @@ void Upi::register_commands() {
     return std::string("clear_lines ok!");
   };
   H["build_tree"] = [this](const Args& a) { return cmd_build_tree(a); };
+  // Extension (#569): the GPU, if any, and the largest tree it takes, for a client choosing a device.
+  H["show_gpu"] = [](const Args&) {
+    if (!gpu_available()) return std::string("gpu: none");
+    const uint64_t limit = gpu_tree_limit_bytes();
+    return "gpu: " + gpu_name() + "\ngpu memory: " + std::to_string(gpu_memory_bytes() >> 20) +
+           " MB\nlargest tree: " + (limit ? std::to_string(limit >> 20) + " MB" : std::string("shares the CPU's memory"));
+  };
   H["list_algorithms"] = [](const Args&) {
     std::string algorithms(
         "v4_small,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4); this solver uses one algorithm for every code\n"

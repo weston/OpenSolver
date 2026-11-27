@@ -74,6 +74,13 @@ class ViewerTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
 
+    def ran_on(self, device):
+        """The device a solve set to `device` runs on: Auto's pick for the tree built last (the CPU
+        without a benchmark profile)."""
+        if device != "auto":
+            return device
+        return (self.solver.auto_choice or {}).get("device", "cpu")
+
     def test_device_selection(self):
         _, state = self.req("/api/status")
         if "gpu" in state["devices"]:
@@ -647,7 +654,7 @@ class ViewerTest(unittest.TestCase):
                     progress = solve(True)
                     self.assertTrue(progress["flop_stability"])
                     self.assertEqual(progress["solver_status"], "stopped (flop strategy stable)")
-                    self.assertEqual(progress["active_device"], device)
+                    self.assertEqual(progress["active_device"], self.ran_on(device))
                     self.assertGreaterEqual(progress["iters"], 100)
                     points = self.req("/api/convergence")[1]["points"]
                     stages = [point["stability_stage"] for point in points]
@@ -693,7 +700,7 @@ class ViewerTest(unittest.TestCase):
                 self.assertEqual(self.req("/api/device", "POST", {"device": device})[0], 200)
                 build(mode)
                 self.solver.cmds(["set_accuracy 0", "go 12 steps", "wait_for_solver"])
-                self.assertEqual(self.solver.state()["active_device"], device)
+                self.assertEqual(self.solver.state()["active_device"], self.ran_on(device))
                 before = self.solver.cmd("show_strategy r:0:c")
                 self.assertEqual(children(deep), replies)
                 status, strategy = self.req("/api/strategy?id=" + deep)

@@ -121,28 +121,42 @@ class Solver:
         self._read_response()  # banner lines, skipped until the first END
         self.version = self.cmd("show_version")
         self.gpu_algorithm, self.gpu_name = None, None
+        self.gpu_tree_limit_mb = None
         try:
             algorithms = self.cmd("list_algorithms").splitlines()
             # v4_gpu (Metal, CUDA or OpenCL), or v4_metal from a solver that predates it
             gpu = next((a for a in algorithms if a.startswith("v4_gpu,")), None) or \
                 next((a for a in algorithms if a.startswith("v4_metal,")), None)
-            self.devices = ["cpu", "gpu"] if gpu else ["cpu"]
+            # auto: the device_bench profile picks CPU or GPU for each tree as it is built (#569)
+            self.devices = ["cpu", "gpu", "auto"] if gpu else ["cpu"]
             if gpu:
                 fields = gpu.split(",")
                 self.gpu_algorithm = fields[0]
                 self.gpu_name = fields[2].strip() if len(fields) > 2 else "GPU"
+                # the largest tree (32-bit MB) a discrete GPU takes; None: no limit of its own (Metal shares
+                # the CPU's memory) or a solver without show_gpu
+                try:
+                    m = re.search(r"^largest tree: (\d+) MB", self.cmd("show_gpu"), re.M)
+                    self.gpu_tree_limit_mb = int(m.group(1)) if m else None
+                except SolverError:
+                    pass
         except SolverError:
             self.devices = ["cpu"]
         self.cpu_algorithm = "auto"
         self.device = "cpu"
+        self.auto_choice = None   # under the auto device: the pick for the tree built last (op_build)
         if "gpu" in self.devices:
-            # the GPU when the solver prefers it (Metal); a discrete GPU is the user's choice
+            # the GPU when the solver prefers it (Metal); else, with a discrete GPU, auto: it picks for
+            # each tree from a benchmark profile, and takes the CPU until there is one
             settings = self.cmd("show_settings").splitlines()
             preferred = any(line.strip() in ("algorithm:v4_gpu", "algorithm:v4_metal") for line in settings)
             if preferred or not any(line.startswith("algorithm:") for line in settings):
                 self.cmd("set_algorithm " + self.gpu_algorithm)
                 self.device = "gpu"
+            else:
+                self.device = "auto"
         self.active_device = None
+        self.device_message = None
 
     def _pump(self, generation, stream, q):
         """Demux solver stdout: SOLVER: blocks go to state, everything else to the response queue."""
@@ -181,6 +195,7 @@ class Solver:
                             self.progress = []
                         elif msg.startswith("device "):
                             self.active_device = msg.split()[1]
+                            self.device_message = msg   # "device cpu (<why not the GPU>)"
                         elif msg.startswith("stopped"):
                             self.solving = False
                             if self.partial:
@@ -257,7 +272,10 @@ class Solver:
 
     def device_algorithm(self, device=None):
         with self.state_lock:
-            return self.gpu_algorithm if (device or self.device) == "gpu" else self.cpu_algorithm
+            device = device or self.device
+            if device == "auto":   # what the current tree was built for, the CPU before any
+                device = self.auto_choice["device"] if self.auto_choice else "cpu"
+            return self.gpu_algorithm if device == "gpu" else self.cpu_algorithm
 
     def state(self):
         with self.state_lock:
@@ -268,6 +286,7 @@ class Solver:
             return {"solving": self.solving, "flop_stability": self.flop_stability,
                     "stability_stage": latest.get("stability_stage"), "suspended": "refine" in self.holds,
                     "devices": self.devices, "device": self.device, "active_device": self.active_device,
+                    "auto_choice": self.auto_choice,
                     "gpu_name": self.gpu_name, "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
                     "tree": self.tree_present and not self.dead, "version": self.version,
@@ -564,6 +583,36 @@ def set_jobs(service):
     _jobs = service
 
 
+_bench = None  # device_bench.DeviceBenchmark (#569): CPU vs GPU on this machine, in a solver of its own
+
+
+def set_bench(bench):
+    global _bench
+    _bench = bench
+
+
+def auto_decide(solver):
+    """The Auto device's pick (#569) for the tree the Build form set up: its 32-bit size from the
+    solver's estimate, then the faster device at that size by the benchmark profile, or the CPU where
+    the GPU cannot hold it. Sets the algorithm; solver.auto_choice says what and why."""
+    import device_bench as vbench
+    smart = (solver.built_sizes or {}).get("smart_tree")
+    try:
+        megabytes = vbench.tree_megabytes(solver.cmd(tree_build_command("estimate_schematic_tree", smart)))
+    except SolverError:
+        megabytes = None
+    if _bench is not None:
+        choice = _bench.choose(megabytes)
+    else:
+        choice = vbench.predict([], megabytes, solver.gpu_tree_limit_mb)
+    choice = dict(choice, megabytes=megabytes)
+    with solver.state_lock:
+        solver.auto_choice = choice
+    if solver.device == "auto":
+        solver.cmd("set_algorithm " + solver.device_algorithm("auto"))
+    return choice
+
+
 def set_refiner(refiner):
     global _refiner, _preview
     _refiner = refiner
@@ -609,6 +658,10 @@ def _api(solver, lib, method, path, query, body):
         return _jobs.api(solver, method, path, query, body)
     if path == "/api/files" and method == "GET":
         return 200, saved_files(query.get("path", ["~"])[0])
+    if path == "/api/device/benchmark" or path.startswith("/api/device/benchmark/"):
+        if _bench is None:
+            raise SolverError("the device benchmark is not initialized")
+        return _bench.api(method, path, body)
     if path == "/api/refine" or path.startswith("/api/refine/"):
         if _refiner is None:
             raise SolverError("fast preview not initialized")
@@ -679,10 +732,13 @@ def _api_main(solver, lib, method, path, query, body):
         with solver.cmd_lock:
             if device not in solver.devices:
                 raise SolverError("unknown solve device")
-            if device == "gpu" and solver.device != "gpu":
+            if device != "cpu" and solver.device == "cpu":
                 settings = solver.cmd("show_settings")
                 solver.cpu_algorithm = next((line.split(":", 1)[1].strip() for line in settings.splitlines()
                                              if line.startswith("algorithm:")), "auto")
+            if device == "auto" and solver.device != "auto" and solver.tree_present and not solver.loaded_file \
+                    and not solver.preflop:
+                auto_decide(solver)   # the tree built already: Auto's pick for it
             if device != solver.device:
                 solver.cmd("set_algorithm " + solver.device_algorithm(device))
                 if _refiner is not None and solver is _refiner.main:
@@ -884,7 +940,10 @@ def _api_main(solver, lib, method, path, query, body):
     if path == "/api/build":
         if _resolver is not None:
             _resolver.main_tree_changed()  # #357: its subgame came from the old tree
-        solver.cmd(tree_build_command("build_tree", (solver.built_sizes or {}).get("smart_tree")))
+        smart = (solver.built_sizes or {}).get("smart_tree")
+        if solver.device == "auto":
+            auto_decide(solver)   # before the build, whose storage depends on the device
+        solver.cmd(tree_build_command("build_tree", smart))
         solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = False
@@ -1919,6 +1978,18 @@ def main(argv=None):
     set_drill(drill.DrillService(solver, os.path.abspath(args.solver), _jobs.q))
     import refine as vrefine
     set_refiner(vrefine.RefineManager(solver, Solver, os.path.abspath(args.solver)))
+    import device_bench
+    set_bench(device_bench.DeviceBenchmark(solver, Solver, os.path.abspath(args.solver),
+                                           profile_path=os.path.join("~", ".wsolver", "device_profile.json")))
+    _bench.watch()   # under Auto with no profile: measure in the background whenever nothing solves
+
+    def pick_for_open_tree():
+        # new measurements: Auto's pick for the tree built already, unless it solves or came from a file
+        with solver.cmd_lock:
+            if (solver.device == "auto" and solver.tree_present and not solver.loaded_file
+                    and not solver.preflop and not solver.state()["solving"]):
+                auto_decide(solver)
+    _bench.on_profile = pick_for_open_tree
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     srv.daemon_threads = True
     srv.solver = solver
@@ -1954,6 +2025,8 @@ def main(argv=None):
         try:
             if _drill:
                 _drill.close()
+            if _bench:
+                _bench.close()
         finally:
             for s in ([solver] + ([_resolver.rsolver] if _resolver else []) + ([_refiner.rsolver] if _refiner else [])):
                 try:

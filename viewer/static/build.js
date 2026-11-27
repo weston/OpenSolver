@@ -4,7 +4,7 @@
 import { H, RANKS, SUITS, GLYPH, el, cardEl } from "./cards.js";
 import { startPreview, previewOn } from "./preview.js";
 import { parseRange, formatRange, rangeStats } from "./ranges.js";
-import { smartTree } from "./settings.js";
+import { smartTree, flopStability } from "./settings.js";
 import { get, post, toast, fail, prefs, fmt, fmtChips, fmtEvPct } from "./api.js";
 import { drawChart } from "./chart.js";
 import { openLibrary } from "./library.js";
@@ -388,6 +388,16 @@ function markDirty() {
 
 /* ------------------------------------------------------------------ build & solve */
 
+function syncSolveMode() {
+  const stability = flopStability();
+  $("target-exploitability").classList.toggle("hidden", stability);
+  $("solve-details").classList.toggle("hidden", stability);
+  $("preview-info").classList.toggle("hidden", stability);
+  $("solve-progress").classList.toggle("hidden", !stability);
+  $("f-accuracy").disabled = stability;
+  if (stability) $("f-accuracy").classList.remove("invalid");
+}
+
 let busy = false;
 let treeReady = false, rootPotNow = 0;
 let treeBB = 0;   // chips in a big blind of the tree in the solver when it is a preflop tree, else 0
@@ -422,13 +432,15 @@ function memLine(text) {
 
 function buildForm() { return { ...readForm(), smart_tree: smartTree() }; }
 
-async function build() {
+async function build(willSolve = false) {
   if (!validateSizes()) { info("Fix the highlighted sizes: 33 (% pot), 2e (geometric), 3x (raises only), a (all-in).", true); return false; }
   if (board.length < 3) { info("Pick at least a flop (3 cards).", true); return false; }
   const bad = badNumbers(["f-pot", "f-stack", "f-allin-threshold", "f-allin-limit", "f-merge-threshold"]);
   if (bad.length) { info(`Fix ${bad.join(", ")}.`, true); return false; }
   const f = buildForm();
   setBusy(true, "Generating the tree…");
+  paintSolveBar("idle");
+  if (willSolve) paintSolveBar("running");
   try {
     const g = await post("/api/generate", f);
     let est = "";
@@ -455,6 +467,7 @@ async function build() {
     onBuilt();
     return true;
   } catch (e) {
+    paintSolveBar("idle");
     info(String(e.message || e), true);
     return false;
   } finally { setBusy(false); }
@@ -464,14 +477,17 @@ async function solve() {
   const bad = badNumbers(["f-accuracy"]);
   if (bad.length) { info(`Fix ${bad.join(", ")}.`, true); return; }
   const pot = rootPotNow || Number($("f-pot").value);
-  const accuracy = (Number($("f-accuracy").value) / 100) * pot;
+  const pct = Number($("f-accuracy").value);
+  const accuracy = ((Number.isFinite(pct) && pct > 0 ? pct : 0.3) / 100) * pot;
   if (solveStarting) return;  // a double click sent two solves; the second failed with "solver is running" (#386)
   solveStarting = true;
+  if ($("solve-progress").dataset.motion !== "running") paintSolveBar("idle");
+  paintSolveBar("running");
   try {
-    const r = await post("/api/solve", { accuracy, preview: previewOn() });
+    const r = await post("/api/solve", { accuracy, preview: previewOn(), flop_stability: flopStability() });
     if (!r.preview) toast("Solving…");
     startPreview(!!r.preview);
-  } catch (e) { fail(e); } finally { solveStarting = false; }
+  } catch (e) { paintSolveBar("idle"); fail(e); } finally { solveStarting = false; }
 }
 let solveStarting = false;
 
@@ -482,7 +498,7 @@ export async function rebuildWithBoard(cards) {
   board = [...cards];
   boardChanged();
   toast(`Rebuilding on ${cards.join(" ")}…`);
-  if (!(await build())) {   // the Build panel shows why; say it here too (the Study view is open)
+  if (!(await build(true))) {   // the Build panel shows why; say it here too (the Study view is open)
     toast($("build-info").textContent || "The build failed", "err");
     return true;
   }
@@ -493,12 +509,52 @@ export async function rebuildWithBoard(cards) {
 
 /** Always rebuild from the form (a fresh tree), then solve it. */
 async function buildAndSolve() {
-  if (!(await build())) return;
+  if (!(await build(true))) return;
   rootPotNow = Number($("f-pot").value);
   await solve();
 }
 
 /* ------------------------------------------------------------------ live progress */
+
+const solveMotion = [
+  { lead: 0.16, limit: 0.42, duration: 12000 },
+  { lead: 0.54, limit: 0.76, duration: 24000 },
+  { lead: 0.84, limit: 0.94, duration: 14000 },
+];
+let fillAnimation;
+
+function paintSolveBar(motion, stage = 0) {
+  const bar = $("solve-progress"), fill = bar.firstElementChild;
+  const previous = bar.dataset.motion;
+  if (motion === "running" && stage === 0) bar.removeAttribute("aria-valuenow");
+  else bar.setAttribute("aria-valuenow", stage);
+  bar.style.setProperty("--measured", motion === "running" && !stage ? 0.08 : stage / 3);
+  if (motion === previous && (motion !== "running" || stage <= Number(bar.dataset.stage))) return;
+
+  const transform = getComputedStyle(fill).transform;
+  const current = transform === "none" || (previous === "done" && motion === "running")
+    ? 0 : new DOMMatrixReadOnly(transform).a;
+  const from = `scaleX(${current})`;
+  fillAnimation?.cancel();
+  bar.dataset.motion = motion;
+  bar.dataset.stage = stage;
+  if (motion === "idle" || motion === "paused") {
+    fill.style.transform = motion === "idle" ? "scaleX(0)" : from;
+    return;
+  }
+  const done = motion === "done";
+  const target = done ? 1 : Math.max(current, solveMotion[stage].limit);
+  const end = `scaleX(${target})`;
+  fill.style.transform = end;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const frames = [{ transform: from, easing: "ease-out" }];
+  if (!done) {
+    const { lead, duration } = solveMotion[stage];
+    frames.push({ transform: `scaleX(${Math.max(current, lead)})`, offset: 360 / duration, easing: "cubic-bezier(.15,.75,.3,1)" });
+  }
+  frames.push({ transform: end });
+  fillAnimation = fill.animate(frames, done ? 280 : solveMotion[stage].duration);
+}
 
 /** bb: chips in a big blind when the tree in the solver is a preflop tree (its exploitability is
  *  then shown in bb/100), else 0. EVs are a share of the root's pot for both kinds (#459). */
@@ -514,8 +570,20 @@ export function updateProgress(st, series, rootPot, bb = 0) {
   const pre = treeBB > 0;
   const pot = rootPot || Number($("f-pot").value) || 1;
   if (pre) drawChart($("chart"), series, treeBB, null, "bb/100");
-  else drawChart($("chart"), series, pot, Number($("f-accuracy").value));
+  else {
+    const useTarget = series?.length ? !st?.flop_stability : !$("f-accuracy").disabled;
+    drawChart($("chart"), series, pot, useTarget ? Number($("f-accuracy").value) : null);
+  }
   const last = series && series.length ? series[series.length - 1] : null;
+  if (!busy && !solveStarting) {
+    const stage = st?.stability_stage ?? 0;
+    const hasResult = st?.tree && st.iters > 0 && last;
+    const reachedAccuracy = hasResult && !st.partial && st.solver_status === "stopped (required accuracy reached)";
+    if (stage === 3 || reachedAccuracy) paintSolveBar("done", 3);
+    else if (solving && !st.suspended) paintSolveBar("running", stage);
+    else if (hasResult || st?.suspended) paintSolveBar("paused", stage);
+    else paintSolveBar("idle");
+  }
   const box = $("solve-stats");
   box.textContent = "";
   const kv = (k, v) => { const d = el("div", "kv"); d.append(el("div", "k", k), el("div", "v num", v)); box.appendChild(d); };
@@ -530,6 +598,8 @@ export function updateProgress(st, series, rootPot, bb = 0) {
 
 export function initBuild({ built }) {
   $("smart-tree").addEventListener("change", markDirty);
+  $("flop-stability").addEventListener("change", syncSolveMode);
+  syncSolveMode();
   onBuilt = built || onBuilt;
   editors.OOP = new RangeEditor(document.querySelector('.editor[data-player="OOP"]'), "OOP", saveForm);
   editors.IP = new RangeEditor(document.querySelector('.editor[data-player="IP"]'), "IP", saveForm);

@@ -37,7 +37,14 @@ export function smartTree() {
   return smartTreeModes[smartTreeLevel()];
 }
 
+export function flopStability() {
+  return prefs.get("flop-stability", false) === true;
+}
+
 export function initSettings() {
+  const stability = document.getElementById("flop-stability");
+  stability.checked = flopStability();
+  stability.onchange = () => prefs.set("flop-stability", stability.checked);
   const smart = document.getElementById("smart-tree");
   smart.value = smartTreeLevel();
   smart.onchange = () => prefs.set("smart-tree-level", smart.value);

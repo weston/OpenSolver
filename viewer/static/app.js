@@ -103,10 +103,12 @@ async function pollOnce() {
   // Solve further (#153): the subtree solve has its own scale (the node's pot, not the root's)
   const pt = st.partial && st.partial.point, ppot = st.partial && st.partial.pot;
   const ppct = pt && ppot ? (pt.explo / ppot) * 100 : null;
+  const stable = st.solver_status === "stopped (flop strategy stable)" && st.flop_stability;
   if (st.dead) setPill("err", "Solver stopped working — restart from Open");
   else if (st.suspended) setPill("solving", `Refining a street · ${pct != null ? pct + " · " : ""}main solve paused`);
   else if (st.solving && st.partial) setPill("solving", `Solving further · ${ppct != null ? fmt(ppct, 2) + "%" : "…"} · ${pt ? fmt(pt.t, 0) + "s" : "0s"}`);
   else if (st.solving) setPill("solving", `Solving${st.device === "gpu" ? " · " + (st.active_device || "cpu").toUpperCase() : ""} · ${pct != null ? pct : "…"} · ${last ? fmt(last.t, 0) + "s" : "0s"}`);
+  else if (stable) setPill("done", "Flop strategy stable");
   else if (last) setPill("done", `Solved · ${exploText(last.explo, "% pot") || "—"}`);
   else setPill("", app.tree ? "Tree ready" : "Idle");
   drawSpark($("pill-spark"), app.series, app.rootPot);
@@ -123,7 +125,7 @@ async function pollOnce() {
   previewStatus(st);
 
   if (wasSolving && !st.solving) {
-    toast(st.partial && st.partial.done && ppct != null
+    toast(stable ? "Flop strategy stable" : st.partial && st.partial.done && ppct != null
       ? `Solve further finished at ${fmt(ppct, 2)}% of the node's pot`
       : pct != null ? `Solve finished at ${exploText(last.explo, "% of the pot")}` : "Solve finished");
     if (app.view === "study" && app.tree) study.refresh();

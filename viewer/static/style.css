@@ -564,6 +564,15 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
 .btn-row.end .btn { flex: none; }
 .build-info { font-size: 12px; color: var(--text-2); min-height: 18px; line-height: 1.5; }
 .build-info .err { color: var(--danger); }
+#solve-progress { height: 7px; margin: 9px 0; border-radius: 8px; overflow: hidden; background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--border); }
+#solve-progress > span { display: block; position: relative; height: 100%; overflow: hidden; border-radius: inherit; background: var(--accent); transform: scaleX(0); transform-origin: left; }
+#solve-progress[data-motion="running"] > span::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 40%, rgb(255 255 255 / .33) 64%, transparent 83%); animation: solve-glint 1.9s linear infinite; }
+#solve-progress[data-motion="done"] > span { background: var(--ok); transition: background-color .28s; }
+@keyframes solve-glint { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  #solve-progress[data-motion] > span { transform: scaleX(var(--measured, 0)) !important; transition: none; }
+  #solve-progress[data-motion="running"] > span::after { animation: none; background: none; }
+}
 .chart-box { margin-top: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 10px 4px; }
 .chart-head { display: flex; justify-content: space-between; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); padding: 0 4px 4px; }
 .chart { width: 100%; height: auto; display: block; overflow: visible; }

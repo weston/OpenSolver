@@ -24,6 +24,37 @@ static bool same_bytes(const V& a, const V& b) {
          (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0);
 }
 
+static bool sampled_averaging_election() {
+  GameTree game;
+  game.cfg.river_sizing = RiverSizing::Smart;
+  game.cfg.pot[2] = 500;
+  Solver solver(game);
+  solver.flop_ip_first = true;
+  solver.avg_delay = 32;
+  solver.set_flop_opening(FlopOpening::SquareRoot);
+  game.storage_floats = (uint64_t{1} << 30) / sizeof(float) - 1;
+  solver.prepare_sampled_averaging();
+  solver.select_sampled_averaging(1.5);
+  if (solver.uses_sampled_averaging()) return false;
+  ++game.storage_floats;
+  solver.prepare_sampled_averaging();
+  solver.select_sampled_averaging(1.51);
+  solver.select_sampled_averaging(1.5);
+  if (solver.uses_sampled_averaging()) return false;
+  solver.restart_flop_opening();
+  solver.select_sampled_averaging(1.5);
+  if (!solver.uses_sampled_averaging()) return false;
+  game.nodes.emplace_back().flags = GF_LOCKED;
+  solver.restart_flop_opening();
+  solver.select_sampled_averaging(1.5);
+  if (solver.uses_sampled_averaging()) return false;
+  game.nodes.clear();
+  solver.params.gamma = 2;
+  solver.prepare_sampled_averaging();
+  solver.select_sampled_averaging(1.5);
+  return !solver.uses_sampled_averaging();
+}
+
 static bool low_reach_average_strategy() {
   GameConfig cfg;
   parse_cards("Kh9d4h2c3s", cfg.board);
@@ -1290,6 +1321,7 @@ int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
   int fails = 0;
+  fails += !sampled_averaging_election();
   fails += !low_reach_average_strategy();
   fails += !parallel_equivalence();
   fails += !auto_report_schedule();

@@ -1,4 +1,5 @@
 #include "solver.hpp"
+#include "average_sampling.hpp"
 #include "compact_rows.hpp"
 
 #include <algorithm>
@@ -2198,13 +2199,10 @@ void Solver::iterate(int t, int first) {
   double pb = std::pow(td, params.beta_at(t));
   pos_mult_ = static_cast<float>(pa / (pa + 1.0));
   neg_mult_ = static_cast<float>(pb / (pb + 1.0));
-  strat_mult_ = static_cast<float>(std::pow(td / (td + 1.0), params.gamma));
-  if (avg_reset) {
-    accumulate_ = true;
-    if (avg_delay > 0 && t == avg_delay + 1) reset_strategy_sums();  // drop the early iterates now
-  } else {
-    accumulate_ = t > avg_delay;  // set_avg_delay: the first t <= avg_delay only move regrets
-  }
+  const auto average = average_step(t, params.gamma, avg_delay, avg_reset, uses_sampled_averaging());
+  strat_mult_ = average.discount;
+  accumulate_ = average.weight != 0.f && (avg_reset || t > avg_delay);
+  if (average.reset) reset_strategy_sums();
   // Every prune_period-th iteration is measured in full (the RBP revisiting schedule), and
   // pruning activates only after two full periods (see Solver::pruning): pruning from t=1
   // destroys convergence (flop_3bet to 0.2% pot: 50 -> 230 iterations at period 32).
@@ -2213,7 +2211,13 @@ void Solver::iterate(int t, int first) {
     int p = k == 0 ? first : 1 - first;
     ArenaScope sc;
     float* out = sc.a.alloc(g_.num_hands(p));
-    walk_t<Walk::CFR>(0, p, g_.init_reach[p].data(), g_.init_reach[1 - p].data(), out);
+    const float* own = g_.init_reach[p].data();
+    if (average.weight != 0.f && average.weight != 1.f) {
+      float* scaled = sc.a.alloc(g_.num_hands(p));
+      for (int h = 0; h < g_.num_hands(p); ++h) scaled[h] = own[h] * average.weight;
+      own = scaled;
+    }
+    walk_t<Walk::CFR>(0, p, own, g_.init_reach[1 - p].data(), out);
     // every 4th iteration (before the other player's walk reads p's strategies): rounding asymmetry grows
     // about 3x per iteration where hands are near-indifferent, so it stays near 1e-5 between resets, at a
     // quarter of the cost (3.5% per iteration on threebet_mono's monotone flop when done every iteration)

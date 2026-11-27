@@ -401,6 +401,10 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   // Solving the whole tree again makes its own results current (#195); go_partial, like solve_partial,
   // keeps reporting the saved ones while other streets are still missing.
   if (!sub) tree_->has_saved_stats = false;
+  const bool accuracy_solve = !sub && !stable_flop && steps == 0 && seconds == 0;
+  const double target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
+  if (stable_flop) solver_->set_average_sampling(AverageSampling::Dense);
+  solver_->select_sampled_averaging(accuracy_solve ? target : 0.0);
   stop_flag_ = false;
   solving_ = true;
   // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)
@@ -724,8 +728,10 @@ std::string Upi::cmd_build_tree(const Args& a) {
   c.subset.clear();
   auto result = build_from(c, mem_ignore, pessimistic, "build_tree ok!");
   solver_->flop_ip_first = auto_flop_order && !first_player_ && flop_ip_opens_betting(*tree_);
-  if (sqrt_opening && solver_->uses_flop_ip_first())
+  if (sqrt_opening && solver_->uses_flop_ip_first()) {
     solver_->set_flop_opening(FlopOpening::SquareRoot);
+    solver_->prepare_sampled_averaging();
+  }
   return result;
 }
 
@@ -814,6 +820,7 @@ void Upi::apply_payoff() {
   TreePause tp(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
   cached_root_stats_.reset();
   tree_->set_payoff(payoff_);
+  if (tree_->iterations > 0 || payoff_.icm.enabled) solver_->set_average_sampling(AverageSampling::Dense);
   discount_restart_ = tree_->iterations;
 }
 
@@ -823,6 +830,7 @@ void Upi::apply_pcfr_settings() {
   solver_->predictive = predictive_;
   solver_->update_flop_opening();
   solver_->avg_delay = avg_delay_;
+  if (predictive_ || avg_delay_ != 32) solver_->set_average_sampling(AverageSampling::Dense);
   // Costs storage_floats * 4 bytes, committed immediately. ZeroAlloc::allocate does use
   // calloc, so the pages start out lazy, but vector::resize then value-initializes every
   // element (a memset for float), touching all of them before the solver runs. Measured on
@@ -1153,7 +1161,10 @@ void Upi::register_commands() {
       d.beta_switch = static_cast<int>(sw);
     }
     dcfr_ = d;
-    if (solver_) solver_->params = dcfr_;
+    if (solver_) {
+      solver_->params = dcfr_;
+      if (dcfr_ != DcfrParams{}) solver_->set_average_sampling(AverageSampling::Dense);
+    }
     return std::string("set_dcfr ok!");
   };
   // Not Pio commands: convergence experiments (#71), off / 0 by default.
@@ -1174,7 +1185,10 @@ void Upi::register_commands() {
     long long n = arg_int(a, 0, "iterations");
     if (n < 0 || n > 1000000) throw CmdError{"incorrect or missing argument"};
     avg_delay_ = static_cast<int>(n);
-    if (solver_) solver_->avg_delay = avg_delay_;
+    if (solver_) {
+      solver_->avg_delay = avg_delay_;
+      if (avg_delay_ != 32) solver_->set_average_sampling(AverageSampling::Dense);
+    }
     return std::string("set_avg_delay ok!");
   };
   // show_avg_delay (extension): the current set_avg_delay. The viewer's fast preview compares

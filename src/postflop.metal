@@ -313,7 +313,17 @@ float update_binary(device float* regrets, device float* sums, device const floa
 }
 
 float3 round_reach(device const RiverRound& r, device const float* opp_r, float weight, uint j, uint O, bool leading) {
-  if (r.final_raise) {
+  if (r.kind == BetWithRaise) {
+    if (leading) {
+      float3 response = raise_strategy(opp_r, r.storage[1] + j, O);
+      return weight * float3(response.xy, 1.f);
+    }
+    float2 first = binary_strategy(opp_r, r.storage[0] + j, O);
+    float2 response = binary_strategy(opp_r, r.storage[2] + j, O);
+    float bet = weight * first.x;
+    return float3(bet * response.x, bet, weight * first.y);
+  }
+  if (r.kind == FinalRaise) {
     if (leading) {
       float2 response = binary_strategy(opp_r, r.storage[1] + j, O);
       return weight * float3(response.x, 1.f, response.y);
@@ -331,23 +341,45 @@ float3 round_reach(device const RiverRound& r, device const float* opp_r, float 
   return float3(weight * first.x, check * response.x, check);
 }
 
+float update_raise(device float* regrets, device float* strategy_sums, device const float* old_r,
+                   device const float* old_s, constant IterationParams& q, uint j, uint H, float reach,
+                   float3 policy, float3 cfv) {
+  float value = fma(policy.z, cfv.z, fma(policy.y, cfv.y, policy.x * cfv.x));
+  for (uint a = 0; a < 3; ++a) {
+    uint k = j + a * H;
+    float v = old_r[k];
+    regrets[k] = v * (v > 0 ? q.positive_discount : q.negative_discount) + (cfv[a] - value);
+    strategy_sums[k] = q.accumulate ? fma(reach, policy[a], old_s[k] * q.average_discount) : old_s[k];
+  }
+  return value;
+}
+
 float update_river_round(device const RiverRound& r, constant IterationParams& q, device const float* old_r,
                          device const float* old_s, device float* regrets, device float* strategy_sums, uint h, uint H,
                          float reach, bool leading, float3 sd, float3 mass) {
   uint p = q.p;
   float value;
-  if (r.final_raise) {
+  if (r.kind == BetWithRaise) {
+    if (leading) {
+      float2 first = binary_strategy(old_r, r.storage[0] + h, H);
+      float2 response = binary_strategy(old_r, r.storage[2] + h, H);
+      float raised = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[2] + h, H,
+                                   reach * first.x, response, float2(sd.x, r.fold[0][p] * mass.x));
+      float bet = (raised + sd.y) + r.fold[1][p] * ((mass.z - mass.x) - mass.y);
+      return update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[0] + h, H, reach,
+                           first, float2(bet, sd.z));
+    }
+    uint j = r.storage[1] + h;
+    float3 policy = raise_strategy(old_r, j, H);
+    float3 cfv = {sd.x + r.fold[0][p] * (mass.y - mass.x), sd.y, r.fold[1][p] * mass.y};
+    return update_raise(regrets, strategy_sums, old_r, old_s, q, j, H, reach, policy, cfv) + sd.z;
+  }
+  if (r.kind == FinalRaise) {
     if (leading) {
       uint j = r.storage[0] + h;
       float3 policy = raise_strategy(old_r, j, H);
       float3 cfv = {sd.x + mass.z * r.fold[0][p], sd.y, mass.y * r.fold[1][p]};
-      value = fma(policy.z, cfv.z, fma(policy.y, cfv.y, policy.x * cfv.x));
-      for (uint a = 0; a < 3; ++a) {
-        uint k = j + a * H;
-        float v = old_r[k];
-        regrets[k] = v * (v > 0 ? q.positive_discount : q.negative_discount) + (cfv[a] - value);
-        strategy_sums[k] = q.accumulate ? fma(reach, policy[a], old_s[k] * q.average_discount) : old_s[k];
-      }
+      value = update_raise(regrets, strategy_sums, old_r, old_s, q, j, H, reach, policy, cfv);
     } else {
       float2 response = binary_strategy(old_r, r.storage[1] + h, H);
       float raised = update_binary(regrets, strategy_sums, old_r, old_s, q, r.storage[1] + h, H, reach, response,

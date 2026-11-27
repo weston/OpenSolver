@@ -381,30 +381,51 @@ class PostflopSolve final : public MetalSolve {
                                vector<RiverRound>& bet_checks, bool bet_checks_fit) {
     const auto& n = g.nodes[i];
     if (n.kind != ANodeKind::Decision || n.board_len != 5) return false;
+    RiverRound r{};
+    r.root = i;
+    auto payoff = [&](unsigned channel, unsigned call, bool has_fold) {
+      const auto& pay = g.term_pay(g.nodes[call]);
+      std::copy_n(pay.w, 2, r.win[channel]);
+      std::copy_n(pay.l, 2, r.loss[channel]);
+      std::copy_n(pay.t, 2, r.tie[channel]);
+      if (has_fold) std::copy_n(g.term_pay(g.nodes[call + 1]).w, 2, r.fold[channel]);
+    };
+    auto call_fold = [&](const GNode& node, unsigned actor) {
+      return node.kind == ANodeKind::Decision && node.player == actor && node.num_children == 2 &&
+             g.nodes[node.first_child].kind == ANodeKind::Showdown &&
+             g.nodes[node.first_child + 1].kind == ANodeKind::Fold;
+    };
     const bool final_raise = n.num_children == 3;
-    if (final_raise || (bet_checks_fit && n.num_children == 2 && g.nodes[n.first_child + 1].kind == ANodeKind::Showdown)) {
-      unsigned raised = n.first_child, called = raised + 1, folded = raised + 2;
-      const auto& response = g.nodes[raised];
-      if (response.kind != ANodeKind::Decision || response.num_children != 2 || response.player == n.player ||
-          g.nodes[called].kind != ANodeKind::Showdown || (final_raise && g.nodes[folded].kind != ANodeKind::Fold) ||
-          g.nodes[response.first_child].kind != ANodeKind::Showdown ||
-          g.nodes[response.first_child + 1].kind != ANodeKind::Fold)
+    if (final_raise || (n.num_children == 2 && g.nodes[n.first_child + 1].kind == ANodeKind::Showdown)) {
+      const unsigned last = n.first_child + 1;
+      const auto& response = g.nodes[n.first_child];
+      if (g.nodes[last].kind != ANodeKind::Showdown || (final_raise && g.nodes[last + 1].kind != ANodeKind::Fold))
         return false;
-      RiverRound r{};
-      r.root = i;
-      r.final_raise = final_raise;
-      r.board = g.nodes[called].aux;
+      r.board = g.nodes[last].aux;
       r.storage[0] = n.storage;
       r.storage[1] = response.storage;
-      for (unsigned j = 0; j < 2; ++j) {
-        unsigned call = j ? called : response.first_child;
-        const auto& pay = g.term_pay(g.nodes[call]);
-        std::copy_n(pay.w, 2, r.win[j]);
-        std::copy_n(pay.l, 2, r.loss[j]);
-        std::copy_n(pay.t, 2, r.tie[j]);
-        if (j == 0 || final_raise) std::copy_n(g.term_pay(g.nodes[call + 1]).w, 2, r.fold[j]);
+      if (call_fold(response, 1 - n.player)) {
+        if (!final_raise && !bet_checks_fit) return false;
+        r.kind = final_raise ? FinalRaise : BetBothSides;
+        payoff(0, response.first_child, true);
+        payoff(1, last, final_raise);
+        (final_raise ? rounds : bet_checks).push_back(r);
+        return true;
       }
-      (final_raise ? rounds : bet_checks).push_back(r);
+      if (final_raise || response.kind != ANodeKind::Decision || response.player == n.player ||
+          response.num_children != 3)
+        return false;
+      const auto& raised = g.nodes[response.first_child];
+      const unsigned called = response.first_child + 1;
+      if (!call_fold(raised, n.player) || g.nodes[called].kind != ANodeKind::Showdown ||
+          g.nodes[called + 1].kind != ANodeKind::Fold)
+        return false;
+      r.kind = BetWithRaise;
+      r.storage[2] = raised.storage;
+      payoff(0, raised.first_child, true);
+      payoff(1, called, true);
+      payoff(2, last, false);
+      rounds.push_back(r);
       return true;
     }
     if (n.num_children != 2) return false;
@@ -420,18 +441,12 @@ class PostflopSolve final : public MetalSolve {
     if (g.nodes[call0].kind != ANodeKind::Showdown || g.nodes[call0 + 1].kind != ANodeKind::Fold ||
         g.nodes[call1].kind != ANodeKind::Showdown || g.nodes[call1 + 1].kind != ANodeKind::Fold)
       return false;
-    RiverRound r{};
-    r.root = i;
     r.board = g.nodes[last].aux;
-    unsigned decisions[] = {i, lead, check, bet}, leaves[] = {call0, call1, last};
+    unsigned decisions[] = {i, lead, check, bet};
     for (int j = 0; j < 4; ++j) r.storage[j] = g.nodes[decisions[j]].storage;
-    for (int j = 0; j < 3; ++j) {
-      const auto& pay = g.term_pay(g.nodes[leaves[j]]);
-      std::copy_n(pay.w, 2, r.win[j]);
-      std::copy_n(pay.l, 2, r.loss[j]);
-      std::copy_n(pay.t, 2, r.tie[j]);
-      if (j < 2) std::copy_n(g.term_pay(g.nodes[leaves[j] + 1]).w, 2, r.fold[j]);
-    }
+    payoff(0, call0, true);
+    payoff(1, call1, true);
+    payoff(2, last, false);
     rounds.push_back(r);
     return true;
   }

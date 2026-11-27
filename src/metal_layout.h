@@ -21,8 +21,10 @@ struct IterationParams {
   unsigned accumulate, phase;
 };
 
+enum RiverRoundKind : unsigned { BetBothSides, FinalRaise, BetWithRaise };
 struct RiverRound {
-  unsigned root, board, storage[4], final_raise;
+  unsigned root, board, storage[4];
+  RiverRoundKind kind;
   float win[3][2], loss[3][2], tie[3][2], fold[2][2];
 };
 

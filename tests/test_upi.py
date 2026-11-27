@@ -2533,6 +2533,11 @@ def check_solve_device(exe):
         for first in ("OOP", "IP"):
             u.cmd("set_first_iteration_player " + first)
             compare_strategies(["r:0:c", "r:0:c:b60"], f"river bet/check and call/fold match CPU with {first} first")
+        assert "ok!" in u.cmd("add_line 0 60 180")
+        for first in ("OOP", "IP"):
+            u.cmd("set_first_iteration_player " + first)
+            compare_strategies(["r:0:c", "r:0:c:b60", "r:0:c:b60:b180"],
+                               f"river bet/check with a raise matches CPU at all three decisions with {first} first")
 
         for cmd in ("clear_lines", "set_board Js8h4d", "add_line 0 0 0 0 100", "add_line 0 0 0 0 0 100",
                     "add_line 60", "add_line 240"):

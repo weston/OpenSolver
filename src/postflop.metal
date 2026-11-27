@@ -392,39 +392,6 @@ float update_river_round(device const RiverRound& r, constant IterationParams& q
   return value;
 }
 
-kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
-                                device const PrefixEntry* indices [[buffer(10)]],
-                                device const HandPrefixes* heroes [[buffer(11)]],
-                                device const float* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]],
-                                device const RiverRound* rounds [[buffer(14)]],
-                                threadgroup packed_float3* prefix [[threadgroup(0)]], NODE_THREADS) {
-  device const RiverRound& r = rounds[k];
-  TraversalNode n = nodes[r.root];
-  device const BoardPrefixes& b = boards[r.board];
-  uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
-  device const float* opp = (p ? oop_reach : ip_reach) + n.reach_offset[1 - p];
-  device const float* own = (p ? ip_reach : oop_reach) + n.reach_offset[p];
-  device const float* opp_r = q.phase ? regrets : old_r;
-  threadgroup packed_float3* reaches = prefix + b.prefix_count;
-  bool leading = n.actor == p;
-  for (uint j = tid; j < O; j += width) reaches[j] = round_reach(r, opp_r, opp[j], j, O, leading);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  river_prefixes<float3>(b, indices, reaches, prefix, tid);
-  float3 win = {r.win[0][p], r.win[1][p], r.win[2][p]};
-  float3 loss = {r.loss[0][p], r.loss[1][p], r.loss[2][p]};
-  float3 tie = {r.tie[0][p], r.tie[1][p], r.tie[2][p]};
-  for (uint h = tid; h < H; h += width) {
-    HandPrefixes m = heroes[b.hand_offset + h];
-    float3 same = m.same >= 0 ? float3(reaches[m.same]) : 0.f;
-    uchar2 c = cards[p * q.stride + h];
-    float3 mass = compatible_mass(prefix, c, same);
-    float3 sd = showdown_payoff(m, prefix, same, mass, win, loss, tie);
-    float reach = blocked(c, n.public_cards) ? 0.f : own[h];
-    values[n.value_row * q.stride + h] =
-        update_river_round(r, q, old_r, old_s, regrets, strategy_sums, h, H, reach, leading, sd, mass);
-  }
-}
-
 kernel void river_bet_check(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
                             device const PrefixEntry* indices [[buffer(10)]],
                             device const HandPrefixes* heroes [[buffer(11)]], device const float* old_r [[buffer(12)]],
@@ -461,48 +428,8 @@ kernel void river_bet_check(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
   }
 }
 
-kernel void river_betting_round_wide(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
-                                     device const PrefixEntry* indices [[buffer(10)]],
-                                     device const HandPrefixes* heroes [[buffer(11)]],
-                                     device const float* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]],
-                                     device const RiverRound* rounds [[buffer(14)]],
-                                     threadgroup float* prefix [[threadgroup(0)]], NODE_THREADS) {
-  device const RiverRound& r = rounds[k];
-  TraversalNode n = nodes[r.root];
-  device const BoardPrefixes& b = boards[r.board];
-  uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
-  device const float* opp = (p ? oop_reach : ip_reach) + n.reach_offset[1 - p];
-  device const float* own = (p ? ip_reach : oop_reach) + n.reach_offset[p];
-  device const float* opp_r = q.phase ? regrets : old_r;
-  threadgroup float* reaches = prefix + b.prefix_count;
-  bool leading = n.actor == p;
-
-  constexpr uint max_hands_per_thread = (1326 + 127) / 128;
-  float3 mass_by_hand[max_hands_per_thread], showdown_by_hand[max_hands_per_thread];
-  for (uint channel = 0; channel < 3; ++channel) {
-    for (uint j = tid; j < O; j += width) reaches[j] = round_reach(r, opp_r, opp[j], j, O, leading)[channel];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    river_prefixes(b, indices, reaches, prefix, tid);
-    for (uint h = tid; h < H; h += width) {
-      HandPrefixes m = heroes[b.hand_offset + h];
-      uchar2 c = cards[p * q.stride + h];
-      float same = m.same >= 0 ? reaches[m.same] : 0.f;
-      mass_by_hand[h / width][channel] = compatible_mass(prefix, c, same);
-      showdown_by_hand[h / width][channel] =
-          showdown_payoff(m, prefix, same, mass_by_hand[h / width][channel], r.win[channel][p], r.loss[channel][p], r.tie[channel][p]);
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-  }
-  for (uint h = tid; h < H; h += width) {
-    uchar2 c = cards[p * q.stride + h];
-    float3 sd = showdown_by_hand[h / width], mass = mass_by_hand[h / width];
-    float reach = blocked(c, n.public_cards) ? 0.f : own[h];
-    values[n.value_row * q.stride + h] =
-        update_river_round(r, q, old_r, old_s, regrets, strategy_sums, h, H, reach, leading, sd, mass);
-  }
-}
-
-float4 two_bet_strategy(device const float* r, uint j, uint H, bool can_fold) {
+float4 two_bet_strategy(device const float* r, uint j, uint H, bool can_fold, bool has_big_bet) {
+  if (!has_big_bet) return float4(0.f, raise_strategy(r, j, H));
   if (!can_fold) return float4(raise_strategy(r, j, H), 0.f);
   float4 positive = max(float4(r[j], r[j + H], r[j + 2 * H], r[j + 3 * H]), 0.f);
   float sum = positive.x + positive.y + positive.z + positive.w;
@@ -512,11 +439,11 @@ float4 two_bet_strategy(device const float* r, uint j, uint H, bool can_fold) {
 float4 two_bet_reaches(device const TwoBetRiver& r, device const float* opp_r, float weight, uint j, uint O,
                        bool bettor, bool can_fold) {
   if (bettor) {
-    float2 big = binary_strategy(opp_r, r.storage[1] + j, O);
+    float2 big = r.has_big_bet ? binary_strategy(opp_r, r.storage[1] + j, O) : float2(0.f);
     float3 small = raise_strategy(opp_r, r.storage[2] + j, O);
     return weight * float4(big.x, small.x, small.y, 1.f);
   }
-  float4 root = two_bet_strategy(opp_r, r.storage[0] + j, O, can_fold);
+  float4 root = two_bet_strategy(opp_r, r.storage[0] + j, O, can_fold, r.has_big_bet);
   float2 response = binary_strategy(opp_r, r.storage[3] + j, O);
   float small = weight * root.y;
   return float4(weight * root.x, small * response.x, small, weight * root.z);
@@ -528,21 +455,28 @@ float update_two_bet_river(device const TwoBetRiver& r, constant IterationParams
   uint p = q.p;
   if (bettor) {
     uint j = r.storage[0] + h, response = r.storage[3] + h;
-    float4 root = two_bet_strategy(old_r, j, H, can_fold);
+    float4 root = two_bet_strategy(old_r, j, H, can_fold, r.has_big_bet);
     float2 policy = binary_strategy(old_r, response, H);
     float vs_raise = update_actions<2>(regrets, sums, old_r, old_s, q, response, H, reach * root.y, policy,
                                        float2(sd.y, mass.y * r.fold[1][p]));
     float big = sd.x + (mass.w - mass.x) * r.fold[0][p];
     float small = (vs_raise + sd.z) + ((mass.w - mass.y) - mass.z) * r.fold[2][p];
+    if (!r.has_big_bet)
+      return update_actions<3>(regrets, sums, old_r, old_s, q, j, H, reach, root.yzw,
+                               float3(small, sd.w, mass.w * r.fold[3][p]));
     if (can_fold)
       return update_actions<4>(regrets, sums, old_r, old_s, q, j, H, reach, root,
                                float4(big, small, sd.w, mass.w * r.fold[3][p]));
     return update_actions<3>(regrets, sums, old_r, old_s, q, j, H, reach, root.xyz, float3(big, small, sd.w));
   }
-  uint big = r.storage[1] + h, small = r.storage[2] + h;
-  float2 big_policy = binary_strategy(old_r, big, H);
-  float big_value = update_actions<2>(regrets, sums, old_r, old_s, q, big, H, reach, big_policy,
-                                      float2(sd.x, mass.x * r.fold[0][p]));
+  uint small = r.storage[2] + h;
+  float big_value = 0;
+  if (r.has_big_bet) {
+    uint big = r.storage[1] + h;
+    float2 big_policy = binary_strategy(old_r, big, H);
+    big_value = update_actions<2>(regrets, sums, old_r, old_s, q, big, H, reach, big_policy,
+                                  float2(sd.x, mass.x * r.fold[0][p]));
+  }
   float3 small_policy = raise_strategy(old_r, small, H);
   float3 small_cfv = {sd.y + (mass.z - mass.y) * r.fold[1][p], sd.z, mass.z * r.fold[2][p]};
   float small_value = update_actions<3>(regrets, sums, old_r, old_s, q, small, H, reach, small_policy, small_cfv);
@@ -567,14 +501,14 @@ void solve_two_bet_river(device const TwoBetRiver& r, device const TraversalNode
   constexpr uint lanes = sizeof(Vec) / sizeof(float);
   constexpr uint max_hands_per_thread = (1326 + 127) / 128;
   float2 first_mass[max_hands_per_thread], first_payoff[max_hands_per_thread];
-  bool can_fold = n.count == 4;
+  bool can_fold = n.count == 4 || !r.has_big_bet;
   float fold_value[max_hands_per_thread];
   if (can_fold && !bettor) {
     threadgroup float* folds = reinterpret_cast<threadgroup float*>(prefix);
     threadgroup float* totals = folds + O;
     for (uint j = tid; j < O; j += width) {
       float weight = blocked(cards[(1 - p) * q.stride + j], n.public_cards) ? 0.f : opp[j];
-      folds[j] = weight * two_bet_strategy(opp_r, r.storage[0] + j, O, true).w;
+      folds[j] = weight * two_bet_strategy(opp_r, r.storage[0] + j, O, true, r.has_big_bet).w;
     }
     count_fold_reach(b, indices, folds, totals, O, tid);
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -639,3 +573,90 @@ kernel void NAME(TWO_BET_BUFFERS, threadgroup VEC* prefix [[threadgroup(0)]], NO
 }
 TWO_BET_KERNEL(river_two_bets, float4)
 TWO_BET_KERNEL(river_two_bets_wide, float2)
+
+template <bool paired, typename Value, typename Entry, uint channels>
+void solve_river_rounds(device const RiverRound* branches, device const TraversalNode& root, device const BoardPrefixes& b,
+                      device const PrefixEntry* indices, device const HandPrefixes* heroes, device const uchar2* cards,
+                      device const float* opp, device const float* own, device const float* old_r, device const float* old_s,
+                      device float* regrets, device float* sums, device float* values, constant IterationParams& q,
+                      threadgroup Entry* prefix, uint tid, uint width) {
+  uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
+  bool leading = paired ? root.actor != p : root.actor == p;
+  device const float* opp_r = q.phase ? regrets : old_r;
+  threadgroup Entry* reaches = prefix + b.prefix_count;
+  constexpr uint max_rows = (1326 + 127) / 128;
+  float lead_values[max_rows];
+  constexpr uint branch_count = paired ? 2 : 1;
+  for (uint branch = 0; branch < branch_count; ++branch) {
+    device const RiverRound& r = branches[branch];
+    float3 partial_mass[max_rows], partial_payoff[max_rows];
+    for (uint base = 0; base < 3; base += channels) {
+      for (uint o = tid; o < O; o += width) {
+        float weight = opp[o];
+        if (paired && leading) weight *= binary_strategy(opp_r, root.storage + o, O)[branch];
+        float3 all = round_reach(r, opp_r, weight, o, O, leading);
+        if constexpr (channels == 1) reaches[o] = all[base];
+        else reaches[o] = all;
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      river_prefixes<Value>(b, indices, reaches, prefix, tid);
+      Value win, loss, tie;
+      if constexpr (channels == 1) {
+        win = r.win[base][p];
+        loss = r.loss[base][p];
+        tie = r.tie[base][p];
+      } else {
+        win = {r.win[0][p], r.win[1][p], r.win[2][p]};
+        loss = {r.loss[0][p], r.loss[1][p], r.loss[2][p]};
+        tie = {r.tie[0][p], r.tie[1][p], r.tie[2][p]};
+      }
+      for (uint h = tid; h < H; h += width) {
+        HandPrefixes hero = heroes[b.hand_offset + h];
+        uchar2 c = cards[p * q.stride + h];
+        Value same = hero.same < 0 ? Value(0.f) : Value(reaches[hero.same]);
+        Value mass = compatible_mass(prefix, c, same);
+        Value sd = showdown_payoff(hero, prefix, same, mass, win, loss, tie);
+        float3 all_mass, all_payoff;
+        if constexpr (channels == 1) {
+          partial_mass[h / width][base] = mass;
+          partial_payoff[h / width][base] = sd;
+          if (base < 2) continue;
+          all_mass = partial_mass[h / width];
+          all_payoff = partial_payoff[h / width];
+        } else {
+          all_mass = mass;
+          all_payoff = sd;
+        }
+        float reach = blocked(c, root.public_cards) ? 0.f : own[h];
+        float2 policy = paired && !leading ? binary_strategy(old_r, root.storage + h, H) : float2(1.f);
+        float value = update_river_round(r, q, old_r, old_s, regrets, sums, h, H, reach * policy[branch],
+                                         leading, all_payoff, all_mass);
+        if constexpr (!paired) values[root.value_row * q.stride + h] = value;
+        else if (!branch) lead_values[h / width] = value;
+        else {
+          float2 children = {lead_values[h / width], value};
+          values[root.value_row * q.stride + h] = !leading
+              ? update_actions<2>(regrets, sums, old_r, old_s, q, root.storage + h, H, reach, policy, children)
+              : children.x + children.y;
+        }
+      }
+      if (branch + 1 < branch_count || base + channels < 3) threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+  }
+}
+
+#define RIVER_ROUND_KERNEL(NAME, PAIRED, RECORD, BRANCHES, VALUE, ENTRY, CHANNELS) \
+kernel void NAME(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]], \
+                 device const PrefixEntry* indices [[buffer(10)]], device const HandPrefixes* heroes [[buffer(11)]], \
+                 device const float* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]], \
+                 device const RECORD* rounds [[buffer(14)]], threadgroup ENTRY* prefix [[threadgroup(0)]], NODE_THREADS) { \
+  device const TraversalNode& root = nodes[rounds[k].root]; \
+  device const RiverRound* branches = BRANCHES; \
+  solve_river_rounds<PAIRED, VALUE, ENTRY, CHANNELS>(branches, root, boards[branches[0].board], indices, heroes, cards, \
+      (q.p ? oop_reach : ip_reach) + root.reach_offset[1 - q.p], (q.p ? ip_reach : oop_reach) + root.reach_offset[q.p], \
+      old_r, old_s, regrets, strategy_sums, values, q, prefix, tid, width); \
+}
+RIVER_ROUND_KERNEL(river_betting_round, false, RiverRound, rounds + k, float3, packed_float3, 3)
+RIVER_ROUND_KERNEL(river_betting_round_wide, false, RiverRound, rounds + k, float, float, 1)
+RIVER_ROUND_KERNEL(river_lead_check, true, PairedRiverRound, rounds[k].branches, float3, packed_float3, 3)
+RIVER_ROUND_KERNEL(river_lead_check_wide, true, PairedRiverRound, rounds[k].branches, float, float, 1)

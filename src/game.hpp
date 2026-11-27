@@ -375,6 +375,7 @@ class GameTree {
   double tune_s[2] = {0, 0};
   bool incomplete = false;
   bool train_missing_rivers = false;
+  bool smart_turns = false;
   int missing_street = 0;     // first street without saved strategies (4 = turn, 5 = river); 0 = none
   bool fast_loaded = false;   // loaded without `full` (Pio: some commands need load_all_nodes)
   bool loaded_compressed = false;

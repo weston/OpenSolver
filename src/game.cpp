@@ -681,6 +681,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   aroot = build_action_tree(ap, cfg.lines, err);
   if (!aroot) return false;
   cfg.smart_rivers = cfg.smart_rivers && bl == 3 && simplify_rivers(*aroot, cfg.eff_stack);
+  smart_turns = cfg.smart_rivers;
   schematic_roots.clear();
   if (cfg.full_preflop()) {
     if (cfg.subset.empty()) {

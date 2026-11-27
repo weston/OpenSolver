@@ -165,6 +165,7 @@ std::string Upi::show_node_text(const NodeRef& r) const {
   const auto& c = tree_->cfg;
   int children = 1;
   std::vector<std::string> flags;
+  if (tree_->smart_turns && r.board.size() >= 4 && tree_->iterations > 0) flags.push_back("SMART_TURN");
   if (r.pseudo_root) {
     s += std::to_string(c.pot[0]) + " " + std::to_string(c.pot[1]) + " " + std::to_string(c.pot[2]) + " \n";
     if (tree_->incomplete) flags.push_back("INCOMPLETE_TREE");

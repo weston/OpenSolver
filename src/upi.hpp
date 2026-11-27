@@ -174,6 +174,7 @@ class Upi {
 
   // Commands needing more code
   std::string cmd_build_tree(const Args& a);
+  std::string turn_build_commands(const std::string& node_id);
   std::string cmd_show_strategy(const Args& a, bool pp);
   std::string cmd_calc_ev(const Args& a, bool pp);
   std::string cmd_show_hand_lines(const Args& a);

@@ -274,7 +274,7 @@ struct Header {
   uint32_t version = 0, truncate = 0;
   uint8_t mode = 0, precision = 0;
 };
-constexpr uint8_t kModeQ16 = 1, kModeCompressed = 2, kModeQuant = 4;
+constexpr uint8_t kModeQ16 = 1, kModeCompressed = 2, kModeQuant = 4, kModeSmartTurns = 8;
 
 Header read_header(GzIn& in) {
   char magic[8];
@@ -769,6 +769,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   out.put(g.checkdowns ? kVersion : kVersionPlain);
   out.put(truncate);
   const uint8_t mode = static_cast<uint8_t>((compress ? kModeCompressed : 0) |
+                                            (g.smart_turns && truncate == 4 ? kModeSmartTurns : 0) |
                                             (lossless ? (g.compressed ? kModeQ16 : 0) : kModeQuant));
   out.put(mode);
   out.put(static_cast<uint8_t>(lossless ? 0 : prec));
@@ -959,6 +960,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   }
   t->iterations = lc.iters;
   t->incomplete = lc.h.truncate != 0;
+  t->smart_turns = lc.h.truncate == 4 && t->root_board_len() == 3 && (lc.h.mode & kModeSmartTurns);
   t->missing_street = lc.h.truncate ? static_cast<int>(lc.h.truncate) + 1 : 0;
   t->has_saved_stats = lc.h.truncate && lc.has_stats;
   std::copy(lc.stats, lc.stats + 5, t->saved_stats);

@@ -15,6 +15,7 @@ Upi& Upi::river_view() {
     std::string err;
     if (!view->tree_->build(full, err, false)) throw CmdError{err};
     view->tree_->allocate_strategy_storage();
+    view->tree_->smart_turns = true;
     view->tree_->missing_street = 5;
     view->tree_->incomplete = true;
     view->tree_->iterations = -1;
@@ -109,6 +110,7 @@ std::string Upi::smart_command(const std::string& cmd, const Args& args, const H
       throw CmdError{"not enough memory for the full configured tree"};
     view.tree_->gpu_tables = algorithm_ == "v4_metal";
     view.tree_->build_allin_tables();
+    view.tree_->smart_turns = false;
     view.tree_->train_missing_rivers = true;
     cached_root_stats_.reset();
     tree_ = std::move(view.tree_);
@@ -139,6 +141,94 @@ std::string Upi::smart_command(const std::string& cmd, const Args& args, const H
   return view.handlers_.at(cmd)(args);
 }
 
+static LineSet street_lines(const LineSet& lines, const std::vector<int32_t>& prefix) {
+  LineSet result;
+  auto suffixes = [&](const auto& lines, auto& out) {
+    for (const auto& line : lines)
+      if (line.size() > prefix.size() && std::equal(prefix.begin(), prefix.end(), line.begin()))
+        out.emplace_back(line.begin() + prefix.size(), line.end());
+  };
+  suffixes(lines.add, result.add);
+  suffixes(lines.remove, result.remove);
+  suffixes(lines.force, result.force);
+  return result;
+}
+
+std::string Upi::turn_build_commands(const std::string& node_id) {
+  require_tree();
+  TreePause pause(pause_requests_, tree_mu_, pause_cv_, pause_mu_);
+  auto root = resolve(node_id);
+  if (!tree_->smart_turns || root.board.size() != 4 || root.steps.empty() ||
+      tree_->nodes[root.steps.back().node].kind != ANodeKind::Chance ||
+      tree_->nodes[root.node].kind != ANodeKind::Decision) throw CmdError{"incorrect node"};
+
+  const auto& cfg = tree_->cfg;
+  const auto& start = tree_->an(tree_->nodes[root.node]);
+  const auto lines = street_lines(cfg.lines, start.line);
+  std::ostringstream out;
+  out.precision(17);
+  out << "set_union_hands " << (cfg.union_hands ? "on" : "off") << '\n';
+  out << "set_collapse_checkdowns " << (cfg.collapse_checkdowns ? "on" : "off") << '\n';
+  out << "set_isomorphism " << cfg.iso_flop << ' ' << cfg.iso_turn << '\n';
+  auto append = [&](const char* command, const auto& set) {
+    for (const auto& line : set) {
+      out << command;
+      for (int amount : line) out << ' ' << amount;
+      out << '\n';
+    }
+  };
+  if (lines.add.empty()) out << "add_line " << start.inv[0] << '\n';
+  append("add_line", lines.add);
+  append("remove_line", lines.remove);
+  append("force_line", lines.force);
+  out << "build_tree\n";
+  const auto& pay = tree_->payoff();
+  if (pay.icm.enabled) {
+    out << "reset_icm_tables\n";
+    for (int p = 0; p < 2; ++p)
+      for (auto [stack, value] : pay.icm.points[p])
+        out << "set_icm_point " << (p ? "IP" : "OOP") << ' ' << stack << ' ' << value << '\n';
+    out << "set_icm " << pay.icm.stacks[0] << ' ' << pay.icm.stacks[1] << '\n';
+  } else if (pay.rake_frac) {
+    out << "set_rake " << pay.rake_frac << ' ' << pay.rake_cap << '\n';
+  }
+  bool locked = false;
+  auto constraints = [&](auto&& self, uint32_t i, const std::string& id) -> void {
+    const auto& n = tree_->nodes[i];
+    if (n.kind != ANodeKind::Decision) return;
+    const auto& an = tree_->an(n);
+    if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) {
+      locked = true;
+      std::vector<float> strategy(tree_->node_size(n));
+      solver_->average_strategy(i, strategy.data());
+      std::array<float, NUM_COMBOS> row;
+      out << "set_strategy " << id;
+      for (unsigned k = 0; k < n.num_children; ++k) {
+        to_1326(n.player, root.frame, strategy.data() + k * tree_->num_hands(n.player), row.data());
+        out << ' ' << floats_line(row.data(), NUM_COMBOS);
+      }
+      out << '\n';
+      if (n.flags & GF_LOCKED) out << "lock_node " << id << '\n';
+      else {
+        const auto& mask = tree_->combo_lock.at(i);
+        std::vector<float> local(mask.begin(), mask.end());
+        to_1326(n.player, root.frame, local.data(), row.data());
+        out << "combo_lock_node " << id << ' ' << floats_line(row.data(), NUM_COMBOS) << '\n';
+      }
+    }
+    if (n.flags & GF_INCENTIVES) {
+      out << "set_incentives_node " << id;
+      for (float incentive : tree_->incentives.at(i)) out << ' ' << incentive;
+      out << '\n';
+    }
+    for (unsigned k = 0; k < n.num_children; ++k)
+      self(self, n.first_child + k, id + ":" + action_label(an, an.actions[k]));
+  };
+  constraints(constraints, root.node, "r:0");
+  if (locked) out << "rebuild_tree\n";
+  return out.str();
+}
+
 bool Upi::solve_metal_river(const NodeRef& root, double accuracy, double seconds) {
   const auto& base = tree_->nodes[root.node];
   if (algorithm_ != "v4_metal" || tree_->missing_street != 5 || tree_->cfg.preflop ||
@@ -156,14 +246,7 @@ bool Upi::solve_metal_river(const NodeRef& root, double accuracy, double seconds
   for (int card = 0; card < NUM_CARDS; ++card)
     if (tree_->dec_board[base.aux] & card_bit(card)) cfg.board.push_back(card);
 
-  auto suffixes = [&](const auto& lines, auto& out) {
-    for (const auto& line : lines)
-      if (line.size() > start.line.size() && std::equal(start.line.begin(), start.line.end(), line.begin()))
-        out.emplace_back(line.begin() + start.line.size(), line.end());
-  };
-  suffixes(tree_->cfg.lines.add, cfg.lines.add);
-  suffixes(tree_->cfg.lines.remove, cfg.lines.remove);
-  suffixes(tree_->cfg.lines.force, cfg.lines.force);
+  cfg.lines = street_lines(tree_->cfg.lines, start.line);
   GameTree river;
   std::string err;
   if (!river.build(cfg, err)) return false;

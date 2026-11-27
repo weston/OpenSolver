@@ -1444,7 +1444,8 @@ void Upi::register_commands() {
     legacy_donk_bet_ = std::atoll(a[0].c_str()) != 0;  // "true" and "0.5" are false, "-1" is true
     return std::string("set_donk_bet ok!");
   };
-  H["show_tree_params"] = [this](const Args&) {
+  H["show_tree_params"] = [this](const Args& a) {
+    if (a.size() == 2 && a[0] == "turn_build") return turn_build_commands(a[1]);
     std::string s = "board: ";
     if (cfg_.board.empty()) s += "not set";
     for (int c : cfg_.board) s += card_str(c) + " ";

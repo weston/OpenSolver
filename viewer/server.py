@@ -605,7 +605,7 @@ def _api(solver, lib, method, path, query, body):
             served = _refiner.overlay(path, query)
             if served is not None:
                 return served
-        elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate"):
+        elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate", "/api/solve_node"):
             # (a preflop build does this itself, once its form is accepted: preflop_api.build)
             _refiner.invalidate()  # the main tree is new: old refines don't apply
             _preview = None
@@ -665,6 +665,8 @@ def _api_main(solver, lib, method, path, query, body):
                                              if line.startswith("algorithm:")), "auto")
             if device != solver.device:
                 solver.cmd("set_algorithm " + solver.device_algorithm(device))
+                if _refiner is not None and solver is _refiner.main:
+                    _refiner.invalidate()
             with solver.state_lock:
                 solver.device = device
         return 200, {"device": device}

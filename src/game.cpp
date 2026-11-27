@@ -1053,7 +1053,7 @@ void GameTree::decode_rows(const GNode& n, const Q* q, float s, float* out) cons
     for (size_t i = 0; i < len; ++i) out[i] = static_cast<float>(q[i]) * s;
     return;
   }
-#if PIO_COMPACT_ROWS
+#if PIO_COMPACT_ROWS_AVX512
   // Expand-load 32 kept values at a time into their hands' lanes (dropped hands 0), then convert like
   // the loop above: int -> float, times s (the same single multiply, so the same floats).
   const size_t H = hands[n.player].size();
@@ -1082,6 +1082,38 @@ void GameTree::decode_rows(const GNode& n, const Q* q, float s, float* out) cons
       if (m1) _mm512_mask_storeu_ps(o + h + 16, m1, _mm512_mul_ps(_mm512_cvtepi32_ps(w1), sv));
     }
   }
+#elif PIO_COMPACT_ROWS_NEON
+  // 8 hands at a time: a table lookup puts the kept values in their lanes (0 elsewhere), then the loop
+  // below's single multiply. A block whose 16-byte read would pass the node's last value goes one by one.
+  (void)k;
+  const size_t H = hands[n.player].size();
+  const uint32_t* bits = keep_bits(n);
+  const Q* src = q;
+  const Q* const end = q + static_cast<size_t>(n.num_children) * row_len(n);
+  for (size_t a = 0; a < n.num_children; ++a) {
+    float* o = out + a * H;
+    for (size_t h = 0; h < H; h += 8) {
+      const unsigned m = (bits[h / 32] >> (h % 32)) & 0xffu;
+      const size_t rem = H - h;
+      if (rem >= 8 && end - src >= 8) {
+        const uint16x8_t v = expand8(m, src);
+        float32x4_t lo, hi;
+        if constexpr (std::is_signed_v<Q>) {
+          const int16x8_t w = vreinterpretq_s16_u16(v);
+          lo = vcvtq_f32_s32(vmovl_s16(vget_low_s16(w)));
+          hi = vcvtq_f32_s32(vmovl_s16(vget_high_s16(w)));
+        } else {
+          lo = vcvtq_f32_u32(vmovl_u16(vget_low_u16(v)));
+          hi = vcvtq_f32_u32(vmovl_u16(vget_high_u16(v)));
+        }
+        vst1q_f32(o + h, vmulq_n_f32(lo, s));
+        vst1q_f32(o + h + 4, vmulq_n_f32(hi, s));
+        src += __builtin_popcount(m);
+      } else {
+        for (size_t i = 0; i < 8 && i < rem; ++i) o[h + i] = (m >> i) & 1 ? static_cast<float>(*src++) * s : 0.0f;
+      }
+    }
+  }
 #else
   const size_t H = hands[n.player].size(), L = row_len(n);
   for (size_t a = 0; a < n.num_children; ++a) {
@@ -1108,7 +1140,7 @@ static Q* full_rows_tmp(size_t len) {
 template <class Q>
 static void compress_rows(const GameTree& g, const GNode& n, const Q* full, Q* q) {
   const size_t H = g.hands[n.player].size();
-#if PIO_COMPACT_ROWS
+#if PIO_COMPACT_ROWS_AVX512
   const uint32_t* bits = g.keep_bits(n);
   for (size_t a = 0; a < n.num_children; ++a) {
     const Q* src = full + a * H;
@@ -1116,6 +1148,26 @@ static void compress_rows(const GameTree& g, const GNode& n, const Q* full, Q* q
       const __mmask32 m = bits[h / 32];
       const size_t rem = H - h;
       q += compress32(m, _mm512_maskz_loadu_epi16(low_bits32(static_cast<int>(rem)), src + h), q);
+    }
+  }
+#elif PIO_COMPACT_ROWS_NEON
+  // 8 hands at a time, packed by a table lookup into 16 bytes at q, of which the next block overwrites what
+  // is past its kept values. A block whose store would pass the node's last value goes one by one, so no
+  // other node's rows are touched.
+  const uint32_t* bits = g.keep_bits(n);
+  Q* const end = q + static_cast<size_t>(n.num_children) * g.row_len(n);
+  for (size_t a = 0; a < n.num_children; ++a) {
+    const Q* src = full + a * H;
+    for (size_t h = 0; h < H; h += 8) {
+      const unsigned m = (bits[h / 32] >> (h % 32)) & 0xffu;
+      const size_t rem = H - h;
+      if (rem >= 8 && end - q >= 8) {
+        vst1q_u16(reinterpret_cast<uint16_t*>(q), compress8(m, vld1q_u16(reinterpret_cast<const uint16_t*>(src + h))));
+        q += __builtin_popcount(m);
+      } else {
+        for (size_t i = 0; i < 8 && i < rem; ++i)
+          if ((m >> i) & 1) *q++ = src[h + i];
+      }
     }
   }
 #else

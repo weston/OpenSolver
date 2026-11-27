@@ -1302,7 +1302,8 @@ static bool checkdowns_collapse() {
 // float32 and 16-bit storage.
 static bool one_action_rows() {
   bool ok = true;
-  for (int compressed = 0; compressed < 2; ++compressed) {
+  for (int mode = 0; mode < 3; ++mode) {  // float32, 16-bit, 16-bit with compact river rows (#568)
+    const bool compressed = mode > 0;
     GameConfig cfg;
     parse_cards("KhQs7d", cfg.board);
     std::string err;
@@ -1314,11 +1315,13 @@ static bool one_action_rows() {
     cfg.pot[2] = 100;
     cfg.eff_stack = 400;
     // A checked-down turn and river after the flop raise, no donk bets after the flop bet, and a check-down
-    // from the root: one-action decisions of both players on every later street.
-    cfg.lines.add = {{0, 50, 150, 150}, {50, 150, 400}, {0, 0}, {50, 50, 50, 100, 100}};
+    // from the root: one-action decisions of both players on every later street (and a river bet after two
+    // checked streets, so there are compact river rows to share the tree with).
+    cfg.lines.add = {{0, 50, 150, 150}, {50, 150, 400}, {0, 0}, {50, 50, 50, 100, 100}, {0, 0, 0, 0, 30, 30}};
     GameTree g;
     if (!g.build(cfg, err, false)) { std::printf("build: %s\n", err.c_str()); return false; }
     g.compressed = compressed;
+    g.select_rows(mode == 2);
     g.allocate_storage();
     // Layout
     uint64_t shared[2] = {UINT64_MAX, UINT64_MAX}, shared_q[2] = {UINT64_MAX, UINT64_MAX}, own = 0, all = 0,
@@ -1345,7 +1348,8 @@ static bool one_action_rows() {
     }
     const uint64_t shared_floats = (forced[0] ? g.num_hands(0) : 0) + (forced[1] ? g.num_hands(1) : 0);
     layout &= forced[0] > 0 && forced[1] > 0 && g.node_floats == all && g.storage_floats == own + shared_floats &&
-              (compressed ? g.regrets_q.size() : g.regrets.size()) == g.storage_floats;
+              (compressed ? g.regrets_q.size() : g.regrets.size()) == (mode == 2 ? g.storage_q : g.storage_floats) &&
+              g.compact_rows == (mode == 2) && (mode != 2 || g.storage_q < g.storage_floats);
     auto zero = [&] {
       for (int p = 0; p < 2; ++p) {
         const size_t H = g.num_hands(p);
@@ -1402,11 +1406,84 @@ static bool one_action_rows() {
     ok &= good;
     std::printf("[one-action rows] %s: %llu + %llu one-action decisions share 2 rows, rows %llu -> %llu floats, "
                 "layout %s, shared rows %s, strategies %s, exploitability %.3f: %s\n",
-                compressed ? "16-bit" : "float32", static_cast<unsigned long long>(forced[0]),
+                mode == 2 ? "16-bit compact" : compressed ? "16-bit" : "float32", static_cast<unsigned long long>(forced[0]),
                 static_cast<unsigned long long>(forced[1]), static_cast<unsigned long long>(g.node_floats),
                 static_cast<unsigned long long>(g.storage_floats), layout ? "ok" : "WRONG", zeros ? "zero" : "WRITTEN",
                 ones ? "1" : "WRONG", e, good ? "ok" : "FAILED");
   }
+  return ok;
+}
+
+// #568: compact 16-bit rows on every CPU build. Each compact river row stored and read back gives the floats a
+// twin tree with full rows gives (random values, zeros at the dropped hands as a solve leaves them, every
+// keep pattern of the tree's river cards), regrets and strategy sums (stochastically rounded, same seed).
+static bool compact_rows_roundtrip() {
+  GameConfig cfg;
+  parse_cards("Qs8s7d", cfg.board);
+  std::string err;
+  RangeWeights w;
+  if (!parse_range("22+,A2s+,K9s+,QTs+,JTs,ATo+,KJo+,76s,65s", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[0][i] = w[i];
+  if (!parse_range("22+,A2s+,K9s+,Q9s+,J9s+,T9s,98s,ATo+,KTo+", w, err)) return false;
+  for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[1][i] = w[i];
+  cfg.pot[2] = 60;
+  cfg.eff_stack = 300;
+  cfg.lines.add = {{0, 20, 20, 60, 60, 300}, {20, 60, 60, 300}, {0, 0, 30, 30, 90, 300}};
+  GameTree gc, gf;
+  for (GameTree* g : {&gc, &gf}) {
+    if (!g->build(cfg, err, false)) { std::printf("build: %s\n", err.c_str()); return false; }
+    g->compressed = true;
+    g->select_rows(g == &gc);
+    g->allocate_storage();
+  }
+  uint64_t rng = 0x243f6a8885a308d3ull;
+  auto unit = [&] {
+    rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
+    return static_cast<float>(rng >> 40) / static_cast<float>(1 << 24);
+  };
+  // Stored last node first, read back after all are stored: a store that ran past its node's rows would show
+  // in the node after it.
+  std::vector<uint32_t> compact;
+  for (uint32_t ni = 0; ni < gc.nodes.size(); ++ni)
+    if (gc.nodes[ni].kind == ANodeKind::Decision && gc.nodes[ni].pad) compact.push_back(ni);
+  std::sort(compact.begin(), compact.end(), [&](uint32_t x, uint32_t y) { return gc.qo(gc.nodes[x]) > gc.qo(gc.nodes[y]); });
+  for (uint32_t ni : compact) {
+    const GNode& n = gc.nodes[ni];
+    const size_t H = gc.num_hands(n.player), len = gc.node_size(n);
+    std::vector<float> r(len), st(len);
+    const uint16_t* keep = gc.keep_of(n);
+    std::vector<char> kept(H, 0);
+    for (size_t j = 0; j < gc.row_len(n); ++j) kept[keep[j]] = 1;
+    for (size_t i = 0; i < len; ++i) {
+      const bool k = kept[i % H];
+      r[i] = k ? (unit() - 0.5f) * 1000.0f : 0.0f;
+      st[i] = k ? unit() * 50.0f : 0.0f;
+    }
+    gc.round_seed = gf.round_seed = static_cast<uint32_t>(ni) * 0x9E3779B1u;
+    gc.regrets_store(n, r.data());
+    gf.regrets_store(gf.nodes[ni], r.data());
+    gc.strat_store(n, st.data());
+    gf.strat_store(gf.nodes[ni], st.data());
+  }
+  long rows = 0, bad = 0;
+  auto same = [](const float* x, const float* y, size_t len) {
+    for (size_t i = 0; i < len; ++i)
+      if (std::bit_cast<uint32_t>(x[i]) != std::bit_cast<uint32_t>(y[i])) return false;
+    return true;
+  };
+  for (uint32_t ni : compact) {
+    const GNode& n = gc.nodes[ni];
+    const size_t len = gc.node_size(n);
+    std::vector<float> a(len), b(len);
+    bad += !same(gc.regrets_ro(n, a.data()), gf.regrets_ro(gf.nodes[ni], b.data()), len);
+    bad += !same(gc.strat_ro(n, a.data()), gf.strat_ro(gf.nodes[ni], b.data()), len);
+    ++rows;
+  }
+  const bool ok = gc.compact_rows && !gf.compact_rows && gc.storage_q < gf.storage_q && rows > 100 && bad == 0;
+  std::printf("[compact rows] %ld compact river nodes, 16-bit rows %llu -> %llu values, stored and read back like full "
+              "rows: %ld differ: %s\n",
+              rows, static_cast<unsigned long long>(gf.storage_q), static_cast<unsigned long long>(gc.storage_q), bad,
+              ok ? "ok" : "FAILED");
   return ok;
 }
 
@@ -1562,6 +1639,7 @@ int main(int argc, char** argv) {
   fails += !river_batch_matches();
   fails += !checkdowns_collapse();
   fails += !one_action_rows();
+  fails += !compact_rows_roundtrip();
   if (big) {
     fails += !run("flop-wide", "Qs8d7s",
                   "22+,A2s+,K2s+,Q4s+,J6s+,T6s+,96s+,85s+,75s+,64s+,54s,A2o+,K8o+,Q9o+,J9o+,T9o",

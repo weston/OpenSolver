@@ -1126,7 +1126,8 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   };
   const float* P = (predictive && !g_.preds.empty()) ? g_.preds.data() + n.storage : nullptr;
 #if PIO_SHOWDOWN_AVX512
-  if (!P && !sqrt_weights_ && A <= 16) {
+  // (compact rows, #568: this pass expands them only where AVX-512 VBMI2 does; elsewhere the generic loops)
+  if (!P && !sqrt_weights_ && A <= 16 && (PIO_COMPACT_ROWS_AVX512 || !g_.compressed || !n.pad)) {
     // One pass per 16 hands with every action's row in registers: positive parts, their sum, then
     // normalise (uniform where all regrets are <= 0). The same operations in the same order as the
     // generic three-pass loops below (sum over actions in order, 1/sum, o * inv + add as an fma), so
@@ -1135,7 +1136,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     const bool q16 = g_.compressed;
     const float* R = q16 ? nullptr : float_regrets();
     const int16_t* Q = q16 ? g_.regrets_q.data() + g_.qo(n) : nullptr;
-#if PIO_COMPACT_ROWS
+#if PIO_COMPACT_ROWS_AVX512
     // Compact rows (#239): row a starts at a * L, and each 16 hands take popcount of their kept bits. An
     // expand-load puts the kept values in their hands' lanes and 0 elsewhere, which is what the full row
     // held there, so the floats are the full-row ones.
@@ -1148,14 +1149,14 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     __m512 v[16];
     for (int h = 0; h < H; h += 16) {
       const __mmask16 m = static_cast<__mmask16>(H - h >= 16 ? 0xffff : (1u << (H - h)) - 1);
-#if PIO_COMPACT_ROWS
+#if PIO_COMPACT_ROWS_AVX512
       const __mmask16 km = kb ? static_cast<__mmask16>(kb[h / 32] >> (h % 32)) : 0;
 #endif
       __m512 sum = z;
       for (int a = 0; a < A; ++a) {
         const size_t off = static_cast<size_t>(a) * H + h;
         __m256i q = _mm256_setzero_si256();
-#if PIO_COMPACT_ROWS
+#if PIO_COMPACT_ROWS_AVX512
         if (kb) {
           const int16_t* qa = Q + static_cast<size_t>(a) * L + used;
           _mm_prefetch(reinterpret_cast<const char*>(qa) + 256, _MM_HINT_T0);
@@ -1180,7 +1181,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
       const __m512 add = _mm512_mask_blend_ps(pos, uni, z);
       for (int a = 0; a < A; ++a)
         _mm512_mask_storeu_ps(out + static_cast<size_t>(a) * H + h, m, _mm512_fmadd_ps(v[a], inv, add));
-#if PIO_COMPACT_ROWS
+#if PIO_COMPACT_ROWS_AVX512
       used += static_cast<size_t>(__builtin_popcount(km));
 #endif
     }

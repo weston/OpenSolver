@@ -1201,8 +1201,9 @@ over the M4 table, which is a snapshot.
 
 `build_tree` checks free memory and switches to compressed storage automatically when float32
 storage would not fit (`small_strats auto`; force with `on` / `off`). If 16-bit would not fit either,
-`auto` also leaves out the river rows' board-blocked hands, about 7% less memory for about 14% more
-time per iteration with identical results (force with `small_strats compact`, #239).
+`auto` also leaves out the river rows' board-blocked hands, about 8% less memory for about 14% more
+time per iteration on Zen 5 (M4: 0 to 15%) with identical results (force with `small_strats compact`,
+#239; every CPU build since #568).
 
 ## Layout
 

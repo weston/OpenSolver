@@ -17,11 +17,18 @@
 #include "action_tree.hpp"
 #include "cards.hpp"
 
-// Compact 16-bit river rows (#239, see GameTree::keep_sets): needs AVX-512 VBMI2 expand / compress.
-#if defined(__AVX512VBMI2__) && defined(__AVX512BW__) && defined(__AVX512VL__) && !defined(PIO_NO_COMPACT_ROWS)
+// Compact 16-bit river rows (#239, see GameTree::keep_sets). Every build can keep them (a capacity tier,
+// chosen only when full 16-bit rows don't fit); AVX-512 VBMI2 builds move them with expand / compress
+// (PIO_COMPACT_ROWS_AVX512), the others with the portable loops (#568).
+#if !defined(PIO_NO_COMPACT_ROWS)
 #define PIO_COMPACT_ROWS 1
 #else
 #define PIO_COMPACT_ROWS 0
+#endif
+#if PIO_COMPACT_ROWS && defined(__AVX512VBMI2__) && defined(__AVX512BW__) && defined(__AVX512VL__)
+#define PIO_COMPACT_ROWS_AVX512 1
+#else
+#define PIO_COMPACT_ROWS_AVX512 0
 #endif
 
 namespace pio {
@@ -311,8 +318,9 @@ class GameTree {
   // rows at GNode::storage.
   // They cost time: about 12% per iteration on threebet_mono (Zen 5, 16 threads) even with AVX-512 VBMI2
   // expand / compress, so they are a capacity tier, used only when full 16-bit rows don't fit
-  // (select_rows, small_strats compact / auto). Builds without VBMI2 never compact (a scalar scatter per
-  // hand was 50% slower). Unselected, they cost 2 bytes per decision: the build only counts kept hands.
+  // (select_rows, small_strats compact / auto). Builds without VBMI2 move them with the portable loops
+  // (#568); a tree that fits full rows never pays for them. Unselected, they cost 2 bytes per decision:
+  // the build only counts kept hands.
   struct KeepSet {
     int card[2] = {-1, -1};         // the cards dealt after the root board
     uint32_t kept[2] = {0, 0};      // [player]: hands neither card blocks

@@ -1095,7 +1095,7 @@ void GameTree::decode_rows(const GNode& n, const Q* q, float s, float* out) cons
     for (size_t h = 0; h < H; h += 8) {
       const unsigned m = (bits[h / 32] >> (h % 32)) & 0xffu;
       const size_t rem = H - h;
-      if (rem >= 8 && src + 8 <= end) {
+      if (rem >= 8 && end - src >= 8) {
         const uint16x8_t v = expand8(m, src);
         float32x4_t lo, hi;
         if constexpr (std::is_signed_v<Q>) {
@@ -1161,7 +1161,7 @@ static void compress_rows(const GameTree& g, const GNode& n, const Q* full, Q* q
     for (size_t h = 0; h < H; h += 8) {
       const unsigned m = (bits[h / 32] >> (h % 32)) & 0xffu;
       const size_t rem = H - h;
-      if (rem >= 8 && q + 8 <= end) {
+      if (rem >= 8 && end - q >= 8) {
         vst1q_u16(reinterpret_cast<uint16_t*>(q), compress8(m, vld1q_u16(reinterpret_cast<const uint16_t*>(src + h))));
         q += __builtin_popcount(m);
       } else {

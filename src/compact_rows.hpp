@@ -33,7 +33,7 @@ inline int compress32(__mmask32 keep, __m512i v, void* dst) {
 // NEON (#568): 8 hands at a time, one byte of the kept bits. A table lookup moves 16-bit values between
 // their packed positions and their hands' lanes; lanes of dropped hands read 0. Values move, nothing is
 // computed, so the results are the portable loops' to the bit.
-#if !PIO_COMPACT_ROWS_AVX512 && PIO_COMPACT_ROWS && (defined(__ARM_NEON) || defined(__aarch64__))
+#if !PIO_COMPACT_ROWS_AVX512 && PIO_COMPACT_ROWS && defined(__aarch64__) && defined(__ARM_NEON)  // vqtbl1q_u8: A64 only
 #define PIO_COMPACT_ROWS_NEON 1
 #include <arm_neon.h>
 #include <array>

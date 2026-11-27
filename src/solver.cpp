@@ -1127,7 +1127,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   const float* P = (predictive && !g_.preds.empty()) ? g_.preds.data() + n.storage : nullptr;
 #if PIO_SHOWDOWN_AVX512
   // (compact rows, #568: this pass expands them only where AVX-512 VBMI2 does; elsewhere the generic loops)
-  if (!P && !sqrt_weights_ && A <= 16 && (PIO_COMPACT_ROWS_AVX512 || !n.pad)) {
+  if (!P && !sqrt_weights_ && A <= 16 && (PIO_COMPACT_ROWS_AVX512 || !g_.compressed || !n.pad)) {
     // One pass per 16 hands with every action's row in registers: positive parts, their sum, then
     // normalise (uniform where all regrets are <= 0). The same operations in the same order as the
     // generic three-pass loops below (sum over actions in order, 1/sum, o * inv + add as an fma), so

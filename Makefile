@@ -289,7 +289,7 @@ build/macos/obj/%.o: src/%.cpp $(wildcard src/*.hpp) | build/macos/obj
 build/macos/solver: $(MACOS_OBJ)
 	$(CXX) $(MACOS_CXXFLAGS) $^ -o $@ $(LDLIBS)
 
-build/metal_kernels.inc: src/metal_layout.h src/postflop.metal src/flop_table.metal | build
+build/metal_kernels.inc: src/bfloat_regrets.hpp src/metal_layout.h src/postflop.metal src/flop_table.metal | build
 	{ echo 'R"MSL('; cat $^; echo ')MSL"'; } > $@
 
 build/metal.o: src/metal.mm $(wildcard src/*.hpp) build/metal_kernels.inc | build

@@ -34,6 +34,7 @@ struct CmdError {
 struct TreePauseRequests {
   std::atomic<int> pending{0};
   uint64_t generation = 0;
+  std::function<void()> sync_regrets;
 };
 
 // RAII: asks the solving thread to pause between iterations, then holds the tree mutex.
@@ -46,6 +47,7 @@ struct TreePause {
       : req(r), cv(c), pm(p), lk(m, std::defer_lock) {
     req.pending.fetch_add(1);
     lk.lock();
+    if (req.sync_regrets) req.sync_regrets();
     ++req.generation;
   }
   ~TreePause() {

@@ -1,9 +1,20 @@
 #include <metal_stdlib>
 using namespace metal;
+#if WSOLVER_BFLOAT
+using RegretWord = ushort;
+float load_regret(RegretWord x) { return as_type<float>(bfloat_regret_bits(x)); }
+RegretWord store_regret(float x) {
+  return bfloat_regret_word(as_type<uint>(x));
+}
+#else
+using RegretWord = float;
+float load_regret(float x) { return x; }
+float store_regret(float x) { return x; }
+#endif
 #define TRAVERSAL_BUFFERS                                                                                            \
   device const TraversalNode *nodes [[buffer(0)]], device const uint *ids [[buffer(1)]],                             \
       constant IterationParams &q [[buffer(2)]], device float *oop_reach [[buffer(3)]],                              \
-      device float *ip_reach [[buffer(4)]], device float *values [[buffer(5)]], device float *regrets [[buffer(6)]], \
+      device float *ip_reach [[buffer(4)]], device float *values [[buffer(5)]], device RegretWord* regrets [[buffer(6)]], \
       device float *strategy_sums [[buffer(7)]], device const uchar2 *cards [[buffer(8)]]
 #define NODE_THREADS                                                                 \
   uint k [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
@@ -26,24 +37,24 @@ template <class T> T regret_weight(T value) {
 bool dead(uchar2 c, uint card) { return c.x == card || c.y == card; }
 bool blocked(uchar2 c, uint board) { return board && (dead(c, (board & 255) - 1) || dead(c, (board >> 8) - 1)); }
 
-kernel void propagate_reach(TRAVERSAL_BUFFERS, device const float* old_regrets [[buffer(12)]], NODE_THREADS) {
+kernel void propagate_reach(TRAVERSAL_BUFFERS, device const RegretWord* old_regrets [[buffer(12)]], NODE_THREADS) {
   uint task = ids[k], player = task & 1;
   TraversalNode n = nodes[task >> 1];
   uint hands = player ? q.hands1 : q.hands0;
   device float* reach = player ? ip_reach : oop_reach;
-  device const float* strategy_regrets = q.phase ? regrets : old_regrets;
+  device const RegretWord* strategy_regrets = q.phase ? regrets : old_regrets;
   for (uint h = tid; h < hands; h += width) {
     float parent = reach[n.reach_offset[player] + h];
     float total = 0;
-    for (uint a = 0; a < n.count; ++a) total += regret_weight(strategy_regrets[n.storage + a * hands + h]);
+    for (uint a = 0; a < n.count; ++a) total += regret_weight(load_regret(strategy_regrets[n.storage + a * hands + h]));
     for (uint a = 0; a < n.count; ++a) {
-      float prob = total > 0 ? regret_weight(strategy_regrets[n.storage + a * hands + h]) / total : 1.f / n.count;
+      float prob = total > 0 ? regret_weight(load_regret(strategy_regrets[n.storage + a * hands + h])) / total : 1.f / n.count;
       reach[nodes[n.child + a].reach_offset[player] + h] = parent * prob;
     }
   }
 }
 kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)]],
-                          device const ushort* perms [[buffer(10)]], device const float* old_regrets [[buffer(12)]],
+                          device const ushort* perms [[buffer(10)]], device const RegretWord* old_regrets [[buffer(12)]],
                           device const float* old_sums [[buffer(13)]], NODE_THREADS) {
   uint i = ids[k];
   TraversalNode n = nodes[i];
@@ -53,7 +64,7 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
     float sum = 0;
     bool updating = n.kind == Decision && n.actor == q.p;
     if (updating)
-      for (uint a = 0; a < n.count; ++a) sum += regret_weight(old_regrets[n.storage + a * H + h]);
+      for (uint a = 0; a < n.count; ++a) sum += regret_weight(load_regret(old_regrets[n.storage + a * H + h]));
     float node_value = 0;
     if (n.kind == Deal) {
       for (uint a = 0; a < n.deal_count; ++a) {
@@ -66,31 +77,31 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
     } else
       for (uint a = 0; a < n.count; ++a) {
         float val = values[(a == 0 ? n.value_row : n.child_value + a - 1) * q.stride + h];
-        float w = updating ? (sum > 0 ? regret_weight(old_regrets[n.storage + a * H + h]) / sum : 1.f / n.count) : 1.f;
+        float w = updating ? (sum > 0 ? regret_weight(load_regret(old_regrets[n.storage + a * H + h])) / sum : 1.f / n.count) : 1.f;
         node_value = fma(w, val, node_value);
       }
     if (updating)
       for (uint a = 0; a < n.count; ++a) {
         uint j = n.storage + a * H + h;
-        float r = old_regrets[j];
+        float r = load_regret(old_regrets[j]);
         float s = sum > 0 ? regret_weight(r) / sum : 1.f / n.count;
-        regrets[j] = r * (r > 0 ? q.positive_discount : q.negative_discount) +
-                     (values[(a == 0 ? n.value_row : n.child_value + a - 1) * q.stride + h] - node_value);
+        regrets[j] = store_regret(r * (r > 0 ? q.positive_discount : q.negative_discount) +
+                     (values[(a == 0 ? n.value_row : n.child_value + a - 1) * q.stride + h] - node_value));
         float reach = blocked(cards[q.p * q.stride + h], n.public_cards) ? 0.f : own_reach[n.reach_offset[q.p] + h];
         update_average(strategy_sums, old_sums, j, reach, s, q);
       }
     values[n.value_row * q.stride + h] = node_value;
   }
 }
-kernel void advance_forced(TRAVERSAL_BUFFERS, device const float* old_regrets [[buffer(12)]],
+kernel void advance_forced(TRAVERSAL_BUFFERS, device const RegretWord* old_regrets [[buffer(12)]],
                            device const float* old_sums [[buffer(13)]], NODE_THREADS) {
   TraversalNode n = nodes[ids[k]];
   uint hands = q.p ? q.hands1 : q.hands0;
   device const float* reach = (q.p ? ip_reach : oop_reach) + n.reach_offset[q.p];
   for (uint h = tid; h < hands; h += width) {
     uint j = n.storage + h;
-    float r = old_regrets[j];
-    regrets[j] = r * (r > 0 ? q.positive_discount : q.negative_discount);
+    float r = load_regret(old_regrets[j]);
+    regrets[j] = store_regret(r * (r > 0 ? q.positive_discount : q.negative_discount));
     float weight = reach[h];
     if (blocked(cards[q.p * q.stride + h], n.public_cards)) weight = 0;
     if (average_mode != SkipAverage)
@@ -200,7 +211,7 @@ kernel void terminal(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buf
 kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
                             device const PrefixEntry* indices [[buffer(10)]],
                             device const HandPrefixes* heroes [[buffer(11)]],
-                            device const float* old_regrets [[buffer(12)]], device const float* old_sums [[buffer(13)]],
+                            device const RegretWord* old_regrets [[buffer(12)]], device const float* old_sums [[buffer(13)]],
                             threadgroup float* prefix [[threadgroup(0)]], NODE_THREADS) {
   TraversalNode n = nodes[ids[k]];
   TraversalNode call = nodes[n.child];
@@ -215,9 +226,9 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
   if (updating) {
     river_prefixes(b, indices, opp, prefix, tid);
   } else {
-    device const float* r = q.phase ? regrets : old_regrets;
+    device const RegretWord* r = q.phase ? regrets : old_regrets;
     for (uint j = tid; j < O; j += width) {
-      float c = regret_weight(r[n.storage + j]), f = regret_weight(r[n.storage + O + j]);
+      float c = regret_weight(load_regret(r[n.storage + j])), f = regret_weight(load_regret(r[n.storage + O + j]));
       float total = c + f;
       float mass = blocked(cards[(1 - q.p) * q.stride + j], n.public_cards) ? 0.f : opp[j];
       call_reach[j] = mass * (total > 0 ? c / total : .5f);
@@ -236,12 +247,12 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
     if (updating) {
       float fv = fold_pay * compat;
       uint j = n.storage + h;
-      float rc = old_regrets[j], rf = old_regrets[j + H];
+      float rc = load_regret(old_regrets[j]), rf = load_regret(old_regrets[j + H]);
       float total = regret_weight(rc) + regret_weight(rf);
       float sc = total > 0 ? regret_weight(rc) / total : .5f, sf = total > 0 ? regret_weight(rf) / total : .5f;
       v = fma(sf, fv, sc * cv);
-      regrets[j] = rc * (rc > 0 ? q.positive_discount : q.negative_discount) + (cv - v);
-      regrets[j + H] = rf * (rf > 0 ? q.positive_discount : q.negative_discount) + (fv - v);
+      regrets[j] = store_regret(rc * (rc > 0 ? q.positive_discount : q.negative_discount) + (cv - v));
+      regrets[j + H] = store_regret(rf * (rf > 0 ? q.positive_discount : q.negative_discount) + (fv - v));
       float reach = blocked(c, n.public_cards) ? 0.f : (q.p ? ip_reach : oop_reach)[n.reach_offset[q.p] + h];
       update_average(strategy_sums, old_sums, j, reach, sc, q);
       update_average(strategy_sums, old_sums, j + H, reach, sf, q);
@@ -298,33 +309,33 @@ kernel void allin(TRAVERSAL_BUFFERS, device const AllinTable* tables [[buffer(9)
   }
 }
 
-float2 binary_strategy(device const float* r, uint j, uint H) {
-  float2 pos = regret_weight(float2(r[j], r[j + H]));
+float2 binary_strategy(device const RegretWord* r, uint j, uint H) {
+  float2 pos = regret_weight(float2(load_regret(r[j]), load_regret(r[j + H])));
   float total = pos.x + pos.y;
   return total > 0 ? pos / total : float2(.5f);
 }
 
-float3 raise_strategy(device const float* r, uint j, uint H) {
-  float3 pos = regret_weight(float3(r[j], r[j + H], r[j + 2 * H]));
+float3 raise_strategy(device const RegretWord* r, uint j, uint H) {
+  float3 pos = regret_weight(float3(load_regret(r[j]), load_regret(r[j + H]), load_regret(r[j + 2 * H])));
   float sum = pos.x + pos.y + pos.z;
   return sum > 0 ? pos / sum : float3(1.f / 3.f);
 }
 
 template <uint N, typename Vec>
-float update_actions(device float* regrets, device float* sums, device const float* old_r, device const float* old_s,
+float update_actions(device RegretWord* regrets, device float* sums, device const RegretWord* old_r, device const float* old_s,
                      constant IterationParams& q, uint j, uint H, float reach, Vec policy, Vec cfv) {
   float value = policy.x * cfv.x;
   for (uint a = 1; a < N; ++a) value = fma(policy[a], cfv[a], value);
   for (uint a = 0; a < N; ++a) {
     uint k = j + a * H;
-    float r = old_r[k];
-    regrets[k] = r * (r > 0 ? q.positive_discount : q.negative_discount) + (cfv[a] - value);
+    float r = load_regret(old_r[k]);
+    regrets[k] = store_regret(r * (r > 0 ? q.positive_discount : q.negative_discount) + (cfv[a] - value));
     update_average(sums, old_s, k, reach, policy[a], q);
   }
   return value;
 }
 
-float3 round_reach(device const RiverRound& r, device const float* opp_r, float weight, uint j, uint O, bool leading) {
+float3 round_reach(device const RiverRound& r, device const RegretWord* opp_r, float weight, uint j, uint O, bool leading) {
   if (r.kind == BetWithRaise) {
     if (leading) {
       float3 response = raise_strategy(opp_r, r.storage[1] + j, O);
@@ -353,8 +364,8 @@ float3 round_reach(device const RiverRound& r, device const float* opp_r, float 
   return float3(weight * first.x, check * response.x, check);
 }
 
-float update_river_round(device const RiverRound& r, constant IterationParams& q, device const float* old_r,
-                         device const float* old_s, device float* regrets, device float* strategy_sums, uint h, uint H,
+float update_river_round(device const RiverRound& r, constant IterationParams& q, device const RegretWord* old_r,
+                         device const float* old_s, device RegretWord* regrets, device float* strategy_sums, uint h, uint H,
                          float reach, bool leading, float3 sd, float3 mass) {
   uint p = q.p;
   float value;
@@ -407,7 +418,7 @@ float update_river_round(device const RiverRound& r, constant IterationParams& q
 
 kernel void river_bet_check(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
                             device const PrefixEntry* indices [[buffer(10)]],
-                            device const HandPrefixes* heroes [[buffer(11)]], device const float* old_r [[buffer(12)]],
+                            device const HandPrefixes* heroes [[buffer(11)]], device const RegretWord* old_r [[buffer(12)]],
                             device const float* old_s [[buffer(13)]], device const RiverRound* rounds [[buffer(14)]],
                             threadgroup float2* prefix [[threadgroup(0)]], NODE_THREADS) {
   device const RiverRound& r = rounds[k];
@@ -417,7 +428,7 @@ kernel void river_bet_check(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
   bool bettor = n.actor == p;
   device const float* opp = (p ? oop_reach : ip_reach) + n.reach_offset[1 - p];
   device const float* own = (p ? ip_reach : oop_reach) + n.reach_offset[p];
-  device const float* opp_regrets = q.phase ? regrets : old_r;
+  device const RegretWord* opp_regrets = q.phase ? regrets : old_r;
   threadgroup float2* reaches = prefix + b.prefix_count;
   for (uint j = tid; j < O; j += width) {
     float2 policy = binary_strategy(opp_regrets, r.storage[bettor ? 1 : 0] + j, O);
@@ -441,15 +452,15 @@ kernel void river_bet_check(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
   }
 }
 
-float4 two_bet_strategy(device const float* r, uint j, uint H, bool can_fold, bool has_big_bet) {
+float4 two_bet_strategy(device const RegretWord* r, uint j, uint H, bool can_fold, bool has_big_bet) {
   if (!has_big_bet) return float4(0.f, raise_strategy(r, j, H));
   if (!can_fold) return float4(raise_strategy(r, j, H), 0.f);
-  float4 positive = regret_weight(float4(r[j], r[j + H], r[j + 2 * H], r[j + 3 * H]));
+  float4 positive = regret_weight(float4(load_regret(r[j]), load_regret(r[j + H]), load_regret(r[j + 2 * H]), load_regret(r[j + 3 * H])));
   float sum = positive.x + positive.y + positive.z + positive.w;
   return sum > 0 ? positive / sum : float4(.25f);
 }
 
-float4 two_bet_reaches(device const TwoBetRiver& r, device const float* opp_r, float weight, uint j, uint O,
+float4 two_bet_reaches(device const TwoBetRiver& r, device const RegretWord* opp_r, float weight, uint j, uint O,
                        bool bettor, bool can_fold) {
   if (bettor) {
     float2 big = r.has_big_bet ? binary_strategy(opp_r, r.storage[1] + j, O) : float2(0.f);
@@ -462,8 +473,8 @@ float4 two_bet_reaches(device const TwoBetRiver& r, device const float* opp_r, f
   return float4(weight * root.x, small * response.x, small, weight * root.z);
 }
 
-float update_two_bet_river(device const TwoBetRiver& r, constant IterationParams& q, device const float* old_r,
-                           device const float* old_s, device float* regrets, device float* sums, uint h, uint H,
+float update_two_bet_river(device const TwoBetRiver& r, constant IterationParams& q, device const RegretWord* old_r,
+                           device const float* old_s, device RegretWord* regrets, device float* sums, uint h, uint H,
                            float reach, bool bettor, bool can_fold, float fold_value, float4 sd, float4 mass) {
   uint p = q.p;
   if (bettor) {
@@ -498,17 +509,17 @@ float update_two_bet_river(device const TwoBetRiver& r, constant IterationParams
 
 #define TWO_BET_BUFFERS TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]], \
     device const PrefixEntry* indices [[buffer(10)]], device const HandPrefixes* heroes [[buffer(11)]], \
-    device const float* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]], \
+    device const RegretWord* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]], \
     device const TwoBetRiver* rounds [[buffer(14)]]
 
 template <typename Vec>
 void solve_two_bet_river(device const TwoBetRiver& r, device const TraversalNode& n, device const BoardPrefixes& b,
                          device const PrefixEntry* indices, device const HandPrefixes* heroes, device const uchar2* cards,
-                         device const float* opp, device const float* own, device const float* old_r, device const float* old_s,
-                         device float* regrets, device float* sums, device float* values, constant IterationParams& q,
+                         device const float* opp, device const float* own, device const RegretWord* old_r, device const float* old_s,
+                         device RegretWord* regrets, device float* sums, device float* values, constant IterationParams& q,
                          threadgroup Vec* prefix, uint tid, uint width) {
   uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
-  device const float* opp_r = q.phase ? regrets : old_r;
+  device const RegretWord* opp_r = q.phase ? regrets : old_r;
   threadgroup Vec* reaches = prefix + b.prefix_count;
   bool bettor = n.actor == p;
   constexpr uint lanes = sizeof(Vec) / sizeof(float);
@@ -590,12 +601,12 @@ TWO_BET_KERNEL(river_two_bets_wide, float2)
 template <bool paired, typename Value, typename Entry, uint channels>
 void solve_river_rounds(device const RiverRound* branches, device const TraversalNode& root, device const BoardPrefixes& b,
                       device const PrefixEntry* indices, device const HandPrefixes* heroes, device const uchar2* cards,
-                      device const float* opp, device const float* own, device const float* old_r, device const float* old_s,
-                      device float* regrets, device float* sums, device float* values, constant IterationParams& q,
+                      device const float* opp, device const float* own, device const RegretWord* old_r, device const float* old_s,
+                      device RegretWord* regrets, device float* sums, device float* values, constant IterationParams& q,
                       threadgroup Entry* prefix, uint tid, uint width) {
   uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
   bool leading = paired ? root.actor != p : root.actor == p;
-  device const float* opp_r = q.phase ? regrets : old_r;
+  device const RegretWord* opp_r = q.phase ? regrets : old_r;
   threadgroup Entry* reaches = prefix + b.prefix_count;
   constexpr uint max_rows = (1326 + 127) / 128;
   float lead_values[max_rows];
@@ -661,7 +672,7 @@ void solve_river_rounds(device const RiverRound* branches, device const Traversa
 #define RIVER_ROUND_KERNEL(NAME, PAIRED, RECORD, BRANCHES, VALUE, ENTRY, CHANNELS) \
 kernel void NAME(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]], \
                  device const PrefixEntry* indices [[buffer(10)]], device const HandPrefixes* heroes [[buffer(11)]], \
-                 device const float* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]], \
+                 device const RegretWord* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]], \
                  device const RECORD* rounds [[buffer(14)]], threadgroup ENTRY* prefix [[threadgroup(0)]], NODE_THREADS) { \
   device const TraversalNode& root = nodes[rounds[k].root]; \
   device const RiverRound* branches = BRANCHES; \

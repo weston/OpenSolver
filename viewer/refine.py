@@ -43,8 +43,8 @@ import server as vsrv
 import resolve as vresolve
 
 CARD = re.compile(r"^[2-9TJQKA][cdhs]$")
-OVERLAY = ("/api/strategy", "/api/range", "/api/ev", "/api/node", "/api/categories", "/api/blockers",
-           "/api/graphs")
+OVERLAY = ("/api/path", "/api/strategy", "/api/range", "/api/ev", "/api/node", "/api/categories", "/api/blockers",
+           "/api/graphs", "/api/hand_lines")
 
 
 def street_root(node_id):
@@ -70,7 +70,6 @@ class RefineManager(vresolve.ResolveManager):
         self.root = None        # main-tree id of the street root being refined / refined
         self.ready = None       # finished refine: {root, sub_root, accuracy, seconds, explo_main, ...}
         self.pending = None     # (root, body, pct) queued behind a cancelled job
-        self.paused_main = False
 
     # ---- main solve pause / resume ----
 
@@ -95,13 +94,13 @@ class RefineManager(vresolve.ResolveManager):
         with self.mu:
             self.gen += 1
             self.ready, self.root, self.pending, self.error = None, None, None, None
-        self.stop()
+            self.stop()
 
-    def _start(self, root, body, pct):
+    def _start(self, root, body, pct, smart):
         with self.mu:
             gen = self.gen
             self.busy, self.kind, self.node, self.root = True, "refine", root, root
-            self.error, self.abort = None, False
+            self.ready, self.error, self.abort = None, None, False
 
         def job():
             tp = time.time()
@@ -109,16 +108,25 @@ class RefineManager(vresolve.ResolveManager):
             try:
                 t0 = time.time()
                 phases = {"pause": round(t0 - tp, 2)}
-                with self.main.state_lock:
-                    points = len(self.main.series)
-                ctx = vresolve.read_context(self.main, root, with_ranges=True)
+                with self.main.cmd_lock:
+                    with self.main.state_lock:
+                        points = len(self.main.series)
+                        events = self.main.events
+                    ctx = vresolve.read_context(self.main, root, with_ranges=True)
+                    commands = self.main.cmd("show_tree_params turn_build " + root).splitlines() if smart else None
+                    algorithm = self.main.device_algorithm()
                 phases["context"] = round(time.time() - t0, 2)
                 pot = ctx["pot"]["oop"] + ctx["pot"]["ip"] + ctx["pot"]["dead"]
                 acc = max(pct, 0.01) / 100.0 * pot
                 with self.mu:
                     self.ctx = {k: v for k, v in ctx.items() if not k.startswith("range_")}
                 t1 = time.time()
-                lines = self._build_and_solve(ctx, body, acc)
+                self.rsolver.cmd("set_algorithm " + algorithm)
+                if smart:
+                    self._solve_configured(ctx, commands, acc)
+                    lines = [line for line in commands if line.startswith("add_line ")]
+                else:
+                    lines = self._build_and_solve(ctx, body, acc)
                 phases["build+solve"] = round(time.time() - t1, 2)
                 t1 = time.time()
                 self._finish(ctx, acc, lines)
@@ -128,7 +136,8 @@ class RefineManager(vresolve.ResolveManager):
                         self.ready = {"root": root, "sub_root": ctx["subgame_root"], "street": ctx["street"],
                                       "accuracy": acc, "accuracy_pct": pct, "pot": pot,
                                       "seconds": round(time.time() - t0, 2),
-                                      "main_points": points, "main_paused": paused, "phases": phases}
+                                      "main_points": points, "main_events": events, "smart_turn": smart,
+                                      "main_paused": paused, "phases": phases}
             finally:
                 if paused:
                     self._resume_main()
@@ -138,44 +147,41 @@ class RefineManager(vresolve.ResolveManager):
     def _entry(self, job):
         super()._entry(job)
         with self.mu:
-            nxt, self.pending = self.pending, None
-        if nxt:
-            self._start(*nxt)
+            if self.pending and not self.busy:
+                nxt, self.pending = self.pending, None
+                self._start(*nxt)
 
     def view(self, node_id, body):
         root, _ = street_root(node_id)
-        if root is None or self._main_done():
+        if root is None:
+            return {"state": "none"}
+        node = vsrv.parse_node_block(self.main.cmd("show_node " + root))
+        smart = "SMART_TURN" in node["flags"].split()
+        if node["type"] not in ("OOP_DEC", "IP_DEC") or (not smart and self._main_done()):
             return {"state": "none"}
         try:
-            pct = float(body.get("accuracy_pct", 0.3))
+            pct = float(body.get("accuracy_pct", 0.1 if smart else 0.3))
         except (TypeError, ValueError):
             raise vsrv.SolverError("bad accuracy_pct")
-        # The subgame must have the main tree's shape: the client sends the Build form as it is
-        # now, which may have been edited since the tree was built.
-        built = getattr(self.main, "built_sizes", None)
-        if built:
+        if not (0 < pct < float("inf")):
+            raise vsrv.SolverError("bad accuracy_pct")
+        built = self.main.built_sizes
+        if built and not smart:
             body = dict(body, **built)
         with self.mu:
             if self.ready and self.ready["root"] == root and not self._stale(self.ready):
                 return {"state": "ready", "root": root, "refine": dict(self.ready)}
-            if self.busy and self.root == root:
-                return {"state": "running", "root": root}
-            busy = self.busy
-        if not self._main_running():
-            return {"state": "none"}  # a finished refine above is still served; no new one starts
-        with self.mu:
-            busy = self.busy
-            if busy:
-                self.pending = (root, body, pct)
-        if busy:
-            self.stop()           # the job thread starts `pending` when it unwinds
+            if not smart and not self._main_running():
+                return {"state": "none"}
+            if self.busy:
+                if self.root != root or self.abort:
+                    self.pending = (root, body, pct, smart)
+                    if not self.abort:
+                        self.stop()
+            else:
+                self.pending = None
+                self._start(root, body, pct, smart)
             return {"state": "running", "root": root}
-        # Only a decision node can root a subgame (an all-in runout has none).
-        node = vsrv.parse_node_block(self.main.cmd("show_node " + root))
-        if node["type"] not in ("OOP_DEC", "IP_DEC"):
-            return {"state": "none"}
-        self._start(root, body, pct)
-        return {"state": "running", "root": root}
 
     def _main_done(self):
         """The main solve met its target: from then on it is the answer, refined or not. A tree loaded
@@ -202,15 +208,15 @@ class RefineManager(vresolve.ResolveManager):
         since (so redone at most once per report, and reports are spaced geometrically in
         iterations)."""
         with self.main.state_lock:
+            if r["smart_turn"] and not self.main.solving:
+                return self.main.events != r["main_events"]
             return len(self.main.series) > r["main_points"]
 
     def translate(self, node_id):
         """Refine-solver id for a main-tree id inside the refined subtree, else None."""
-        if self._main_done():
-            return None, None
         with self.mu:
             r = self.ready
-            if not r or self.busy or not self.tree_ok:
+            if not r or self.busy or not self.tree_ok or (not r["smart_turn"] and self._main_done()):
                 return None, None
         root, rest = street_root(node_id)
         if root != r["root"]:
@@ -221,24 +227,27 @@ class RefineManager(vresolve.ResolveManager):
         """Serve a browse request from the refined subtree, or None to use the main tree."""
         if path not in OVERLAY or "id" not in query:
             return None
-        sub, info = self.translate(query["id"][0])
-        if sub is None:
-            return None
-        q = dict(query)
-        q["id"] = [sub]
-        try:
-            status, data = vsrv._api_main(self.rsolver, None, "GET", path, q, None)
-        except vsrv.SolverError:
-            return None
-        if status != 200 or not isinstance(data, dict):
-            return None
-        _rewrite_ids(data, info["sub_root"], info["root"])
-        data["refined"] = {k: info[k] for k in ("root", "street", "accuracy", "accuracy_pct", "seconds")}
+        with self.mu:
+            sub, info = self.translate(query["id"][0])
+            if sub is None or (path in ("/api/path", "/api/hand_lines") and not info["smart_turn"]):
+                return None
+            q = dict(query)
+            q["id"] = [sub]
+            try:
+                status, data = vsrv._api_main(self.rsolver, None, "GET", path, q, None)
+            except vsrv.SolverError:
+                return None
+            if status != 200 or not isinstance(data, dict):
+                return None
+            _rewrite_ids(data, info["sub_root"], info["root"])
+            data["refined"] = {k: info[k] for k in ("root", "street", "accuracy", "accuracy_pct", "seconds", "smart_turn")}
+        if path == "/api/path":
+            vresolve.prepend_main_path(self.main, data, info["root"], info["sub_root"])
         return status, data
 
     def refine_status(self):
         with self.mu:
-            return {"busy": self.busy, "root": self.root, "error": self.error, "gen": self.gen,
+            return {"busy": self.busy or self.pending is not None, "root": self.root, "error": self.error, "gen": self.gen,
                     "ready": dict(self.ready) if self.ready else None,
                     "main_suspended": self.main.suspended}
 

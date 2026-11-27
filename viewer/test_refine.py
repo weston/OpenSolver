@@ -255,6 +255,84 @@ class RefineIntegrationTest(unittest.TestCase):
         st, d = self.req("/api/refine/view", "POST", dict(CFG, id=TURN, accuracy_pct=0.3))
         self.assertEqual(d["state"], "none")
 
+    def test_smart_turn_updates_in_place_on_the_selected_device_and_after_reload(self):
+        cfg = dict(CFG, stack=400, turn_bet="50,100", river_bet="25,75,150,300",
+                   river_bet_ip="25,75,150", smart_tree=True, allin_threshold=100)
+        river = TURN + ":c:c:3s"
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                for device in self.main.devices:
+                    with self.subTest(device=device):
+                        self.req("/api/device", "POST", {"device": device})
+                        self.assertEqual(self.req("/api/generate", "POST", cfg)[0], 200)
+                        self.assertEqual(self.req("/api/build", "POST")[0], 200)
+                        self.main.cmds(["set_accuracy 1 fraction", "go", "wait_for_solver"])
+                        expected = self.main.cmd("show_children " + river)
+                        name = os.path.join(tmp, device + ".cfr")
+                        self.main.cmd(f'dump_tree "{name}" no_rivers')
+                        for reopen in (False, True):
+                            if reopen:
+                                self.assertEqual(self.req("/api/load", "POST", {"path": name})[0], 200)
+                            flop = self.main.cmd("show_strategy r:0:c")
+                            initial = self.req("/api/strategy?id=" + TURN)[1]
+                            self.assertIn("SMART_TURN", initial["node"]["flags"])
+                            self.assertNotIn("refined", initial)
+                            ready = self.view_and_wait(TURN)
+                            self.assertIsNone(ready["error"])
+                            self.assertTrue(ready["ready"]["smart_turn"])
+                            self.assertEqual(self.mgr.rsolver.state()["active_device"], device)
+                            live = self.req("/api/strategy?id=" + TURN)[1]
+                            self.assertTrue(live["refined"]["smart_turn"])
+                            self.assertNotEqual(live["freq"], initial["freq"])
+                            self.assertEqual(self.main.cmd("show_strategy r:0:c"), flop)
+                            self.assertEqual(self.mgr.rsolver.cmd("show_range IP r:0"),
+                                             self.main.cmd("show_range IP " + TURN))
+                            kids = self.req("/api/node?id=" + river)[1]["children"]
+                            self.assertEqual([k["id"] for k in kids],
+                                             [k["id"] for k in vsrv.parse_children(expected)])
+                            self.assertTrue(self.req("/api/strategy?id=" + kids[0]["id"])[1]["refined"]["smart_turn"])
+                            trail = self.req("/api/path?id=" + river)[1]["nodes"]
+                            self.assertEqual([n["id"] for n in trail],
+                                             [":".join(river.split(":")[:i]) for i in range(2, len(river.split(":")) + 1)])
+                            other = TURN.replace("Kd", "Jd")
+                            self.assertNotIn("refined", self.req("/api/strategy?id=" + other)[1])
+                            self.assertEqual(self.req("/api/refine/view", "POST", {"id": TURN})[1]["state"], "ready")
+            finally:
+                self.req("/api/generate", "POST", CFG)
+                self.req("/api/build", "POST")
+                self.req("/api/device", "POST", {"device": "cpu"})
+
+    def test_smart_saved_turn_keeps_locks_and_switches_to_latest_card(self):
+        cfg = dict(CFG, smart_tree=True, stack=400, river_bet="25,75,150,300", allin_threshold=100)
+        try:
+            self.req("/api/generate", "POST", cfg)
+            self.req("/api/build", "POST")
+            self.main.cmds(["set_accuracy 0", "go 8 steps", "wait_for_solver"])
+            locked = TURN + ":c"
+            actions = vsrv.parse_children(self.main.cmd("show_children " + locked))
+            self.assertGreater(len(actions), 1)
+            weights = " ".join(["1"] * 1326 + ["0"] * (1326 * (len(actions) - 1)))
+            self.main.cmds(["set_strategy " + locked + " " + weights, "lock_node " + locked])
+            with tempfile.TemporaryDirectory() as tmp:
+                save = os.path.join(tmp, "locked.cfr")
+                self.main.cmd(f'dump_tree "{save}" no_rivers')
+                self.req("/api/load", "POST", {"path": save})
+                for card in ("5s", "As"):
+                    st, response = self.req("/api/refine/view", "POST", {"id": TURN.replace("Kd", card)})
+                    self.assertEqual(st, 200, response)
+                status = self.view_and_wait(TURN)
+                self.assertEqual(status["ready"]["root"], TURN, status)
+                after = self.req("/api/strategy?id=" + locked)[1]
+                self.assertTrue(after["refined"]["smart_turn"])
+                self.assertIn("LOCKED", after["node"]["flags"].split())
+                self.assertTrue(any(after["reach"]))
+                for h, w in enumerate(after["reach"]):
+                    if w:
+                        self.assertAlmostEqual(after["freq"][0][h], 1.0)
+        finally:
+            self.req("/api/generate", "POST", CFG)
+            self.req("/api/build", "POST")
+
     def test_z_loaded_file_is_never_refined(self):
         # #369: a saved tree is the answer itself, never re-solved over (it has no built sizes either)
         import tempfile

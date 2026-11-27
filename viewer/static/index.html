@@ -206,10 +206,11 @@
         <label class="field"><span>Frequency tolerance</span><div class="suffix"><input id="drill-frequency_tolerance" type="number" value="10" min="0" max="100" step="1" required><i>%</i></div></label>
       </div>
     </section>
-    <section id="device-settings" class="card hidden">
+    <section class="card">
       <div class="card-head"><h2>Interactive solver</h2></div>
       <div class="settings-fields">
-        <label class="field"><span>Compute device</span><select id="solve-device"><option value="cpu">CPU</option><option value="gpu">GPU (Metal)</option></select></label>
+        <label class="check"><input id="smart-tree" type="checkbox">Smart tree building</label>
+        <label id="device-settings" class="field hidden"><span>Compute device</span><select id="solve-device"><option value="cpu">CPU</option><option value="gpu">GPU (Metal)</option></select></label>
       </div>
     </section>
   </div>

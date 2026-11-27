@@ -1256,6 +1256,31 @@ static bool auto_report_schedule() {
   return ok;
 }
 
+static bool smart_river_spr() {
+  ActionTreeParams params;
+  params.dead = 100;
+  params.eff_stack = 700;
+  LineSet lines;
+  for (int bet : {25, 75, 150, 300, 700}) lines.add.push_back({0, 0, 0, 0, bet});
+  for (int bet : {350, 475, 600, 700}) lines.add.push_back({0, 0, 300, 300, bet});
+  std::string err;
+  auto root = build_action_tree(params, lines, err);
+  if (!root || !simplify_rivers(*root, params.eff_stack)) return false;
+  std::vector<ActionNode*> nodes;
+  index_action_tree(root.get(), nodes);
+  auto bets = [&](const std::vector<int32_t>& line) {
+    std::vector<int> out;
+    for (auto n : nodes)
+      if (n->kind == ANodeKind::Decision && n->line == line)
+        for (auto a : n->actions)
+          if (a.kind == ActKind::Bet) out.push_back(a.total);
+    return out;
+  };
+  return bets({0, 0, 0, 0}) == std::vector<int>({700, 150, 25}) &&
+         bets({0, 0, 300, 300}) == std::vector<int>({700}) &&
+         bets({0, 0}) == std::vector<int>({300});
+}
+
 int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
@@ -1263,6 +1288,7 @@ int main(int argc, char** argv) {
   fails += !low_reach_average_strategy();
   fails += !parallel_equivalence();
   fails += !auto_report_schedule();
+  fails += !smart_river_spr();
   // #71 convergence experiments still converge: predictive regret matching (PCFR+-style,
   // matching input R + last instantaneous regret) and a delayed strategy average.
   {

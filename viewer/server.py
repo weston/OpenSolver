@@ -605,7 +605,7 @@ def _api(solver, lib, method, path, query, body):
             served = _refiner.overlay(path, query)
             if served is not None:
                 return served
-        elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate"):
+        elif path in ("/api/build", "/api/load", "/api/restart", "/api/generate", "/api/solve_node"):
             # (a preflop build does this itself, once its form is accepted: preflop_api.build)
             _refiner.invalidate()  # the main tree is new: old refines don't apply
             _preview = None
@@ -665,6 +665,8 @@ def _api_main(solver, lib, method, path, query, body):
                                              if line.startswith("algorithm:")), "auto")
             if device != solver.device:
                 solver.cmd("set_algorithm " + solver.device_algorithm(device))
+                if _refiner is not None and solver is _refiner.main:
+                    _refiner.invalidate()
             with solver.state_lock:
                 solver.device = device
         return 200, {"device": device}
@@ -772,7 +774,7 @@ def _api_main(solver, lib, method, path, query, body):
 
     if path == "/api/estimate":
         # the configured (not yet built) postflop tree: estimate_tree needs a built one, as in Pio
-        return 200, {"text": solver.cmd("estimate_schematic_tree")}
+        return 200, {"text": solver.cmd(tree_build_command("estimate_schematic_tree", (solver.built_sizes or {}).get("smart_tree")))}
 
     if path == "/api/calc_results":
         return 200, {"text": solver.cmd("calc_results")}
@@ -790,10 +792,11 @@ def _api_main(solver, lib, method, path, query, body):
             mode = need_body(b.get("content", {})).get("save_mode", "full")
             if mode not in ("full", "no_rivers", "no_turns"):
                 raise SolverError("bad save mode")
-            suffix = "" if mode == "full" else " " + mode
             with solver.cmd_lock:
-                metadata = simulation_metadata(solver) | {"save_mode": mode}
-                name = lib.save_simulation(b.get("name"), lambda tmp: solver.cmd(f'dump_tree "{safe_path(tmp)}"{suffix}', timeout=7200), metadata, b.get("overwrite") is True)
+                metadata = simulation_metadata(solver)
+                def write_tree(tmp):
+                    metadata["save_mode"] = solver.cmd(f'dump_tree "{safe_path(tmp)}" {mode} report_mode', timeout=7200)
+                name = lib.save_simulation(b.get("name"), write_tree, metadata, b.get("overwrite") is True)
         else:
             name = lib.save(b.get("kind"), b.get("name"), b.get("content"))
         return 200, {"name": name}
@@ -861,7 +864,7 @@ def _api_main(solver, lib, method, path, query, body):
     if path == "/api/build":
         if _resolver is not None:
             _resolver.main_tree_changed()  # #357: its subgame came from the old tree
-        solver.cmd("build_tree")
+        solver.cmd(tree_build_command("build_tree", (solver.built_sizes or {}).get("smart_tree")))
         solver.forget_locks()
         solver.tree_present = True
         solver.loaded_file = False
@@ -1589,6 +1592,10 @@ def tree_config_from_body(b):
         return tb.parse_config("\n".join(header))
     except (ValueError, ArithmeticError) as e:
         raise SolverError(f"bad sizes: {e}")
+
+
+def tree_build_command(command, smart_tree):
+    return command + (" smart_rivers" if smart_tree is True else "")
 
 
 def setup_from_body(b):

@@ -67,6 +67,8 @@ bool validate_line(const ActionTreeParams& p, const std::vector<int32_t>& line, 
 // Action label used in node IDs: "f", "c", or "b<per-street amount>".
 std::string action_label(const ActionNode& node, const Action& a);
 
+bool simplify_rivers(ActionNode& node, int32_t stack);
+
 // Collect nodes in DFS order (assigns ids).
 void index_action_tree(ActionNode* root, std::vector<ActionNode*>& out);
 

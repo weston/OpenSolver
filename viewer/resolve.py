@@ -86,6 +86,15 @@ def rewrite_ids(obj, src, dst):
     return obj
 
 
+def prepend_main_path(main, data, root, sub_root):
+    _, top = vsrv._api_main(main, None, "GET", "/api/path", {"id": [root]}, None)
+    depth = len(sub_root.split(":")) - 2
+    data["nodes"] = top["nodes"][:-1] + data["nodes"][depth:]
+    data["eff_stack"] = top["eff_stack"]
+    if "history" in top:
+        data["history"] = top["history"]
+
+
 # ---------------------------------------------------------------- config -> lines
 
 def _field_sizes(b, key, allow_mult=False):
@@ -330,7 +339,7 @@ class ResolveManager:
     def __init__(self, main_solver, solver_cls, exe):
         self.main = main_solver          # vsrv.Solver browsing the original tree
         self.rsolver = solver_cls(exe)   # second process, for subgames
-        self.mu = threading.Lock()       # guards everything below
+        self.mu = threading.RLock()       # guards everything below
         self.abort = False
         self.busy = False
         self.kind = None                 # "resolve" | "search" (kept after completion)
@@ -437,6 +446,11 @@ class ResolveManager:
             lines = tb.build_lines(cfg, start)
         if not lines:
             raise vsrv.SolverError("config produced no lines (check bet/raise sizes)")
+        commands = ["set_isomorphism 1 1", "set_union_hands off", "set_collapse_checkdowns off"]
+        self._solve_configured(ctx, commands + tb.format_lines(lines) + ["build_tree"], acc, locks, seconds)
+        return lines
+
+    def _solve_configured(self, ctx, tree_commands, acc, locks=None, seconds=None):
         pot = ctx["pot"]
         cmds = ["stop", "wait_for_solver",
                 "set_range OOP " + ctx["range_oop"],
@@ -444,14 +458,11 @@ class ResolveManager:
                 "set_board " + ctx["board"],
                 f"set_eff_stack {ctx['stack']}",
                 f"set_pot {pot['oop']} {pot['ip']} {pot['dead']}",
-                "set_isomorphism 1 1", "clear_lines"]
-        cmds += tb.format_lines(lines)
-        cmds.append("build_tree")
-        self.rsolver.cmds(cmds)
+                "clear_lines"]
+        self.rsolver.cmds(cmds + tree_commands)
         self.carried = self._apply_locks(locks)
         self.rsolver.cmds([f"set_accuracy {acc:g}", f"go {seconds:g} seconds" if seconds else "go"])
         self.rsolver.cmd("wait_for_solver", timeout=SOLVE_TIMEOUT)
-        return lines
 
     def _finish(self, ctx, acc, lines, extra=None):
         calc = self.rsolver.cmd("calc_results")
@@ -642,17 +653,10 @@ class ResolveManager:
         q = dict(query)
         q["id"] = [sroot + mid[len(x):]]
         status, data = vsrv._api_main(self.rsolver, None, "GET", path, q, None)
-        if path == "/api/path" and status == 200:
-            # the main tree's line down to the node, then the subgame's from its root (an IP
-            # root's forced-check wrapper above it is not a real action: dropped)
-            _, top = vsrv._api_main(self.main, None, "GET", "/api/path", {"id": [x]}, None)
-            depth = len(sroot.split(":")) - 2
-            data["nodes"] = top["nodes"][:-1] + data["nodes"][depth:]
-            data["eff_stack"] = top["eff_stack"]
         if status == 200 and isinstance(data, dict):
             rewrite_ids(data, sroot, x)
-            if path == "/api/path" and "history" in top:
-                data["history"] = top["history"]
+            if path == "/api/path":
+                prepend_main_path(self.main, data, x, sroot)
             data["variant"] = a
         return status, data
 

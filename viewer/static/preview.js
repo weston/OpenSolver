@@ -112,7 +112,7 @@ export function previewStatus(st) {
   // Each progress report is when the numbers on screen and refines' freshness can change:
   // re-read the node on screen then.
   const ev = st ? st.events : null;
-  if (P.solving && previewOn() && P.events != null && ev !== P.events) liveRefresh();
+  if (P.solving && (previewOn() || P.shown?.smart) && P.events != null && ev !== P.events) liveRefresh();
   P.events = ev;
   drawBadge();
 }
@@ -152,16 +152,20 @@ function liveRefresh() {
 /** The Study view calls this after every render. cur: the node's /api/strategy payload. */
 export async function nodeShown(id, cur, { inSubgame, refresh }) {
   P.refresh = refresh;
-  P.shown = { id, refined: cur && cur.refined ? cur.refined : null, sub: inSubgame, state: null };
+  const smart = !!cur?.refined?.smart_turn || (cur?.node?.flags || "").split(/\s+/).includes("SMART_TURN");
+  const shown = { id, smart, refined: cur?.refined, sub: inSubgame, state: null };
+  P.shown = shown;
+  clearTimeout(P.refineTimer);
+  P.refineRoot = null;
   drawBadge();
-  if (!previewOn() || inSubgame) return;
+  if ((!previewOn() && !smart) || inSubgame) return;
   // not yet readable: a refine now would park the main solve to re-solve from ranges that are
   // still far off. app.js refreshes the node at "preview-ready", which comes back here.
-  if (P.watching) return;
+  if (P.watching && !smart) return;
   const hasCard = id.split(":").some((t) => /^[2-9TJQKA][cdhs]$/.test(t));
   if (!hasCard) return;
   const build = prefs.get("build", {}) || {};
-  const body = Object.assign({}, build, {
+  const body = smart ? { id } : Object.assign({}, build, {
     id,
     accuracy_pct: Number(build.accuracy || $("f-accuracy").value) || 0.3,
     allin_threshold: build.allin_threshold ?? 67,
@@ -169,21 +173,22 @@ export async function nodeShown(id, cur, { inSubgame, refresh }) {
   });
   let r;
   try { r = await post("/api/refine/view", body); } catch (e) { return; }
-  if (!P.shown || P.shown.id !== id) return;
+  if (P.shown !== shown) return;
   P.shown.state = r.state;
   P.refineRoot = r.root || null;
   drawBadge();
   if (r.state === "ready" && !P.shown.refined) refresh();   // finished earlier: show it
-  else if (r.state === "running") watchRefine(r.root);
+  else if (r.state === "running") watchRefine(r.root, shown);
 }
 
-function watchRefine(root) {
+function watchRefine(root, shown) {
   clearTimeout(P.refineTimer);
   const poll = async () => {
     let st;
     try { st = await get("/api/refine/status"); } catch (e) { return; }
-    if (P.refineRoot !== root) return;
+    if (P.refineRoot !== root || P.shown !== shown) return;
     if (st.ready && st.ready.root === root && !st.busy) { if (P.refresh) P.refresh(); return; }
+    if (!st.busy && !st.error) return;
     if (!st.busy && st.error) {
       // only on a node of that street: browsing back to the flop meanwhile must not show it there
       const s = P.shown;
@@ -201,7 +206,7 @@ function drawBadge() {
   if (!b) return;
   const s = P.shown;
   let text = "", cls = "", title = "";
-  if (s && !s.sub && previewOn()) {
+  if (s && !s.sub && !s.smart && previewOn()) {
     if (s.refined) {
       text = `Refined · ${s.refined.street} re-solved to ${fmt(s.refined.accuracy_pct, 2)}%`;
       cls = "ok";
@@ -243,7 +248,7 @@ export function initPreview() {
     cb.checked = previewOn();
     cb.onchange = () => {
       prefs.set("fast-preview", cb.checked);
-      if (!cb.checked) post("/api/refine/clear", {}).catch(() => {});
+      if (!cb.checked && !P.shown?.smart) post("/api/refine/clear", {}).catch(() => {});
       drawBadge();
     };
   }

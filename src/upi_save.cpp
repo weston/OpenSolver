@@ -274,7 +274,7 @@ struct Header {
   uint32_t version = 0, truncate = 0;
   uint8_t mode = 0, precision = 0;
 };
-constexpr uint8_t kModeQ16 = 1, kModeCompressed = 2, kModeQuant = 4;
+constexpr uint8_t kModeQ16 = 1, kModeCompressed = 2, kModeQuant = 4, kModeSmartTurns = 8;
 
 Header read_header(GzIn& in) {
   char magic[8];
@@ -743,12 +743,13 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   require_tree();
   if (a.empty()) throw CmdError{"incorrect or missing argument"};
   uint32_t truncate = 0;
-  bool compress = true, lossless = false;
+  bool compress = true, lossless = false, report_mode = false;
   for (size_t i = 1; i < a.size(); ++i) {
     if (a[i] == "full") truncate = 0;
     else if (a[i] == "no_rivers") truncate = 4;
     else if (a[i] == "no_turns") truncate = 3;
     else if (a[i] == "no_compress") compress = false;
+    else if (a[i] == "report_mode") report_mode = true;
     else if (a[i] == "lossless") lossless = true;   // ours: exact records (v4 layout)
     else throw CmdError{"incorrect or missing argument"};
   }
@@ -768,6 +769,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   out.put(g.checkdowns ? kVersion : kVersionPlain);
   out.put(truncate);
   const uint8_t mode = static_cast<uint8_t>((compress ? kModeCompressed : 0) |
+                                            (g.smart_turns && truncate == 4 ? kModeSmartTurns : 0) |
                                             (lossless ? (g.compressed ? kModeQ16 : 0) : kModeQuant));
   out.put(mode);
   out.put(static_cast<uint8_t>(lossless ? 0 : prec));
@@ -834,6 +836,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   tail_member(index_off, tail);
   out.write_raw(tail, kTailSize);
   out.close();
+  if (report_mode) return truncate == 3 ? "no_turns" : truncate == 4 ? "no_rivers" : "full";
   return "dump_tree ok!";
 }
 
@@ -843,6 +846,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
     if (a[i] != "full" && a[i] != "fast" && a[i] != "auto") throw CmdError{"incorrect or missing argument"};
   bool full_load = a.size() > 1 && a[1] == "full";
   stop_solver();
+  river_view_.reset();
   std::unique_ptr<GzIn> inp;
   try {
     inp = std::make_unique<GzIn>(a[0]);
@@ -956,6 +960,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   }
   t->iterations = lc.iters;
   t->incomplete = lc.h.truncate != 0;
+  t->smart_turns = lc.h.truncate == 4 && t->root_board_len() == 3 && (lc.h.mode & kModeSmartTurns);
   t->missing_street = lc.h.truncate ? static_cast<int>(lc.h.truncate) + 1 : 0;
   t->has_saved_stats = lc.h.truncate && lc.has_stats;
   std::copy(lc.stats, lc.stats + 5, t->saved_stats);

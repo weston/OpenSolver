@@ -1,7 +1,7 @@
 import { get, post } from "./api.js";
 import { el, cardEl, parseCards, RANKS, SUITS } from "./cards.js";
 import { currentTree } from "./build.js";
-import { drillSettings } from "./settings.js";
+import { drillSettings, smartTree } from "./settings.js";
 import { actionOrder, bb } from "./drill_controls.js";
 import { defaultBoardFilters, renderBoardFilters } from "./board_filters.js";
 
@@ -15,8 +15,8 @@ export function boardConfig() {
 
 export async function liveConfig() {
   const spot = $("drill-spot").value;
-  return { ...drillSettings(), ...boardConfig(), spot,
-    tree: spot ? (await get("/api/library/get?kind=config&name=" + encodeURIComponent(spot))).content : currentTree(true) };
+  const tree = spot ? (await get("/api/library/get?kind=config&name=" + encodeURIComponent(spot))).content : currentTree(true);
+  return { ...drillSettings(), ...boardConfig(), spot, tree: { ...tree, smart_tree: smartTree() } };
 }
 
 export function renderBoardOptions() {

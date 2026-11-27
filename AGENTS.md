@@ -72,6 +72,8 @@ Pio comparison scripts take the host from `PIO_SSH`.
 5. Commit trailers: end commit messages with `Agent: <your name>` (and `Co-Authored-By: <model>` if
    your tool adds one).
 
+Implement and validate every WSolver solving-algorithm change on both the CPU and GPU backends. Shared algorithms should use the same implementation wherever possible.
+
 ## Build and test
 
 ```sh

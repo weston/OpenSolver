@@ -14,7 +14,7 @@ endif
 CXXFLAGS ?= -std=c++20 -O3 $(NATIVE_ARCH) -Wall -Wextra -DNDEBUG
 LDLIBS   := -lz -lpthread
 SRC      := src/cards.cpp src/eval.cpp src/range.cpp src/action_tree.cpp src/game.cpp src/solver.cpp \
-            src/parallel.cpp src/equity.cpp src/categories.cpp src/pfh2h.cpp src/upi.cpp src/upi_nodes.cpp src/upi_save.cpp
+            src/parallel.cpp src/equity.cpp src/categories.cpp src/pfh2h.cpp src/upi.cpp src/upi_nodes.cpp src/upi_save.cpp src/upi_smart.cpp
 ifeq ($(shell uname -s),Darwin)
 ifneq ($(filter aarch64 arm64,$(TARGET_ARCH)),)
 METAL_OBJ := metal.o
@@ -34,7 +34,7 @@ build:
 solver: $(OBJ) build/main.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
 
-LIBOBJ := $(filter-out build/upi.o build/upi_nodes.o build/upi_save.o,$(OBJ))
+LIBOBJ := $(filter-out build/upi.o build/upi_nodes.o build/upi_save.o build/upi_smart.o,$(OBJ))
 
 build/test_%: tests/test_%.cpp $(LIBOBJ)
 	$(CXX) $(CXXFLAGS) $(filter %.cpp %.o,$^) -o $@ $(LDLIBS)

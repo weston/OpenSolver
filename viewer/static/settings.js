@@ -25,7 +25,7 @@ export function updateDevice(st) {
 }
 
 export function smartTree() {
-  return prefs.get("smart-tree", false) === true;
+  return prefs.get("smart-tree", true) === true;
 }
 
 export function initSettings() {

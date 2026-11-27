@@ -1,6 +1,6 @@
 enum NodeKind : unsigned { Decision, Deal, RiverShowdown, Fold, AllIn };
 struct TraversalNode {
-  unsigned child, count, kind, actor, storage, aux, card, deals, deal_count, row[2], value_row, child_value,
+  unsigned child, count, kind, actor, storage, aux, card, deals, deal_count, reach_offset[2], value_row, child_value,
       public_cards;
   float chance_weight, win[2], loss[2], tie[2];
 };

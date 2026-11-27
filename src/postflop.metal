@@ -18,12 +18,12 @@ kernel void propagate_reach(TRAVERSAL_BUFFERS, device const float* old_regrets [
   device float* reach = player ? ip_reach : oop_reach;
   device const float* strategy_regrets = q.phase ? regrets : old_regrets;
   for (uint h = tid; h < hands; h += width) {
-    float parent = reach[n.row[player] * q.stride + h];
+    float parent = reach[n.reach_offset[player] + h];
     float total = 0;
     for (uint a = 0; a < n.count; ++a) total += max(strategy_regrets[n.storage + a * hands + h], 0.f);
     for (uint a = 0; a < n.count; ++a) {
       float prob = total > 0 ? max(strategy_regrets[n.storage + a * hands + h], 0.f) / total : 1.f / n.count;
-      reach[nodes[n.child + a].row[player] * q.stride + h] = parent * prob;
+      reach[nodes[n.child + a].reach_offset[player] + h] = parent * prob;
     }
   }
 }
@@ -50,31 +50,31 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
       node_value *= n.chance_weight;
     } else
       for (uint a = 0; a < n.count; ++a) {
-        float val = values[(n.child_value + a) * q.stride + h];
+        float val = values[(a == 0 ? n.value_row : n.child_value + a - 1) * q.stride + h];
         float w = updating ? (sum > 0 ? max(old_regrets[n.storage + a * H + h], 0.f) / sum : 1.f / n.count) : 1.f;
         node_value = fma(w, val, node_value);
       }
-    values[n.value_row * q.stride + h] = node_value;
     if (updating)
       for (uint a = 0; a < n.count; ++a) {
         uint j = n.storage + a * H + h;
         float r = old_regrets[j];
         float s = sum > 0 ? max(r, 0.f) / sum : 1.f / n.count;
         regrets[j] = r * (r > 0 ? q.positive_discount : q.negative_discount) +
-                     (values[(n.child_value + a) * q.stride + h] - node_value);
+                     (values[(a == 0 ? n.value_row : n.child_value + a - 1) * q.stride + h] - node_value);
         strategy_sums[j] =
             q.accumulate
-                ? fma(blocked(cards[q.p * q.stride + h], n.public_cards) ? 0.f : own_reach[n.row[q.p] * q.stride + h],
+                ? fma(blocked(cards[q.p * q.stride + h], n.public_cards) ? 0.f : own_reach[n.reach_offset[q.p] + h],
                       s, old_sums[j] * q.average_discount)
                 : old_sums[j];
       }
+    values[n.value_row * q.stride + h] = node_value;
   }
 }
 kernel void advance_forced(TRAVERSAL_BUFFERS, device const float* old_regrets [[buffer(12)]],
                            device const float* old_sums [[buffer(13)]], NODE_THREADS) {
   TraversalNode n = nodes[ids[k]];
   uint hands = q.p ? q.hands1 : q.hands0;
-  device const float* reach = (q.p ? ip_reach : oop_reach) + n.row[q.p] * q.stride;
+  device const float* reach = (q.p ? ip_reach : oop_reach) + n.reach_offset[q.p];
   for (uint h = tid; h < hands; h += width) {
     uint j = n.storage + h;
     float r = old_regrets[j];
@@ -137,7 +137,7 @@ kernel void terminal(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buf
   TraversalNode n = nodes[i];
   device const BoardPrefixes& b = boards[n.aux];
   uint H = q.p ? q.hands1 : q.hands0;
-  device const float* reach = (q.p ? oop_reach : ip_reach) + n.row[1 - q.p] * q.stride;
+  device const float* reach = (q.p ? oop_reach : ip_reach) + n.reach_offset[1 - q.p];
   if (n.kind == Fold) {
     threadgroup float* live = prefix + 53;
     uint O = q.p ? q.hands0 : q.hands1;
@@ -184,7 +184,7 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
   float fold_pay = nodes[n.child + 1].win[q.p];
   device const BoardPrefixes& b = boards[call.aux];
   uint H = q.p ? q.hands1 : q.hands0, O = q.p ? q.hands0 : q.hands1;
-  device const float* opp = (q.p ? oop_reach : ip_reach) + n.row[1 - q.p] * q.stride;
+  device const float* opp = (q.p ? oop_reach : ip_reach) + n.reach_offset[1 - q.p];
   bool updating = q.p == n.actor;
   threadgroup float* call_reach = prefix + b.prefix_count;
   threadgroup float* fold_reach = call_reach + O;
@@ -230,7 +230,7 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
       v = fma(sf, fv, sc * cv);
       regrets[j] = rc * (rc > 0 ? q.positive_discount : q.negative_discount) + (cv - v);
       regrets[j + H] = rf * (rf > 0 ? q.positive_discount : q.negative_discount) + (fv - v);
-      float reach = blocked(c, n.public_cards) ? 0.f : (q.p ? ip_reach : oop_reach)[n.row[q.p] * q.stride + h];
+      float reach = blocked(c, n.public_cards) ? 0.f : (q.p ? ip_reach : oop_reach)[n.reach_offset[q.p] + h];
       strategy_sums[j] = q.accumulate ? fma(reach, sc, old_sums[j] * q.average_discount) : old_sums[j];
       strategy_sums[j + H] = q.accumulate ? fma(reach, sf, old_sums[j + H] * q.average_discount) : old_sums[j + H];
     } else {
@@ -383,8 +383,8 @@ kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* b
   TraversalNode n = nodes[r.root];
   device const BoardPrefixes& b = boards[r.board];
   uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
-  device const float* opp = (p ? oop_reach : ip_reach) + n.row[1 - p] * q.stride;
-  device const float* own = (p ? ip_reach : oop_reach) + n.row[p] * q.stride;
+  device const float* opp = (p ? oop_reach : ip_reach) + n.reach_offset[1 - p];
+  device const float* own = (p ? ip_reach : oop_reach) + n.reach_offset[p];
   device const float* opp_r = q.phase ? regrets : old_r;
   threadgroup packed_float3* reaches = prefix + b.prefix_count;
   bool leading = n.actor == p;
@@ -419,8 +419,8 @@ kernel void river_betting_round_wide(TRAVERSAL_BUFFERS, device const BoardPrefix
   TraversalNode n = nodes[r.root];
   device const BoardPrefixes& b = boards[r.board];
   uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
-  device const float* opp = (p ? oop_reach : ip_reach) + n.row[1 - p] * q.stride;
-  device const float* own = (p ? ip_reach : oop_reach) + n.row[p] * q.stride;
+  device const float* opp = (p ? oop_reach : ip_reach) + n.reach_offset[1 - p];
+  device const float* own = (p ? ip_reach : oop_reach) + n.reach_offset[p];
   device const float* opp_r = q.phase ? regrets : old_r;
   threadgroup float* reaches = prefix + b.prefix_count;
   bool leading = n.actor == p;

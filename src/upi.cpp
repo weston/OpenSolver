@@ -443,6 +443,10 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   const bool tune_threads = !sub && threads_ == 0 && hw_threads >= 4;
 #endif
   std::unique_ptr<MetalSolve> metal;
+  auto release_metal_memory = [&] {
+    metal.reset();
+    out_raw("SOLVER: device cpu (Metal ran out of memory)\n");
+  };
   uint64_t metal_payoff_version = 0, metal_generation = 0;
   bool pool_set = !tune_threads;  // set under tree_mu_ below: a command may be using the pool now
   try {
@@ -510,11 +514,14 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
         const auto it0 = std::chrono::steady_clock::now();
         const int tick = static_cast<int>(tree_->iterations + 1 - discount_restart_);
         if (metal) {
-          metal->iterate(*tree_, *solver_, tick, refresh_reach);
-          metal_generation = pause_requests_.generation;
-        } else {
-          solver_->iterate(tick);
+          try {
+            metal->iterate(*tree_, *solver_, tick, refresh_reach);
+            metal_generation = pause_requests_.generation;
+          } catch (const std::bad_alloc&) {
+            release_metal_memory();
+          }
         }
+        if (!metal) solver_->iterate(tick);
         if (tree_->train_missing_rivers) {
           tree_->missing_street = 0;
           tree_->incomplete = false;
@@ -561,8 +568,14 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           out_raw("SOLVER:\npartial: " + sub->id + "\n" + stats_block(st, el) + endl_str + "\n");
           target = accuracy_fraction_ ? accuracy_ * sub->pot : accuracy_;
         } else {
-          st = metal && !limit ? metal->evaluate_and_prepare(*tree_, *solver_, static_cast<int>(tick + 1 - discount_restart_))
-                               : solver_->root_stats();
+          if (metal && !limit) {
+            try {
+              st = metal->evaluate_and_prepare(*tree_, *solver_, static_cast<int>(tick + 1 - discount_restart_));
+            } catch (const std::bad_alloc&) {
+              release_metal_memory();
+            }
+          }
+          if (!metal || limit) st = solver_->root_stats();
           cached_root_stats_ = st;
           out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
           target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;

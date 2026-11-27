@@ -387,7 +387,7 @@ class PostflopSolve final : public MetalSolve {
     regrets.bind(m, g.regrets, stage_regrets);
     if (checkpoint_bytes) {
       strategy_sums.input = strategy_sums.output = MetalRows::shared(m, g.strat);
-      if (!strategy_sums.input) throw std::runtime_error("Metal workspace exceeds available memory");
+      if (!strategy_sums.input) throw std::runtime_error("Metal cannot share the published strategy storage");
       checkpoint.allocate(m, g.strat.size(), checkpoint_bytes);
     } else {
       strategy_sums.bind(m, g.strat, stage_sums);

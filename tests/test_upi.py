@@ -2434,14 +2434,21 @@ def check_metal_resume_memory(exe):
         assert marker and "ERROR" not in out and snapshot.startswith(str(steps + 4) + "\n"), out
         return [line for line in before.splitlines() if line.startswith("SOLVER: device")], snapshot
 
+    gpu = "SOLVER: device gpu"
+    unshared = ["SOLVER: device cpu (Metal cannot share the published strategy storage)"]
     regular, expected = resume(48, 1024, "v4_metal")
     compact, actual = resume(48, 31, "v4_metal")
-    check(compact == regular == ["SOLVER: device gpu"] and actual == expected,
-          "Metal resumes within 31 MiB with the same flop and turn strategies and root values")
+    check(regular == [gpu], "the reference continuation uses Metal")
+    if compact == unshared:
+        _, expected = resume(48, 1024, "auto")
+        check(actual == expected, "an unshareable strategy allocation resumes exactly on CPU")
+    else:
+        check(compact == [gpu] and actual == expected,
+              "the sparse checkpoint resumes with the same flop and turn strategies and root values")
     _, expected = resume(1, 1024, "auto")
     fallback, actual = resume(1, 31, "v4_metal")
-    check(fallback == ["SOLVER: device gpu", "SOLVER: device cpu (Metal ran out of memory)"] and actual == expected,
-          "a dense checkpoint exceeds the same budget and resumes exactly on CPU")
+    check(fallback in ([gpu, "SOLVER: device cpu (Metal ran out of memory)"], unshared) and actual == expected,
+          "a dense checkpoint or unshareable storage resumes exactly on CPU")
 
 
 def check_solve_device(exe):

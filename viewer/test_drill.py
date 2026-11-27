@@ -235,7 +235,9 @@ class DrillTest(unittest.TestCase):
         comparison = feedback["simplification"]
         self.assertAlmostEqual(comparison["original"]["ev"], full_ev, delta=0.02)
         self.assertLessEqual(comparison["simplified"]["lower"], comparison["original"]["upper"] + 0.003)
-        self.assertLessEqual(comparison["cost"][0], comparison["cost"][1])
+        # the two costs are differences of the bounds' figures: equal bounds leave a rounding error (1.8e-15 on
+        # Linux g++, #572), not a lower cost above the upper one
+        self.assertLessEqual(comparison["cost"][0], comparison["cost"][1] + 1e-9)
         self.assertAlmostEqual(comparison["cost"][1],
                                comparison["original"]["upper"] - comparison["simplified"]["lower"], delta=0.003)
 

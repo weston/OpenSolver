@@ -1803,11 +1803,14 @@ def check_free_memory(exe):
         over = lambda free: run(["ignore_mem_check on"] + post + ["small_strats on", "build_tree", "ignore_mem_check off", "small_strats auto",
                                                                   f'load_tree "{path}" full', "estimate_rebuild_tree"], free)
         short, shorter = l32 + 1 - small, l32 - 1 - small
+        # over none, not even full 16-bit rows fit in nine tenths of what is free: auto takes the compact ones
+        # (#239; the same figure as l16 on a build without compact rows, #572)
+        l16c = (needed(load("compact", roomy)) + [0])[0]
         o = over(short)
-        check(0 < shorter and short < l32 - 1 and answers(o).count("build_tree ok!") == 1 and needed(o) == [l32] and
-              needed(load("auto", short)) == [l16] and needed(over(shorter)) == [l16],
-              f"with {short} MB free it is loaded 32-bit over a tree of {small} MB, which the load lets go, and 16-bit over none; "
-              f"16-bit over that tree with {shorter}")
+        check(0 < shorter and short < l32 - 1 and 0 < l16c <= l16 and answers(o).count("build_tree ok!") == 1 and
+              needed(o) == [l32] and needed(load("auto", short)) == [l16c] and needed(over(shorter)) == [l16],
+              f"with {short} MB free it is loaded 32-bit over a tree of {small} MB, which the load lets go, and 16-bit "
+              f"over none (compact rows where the build has them: {l16c} MB); 16-bit over that tree with {shorter}")
 
     # a preflop tree with turn bets and every hand (check_outcome_tables' tree): the tables are more bytes
     def pre(mode, hands=every, turn=True):

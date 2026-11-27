@@ -27,6 +27,7 @@
 #include <sstream>
 
 #include "parallel.hpp"
+#include "state_transfer.hpp"
 #include "range.hpp"
 #include "version.hpp"
 
@@ -409,7 +410,7 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   if (!sub && (accuracy_solve || target > 0.) && !solver_->is_bfloat_target(target))
     solver_->set_bfloat_regrets(false);
   if (solver_->fp16_sums() && (tree_->iterations >= 1024 ||
-      std::any_of(tree_->strat.begin(), tree_->strat.end(), [](float x) { return !(x >= 0.f && x <= 1024.f); })))
+      !fp16_sums_fit(tree_->strat.data(), tree_->strat.size())))
     solver_->set_fp16_sums(false);
   stop_flag_ = false;
   solving_ = true;

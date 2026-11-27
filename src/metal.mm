@@ -1,6 +1,7 @@
 #include "metal.hpp"
 #include "bfloat_regrets.hpp"
 #include "fp16_sums.hpp"
+#include "state_transfer.hpp"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <malloc/malloc.h>
@@ -261,21 +262,19 @@ class PostflopSolve final : public MetalSolve {
   void publish_for_cpu(GameTree& g) override {
     if (!sums_current_on_cpu) {
       const auto* source = static_cast<const uint16_t*>(strategy_sums.input.contents);
-      for (size_t i = 0; i < g.strat.size(); ++i) g.strat[i] = fp16_sum_value(source[i]);
+      transfer_state(source, g.strat.data(), g.strat.size(), [](uint16_t word) { return fp16_sum_value(word); });
       sums_current_on_cpu = true;
     }
     if (regrets_current_on_cpu) return;
     const auto* source = static_cast<const uint16_t*>(regrets.input.contents);
-    for (size_t i = 0; i < g.regrets.size(); ++i)
-      g.regrets[i] = std::bit_cast<float>(bfloat_regret_bits(source[i]));
+    transfer_state(source, g.regrets.data(), g.regrets.size(),
+                   [](uint16_t word) { return std::bit_cast<float>(bfloat_regret_bits(word)); });
     regrets_current_on_cpu = true;
   }
   void prepare_regrets(const GameTree& g) {
     auto* dest = static_cast<uint16_t*>(regrets.input.contents);
-    for (size_t i = 0; i < g.regrets.size(); ++i) {
-      auto bits = std::bit_cast<uint32_t>(g.regrets[i]);
-      dest[i] = bfloat_regret_word(bits);
-    }
+    transfer_state(g.regrets.data(), dest, g.regrets.size(),
+                   [](float value) { return bfloat_regret_word(std::bit_cast<uint32_t>(value)); });
   }
   struct Range {
     size_t start, count;
@@ -904,7 +903,7 @@ class PostflopSolve final : public MetalSolve {
     if (compact_sums) {
       if (refresh_reach) {
         auto* destination = static_cast<uint16_t*>(strategy_sums.input.contents);
-        for (size_t i = 0; i < g.strat.size(); ++i) destination[i] = fp16_sum_word(g.strat[i]);
+        transfer_state(g.strat.data(), destination, g.strat.size(), [](float value) { return fp16_sum_word(value); });
       }
     } else {
       strategy_sums.prepare(g.strat, refresh_reach);

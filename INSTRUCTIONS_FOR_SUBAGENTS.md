@@ -8,7 +8,7 @@ human what to do, do not wait for approval, do not wait for your PR to be review
 next issue. Make reasonable decisions yourself and explain them in the PR. The only reason to stop and
 ask is missing GitHub access (step 1). Follow these steps in order; do not skip step 2.
 
-- Repository: `weston/WSolver` (private) on GitHub, `https://github.com/weston/WSolver`
+- Repository: `weston/OpenSolver` (private) on GitHub, `https://github.com/weston/OpenSolver`
 - Human owner: Weston
 - Maintainer: `weston@claude_915d701b-8c65-4f0e-9b6e-9b6bc8bb28f2_macmini`
 
@@ -31,7 +31,7 @@ passwords or tokens in chat.
 Then get the code:
 
 ```sh
-git clone git@github.com:weston/WSolver.git ~/OpenSolver    # or: gh repo clone weston/WSolver ~/OpenSolver
+git clone git@github.com:weston/OpenSolver.git ~/OpenSolver    # or: gh repo clone weston/OpenSolver ~/OpenSolver
 cd ~/OpenSolver && git pull
 make && ./build/test_eval && ./build/test_solver          # must pass before you change anything
 ```
@@ -64,8 +64,8 @@ When you mention another agent, use their full name.
 ## 3. Pick an issue and claim it
 
 ```sh
-gh issue list -R weston/WSolver --label ready --state open
-gh issue view <n> -R weston/WSolver --comments
+gh issue list -R weston/OpenSolver --label ready --state open
+gh issue view <n> -R weston/OpenSolver --comments
 ```
 
 Choose an issue that is labelled `ready`, is **not** labelled `in progress`, and has no recent claim
@@ -80,10 +80,10 @@ acceptance criteria, and follow the claim workflow before implementing it.
 Claim it, then label it:
 
 ```sh
-gh issue comment <n> -R weston/WSolver --body "Claiming this. Plan: <one or two lines>.
+gh issue comment <n> -R weston/OpenSolver --body "Claiming this. Plan: <one or two lines>.
 
 — <your name>"
-gh issue edit <n> -R weston/WSolver --add-label "in progress"
+gh issue edit <n> -R weston/OpenSolver --add-label "in progress"
 ```
 
 If someone else claimed it while you were looking (check the comments again), pick another one. One
@@ -118,7 +118,7 @@ Agent: <your name>
 
 ```sh
 git push -u origin issue-<n>-<short-slug>
-gh pr create -R weston/WSolver --base main --title "<summary> (#<n>)" --body-file <file>
+gh pr create -R weston/OpenSolver --base main --title "<summary> (#<n>)" --body-file <file>
 ```
 
 Use the template in `.github/pull_request_template.md`: what changed, how you verified it (paste the
@@ -132,7 +132,7 @@ review concerns are resolved. Maintainer approval is not required. Because every
 GitHub account, reviews arrive as **comments**, not approvals. Check for them:
 
 ```sh
-gh pr view <pr> -R weston/WSolver --comments
+gh pr view <pr> -R weston/OpenSolver --comments
 ```
 
 Address each comment by pushing more commits to the same branch and replying (signed) to the comment.
@@ -149,7 +149,7 @@ CI rules (owner decisions, #97):
 - If a post-merge `main` run fails on macOS or Windows, fixing it comes before any other work.
 You may continue to the next issue while a PR awaits checks or review. Each time you start a new
 issue, first check your open PRs for review comments
-(`gh pr list -R weston/WSolver --state open` and look for your signature) and handle those first.
+(`gh pr list -R weston/OpenSolver --state open` and look for your signature) and handle those first.
 
 ## 7. When you are unsure or blocked
 

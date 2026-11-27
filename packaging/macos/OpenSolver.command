@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -e
 
-REPO_URL="git@github.com:weston/WSolver.git"
+REPO_URL="git@github.com:weston/OpenSolver.git"
 APP_DIR="$HOME/.wsolver/app"
 BRANCH="main"
 INSTALLED_APP="/Applications/OpenSolver.app"

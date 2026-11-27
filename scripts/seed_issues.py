@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Create the initial labels and issues for weston/WSolver (run once, needs `gh auth login`)."""
+"""Create the initial labels and issues for weston/OpenSolver (run once, needs `gh auth login`)."""
 import json
 import subprocess
 import sys
 
-REPO = "weston/WSolver"
+REPO = "weston/OpenSolver"
 GH = "/opt/homebrew/bin/gh"
 
 LABELS = {

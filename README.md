@@ -1,10 +1,23 @@
 # OpenSolver
 
-[![CI](https://github.com/weston/WSolver/actions/workflows/ci.yml/badge.svg)](https://github.com/weston/WSolver/actions/workflows/ci.yml)
+OpenSolver helps you study heads-up no-limit Texas Hold’em hands.
 
-A heads-up no-limit hold'em solver (postflop trees and full preflop trees) with a PioSOLVER-compatible text interface
-(UPI, the Universal Poker Interface). It is an independent implementation written from the
-public UPI documentation; it contains no PioSOLVER code.
+## Install OpenSolver on macOS
+
+Install and run OpenSolver on an **Apple Silicon Mac (M1 or newer)** with **macOS 13.3 or later**.
+To check your Mac, choose **Apple menu → About This Mac**.
+
+1. Ask the person who shared OpenSolver with you for the installer. Its name starts with **OpenSolver** and ends in **.pkg**.
+2. Find the installer in **Downloads** or wherever you saved it. Double-click it and follow the onscreen instructions.
+3. Open **Finder → Applications** and double-click **OpenSolver**.
+
+If your Mac says it can’t verify the installer or app, and you trust where it came from, open
+**System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+[Apple’s instructions](https://support.apple.com/en-us/102445)
+
+## Solver features
+
+OpenSolver supports postflop and full preflop trees and speaks PioSOLVER’s Universal Poker Interface (UPI). It was built independently from the public UPI documentation.
 
 - C++20, single binary, no dependencies beyond zlib (ships with macOS).
 - Vector-form **Discounted CFR** (α=1.3, γ=4; β=0, then 0.5 after iteration 50) with exact card removal, no abstraction. `set_dcfr` overrides the exponents (`set_dcfr a b g` constant, `set_dcfr a b g b_late t` with the β switch).
@@ -16,32 +29,9 @@ public UPI documentation; it contains no PioSOLVER code.
 New here? **[docs/quickstart.md](docs/quickstart.md)** walks through installing, solving a spot and
 reading the output in about five minutes. The rest of this file is reference and internals.
 
-## Install OpenSolver on macOS
-
-The desktop app requires an Apple Silicon Mac (M1 or later) and macOS 13.3 or later.
-The installer includes the solver, viewer, and Python runtime.
-
-1. Get an `OpenSolver-<version>-macos-arm64.pkg` from your maintainer or [build the installer](#macos-installer) from this checkout.
-2. Double-click the package in Finder and follow the Installer prompts.
-3. Open **OpenSolver** from **Applications**. The viewer opens in the app window.
-
-If macOS says it cannot verify the developer, use **System Settings → Privacy & Security → Open Anyway**
-after trying to open the package or app, provided you trust its source. [Apple’s instructions](https://support.apple.com/en-us/102445)
-
-### Keep OpenSolver up to date from GitHub
-
-Use [OpenSolver.command](packaging/macos/OpenSolver.command) to install and launch the latest version
-from the project's GitHub `main` branch. This option requires Xcode Command Line Tools and SSH access
-to the private repository.
-
-1. If you need the command-line tools, run `xcode-select --install` in Terminal.
-2. From this checkout, run `./packaging/macos/OpenSolver.command`, or double-click
-   **OpenSolver.command** in Finder.
-3. Use **OpenSolver.command** whenever you want to launch with an update check. It rebuilds and
-   installs **OpenSolver.app** when the Git revision changes. If GitHub is unreachable and the app
-   is already installed, the launcher opens the installed copy.
-
 ## Build and run
+
+[![CI](https://github.com/weston/OpenSolver/actions/workflows/ci.yml/badge.svg)](https://github.com/weston/OpenSolver/actions/workflows/ci.yml)
 
 ```sh
 make            # builds ./solver (-O3, native CPU optimizations)
@@ -71,6 +61,19 @@ point `INSTALL_BIN` at it:
 ```sh
 make release && make install INSTALL_BIN=solver-release
 ```
+
+### Keep OpenSolver up to date from GitHub
+
+Use [OpenSolver.command](packaging/macos/OpenSolver.command) to install and launch the latest version
+from the project's GitHub `main` branch. This option requires Xcode Command Line Tools and SSH access
+to the private repository.
+
+1. If you need the command-line tools, run `xcode-select --install` in Terminal.
+2. From this checkout, run `./packaging/macos/OpenSolver.command`, or double-click
+   **OpenSolver.command** in Finder.
+3. Use **OpenSolver.command** whenever you want to launch with an update check. It rebuilds and
+   installs **OpenSolver.app** when the Git revision changes. If GitHub is unreachable and the app
+   is already installed, the launcher opens the installed copy.
 
 ### Source distribution
 

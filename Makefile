@@ -90,6 +90,7 @@ test: solver build/test_eval build/test_range build/test_categories build/test_s
 	python3 viewer/test_drill_analysis.py
 	if command -v node >/dev/null; then node viewer/test_drill_controls_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_drill_controls_js.mjs; else echo "node not found: skipping viewer/test_drill_controls_js.mjs"; fi
 	python3 viewer/test_refine.py ./solver
+	python3 viewer/test_device_bench.py ./solver
 
 test-big: solver build/test_eval build/test_range build/test_categories build/test_solver build/test_pfh2h build/test_parallel build/test_flop_subsets build/flop_subsets
 	./build/test_eval
@@ -124,6 +125,7 @@ test-big: solver build/test_eval build/test_range build/test_categories build/te
 	python3 viewer/test_drill_analysis.py
 	if command -v node >/dev/null; then node viewer/test_drill_controls_js.mjs; elif [ -x $(JSC) ]; then $(JSC) viewer/jsc_prelude.js -m viewer/test_drill_controls_js.mjs; else echo "node not found: skipping viewer/test_drill_controls_js.mjs"; fi
 	python3 viewer/test_refine.py ./solver
+	python3 viewer/test_device_bench.py ./solver
 
 # Cross-compile a static Windows binary (solver.exe) from macOS/Linux with mingw-w64. ZLIB_DIR must
 # contain zlib.h and a MinGW libz.a (e.g. zlib's own: make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32-).

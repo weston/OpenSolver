@@ -1322,6 +1322,33 @@ void Solver::apply_elimination(uint32_t ni, float* out) const {
   }
 }
 
+template <int actions>
+static void average_float_strategy(const float* sums, const float* regrets, float* out, int hands) {
+  uint32_t max_sum_bits = 0;
+  for (int h = 0; h < hands; ++h) {
+    float sum = 0;
+    for (int a = 0; a < actions; ++a) sum += sums[a * hands + h];
+    max_sum_bits = std::max(max_sum_bits, std::bit_cast<uint32_t>(std::max(0.f, sum)));
+  }
+  const float threshold = std::bit_cast<float>(max_sum_bits) * 1e-4f;
+  for (int h = 0; h < hands; ++h) {
+    float total = 0;
+    for (int a = 0; a < actions; ++a) total += sums[a * hands + h];
+    if (total > threshold) {
+      for (int a = 0; a < actions; ++a) out[a * hands + h] = sums[a * hands + h] / total;
+    } else {
+      float pos[actions], sum = 0;
+      for (int a = 0; a < actions; ++a) {
+        pos[a] = std::max(0.f, regrets[a * hands + h]);
+        sum += pos[a];
+      }
+      const float inv = sum > 0 ? 1.f / sum : 0.f;
+      const float uniform = sum > 0 ? 0.f : 1.f / actions;
+      for (int a = 0; a < actions; ++a) out[a * hands + h] = std::fma(pos[a], inv, uniform);
+    }
+  }
+}
+
 void Solver::average_strategy(uint32_t ni, float* out) const {
   const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
@@ -1331,6 +1358,15 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
   if (n.flags & GF_LOCKED) {
     std::memcpy(out, S, sizeof(float) * A * H);
     return;
+  }
+  if (!n.flags && !g_.compressed && !predictive && A <= 4) {
+    const float* regrets = g_.regrets.data() + n.storage;
+    switch (A) {
+      case 1: return average_float_strategy<1>(S, regrets, out, H);
+      case 2: return average_float_strategy<2>(S, regrets, out, H);
+      case 3: return average_float_strategy<3>(S, regrets, out, H);
+      case 4: return average_float_strategy<4>(S, regrets, out, H);
+    }
   }
   float* sum = sc.a.alloc_zero(H);
   for (int a = 0; a < A; ++a) {

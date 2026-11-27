@@ -24,6 +24,53 @@ static bool same_bytes(const V& a, const V& b) {
          (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0);
 }
 
+static bool low_reach_average_strategy() {
+  GameConfig cfg;
+  parse_cards("Kh9d4h2c3s", cfg.board);
+  cfg.pot[2] = 60;
+  cfg.eff_stack = 100;
+  cfg.lines.add = {{10, 30, 70}, {30}, {60}};
+  cfg.range[0].fill(1.f);
+  cfg.range[1].fill(1.f);
+  std::string err;
+  GameTree game;
+  if (!game.build(cfg, err)) return false;
+  Solver solver(game);
+  std::array<bool, 5> tested{};
+  for (unsigned i = 0; i < game.nodes.size(); ++i) {
+    const auto& node = game.nodes[i];
+    if (node.kind != ANodeKind::Decision) continue;
+    const int actions = node.num_children, hands = game.num_hands(node.player);
+    if (actions < 1 || actions > 4) return false;
+    tested[actions] = true;
+    float* sums = game.strat.data() + node.storage;
+    for (int a = 0; a < actions; ++a) {
+      for (int h = 0; h < hands; ++h) {
+        int j = a * hands + h;
+        sums[j] = h % 4 == 0 ? float(a + 1) : 0.f;
+        game.regrets[node.storage + j] = h % 3 == 0 ? -1.f : float(a + 1) * .37f;
+      }
+    }
+    sums[3] = 10000.f;
+    sums[1] = 1.f;
+    sums[2] = std::nextafter(1.f, 2.f);
+    std::vector<float> expected(actions * hands), actual(actions * hands);
+    solver.current_strategy(i, expected.data());
+    for (int h = 0; h < hands; ++h) {
+      float total = 0;
+      for (int a = 0; a < actions; ++a) total += sums[a * hands + h];
+      if (total > 1.f)
+        for (int a = 0; a < actions; ++a) expected[a * hands + h] = sums[a * hands + h] / total;
+    }
+    solver.average_strategy(i, actual.data());
+    if (!same_bytes(expected, actual)) {
+      std::printf("Low-reach average strategy differs at node %u with %d actions\n", i, actions);
+      return false;
+    }
+  }
+  return std::all_of(tested.begin() + 1, tested.end(), [](bool ran) { return ran; });
+}
+
 static bool parallel_equivalence() {
   const int saved_threads = pool().threads();
   for (bool compressed : {false, true}) {
@@ -1213,6 +1260,7 @@ int main(int argc, char** argv) {
   init_cards();
   bool big = argc > 1 && std::string(argv[1]) == "big";
   int fails = 0;
+  fails += !low_reach_average_strategy();
   fails += !parallel_equivalence();
   fails += !auto_report_schedule();
   // #71 convergence experiments still converge: predictive regret matching (PCFR+-style,

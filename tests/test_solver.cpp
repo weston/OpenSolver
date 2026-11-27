@@ -14,7 +14,7 @@
 #include "../src/range.hpp"
 #include "../src/reach_digits.hpp"
 #include "../src/solver.hpp"
-#include "../src/metal.hpp"
+#include "../src/gpu.hpp"
 #include "../src/upi.hpp"
 
 using namespace pio;
@@ -958,12 +958,12 @@ static bool preflop_runout_tables() {
     };
     std::vector<Tables> first;
     for (AllinRunouts& ar : g.allins) first.push_back(take(ar));
-    if (&sp == &spots[0] && metal_available()) {
+    if (&sp == &spots[0] && gpu_available()) {
       g.gpu_tables = true;
       g.build_allin_tables();
       for (size_t i = 0; i < g.allins.size(); ++i)
         if (take(g.allins[i]) != first[i]) {
-          std::printf("Metal flop table differs at set %zu\n", i);
+          std::printf("GPU flop table differs at set %zu\n", i);
           return false;
         }
       g.gpu_tables = false;

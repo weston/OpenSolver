@@ -869,11 +869,40 @@ independent brute force on a small river spot.
 UPI probe matches the macOS build up to floating-point rounding).
 
 - **Native (MSYS2 UCRT64):** `pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-python make`,
-  then `make` (produces `solver.exe`) and `make test`.
+  then `make` (produces `solver.exe`) and `make test`. That `solver.exe` needs MSYS2's DLLs on `PATH`;
+  `make LDLIBS="-static -lz -lpthread"` builds one that runs from any Windows shell (and the viewer).
 - **Cross-compile from macOS/Linux:** install mingw-w64 (`brew install mingw-w64`), build zlib for it
   (`make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32- libz.a` in zlib's source), then
   `make windows ZLIB_DIR=/path/to/zlib` -> `build/win/solver.exe` (static, no DLLs; AVX2 by default,
   `WIN_ARCH=-march=x86-64` for older CPUs).
+
+## GPU solving
+
+`set_algorithm v4_gpu` (the viewer's **Compute device: GPU**) runs whole-tree postflop solves on the
+GPU: Metal on Apple Silicon, OpenCL 2.0 everywhere else (AMD Radeon on Windows and Linux; other
+OpenCL 2.0 GPUs should work but are untested). `list_algorithms` shows a `v4_gpu` line naming the
+device when there is one, e.g. `v4_gpu,DCFR,AMD Radeon RX 9060 XT (OpenCL), unpruned postflop traversal`.
+`v4_metal`, the algorithm's first name, is still accepted.
+
+- The tree is compiled once into flat per-level passes (one kernel launch per tree depth and pass,
+  the static-dataflow idea of GPU-CFR, arXiv:2609.11923) and every iteration replays them. Results
+  match the CPU to floating-point rounding; the GPU does not prune, so the CPU can still win on trees
+  where pruning skips most of the work.
+- OpenCL is loaded at run time (`OpenCL.dll`, `libOpenCL.so.1`): building needs no SDK, and a
+  machine without a GPU driver just has no `v4_gpu`. The AMD Adrenalin driver ships the runtime.
+- A discrete GPU holds the regrets and strategy sums in its own memory and copies them back after
+  each iteration, so the tree has to fit in GPU memory (`SOLVER: device cpu (GPU memory too small
+  for this tree)` otherwise) and the copy costs PCIe bandwidth on large trees.
+- **Speed depends on the machine.** Metal beat 18 CPU cores on an M5 Pro (25bb fixture to 0.2% of
+  pot: 40 s vs 55 s). On a Radeon RX 9060 XT against 32 Zen 5 threads, OpenCL is not faster yet: 0.12 s
+  vs 0.15 s on flop_3bet, but 0.42 vs 0.23 s on flop_srp_2, 1.12 vs 0.76 s on deep, 4.55 vs 3.31 s on
+  threebet_mono and 55 vs 41 s on the 25bb fixture (`make bench`, 2026-11-26). Iterations cost
+  about the same; the GPU also pays about 0.1 s to set up each solve (plus a one-time 0.25 s in a
+  new process) and a copy of the state to the CPU for every exploitability report (0.27 s on the 25bb
+  tree). Try both on your own trees: the viewer's Compute device setting switches between them.
+- The CPU still runs everything the GPU does not: preflop trees, `go_partial`, node locks and other
+  node edits, 16-bit storage, predictive CFR, ICM. The solve says which device it is using
+  (`SOLVER: device gpu`, or `SOLVER: device cpu (<reason>)`).
 
 ## Interface conventions (as implemented)
 

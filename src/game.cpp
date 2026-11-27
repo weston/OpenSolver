@@ -1,5 +1,5 @@
 #include "game.hpp"
-#include "metal.hpp"
+#include "gpu.hpp"
 #include "parallel.hpp"
 #include "pfh2h.hpp"
 
@@ -906,7 +906,7 @@ void GameTree::build_allin_tables() {
         for (int o = 0; o < H1; ++o) compat[static_cast<size_t>(h) * H1 + o] = (combo_mask(hands[1][o]) & mh) == 0;
       }
     }
-  const bool use_gpu = gpu_tables && metal_available();
+  const bool use_gpu = gpu_tables && gpu_available();
   std::function<void(int)> fn = [&](int k) {
     AllinRunouts& ar = allins[todo[static_cast<size_t>(k)]];
     ar.valid = static_cast<int>(std::lround(1.0 / static_cast<double>(ar.scale)));
@@ -931,7 +931,7 @@ void GameTree::build_allin_tables() {
         boards.push_back(suits);
       });
       try {
-        metal_flop_table(*this, ar, boards);
+        gpu_flop_table(*this, ar, boards);
         return;
       } catch (const std::exception&) {
         if (tri) throw;

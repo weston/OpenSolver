@@ -167,6 +167,29 @@ Python's `yaml.safe_load` both silently keep the **last** of two duplicate mappi
 with a duplicated job key passes a naive local parse and is then rejected by GitHub as a 0-second
 "workflow file issue". Re-read the file after a pull rather than appending to it blind.
 
+## GPU solve
+
+`set_algorithm v4_gpu` runs whole-tree postflop solves on a GPU (README, "GPU solving"): Metal on
+Apple Silicon (`src/metal.mm`, `src/postflop.metal`), OpenCL 2.0 elsewhere (`src/opencl.cpp`,
+`src/postflop.cl`, tree packing in `src/gpu_pack.hpp`). The two kernel sets are the same passes: a
+change to one is a change to both, and `tests/test_upi.py`'s `check_solve_device` compares either
+against the CPU (it runs only where `list_algorithms` shows `v4_gpu`). The OpenCL backend was
+written and measured on an AMD Radeon RX 9060 XT under Windows 11 (MSYS2 UCRT64 build).
+
+- **Profiling.** `WSOLVER_GPU_PROFILE=1` in the solver's environment (OpenCL only; a developer switch,
+  in no user document) prints the plan's shape, each kernel's GPU time from queue events, and the
+  wall time of setup and of every state copy to stderr at exit. It waits for every command, so read
+  the shares, not the total.
+- **Where OpenCL time went (RX 9060 XT vs 32 Zen 5 threads, 2026-11-26).** A full copy of regrets and
+  sums to the tree after each iteration was 40% of GPU time, so the state stays on the device and
+  is copied when the CPU reads it (reports, a TreePause, the end; `MetalSolve::sync`,
+  `TreePauseRequests::sync`). After that the river kernels are 60-75%: they are latency-bound, not
+  bandwidth-bound (work-group width 64/128/256, correctly rounded division and the one-channel
+  round variant were each measured and changed nothing or lost). A whole-group serial scan beat the
+  52 serial card spans of the Metal design only by 25% on terminals.
+- **Discrete GPU memory.** The tree must fit the card: `small_strats auto` keeps float32 under
+  `v4_gpu` only when it should (a 16-bit tree solves on the CPU).
+
 ## Layout
 
 | Path | What |

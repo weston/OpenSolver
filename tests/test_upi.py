@@ -2584,9 +2584,13 @@ def check_sampled_averaging(exe):
                 raw[flags] = 7 | mode
                 path.write_bytes(gzip.compress(raw))
 
+            paired = Path(tmp, "packed-sums")
+            raw[flags] = 7 | 16 | 64 | 128
+            paired.write_bytes(gzip.compress(raw))
+
             def saved_mode(path):
                 data = gzip.decompress(path.read_bytes())
-                return data[21 + struct.unpack_from("<I", data, 18)[0]] & (16 | 32 | 64)
+                return data[21 + struct.unpack_from("<I", data, 18)[0]] & (16 | 32 | 64 | 128)
 
             run(f'load_tree "{sampled}" full')
             run(f'dump_tree "{mid}"')
@@ -2632,7 +2636,7 @@ def check_sampled_averaging(exe):
                 if device == "v4_metal":
                     assert ["SOLVER: device gpu"] in u.solver_msgs
                 results.append(floats(published))
-            packed_results = []
+            packed_results, paired_results = [], []
             for device in devices:
                 run("set_algorithm " + device)
                 run(f'load_tree "{eligible}" full')
@@ -2663,8 +2667,33 @@ def check_sampled_averaging(exe):
                 check(continued == uninterrupted and continued != full37 and run("calc_results") == reported,
                       "compact reports and a lossless restart reproduce the uninterrupted solve on " + device)
                 packed_results.append(floats(continued))
+                run(f'load_tree "{paired}" full')
+                published = steps(33)
+                check(steps(2) == published, "skipped sweeps retain the packed average on " + device)
+                run(f'dump_tree "{mid}" lossless')
+                check(saved_mode(mid) == (16 | 64 | 128), "lossless preserves both precision flags on " + device)
+                next_average = steps(2)
+                run("clear_cache")
+                actual = run("calc_results")
+                run(f'load_tree "{paired}" full')
+                u.solver_msgs.clear()
+                steps(38)
+                reports = [b[1:] for b in u.solver_msgs if b and b[0].startswith("running time")]
+                check(len(reports) == 38 and "\n".join(reports[36]) == actual,
+                      "the packed step-37 report matches the committed best response on " + device)
+                run(f'load_tree "{mid}" full')
+                check(steps(2) == next_average and run("calc_results") == actual and next_average != continued,
+                      "the packed average resumes exactly at its next retained sweep on " + device)
+                paired_results.append(floats(next_average))
+                at97 = steps(60)
+                check(steps(1) == at97, "iteration 98 retains the packed iteration-97 average on " + device)
+                run(f'dump_tree "{mid}" lossless')
+                at99 = steps(1)
+                run(f'load_tree "{mid}" full')
+                check(at99 != at97 and steps(1) == at99,
+                      "a lossless split across the two-sweep update reproduces the iteration-99 strategy on " + device)
                 for go in ("go", "go 1 steps", "go 0 seconds"):
-                    run(f'load_tree "{packed}" full')
+                    run(f'load_tree "{paired}" full')
                     run("set_accuracy 0.1")
                     run(go)
                     run("wait_for_solver")
@@ -2674,19 +2703,22 @@ def check_sampled_averaging(exe):
                 check(max(abs(a - b) for a, b in zip(*packed_results)) < .02,
                       "the CPU continuation policy and Metal agree with compact regrets")
 
+                check(max(abs(a - b) for a, b in zip(*paired_results)) < .02,
+                      "CPU and Metal agree on the resumed FP16 flop strategy")
                 run("set_algorithm v4_metal")
                 run("set_accuracy 0")
-                run(f'load_tree "{packed}" full')
+                run(f'load_tree "{paired}" full')
                 u.solver_msgs.clear()
-                run("go 64 steps")
+                run("set_info_freq 8")
+                run("go 124 steps")
                 deadline = time.monotonic() + 15
-                while int(run("show_iters")) < 12:
+                while int(run("show_iters")) < 98:
                     if time.monotonic() >= deadline:
                         raise AssertionError("compact Metal solve did not reach the hold")
                     time.sleep(.001)
                 run("hold")
                 held = int(run("show_iters"))
-                assert 12 <= held < 64
+                assert 98 <= held < 124
                 run(f'dump_tree "{mid}" lossless')
                 original = run("calc_results")
                 run("lock_node r:0:c:b30")
@@ -2699,7 +2731,7 @@ def check_sampled_averaging(exe):
                 run(f'load_tree "{mid}" full')
                 check(run("calc_results") == original, "the held lossless checkpoint contains the committed regrets")
                 run("lock_node r:0:c:b30")
-                resumed = steps(64 - held), run("calc_results")
+                resumed = steps(124 - held), run("calc_results")
                 check(resumed == fallback, "a CPU reload and the live Metal fallback finish identically")
 
             run("set_algorithm v4_large")

@@ -71,6 +71,7 @@ Upi& Upi::river_view() {
   view.solver_->set_flop_opening(solver_->flop_opening());
   view.solver_->set_average_sampling(solver_->average_sampling());
   view.solver_->set_bfloat_regrets(solver_->bfloat_regrets());
+  view.solver_->set_fp16_sums(solver_->fp16_sums());
   view.solver_->pruning = pruning_;
   view.solver_->prune_period = prune_period_;
   std::copy_n(recalc_accuracy_, 3, view.recalc_accuracy_);

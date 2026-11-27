@@ -18,14 +18,17 @@ inline uint16_t fp16_sum_word(float value) {
 #endif
 }
 
-inline float fp16_sum_value(uint16_t word) {
+inline float scaled_fp16_sum_value(uint16_t word) {
 #if defined(__FLT16_MANT_DIG__)
-  return float(std::bit_cast<_Float16>(word)) / fp16_sum_scale;
+  return float(std::bit_cast<_Float16>(word));
 #else
   if (word == 0x8000u) return -0.f;
-  const float scaled = word < 1024 ? std::ldexp(float(word), -24) :
+  return word < 1024 ? std::ldexp(float(word), -24) :
       std::bit_cast<float>((uint32_t(word) << 13) + 0x38000000u);
-  return scaled / fp16_sum_scale;
 #endif
+}
+
+inline float fp16_sum_value(uint16_t word) {
+  return scaled_fp16_sum_value(word) / fp16_sum_scale;
 }
 }  // namespace pio

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
+#include <type_traits>
 
 #if PIO_SHOWDOWN_AVX512 || PIO_SHOWDOWN_AVX2
 #include <immintrin.h>
@@ -1337,23 +1338,28 @@ void Solver::apply_elimination(uint32_t ni, float* out) const {
   }
 }
 
-static float expand_sum(float x) { return x; }
-static float expand_sum(uint16_t x) { return fp16_sum_value(x); }
+static float normalization_weight(float x) { return x; }
+static float normalization_weight(uint16_t x) { return scaled_fp16_sum_value(x); }
 
 template <int actions, class Sum, class Regret>
 static void average_float_strategy(const Sum* sums, const Regret* regrets, float* out, int hands) {
   uint32_t max_sum_bits = 0;
   for (int h = 0; h < hands; ++h) {
     float sum = 0;
-    for (int a = 0; a < actions; ++a) sum += expand_sum(sums[a * hands + h]);
+    for (int a = 0; a < actions; ++a) sum += normalization_weight(sums[a * hands + h]);
+    if constexpr (std::is_same_v<Sum, uint16_t>) out[h] = sum;
     max_sum_bits = std::max(max_sum_bits, std::bit_cast<uint32_t>(std::max(0.f, sum)));
   }
   const float threshold = std::bit_cast<float>(max_sum_bits) * 1e-4f;
   for (int h = 0; h < hands; ++h) {
     float total = 0;
-    for (int a = 0; a < actions; ++a) total += expand_sum(sums[a * hands + h]);
+    if constexpr (std::is_same_v<Sum, uint16_t>) {
+      total = out[h];
+    } else {
+      for (int a = 0; a < actions; ++a) total += normalization_weight(sums[a * hands + h]);
+    }
     if (total > threshold) {
-      for (int a = 0; a < actions; ++a) out[a * hands + h] = expand_sum(sums[a * hands + h]) / total;
+      for (int a = 0; a < actions; ++a) out[a * hands + h] = normalization_weight(sums[a * hands + h]) / total;
     } else {
       float pos[actions], sum = 0;
       for (int a = 0; a < actions; ++a) {

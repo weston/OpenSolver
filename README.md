@@ -15,6 +15,21 @@ If your Mac says it can’t verify the installer or app, and you trust where it 
 **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
 [Apple’s instructions](https://support.apple.com/en-us/102445)
 
+## Install OpenSolver on Windows
+
+Install and run OpenSolver on **64-bit Windows 10 or 11** with a processor from about 2013 or later
+(one with AVX2: Intel Haswell, AMD Ryzen or Excavator, or newer). No administrator rights are needed.
+
+1. [Download the OpenSolver installer](https://github.com/weston/OpenSolver/raw/refs/heads/main/installers/windows/OpenSolver-0.1.0-windows-x64-setup.exe).
+2. Open **Downloads** in File Explorer, double-click the installer, and follow the onscreen steps.
+3. Open **Start**, type **OpenSolver**, and press Enter. It opens in your web browser.
+
+If Windows says **Windows protected your PC**, and you trust where the installer came from, click
+**More info**, then **Run anyway**. If your browser calls the download uncommon, choose to keep it
+(in Edge: **...** next to the download, then **Keep**).
+
+To uninstall, open **Settings → Apps → Installed apps**, find **OpenSolver**, and choose **Uninstall**.
+
 ## Solver features
 
 OpenSolver supports postflop and full preflop trees and speaks PioSOLVER’s Universal Poker Interface (UPI). It was built independently from the public UPI documentation.
@@ -130,6 +145,71 @@ share the library and the job queue. What the viewer prints goes to
 - **Uninstalling:** quit OpenSolver, then
   `sudo rm -rf /Applications/OpenSolver.app && sudo pkgutil --forget com.wsolver.WSolver.pkg`.
   `~/.wsolver` and `~/Library/Logs/OpenSolver` are yours to keep or delete.
+
+### Windows installer
+
+`make windows-installer`, in an MSYS2 UCRT64 shell on Windows, writes
+`dist/OpenSolver-<version>-windows-x64-setup.exe` and a matching `.sha256`: a per-user installer that
+puts **OpenSolver** in `%LOCALAPPDATA%\Programs\OpenSolver` (#565). Like the macOS app, it is the
+solver and the [viewer](#viewer) with everything they need, so the PC it is installed on needs no
+compiler, no Python and no checkout. For 64-bit Windows 10 or 11 on a CPU with AVX2. The
+ready-to-install copy and its checksum are checked into [`installers/windows`](installers/windows/).
+
+```sh
+pacman -S mingw-w64-ucrt-x86_64-nsis     # once: the NSIS compiler (see Windows, below, for the rest)
+make windows-installer
+cd dist && sha256sum -c OpenSolver-0.1.0-windows-x64-setup.exe.sha256
+```
+
+(In PowerShell, `(Get-FileHash .\OpenSolver-0.1.0-windows-x64-setup.exe).Hash` must match the hex
+string in the `.sha256`, case aside.)
+
+OpenSolver starts the viewer and opens it in the default browser. A small window shows the
+address, with **Open in Browser**, **Show Log** and **Quit**. Closing that window quits OpenSolver,
+which stops the viewer and its solvers, with a confirmation if a solve or the job queue is running.
+Opening OpenSolver again while it runs brings the page back. The viewer takes port 8765 when that
+is free and any free port otherwise (when a viewer from a checkout is already running, say), and
+remembers the port it got; it listens on 127.0.0.1 only, so Windows Firewall does not ask. What the
+viewer prints goes to `%LOCALAPPDATA%\OpenSolver\Logs\viewer.log` (**Show Log**).
+
+- **What is in the app.** A launcher (`packaging/windows/launcher.cpp`, a small Win32 program,
+  `OpenSolver.exe`), the static `build/win/solver.exe` of `make windows` (`-march=x86-64-v3`, no
+  DLLs; `WIN_INSTALLER_SOLVER=<exe>` packages another build), the same viewer files as the macOS
+  app, and a Python to run them: a
+  [python-build-standalone](https://github.com/astral-sh/python-build-standalone) build of CPython
+  3.13, pinned by checksum in `packaging/windows/build.sh`, downloaded on the first build into
+  `build/windows/cache/` and trimmed like the macOS one. To build offline, set `PYTHON_TARBALL` to
+  a copy of that file. The installer is `packaging/windows/installer.nsi`. About 9 MB to download,
+  37 MB installed.
+- **Where it goes.** For the user only, with no administrator rights: `%LOCALAPPDATA%\Programs\OpenSolver`
+  (the setup lets you choose another folder, which must be empty or an OpenSolver install), with
+  **OpenSolver** in the Start menu, on the desktop if you tick it, and in Settings > Apps.
+  Installing a newer version over an older one replaces the program and nothing else.
+- **Your data is not in the app.** Ranges, tree configs and the job queue stay in
+  `%USERPROFILE%\.wsolver`, as for a viewer run from a checkout.
+- **It is not code-signed.** The project has no code-signing certificate, so SmartScreen warns the
+  first time the setup runs. See the [install instructions](#install-opensolver-on-windows).
+- **GPU.** The solver in the app can solve on the GPU (the viewer's **Compute device: GPU**; see
+  [GPU solving](#gpu-solving)), and the setup brings no GPU runtime of its own: the solver loads
+  the driver's at run time. AMD Radeon and Intel GPUs use OpenCL, which comes with the graphics
+  driver. NVIDIA GPUs use CUDA when NVRTC, the CUDA runtime compiler, is installed (the
+  [CUDA toolkit](https://developer.nvidia.com/cuda-downloads), found through `CUDA_PATH`), and the
+  NVIDIA driver's own OpenCL otherwise. Keep the graphics driver up to date. Without a GPU driver,
+  OpenSolver solves on the CPU.
+- **Before it is packed, the app is run.** `build.sh` starts the staged app's own launcher, which
+  starts the viewer with the app's Python, and builds and solves a small tree through it. It checks
+  that closing the launcher's window while a solve runs asks first, that quitting leaves no viewer
+  or solver running, and that a launcher killed outright leaves none either: everything it starts
+  is in a Windows job object that ends with it (`packaging/windows/smoke.py`). An installer is
+  written only when that passes. `make test` checks, without building anything, that the app gets
+  the same files as the macOS one and that the uninstaller removes each of its folders.
+  `make windows-app` stages and runs the app without writing the installer.
+- **Uninstalling:** Settings > Apps > Installed apps > OpenSolver > **Uninstall** (quit OpenSolver
+  first), or silently `"%LOCALAPPDATA%\Programs\OpenSolver\Uninstall OpenSolver.exe" /S`. It
+  removes the program, the shortcuts it made and its log. `%USERPROFILE%\.wsolver`, and the solver's
+  cached preflop table in `%LOCALAPPDATA%\wsolver`, are yours to keep or delete. A silent install is
+  `OpenSolver-<version>-windows-x64-setup.exe /S`, with `/D=<folder>` last and unquoted for another
+  folder.
 
 `make release` leaves the default build untouched and produces a second binary,
 `./solver-release`, with link-time optimization. Results are identical to the
@@ -865,15 +945,56 @@ independent brute force on a small river spot.
 
 ## Windows
 
+To install OpenSolver without building it, see [Install OpenSolver on Windows](#install-opensolver-on-windows).
+
 `solver.exe` runs natively on Windows (verified on Windows 11 / Zen 5: all unit tests pass and every
 UPI probe matches the macOS build up to floating-point rounding).
 
 - **Native (MSYS2 UCRT64):** `pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-python make`,
-  then `make` (produces `solver.exe`) and `make test`.
+  then `make` (produces `solver.exe`) and `make test`. That `solver.exe` needs MSYS2's DLLs on `PATH`;
+  `make LDLIBS="-static -lz -lpthread"` builds one that runs from any Windows shell (and the viewer).
 - **Cross-compile from macOS/Linux:** install mingw-w64 (`brew install mingw-w64`), build zlib for it
   (`make -f win32/Makefile.gcc PREFIX=x86_64-w64-mingw32- libz.a` in zlib's source), then
   `make windows ZLIB_DIR=/path/to/zlib` -> `build/win/solver.exe` (static, no DLLs; AVX2 by default,
   `WIN_ARCH=-march=x86-64` for older CPUs).
+- **The installer:** in the UCRT64 shell, also `pacman -S mingw-w64-ucrt-x86_64-nsis`, then
+  `make windows-installer`; see [Windows installer](#windows-installer).
+
+## GPU solving
+
+`set_algorithm v4_gpu` (the viewer's **Compute device: GPU**) runs whole-tree postflop solves on the
+GPU, with one of three backends:
+
+| GPU | Backend | Needs |
+|---|---|---|
+| Apple Silicon | Metal | macOS; the default device there |
+| NVIDIA (Maxwell or later) | CUDA | the NVIDIA driver, and NVRTC, the CUDA runtime compiler: `nvrtc64_*.dll` / `libnvrtc.so` from the [CUDA toolkit](https://developer.nvidia.com/cuda-downloads) (found through `CUDA_PATH`) or next to the solver. Without NVRTC the NVIDIA driver's own OpenCL is used |
+| AMD Radeon, Intel, others | OpenCL 1.2 | the GPU driver (AMD Adrenalin ships OpenCL); 32 KB of work-group memory |
+
+`list_algorithms` shows a `v4_gpu` line naming the device when there is one, e.g.
+`v4_gpu,DCFR,AMD Radeon RX 9060 XT (OpenCL), unpruned postflop traversal`. CUDA is tried before
+OpenCL; `WSOLVER_GPU_BACKEND=opencl` or `=cuda` in the solver's environment picks one. `v4_metal`,
+the algorithm's first name, is still accepted.
+
+- The tree is compiled once into flat per-level passes (one kernel launch per tree depth and pass,
+  the static-dataflow idea of GPU-CFR, arXiv:2609.11923), with whole river betting rounds fused into
+  one pass, and every iteration replays them. Results match the CPU to floating-point rounding; the
+  GPU does not prune, so the CPU can still win on trees where pruning skips most of the work.
+- CUDA and OpenCL are loaded at run time: building needs no SDK, and a machine without the driver
+  just has no `v4_gpu`. The kernels are compiled for the device the first time it is used.
+- Large Medium flop solves use bfloat16 regrets and fp16 strategy sums on the GPU as on the CPU
+  (`small_strats` is separate: 16-bit *storage* solves on the CPU).
+- A discrete GPU holds the regrets and strategy sums in its own memory and copies them to the tree
+  when the CPU needs them (an exploitability report, a command between iterations, the end), so the
+  tree has to fit in GPU memory (`SOLVER: device cpu (GPU memory too small for this tree)` otherwise).
+- **Speed depends on the machine.** Metal beat 18 CPU cores on an M5 Pro (25bb fixture to 0.2% of
+  pot: 40 s vs 55 s). On a Radeon RX 9060 XT against 32 Zen 5 threads, OpenCL is not faster yet
+  (seconds to 0.2% of pot, CPU vs GPU, `bench/run.py --threads 32`, 2026-11-27: flop_3bet 0.12 vs **0.09**, flop_srp_2 0.20 vs 0.41, flop_srp_4 0.34 vs 0.67, deep 0.61 vs 0.79, threebet_mono 3.31 vs 4.12, 25bb fixture 41.6 vs 48.4 with float32 state on the GPU; a new process also compiles the kernels once, about 0.3 s), so a discrete GPU is not the default device: try both on your own trees, the
+  viewer's Compute device setting switches between them. The CUDA backend has not been measured
+  (it has not yet run on an NVIDIA GPU).
+- The CPU still runs everything the GPU does not: preflop trees, `go_partial`, node locks and other
+  node edits, 16-bit storage, predictive CFR, ICM. The solve says which device it is using
+  (`SOLVER: device gpu`, or `SOLVER: device cpu (<reason>)`).
 
 ## Interface conventions (as implemented)
 
@@ -1089,6 +1210,7 @@ src/upi*.cpp       command processor, node queries, save/load
 tests/             unit tests (eval, range, categories, solver, flop subsets, tree builder) + end-to-end UPI test
 flops/             flop subsets for preflop trees and the job queue (wsolver_<N>.txt; README.md)
 packaging/macos/   what `make macos-pkg` builds OpenSolver.app and its installer from
+packaging/windows/ what `make windows-installer` builds the Windows app and its setup program from
 tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue;
                    fuzz.py: randomised invariant / concurrency / save / preflop / lock / truncated-save checks over UPI;
                    flop_subsets.cpp/.hpp: chooses the flops and weights in flops/, `make flop-subsets`;

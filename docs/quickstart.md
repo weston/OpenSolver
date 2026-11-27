@@ -22,6 +22,10 @@ make install PREFIX=$HOME/.local
 You need a C++20 compiler, make, Python 3 and zlib headers. On macOS the Command Line Tools cover
 all of it.
 
+On Windows and on Apple Silicon Macs there are also installers for the solver and its viewer that
+need none of this: see the README's [Install OpenSolver on Windows](../README.md#install-opensolver-on-windows) and
+[Install OpenSolver on macOS](../README.md#install-opensolver-on-macos).
+
 ## 2. Talk to it
 
 The solver speaks **UPI**, a line-based text protocol, on stdin/stdout. One command per line, and

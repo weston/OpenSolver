@@ -20,6 +20,8 @@ export function updateDevice(st) {
   const available = st.devices?.includes("gpu");
   document.getElementById("device-settings").classList.toggle("hidden", !available);
   const field = document.getElementById("solve-device");
+  const gpu = field.querySelector('option[value="gpu"]');
+  if (gpu) gpu.textContent = st.gpu_name ? `GPU (${st.gpu_name})` : "GPU";
   if (!savingDevice) field.value = st.device;
   field.disabled = savingDevice || st.solving || st.dead;
 }

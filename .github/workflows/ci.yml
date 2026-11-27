@@ -170,3 +170,35 @@ jobs:
           test -f build/win/solver.exe
           file build/win/solver.exe
           file build/win/solver.exe | grep -q 'PE32+ executable'
+
+  # The Windows setup program (#565): built, its staged app run by packaging/windows/smoke.py
+  # (inside make windows-installer), and kept as an artifact. Gated like windows-native.
+  windows-installer:
+    name: Windows installer
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-nsis
+
+      - name: Build and check the installer
+        run: make -j"$(nproc)" windows-installer
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/OpenSolver-*-windows-x64-setup.exe*

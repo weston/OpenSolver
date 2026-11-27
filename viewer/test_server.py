@@ -77,17 +77,21 @@ class ViewerTest(unittest.TestCase):
     def test_device_selection(self):
         _, state = self.req("/api/status")
         if "gpu" in state["devices"]:
-            self.assertEqual(state["device"], "gpu")
-            self.assertIn("algorithm:v4_metal", self.solver.cmd("show_settings"))
+            # Metal starts on the GPU; a discrete GPU (CUDA, OpenCL) starts on the CPU
+            start = state["device"]
+            gpu = "algorithm:" + self.solver.gpu_algorithm
+            self.assertTrue(state["gpu_name"])
+            self.assertIn(gpu if start == "gpu" else "algorithm:auto", self.solver.cmd("show_settings"))
+            other = "cpu" if start == "gpu" else "gpu"
             try:
-                status, data = self.req("/api/device", "POST", {"device": "cpu"})
+                status, data = self.req("/api/device", "POST", {"device": other})
                 self.assertEqual(status, 200, data)
-                self.assertIn("algorithm:auto", self.solver.cmd("show_settings"))
-                self.assertEqual(self.req("/api/progress")[1]["device"], "cpu")
+                self.assertIn(gpu if other == "gpu" else "algorithm:auto", self.solver.cmd("show_settings"))
+                self.assertEqual(self.req("/api/progress")[1]["device"], other)
             finally:
-                status, data = self.req("/api/device", "POST", {"device": "gpu"})
+                status, data = self.req("/api/device", "POST", {"device": start})
             self.assertEqual(status, 200, data)
-            self.assertIn("algorithm:v4_metal", self.solver.cmd("show_settings"))
+            self.assertIn(gpu if start == "gpu" else "algorithm:auto", self.solver.cmd("show_settings"))
         else:
             self.assertEqual(state["device"], "cpu")
             self.assertGreaterEqual(self.req("/api/device", "POST", {"device": "gpu"})[0], 400)

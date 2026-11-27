@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Packaging checks for `make dist`, `make install` (#207) and what goes into the macOS app (#479).
+"""Packaging checks for `make dist`, `make install` (#207) and what goes into the macOS app (#479)
+and the Windows one (#565).
 
 These exist because the packaging path is part of what ships and had no coverage. The specific bug
 that motivated them: `make dist` builds the tarball with `git archive`, so an **untracked** file is
@@ -232,8 +233,99 @@ def test_macos_app():
     check(r.returncode == 0, f"the launcher compiles without a warning {r.stderr.strip()[:300]}")
 
 
+def test_windows_app():
+    """What `make windows-installer` puts in the Windows app (#565), as far as it can be checked
+    without building it (packaging/windows/build.sh runs the built app itself, smoke.py). The app
+    carries the same viewer files as the macOS one; what is its own is the Python it trims, the
+    uninstaller, which removes the app's folders by name, and the icon, drawn by a script."""
+    print("[Windows app: packaging/windows]")
+    import ast
+    import shutil
+    import struct
+    pk = os.path.join(ROOT, "packaging", "windows")
+    sh = shutil.which("sh")
+    if not sh:
+        print("  (no sh: build.sh --files is not run)")
+        return
+    r = subprocess.run([sh, os.path.join(pk, "build.sh"), "--files"], cwd=ROOT, capture_output=True, text=True)
+    staged = r.stdout.splitlines()
+    check(r.returncode == 0 and len(staged) > 20, f"build.sh --files lists the app's files ({len(staged)})")
+    check(all(os.path.isfile(os.path.join(ROOT, f)) for f in staged), "each of them exists")
+    mac = subprocess.run([sh, os.path.join(ROOT, "packaging", "macos", "build.sh"), "--files"], cwd=ROOT,
+                         capture_output=True, text=True).stdout.splitlines()
+    check(staged == mac, "the same files as the macOS app's (the macOS checks say what they must hold)")
+    viewer = os.path.join(ROOT, "viewer")
+    want = [f"viewer/{f}" for f in os.listdir(viewer) if f.endswith(".py") and not f.startswith("test_")]
+    want += [f"viewer/static/{f}" for f in os.listdir(os.path.join(viewer, "static"))
+             if f not in ("package.json", ".DS_Store")]
+    want += ["tools/tree_builder.py", "tools/jobs.py", "tools/preflop.py"]
+    want += [f"flops/{f}" for f in os.listdir(os.path.join(ROOT, "flops")) if f.endswith(".txt")]
+    missing = sorted(set(want) - set(staged))
+    check(not missing, f"every viewer module, every file of its page, the three tools and the flop files are in it {missing[:4]}")
+    check(not [f for f in staged if "/test_" in f], "and no tests")
+
+    # The modules build.sh takes out of the bundled Python: none may be imported by what is staged.
+    build_sh = open(os.path.join(pk, "build.sh"), encoding="utf-8").read()
+    trimmed = set(re.findall(r'"\$PYLIB/([a-z0-9_]+)"', build_sh)) - {"site-packages"}
+    check({"tkinter", "test"} <= trimmed, f"the modules build.sh trims are read from it ({sorted(trimmed)})")
+    cut = []
+    for f in (f for f in staged if f.endswith(".py")):
+        for node in ast.walk(ast.parse(open(os.path.join(ROOT, f), encoding="utf-8").read())):
+            names = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                     else [node.module] if isinstance(node, ast.ImportFrom) and node.module and not node.level else [])
+            cut += [f"{f}: {n}" for n in names if n.split(".")[0] in trimmed]
+    check(not cut, f"none imports a module trimmed from the bundled Python {cut[:4]}")
+
+    # The uninstaller removes the app's own folders by name (never the whole install folder, which
+    # may hold other files): each top-level folder of the app must be on that list, and is also
+    # cleared before an upgrade, so that nothing of an older version stays.
+    nsi = open(os.path.join(pk, "installer.nsi"), encoding="utf-8").read()
+    removed = re.findall(r'RMDir /r "\$INSTDIR\\([^"\\]+)"', nsi)
+    tops = sorted({f.split("/")[0] for f in staged} | {"python"})
+    check(all(removed.count(t) == 2 for t in tops),
+          f"the installer clears and the uninstaller removes each of the app's folders {tops} ({removed})")
+    deleted = re.findall(r'Delete "\$INSTDIR\\([^"\\]+)"', nsi)
+    check({"OpenSolver.exe", "solver.exe", "${UNINSTALLER}"} <= set(deleted), f"and its programs ({deleted})")
+    check("RequestExecutionLevel user" in nsi and "$LOCALAPPDATA\\Programs\\" in nsi,
+          "a per-user install, into %LOCALAPPDATA%\\Programs")
+
+    # The icon is drawn from the viewer's favicon by a script: no image tools needed to build.
+    sys.path.insert(0, pk)
+    import make_icon
+    with tempfile.TemporaryDirectory() as td:
+        ico = os.path.join(td, "icon.ico")
+        subprocess.run([sys.executable, os.path.join(pk, "make_icon.py"),
+                        os.path.join(ROOT, "viewer", "static", "favicon.svg"), ico])
+        data = open(ico, "rb").read() if os.path.exists(ico) else b""
+        n = len(make_icon.SIZES)
+        ok = len(data) > 6 + 16 * n and struct.unpack("<HHH", data[:6]) == (0, 1, n)
+        entries = [struct.unpack("<BBBBHHII", data[6 + 16 * i:22 + 16 * i]) for i in range(n)] if ok else []
+        ok = ok and all(e[6] + e[7] <= len(data) for e in entries) and data[entries[-1][7]:entries[-1][7] + 4] == b"\x89PNG"
+        check(ok, f"make_icon.py draws an icon of {n} sizes ({len(data)} bytes)")
+    try:
+        import xml.dom.minidom
+        xml.dom.minidom.parse(os.path.join(pk, "launcher.manifest"))
+        check(True, "launcher.manifest is well-formed")
+    except Exception as e:  # noqa: BLE001
+        check(False, f"launcher.manifest is well-formed ({e})")
+    for name in ("smoke.py", "launcher.cpp", "launcher.rc.in"):
+        check(os.path.isfile(os.path.join(pk, name)), f"{name} is there")
+    gxx = shutil.which("g++")
+    if sys.platform != "win32" or not gxx:
+        print("  (not Windows with g++: the launcher is not compiled)")
+        return
+    r = subprocess.run([gxx, "-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-municode",
+                        "-D_WIN32_WINNT=0x0A00", '-DOPENSOLVER_ISA="x86-64-v3"', os.path.join(pk, "launcher.cpp")],
+                       capture_output=True, text=True)
+    check(r.returncode == 0, f"the launcher compiles without a warning {r.stderr.strip()[:300]}")
+    if shutil.which("make"):
+        r = make("-n", "windows-installer")
+        check(r.returncode == 0 and "packaging/windows/build.sh" in r.stdout, "make windows-installer is a target that runs build.sh")
+
+
 if __name__ == "__main__":
     test_commands_doc()
+    test_windows_app()   # before the macOS checks, which cannot run build.sh on Windows (#537)
     test_macos_app()
     test_dist()
     test_install()

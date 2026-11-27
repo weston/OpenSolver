@@ -884,7 +884,7 @@ GPU, with one of three backends:
 | GPU | Backend | Needs |
 |---|---|---|
 | Apple Silicon | Metal | macOS; the default device there |
-| NVIDIA (Maxwell or later) | CUDA | the NVIDIA driver, and NVRTC, the CUDA runtime compiler: `nvrtc64_*.dll` / `libnvrtc.so` from the [CUDA toolkit](https://developer.nvidia.com/cuda-downloads) (found through `CUDA_PATH`) or next to the solver |
+| NVIDIA (Maxwell or later) | CUDA | the NVIDIA driver, and NVRTC, the CUDA runtime compiler: `nvrtc64_*.dll` / `libnvrtc.so` from the [CUDA toolkit](https://developer.nvidia.com/cuda-downloads) (found through `CUDA_PATH`) or next to the solver. Without NVRTC the NVIDIA driver's own OpenCL is used |
 | AMD Radeon, Intel, others | OpenCL 1.2 | the GPU driver (AMD Adrenalin ships OpenCL); 32 KB of work-group memory |
 
 `list_algorithms` shows a `v4_gpu` line naming the device when there is one, e.g.

@@ -1169,6 +1169,19 @@ button.rl-card.end { cursor: default; }
 .sub-settings { margin: 10px 0 0 8px; padding: 12px 12px 12px 14px; border-left: 2px solid var(--border-strong); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--surface-2); }
 .settings-layout { max-width: 640px; margin: 24px auto; padding: 0 24px; }
 .settings-fields { display: grid; gap: 20px; max-width: 360px; }
+.device-settings { display: grid; gap: 12px; }
+.bench { display: grid; gap: 10px; }
+.bench-intro { margin: 0; font-size: 12px; line-height: 1.5; }
+.bench-progress { display: grid; gap: 6px; font-size: 12px; }
+.bench-bar { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.bench-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+@media (prefers-reduced-motion: reduce) { .bench-bar i { transition: none; } }
+.bench-table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; width: 100%; }
+.bench-table th, .bench-table td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.bench-table th:first-child, .bench-table td:first-child { text-align: left; }
+.bench-table th { color: var(--text-3); font-weight: 500; }
+.bench-verdict { margin: 0; font-size: 13px; line-height: 1.5; }
+.bench-error { margin: 0; font-size: 12px; color: var(--danger); }
 .setting-help { position: relative; display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 8px; }
 .setting-help button { margin-bottom: 4px; width: 24px; height: 24px; padding: 0; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--surface-2); color: var(--text-2); font-weight: 700; }
 .setting-help button:hover, .setting-help button:focus-visible { border-color: var(--accent); color: var(--accent); }

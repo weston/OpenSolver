@@ -43,8 +43,8 @@ export function initSettings() {
   };
   row.onpointerenter = (e) => { if (e.pointerType !== "touch") showHelp(true); };
   row.onpointerleave = () => { if (!row.contains(document.activeElement)) showHelp(false); };
-  row.onfocusin = () => showHelp(true);
-  row.onfocusout = (e) => { if (!row.contains(e.relatedTarget)) showHelp(false); };
+  row.addEventListener("focusin", () => showHelp(true));
+  row.addEventListener("focusout", (e) => { if (!row.contains(e.relatedTarget)) showHelp(false); });
   help.onclick = () => { help.focus(); pinned = !pinned; showHelp(pinned); };
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !tip.hidden) showHelp(false); });
   const device = document.getElementById("solve-device");

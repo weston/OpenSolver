@@ -3,6 +3,7 @@
 #include "solver.hpp"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace pio {
 
@@ -79,7 +80,7 @@ bool FlopStability::observe(long long iteration, const GameTree& tree, const Sol
   }
   last_iteration_ = iteration;
   if (iteration < next_[slot_]) return false;
-  while (next_[slot_] < iteration) {  // a solve resumed past this checkpoint
+  while (next_[slot_] < iteration) {
     next_[slot_] *= 2;
     prior_[slot_].reset();
     slot_ = (slot_ + 1) % next_.size();

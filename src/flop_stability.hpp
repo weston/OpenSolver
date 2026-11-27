@@ -22,7 +22,6 @@ class FlopStability {
   static Snapshot capture(const GameTree& tree, const Solver& solver);
   static bool within_limits(const Snapshot& before, const Snapshot& now, double root_matchups);
 
-  // One snapshot per sequence. Each is compared with its successor exactly one doubling later.
   std::array<long long, 4> next_{40, 50, 60, 75};
   std::array<std::optional<Snapshot>, 4> prior_;
   unsigned slot_ = 0;

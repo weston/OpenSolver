@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "average_sampling.hpp"
 #include "game.hpp"
 #include "reach_digits.hpp"
 
@@ -141,18 +142,20 @@ class Solver {
   }
   void restart_flop_opening() {
     const bool previously_eligible = average_sampling_ != AverageSampling::Dense;
+    const bool allow_fp16 = g_.cfg.river_sizing == RiverSizing::Smart || fp16_sums_;
     const bool allow_bfloat = g_.cfg.river_sizing == RiverSizing::Smart || bfloat_regrets_;
     set_average_sampling(AverageSampling::Dense);
     set_flop_opening(opening_ == FlopOpening::Edited ? FlopOpening::SquareRoot : opening_);
     if ((g_.cfg.river_sizing == RiverSizing::Smart || previously_eligible) && opening_ == FlopOpening::SquareRoot &&
         std::none_of(g_.nodes.begin(), g_.nodes.end(), [](const GNode& n) { return n.flags != 0; }))
-      prepare_sampled_averaging(allow_bfloat);
+      prepare_sampled_averaging(allow_bfloat, allow_fp16);
   }
-  void prepare_sampled_averaging(bool allow_bfloat = true) {
+  void prepare_sampled_averaging(bool allow_bfloat = true, bool allow_fp16 = true) {
     constexpr uint64_t min_strategy_floats = (uint64_t{1} << 30) / sizeof(float);
     if (g_.storage_floats >= min_strategy_floats) {
       set_average_sampling(AverageSampling::AwaitingFirstGo);
       set_bfloat_regrets(allow_bfloat);
+      set_fp16_sums(allow_fp16);
     }
   }
   bool is_bfloat_target(double target_chips) const {
@@ -167,11 +170,24 @@ class Solver {
     set_average_sampling(g_.iterations == 0 && (tight_target || compact) ? AverageSampling::Bounded : AverageSampling::Dense);
     set_bfloat_regrets(compact);
   }
+  AverageStep strategy_average_step(int t) const {
+    return average_step(t, params.gamma, avg_delay, avg_reset, uses_sampled_averaging(), uses_fp16_sums(t));
+  }
+  bool fp16_sums() const { return fp16_sums_; }
+  bool uses_fp16_sums(int t) const { return fp16_sums_ && t <= 1024 && uses_bfloat_regrets(t); }
+  void set_fp16_sums(bool enabled) {
+    fp16_sums_ = enabled && bfloat_regrets_;
+    if (fp16_sums_) {
+      for (const auto& range : g_.init_reach)
+        if (std::any_of(range.begin(), range.end(), [](float x) { return !(x >= 0.f && x <= 1.f); })) fp16_sums_ = false;
+    }
+  }
   bool bfloat_regrets() const { return bfloat_regrets_; }
   bool uses_bfloat_regrets(int t) const { return t > 8 && bfloat_regrets_ && uses_sampled_averaging(); }
   void set_bfloat_regrets(bool enabled) {
     bfloat_regrets_ = enabled && average_sampling_ != AverageSampling::Dense &&
                       g_.root_board_len() == 3 && g_.perm_all.size() <= 1;
+    if (!bfloat_regrets_) fp16_sums_ = false;
   }
   AverageSampling average_sampling() const { return average_sampling_; }
   bool uses_sampled_averaging() const { return average_sampling_ == AverageSampling::Bounded; }
@@ -179,7 +195,7 @@ class Solver {
     const bool eligible = opening_ == FlopOpening::SquareRoot && uses_flop_ip_first() &&
                           params == DcfrParams{} && avg_reset && avg_delay == 32 && !g_.payoff().icm.enabled;
     average_sampling_ = eligible ? mode : AverageSampling::Dense;
-    if (average_sampling_ == AverageSampling::Dense) bfloat_regrets_ = false;
+    if (average_sampling_ == AverageSampling::Dense) set_bfloat_regrets(false);
   }
   int whole_tree_first_player() const { return uses_flop_ip_first() ? 1 : first_player; }
   bool parallel = true;
@@ -339,7 +355,7 @@ class Solver {
 
   // Stats from the tree root.
   RootStats root_stats();
-  RootStats root_stats_from_bfloat16(const uint16_t* committed_regrets) const;
+  RootStats root_stats_from_bfloat16(const uint16_t* committed_regrets, const uint16_t* committed_sums = nullptr) const;
 
   // Strategies at decision node (A * H[acting]): current (regret matching) / average.
   void current_strategy(uint32_t ni, float* out) const;
@@ -382,7 +398,8 @@ class Solver {
 
   GameTree& g_;
   const uint16_t* report_bfloat16_regrets_ = nullptr;
-  bool bfloat_regrets_ = false;
+  const uint16_t* report_fp16_sums_ = nullptr;
+  bool bfloat_regrets_ = false, fp16_sums_ = false;
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;
   bool accumulate_ = true;  // t > avg_delay: whether this iteration feeds the strategy sum
   FlopOpening opening_ = FlopOpening::Ordinary;

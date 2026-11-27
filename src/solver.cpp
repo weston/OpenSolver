@@ -1,6 +1,6 @@
 #include "solver.hpp"
 #include "bfloat_regrets.hpp"
-#include "average_sampling.hpp"
+#include "fp16_sums.hpp"
 #include "compact_rows.hpp"
 
 #include <algorithm>
@@ -1337,20 +1337,23 @@ void Solver::apply_elimination(uint32_t ni, float* out) const {
   }
 }
 
-template <int actions, class Regret>
-static void average_float_strategy(const float* sums, const Regret* regrets, float* out, int hands) {
+static float expand_sum(float x) { return x; }
+static float expand_sum(uint16_t x) { return fp16_sum_value(x); }
+
+template <int actions, class Sum, class Regret>
+static void average_float_strategy(const Sum* sums, const Regret* regrets, float* out, int hands) {
   uint32_t max_sum_bits = 0;
   for (int h = 0; h < hands; ++h) {
     float sum = 0;
-    for (int a = 0; a < actions; ++a) sum += sums[a * hands + h];
+    for (int a = 0; a < actions; ++a) sum += expand_sum(sums[a * hands + h]);
     max_sum_bits = std::max(max_sum_bits, std::bit_cast<uint32_t>(std::max(0.f, sum)));
   }
   const float threshold = std::bit_cast<float>(max_sum_bits) * 1e-4f;
   for (int h = 0; h < hands; ++h) {
     float total = 0;
-    for (int a = 0; a < actions; ++a) total += sums[a * hands + h];
+    for (int a = 0; a < actions; ++a) total += expand_sum(sums[a * hands + h]);
     if (total > threshold) {
-      for (int a = 0; a < actions; ++a) out[a * hands + h] = sums[a * hands + h] / total;
+      for (int a = 0; a < actions; ++a) out[a * hands + h] = expand_sum(sums[a * hands + h]) / total;
     } else {
       float pos[actions], sum = 0;
       for (int a = 0; a < actions; ++a) {
@@ -1370,21 +1373,29 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
   const int H = g_.num_hands(n.player);
   ArenaScope sc;
   const float* S = g_.strat_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
+  const uint16_t* half = report_fp16_sums_ ? report_fp16_sums_ + n.storage : nullptr;
+  if (!n.flags && !g_.compressed && !predictive && !sqrt_weights_ && A <= 4) {
+    const auto read_average = [&](const auto* sums, const auto* regrets) {
+      switch (A) {
+        case 1: return average_float_strategy<1>(sums, regrets, out, H);
+        case 2: return average_float_strategy<2>(sums, regrets, out, H);
+        case 3: return average_float_strategy<3>(sums, regrets, out, H);
+        case 4: return average_float_strategy<4>(sums, regrets, out, H);
+      }
+    };
+    if (half) return read_average(half, report_bfloat16_regrets_ + n.storage);
+    if (report_bfloat16_regrets_) return read_average(S, report_bfloat16_regrets_ + n.storage);
+    return read_average(S, g_.regrets.data() + n.storage);
+  }
+  if (half) {
+    const size_t count = static_cast<size_t>(A) * H;
+    auto* decoded = sc.a.alloc(count);
+    for (size_t i = 0; i < count; ++i) decoded[i] = fp16_sum_value(half[i]);
+    S = decoded;
+  }
   if (n.flags & GF_LOCKED) {
     std::memcpy(out, S, sizeof(float) * A * H);
     return;
-  }
-  if (!n.flags && !g_.compressed && !predictive && !sqrt_weights_ && A <= 4) {
-    const auto read_average = [&](const auto* regrets) {
-      switch (A) {
-        case 1: return average_float_strategy<1>(S, regrets, out, H);
-        case 2: return average_float_strategy<2>(S, regrets, out, H);
-        case 3: return average_float_strategy<3>(S, regrets, out, H);
-        case 4: return average_float_strategy<4>(S, regrets, out, H);
-      }
-    };
-    if (report_bfloat16_regrets_) return read_average(report_bfloat16_regrets_ + n.storage);
-    return read_average(g_.regrets.data() + n.storage);
   }
   float* sum = sc.a.alloc_zero(H);
   for (int a = 0; a < A; ++a) {
@@ -2222,7 +2233,7 @@ void Solver::iterate(int t, int first) {
     }
   };
   if (t == 9) round_regrets();
-  const auto average = average_step(t, params.gamma, avg_delay, avg_reset, uses_sampled_averaging());
+  const auto average = strategy_average_step(t);
   strat_mult_ = average.discount;
   accumulate_ = average.weight != 0.f && (avg_reset || t > avg_delay);
   if (average.reset) reset_strategy_sums();
@@ -2247,6 +2258,8 @@ void Solver::iterate(int t, int first) {
     // quarter of the cost (3.5% per iteration on threebet_mono's monotone flop when done every iteration)
     if (t % 4 == 0) symmetrize_root_street(p);
   }
+  if (uses_fp16_sums(t) && (t == 9 || accumulate_))
+    for (float& x : g_.strat) x = fp16_sum_value(fp16_sum_word(x));
 }
 
 // #300. On a board with suit symmetries (both ranges symmetric too: GameTree::perm_all), suit-swapped
@@ -2829,9 +2842,10 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
 }
 
 
-RootStats Solver::root_stats_from_bfloat16(const uint16_t* committed_regrets) const {
+RootStats Solver::root_stats_from_bfloat16(const uint16_t* committed_regrets, const uint16_t* committed_sums) const {
   Solver reader = *this;
   reader.report_bfloat16_regrets_ = committed_regrets;
+  reader.report_fp16_sums_ = committed_sums;
   return reader.root_stats();
 }
 

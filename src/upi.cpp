@@ -408,6 +408,9 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   solver_->select_sampled_averaging(accuracy_solve ? target : 0., algorithm_ == "v4_metal");
   if (!sub && (accuracy_solve || target > 0.) && !solver_->is_bfloat_target(target))
     solver_->set_bfloat_regrets(false);
+  if (solver_->fp16_sums() && (tree_->iterations >= 1024 ||
+      std::any_of(tree_->strat.begin(), tree_->strat.end(), [](float x) { return !(x >= 0.f && x <= 1024.f); })))
+    solver_->set_fp16_sums(false);
   stop_flag_ = false;
   solving_ = true;
   // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)
@@ -550,6 +553,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           tree_->train_missing_rivers = false;
         }
         ++tree_->iterations;
+        if (tree_->iterations >= 1024 && solver_->fp16_sums()) solver_->set_fp16_sums(false);
         solver_->update_flop_opening();
         ++iterations_;
         if (trial) {

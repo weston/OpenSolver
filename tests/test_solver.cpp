@@ -8,6 +8,7 @@
 #include <string>
 
 #include "../src/cards.hpp"
+#include "../src/fp16_sums.hpp"
 #include "../src/game.hpp"
 #include "../src/parallel.hpp"
 #include "../src/range.hpp"
@@ -25,6 +26,8 @@ static bool same_bytes(const V& a, const V& b) {
 }
 
 static bool bfloat_regret_reports() {
+  if (fp16_sum_word(-0.f) != 0x8000u ||
+      std::bit_cast<uint32_t>(fp16_sum_value(0x8000u)) != std::bit_cast<uint32_t>(-0.f)) return false;
   GameConfig cfg;
   std::string error;
   parse_cards("Ah3cQd", cfg.board);
@@ -41,23 +44,40 @@ static bool bfloat_regret_reports() {
   solver.flop_ip_first = true;
   solver.avg_delay = 32;
   solver.set_flop_opening(FlopOpening::SquareRoot);
-  solver.set_average_sampling(AverageSampling::AwaitingFirstGo);
-  solver.set_bfloat_regrets(true);
+  const auto actual_storage = game.storage_floats;
+  game.storage_floats = (uint64_t{1} << 30) / sizeof(float);
+  solver.prepare_sampled_averaging();
+  game.storage_floats = actual_storage;
   solver.select_sampled_averaging(std::nextafter(.3, 1.), true);
-  if (solver.uses_bfloat_regrets(8) || !solver.uses_bfloat_regrets(9)) return false;
+  if (solver.uses_bfloat_regrets(8) || !solver.uses_bfloat_regrets(9) ||
+      solver.uses_fp16_sums(8) || !solver.uses_fp16_sums(9) ||
+      !solver.uses_fp16_sums(1024) || solver.uses_fp16_sums(1025)) return false;
+  auto retained = solver.strategy_average_step(99);
+  if (solver.strategy_average_step(97).weight <= 3.f || solver.strategy_average_step(98).weight != 0.f ||
+      retained.weight != float(1. + std::pow(99. / 100., 4.)) ||
+      retained.discount != float(std::pow(98. / 100., 4.)) ||
+      solver.strategy_average_step(192).weight != 0.f || solver.strategy_average_step(193).weight <= 1.f ||
+      solver.strategy_average_step(194).weight != 1.f) return false;
   game.iterations = 9;
   solver.update_flop_opening();
   std::vector<uint16_t> words(game.storage_floats);
+  std::vector<uint16_t> sums(game.storage_floats);
   for (size_t i = 0; i < words.size(); ++i) {
     game.regrets[i] = (static_cast<int>(i % 43) - 21) * .5f;
     words[i] = static_cast<uint16_t>(std::bit_cast<uint32_t>(game.regrets[i]) >> 16);
-    game.strat[i] = (i % 4 == 0) ? static_cast<float>(i % 53) : 0.f;
+    sums[i] = fp16_sum_word((i % 4 == 0) ? static_cast<float>(i % 53) / 7.f : 0.f);
+    game.strat[i] = fp16_sum_value(sums[i]);
   }
   const auto expected = solver.root_stats();
   std::fill(game.regrets.begin(), game.regrets.end(), 17.f);
   const auto stale = solver.root_stats();
   const auto reported = solver.root_stats_from_bfloat16(words.data());
   if (std::memcmp(&expected, &reported, sizeof(expected)) || !std::memcmp(&stale, &reported, sizeof(stale))) return false;
+
+  std::fill(game.strat.begin(), game.strat.end(), 1.f);
+  const auto stale_sums = solver.root_stats_from_bfloat16(words.data());
+  const auto paired = solver.root_stats_from_bfloat16(words.data(), sums.data());
+  if (std::memcmp(&expected, &paired, sizeof(expected)) || !std::memcmp(&stale_sums, &paired, sizeof(paired))) return false;
 
   parse_cards("Ah3hQh", cfg.board);
   GameTree symmetric;

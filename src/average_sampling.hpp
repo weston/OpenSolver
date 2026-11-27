@@ -8,18 +8,19 @@ struct AverageStep {
   bool reset;
 };
 
-inline AverageStep average_step(int t, double gamma, int delay, bool reset_average, bool sampled) {
+inline AverageStep average_step(int t, double gamma, int delay, bool reset_average, bool sampled, bool packed_sums) {
   const bool reset = reset_average && delay > 0 && t - 1 == delay;
   const auto discount = [&](int previous) { return std::pow((previous + 1.) / (t + 1.), gamma); };
   if (sampled && reset_average) {
     const bool before_reset = delay >= 16 && t <= delay;
     const long long anchor = before_reset ? 8 : std::max(16LL, 1LL + delay);
-    if (t > anchor && (before_reset || t - anchor <= 64)) {
-      if ((t - anchor) % 4 != 0) return {1.f, 0.f, false};
-      // Sum four discounted contributions using the current reach and policy for the interval.
+    const long long elapsed = t - anchor;
+    const int stride = before_reset || elapsed <= 64 ? 4 : packed_sums && elapsed <= 64 + 96 ? 2 : 1;
+    if (elapsed > 0 && stride > 1) {
+      if (elapsed % stride != 0) return {1.f, 0.f, false};
       double weight = 0;
-      for (int i = 3; i >= 0; --i) weight += discount(t - i);
-      return {float(discount(t - 4)), float(weight), false};
+      for (int i = stride - 1; i >= 0; --i) weight += discount(t - i);
+      return {float(discount(t - stride)), float(weight), false};
     }
   }
   return {float(discount(t - 1)), 1.f, reset};

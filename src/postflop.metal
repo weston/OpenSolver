@@ -11,11 +11,18 @@ using RegretWord = float;
 float load_regret(float x) { return x; }
 float store_regret(float x) { return x; }
 #endif
+#if WSOLVER_FP16_SUMS
+using SumWord = half;
+constant float sum_scale = 32.f;
+#else
+using SumWord = float;
+constant float sum_scale = 1.f;
+#endif
 #define TRAVERSAL_BUFFERS                                                                                            \
   device const TraversalNode *nodes [[buffer(0)]], device const uint *ids [[buffer(1)]],                             \
       constant IterationParams &q [[buffer(2)]], device float *oop_reach [[buffer(3)]],                              \
       device float *ip_reach [[buffer(4)]], device float *values [[buffer(5)]], device RegretWord* regrets [[buffer(6)]], \
-      device float *strategy_sums [[buffer(7)]], device const uchar2 *cards [[buffer(8)]]
+      device SumWord* strategy_sums [[buffer(7)]], device const uchar2 *cards [[buffer(8)]]
 #define NODE_THREADS                                                                 \
   uint k [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
       uint width [[threads_per_threadgroup]]
@@ -24,10 +31,10 @@ constant uint average_mode [[function_constant(1)]];
 float average_reach(float reach, constant IterationParams& q) {
   return average_mode == WeightedAverage ? reach * q.sample_weight : reach;
 }
-void update_average(device float* sums, device const float* old, uint index, float reach, float probability,
+void update_average(device SumWord* sums, device const SumWord* old, uint index, float reach, float probability,
                     constant IterationParams& q) {
   if (average_mode != SkipAverage) {
-    sums[index] = q.accumulate ? fma(average_reach(reach, q), probability, old[index] * q.average_discount) : old[index];
+    sums[index] = q.accumulate ? SumWord(fma(sum_scale * average_reach(reach, q), probability, float(old[index]) * q.average_discount)) : old[index];
   }
 }
 template <class T> T regret_weight(T value) {
@@ -55,7 +62,7 @@ kernel void propagate_reach(TRAVERSAL_BUFFERS, device const RegretWord* old_regr
 }
 kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)]],
                           device const ushort* perms [[buffer(10)]], device const RegretWord* old_regrets [[buffer(12)]],
-                          device const float* old_sums [[buffer(13)]], NODE_THREADS) {
+                          device const SumWord* old_sums [[buffer(13)]], NODE_THREADS) {
   uint i = ids[k];
   TraversalNode n = nodes[i];
   uint H = q.p ? q.hands1 : q.hands0;
@@ -94,7 +101,7 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
   }
 }
 kernel void advance_forced(TRAVERSAL_BUFFERS, device const RegretWord* old_regrets [[buffer(12)]],
-                           device const float* old_sums [[buffer(13)]], NODE_THREADS) {
+                           device const SumWord* old_sums [[buffer(13)]], NODE_THREADS) {
   TraversalNode n = nodes[ids[k]];
   uint hands = q.p ? q.hands1 : q.hands0;
   device const float* reach = (q.p ? ip_reach : oop_reach) + n.reach_offset[q.p];
@@ -105,7 +112,7 @@ kernel void advance_forced(TRAVERSAL_BUFFERS, device const RegretWord* old_regre
     float weight = reach[h];
     if (blocked(cards[q.p * q.stride + h], n.public_cards)) weight = 0;
     if (average_mode != SkipAverage)
-      strategy_sums[j] = q.accumulate ? fma(old_sums[j], q.average_discount, average_reach(weight, q)) : old_sums[j];
+      strategy_sums[j] = q.accumulate ? SumWord(fma(float(old_sums[j]), q.average_discount, sum_scale * average_reach(weight, q))) : old_sums[j];
   }
 }
 template <typename Sum = float, typename Reach, typename Entry>
@@ -211,7 +218,7 @@ kernel void terminal(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buf
 kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
                             device const PrefixEntry* indices [[buffer(10)]],
                             device const HandPrefixes* heroes [[buffer(11)]],
-                            device const RegretWord* old_regrets [[buffer(12)]], device const float* old_sums [[buffer(13)]],
+                            device const RegretWord* old_regrets [[buffer(12)]], device const SumWord* old_sums [[buffer(13)]],
                             threadgroup float* prefix [[threadgroup(0)]], NODE_THREADS) {
   TraversalNode n = nodes[ids[k]];
   TraversalNode call = nodes[n.child];
@@ -322,7 +329,7 @@ float3 raise_strategy(device const RegretWord* r, uint j, uint H) {
 }
 
 template <uint N, typename Vec>
-float update_actions(device RegretWord* regrets, device float* sums, device const RegretWord* old_r, device const float* old_s,
+float update_actions(device RegretWord* regrets, device SumWord* sums, device const RegretWord* old_r, device const SumWord* old_s,
                      constant IterationParams& q, uint j, uint H, float reach, Vec policy, Vec cfv) {
   float value = policy.x * cfv.x;
   for (uint a = 1; a < N; ++a) value = fma(policy[a], cfv[a], value);
@@ -365,7 +372,7 @@ float3 round_reach(device const RiverRound& r, device const RegretWord* opp_r, f
 }
 
 float update_river_round(device const RiverRound& r, constant IterationParams& q, device const RegretWord* old_r,
-                         device const float* old_s, device RegretWord* regrets, device float* strategy_sums, uint h, uint H,
+                         device const SumWord* old_s, device RegretWord* regrets, device SumWord* strategy_sums, uint h, uint H,
                          float reach, bool leading, float3 sd, float3 mass) {
   uint p = q.p;
   float value;
@@ -419,7 +426,7 @@ float update_river_round(device const RiverRound& r, constant IterationParams& q
 kernel void river_bet_check(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
                             device const PrefixEntry* indices [[buffer(10)]],
                             device const HandPrefixes* heroes [[buffer(11)]], device const RegretWord* old_r [[buffer(12)]],
-                            device const float* old_s [[buffer(13)]], device const RiverRound* rounds [[buffer(14)]],
+                            device const SumWord* old_s [[buffer(13)]], device const RiverRound* rounds [[buffer(14)]],
                             threadgroup float2* prefix [[threadgroup(0)]], NODE_THREADS) {
   device const RiverRound& r = rounds[k];
   TraversalNode n = nodes[r.root];
@@ -474,7 +481,7 @@ float4 two_bet_reaches(device const TwoBetRiver& r, device const RegretWord* opp
 }
 
 float update_two_bet_river(device const TwoBetRiver& r, constant IterationParams& q, device const RegretWord* old_r,
-                           device const float* old_s, device RegretWord* regrets, device float* sums, uint h, uint H,
+                           device const SumWord* old_s, device RegretWord* regrets, device SumWord* sums, uint h, uint H,
                            float reach, bool bettor, bool can_fold, float fold_value, float4 sd, float4 mass) {
   uint p = q.p;
   if (bettor) {
@@ -509,14 +516,14 @@ float update_two_bet_river(device const TwoBetRiver& r, constant IterationParams
 
 #define TWO_BET_BUFFERS TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]], \
     device const PrefixEntry* indices [[buffer(10)]], device const HandPrefixes* heroes [[buffer(11)]], \
-    device const RegretWord* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]], \
+    device const RegretWord* old_r [[buffer(12)]], device const SumWord* old_s [[buffer(13)]], \
     device const TwoBetRiver* rounds [[buffer(14)]]
 
 template <typename Vec>
 void solve_two_bet_river(device const TwoBetRiver& r, device const TraversalNode& n, device const BoardPrefixes& b,
                          device const PrefixEntry* indices, device const HandPrefixes* heroes, device const uchar2* cards,
-                         device const float* opp, device const float* own, device const RegretWord* old_r, device const float* old_s,
-                         device RegretWord* regrets, device float* sums, device float* values, constant IterationParams& q,
+                         device const float* opp, device const float* own, device const RegretWord* old_r, device const SumWord* old_s,
+                         device RegretWord* regrets, device SumWord* sums, device float* values, constant IterationParams& q,
                          threadgroup Vec* prefix, uint tid, uint width) {
   uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
   device const RegretWord* opp_r = q.phase ? regrets : old_r;
@@ -601,8 +608,8 @@ TWO_BET_KERNEL(river_two_bets_wide, float2)
 template <bool paired, typename Value, typename Entry, uint channels>
 void solve_river_rounds(device const RiverRound* branches, device const TraversalNode& root, device const BoardPrefixes& b,
                       device const PrefixEntry* indices, device const HandPrefixes* heroes, device const uchar2* cards,
-                      device const float* opp, device const float* own, device const RegretWord* old_r, device const float* old_s,
-                      device RegretWord* regrets, device float* sums, device float* values, constant IterationParams& q,
+                      device const float* opp, device const float* own, device const RegretWord* old_r, device const SumWord* old_s,
+                      device RegretWord* regrets, device SumWord* sums, device float* values, constant IterationParams& q,
                       threadgroup Entry* prefix, uint tid, uint width) {
   uint p = q.p, H = p ? q.hands1 : q.hands0, O = p ? q.hands0 : q.hands1;
   bool leading = paired ? root.actor != p : root.actor == p;
@@ -672,7 +679,7 @@ void solve_river_rounds(device const RiverRound* branches, device const Traversa
 #define RIVER_ROUND_KERNEL(NAME, PAIRED, RECORD, BRANCHES, VALUE, ENTRY, CHANNELS) \
 kernel void NAME(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]], \
                  device const PrefixEntry* indices [[buffer(10)]], device const HandPrefixes* heroes [[buffer(11)]], \
-                 device const RegretWord* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]], \
+                 device const RegretWord* old_r [[buffer(12)]], device const SumWord* old_s [[buffer(13)]], \
                  device const RECORD* rounds [[buffer(14)]], threadgroup ENTRY* prefix [[threadgroup(0)]], NODE_THREADS) { \
   device const TraversalNode& root = nodes[rounds[k].root]; \
   device const RiverRound* branches = BRANCHES; \

@@ -40,6 +40,7 @@ constexpr uint8_t kConfigEditedOpening = 8;
 constexpr uint8_t kConfigSampledAveraging = 16;
 constexpr uint8_t kConfigAwaitingFirstGo = 32;
 constexpr uint8_t kConfigBfloatRegrets = 64;
+constexpr uint8_t kConfigFp16Sums = 128;
 constexpr char kMagic[8] = {'O', 'U', 'P', 'I', 'S', 'A', 'V', '2'};
 constexpr char kTrailer[8] = {'O', 'U', 'P', 'I', 'E', 'N', 'D', '!'};
 // 6: version 5 with check-downs built as one showdown node (set_collapse_checkdowns on, #484). The tree
@@ -304,7 +305,7 @@ Header read_header(GzIn& in) {
 
 void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const std::vector<std::string>& info,
                   long long iters, double secs, const double* stats, bool flop_ip_first, FlopOpening opening,
-                  AverageSampling sampling, bool bfloat_regrets) {
+                  AverageSampling sampling, bool bfloat_regrets, bool fp16_sums) {
   w.put(static_cast<uint8_t>(c.board.size()));
   for (int x : c.board) w.put(static_cast<uint8_t>(x));
   for (int i = 0; i < 3; ++i) w.put(c.pot[i]);
@@ -362,7 +363,7 @@ void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const s
                         (opening == FlopOpening::Edited ? kConfigEditedOpening : 0) |
                         (sampling == AverageSampling::Bounded ? kConfigSampledAveraging : 0) |
                         (sampling == AverageSampling::AwaitingFirstGo ? kConfigAwaitingFirstGo : 0) |
-                        (bfloat_regrets ? kConfigBfloatRegrets : 0);
+                        (bfloat_regrets ? kConfigBfloatRegrets : 0) | (fp16_sums ? kConfigFp16Sums : 0);
   if (stats || flags) {
     w.put(static_cast<uint8_t>(stats ? 1 : 0));
     if (stats)
@@ -373,7 +374,7 @@ void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const s
 
 void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::string>& info, long long& iters,
                  double& secs, bool& has_stats, double* stats, bool& flop_ip_first, FlopOpening& opening,
-                 AverageSampling& sampling, bool& bfloat_regrets) {
+                 AverageSampling& sampling, bool& bfloat_regrets, bool& fp16_sums) {
   has_stats = false;
   uint8_t n = r.get<uint8_t>();
   if (n != 0 && (n < 3 || n > 5)) throw CmdError{"file format error (board)"};  // 0 = preflop tree
@@ -471,6 +472,7 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
   if (flags & kConfigSampledAveraging) sampling = AverageSampling::Bounded;
   else if (flags & kConfigAwaitingFirstGo) sampling = AverageSampling::AwaitingFirstGo;
   bfloat_regrets = (flags & kConfigBfloatRegrets) != 0;
+  fp16_sums = (flags & kConfigFp16Sums) != 0;
 }
 
 struct LoadedConfig {
@@ -484,7 +486,7 @@ struct LoadedConfig {
   bool flop_ip_first = false;
   FlopOpening opening = FlopOpening::Ordinary;
   AverageSampling sampling = AverageSampling::Dense;
-  bool bfloat_regrets = false;
+  bool bfloat_regrets = false, fp16_sums = false;
   double stats[5] = {0, 0, 0, 0, 0};
 };
 
@@ -497,7 +499,7 @@ LoadedConfig read_config_section(GzIn& in) {
   in.read(buf.data(), len);
   Reader r{buf.data(), buf.data() + buf.size()};
   read_config(r, lc.cfg, lc.pm, lc.info, lc.iters, lc.secs, lc.has_stats, lc.stats, lc.flop_ip_first, lc.opening,
-              lc.sampling, lc.bfloat_regrets);
+              lc.sampling, lc.bfloat_regrets, lc.fp16_sums);
   return lc;
 }
 
@@ -811,7 +813,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   write_config(w, g.cfg, g.payoff(), tree_info_, g.iterations, solve_seconds_, stats_p, lossless && solver_->uses_flop_ip_first(),
                lossless && solver_->uses_flop_ip_first() ? solver_->flop_opening() : FlopOpening::Ordinary,
                lossless ? solver_->average_sampling() : AverageSampling::Dense,
-               lossless && solver_->bfloat_regrets());
+               lossless && solver_->bfloat_regrets(), lossless && solver_->fp16_sums());
   out.put(static_cast<uint32_t>(w.buf.size()));
   out.write(w.buf.data(), w.buf.size());
   Writer m;
@@ -1003,6 +1005,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   if (!(lc.h.mode & kModeQuant)) {
     solver_->set_average_sampling(lc.sampling);
     solver_->set_bfloat_regrets(lc.bfloat_regrets);
+    solver_->set_fp16_sums(lc.fp16_sums);
   }
   solver_->pruning = pruning_;
   solver_->prune_period = prune_period_;

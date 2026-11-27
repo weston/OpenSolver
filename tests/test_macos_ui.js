@@ -24,6 +24,18 @@ for (const [level, mode] of [['off', false], ['medium', true], ['strong', 'singl
   smart.dispatchEvent(new Event('change', { bubbles: true }));
   check(smartTree() === mode, level + ' selected the wrong tree');
 }
+const help = $('smart-tree-help'), tip = $('smart-tree-tip');
+check(help && help.getBoundingClientRect().width > 0, 'Smart tree help button is missing');
+check(tip && !tip.getClientRects().length, 'Smart tree tooltip should start closed');
+help.click();
+const bounds = tip.getBoundingClientRect();
+check(bounds.height > 0 && tip.contains(document.elementFromPoint(bounds.left + 8, bounds.bottom - 8))
+  && ['Off', 'Medium', 'Strong'].every(level => tip.textContent.includes(level)), 'Smart tree tooltip is not visible above the setting');
+check(smart.value === 'strong', 'Opening the tooltip changed the tree setting');
+help.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+check(!tip.getClientRects().length, 'Escape did not dismiss the tooltip');
+smart.focus();
+check(tip.getClientRects().length, 'Focusing the level selector did not show its description');
 $('drill-ahead').value = '4';
 $('drill-ahead').dispatchEvent(new Event('input', {bubbles: true}));
 check(localStorage.getItem('ws-drill-ahead') === '4', 'settings could not be stored');

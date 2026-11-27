@@ -130,7 +130,7 @@ struct MetalRows {
 
 struct BoardTables {
   vector<BoardPrefixes> boards;
-  vector<uint16_t> indices;
+  vector<PrefixEntry> indices;
   vector<HandPrefixes> heroes;
   BoardTables(const GameTree& g, const ShowdownBoard& fold, int p) {
     const unsigned H = g.num_hands(p);
@@ -161,23 +161,25 @@ struct BoardTables {
         b.start[c + 1] = b.start[c] + 1 + count[c];
       }
       auto* entries = indices.data() + b.index_offset;
+      vector<uint16_t> slots(b.start[53]);
       unsigned hero_start = 0, opp_start = 0;
       for (auto [hero_end, opp_end] : sd.groups[p]) {
         for (unsigned j = hero_start; j < hero_end; ++j) {
           auto h = sd.ent[p][j];
           auto& m = heroes[b.hand_offset + h.idx];
           m.same = h.same;
+          m.live = 1;
           unsigned c[3] = {0, 1u + h.c1, 1u + h.c2};
           for (int k = 0; k < 3; ++k) {
             m.lo[k] = position[c[k]];
-            m.end[k] = b.start[c[k] + 1] - 1;
+            slots[m.lo[k]] = 1;
           }
         }
         for (unsigned j = opp_start; j < opp_end; ++j) {
           auto o = opponents[j];
-          entries[++position[0]] = o.idx;
-          entries[++position[1 + o.c1]] = o.idx;
-          entries[++position[1 + o.c2]] = o.idx;
+          entries[++position[0]].hand = o.idx;
+          entries[++position[1 + o.c1]].hand = o.idx;
+          entries[++position[1 + o.c2]].hand = o.idx;
         }
         for (unsigned j = hero_start; j < hero_end; ++j) {
           auto h = sd.ent[p][j];
@@ -185,9 +187,31 @@ struct BoardTables {
           m.hi[0] = position[0];
           m.hi[1] = position[1 + h.c1];
           m.hi[2] = position[1 + h.c2];
+          for (auto j : m.hi) slots[j] = 1;
         }
         hero_start = hero_end;
         opp_start = opp_end;
+      }
+      b.prefix_count = first_rank_prefix;
+      for (unsigned c = 0; c < 53; ++c) {
+        const unsigned first = b.start[c], last = b.start[c + 1] - 1;
+        slots[first] = empty_prefix;
+        if (first == last) continue;
+        slots[last] = total_prefix + c;
+        entries[last].slot = slots[last];
+        for (unsigned j = first + 1; j < last; ++j) {
+          if (slots[j]) {
+            slots[j] = b.prefix_count++;
+            entries[j].slot = slots[j];
+          }
+        }
+      }
+      for (const auto& h : sd.ent[p]) {
+        auto& m = heroes[b.hand_offset + h.idx];
+        for (int c = 0; c < 3; ++c) {
+          m.lo[c] = slots[m.lo[c]];
+          m.hi[c] = slots[m.hi[c]];
+        }
       }
     });
   }
@@ -206,7 +230,7 @@ class PostflopSolve final : public MetalSolve {
   vector<Range> levels;
   vector<array<Range, 2>> reach_levels;
   Range terminal_range, pair_range, round_range, allin_range, forced_range[2];
-  size_t stride, state_bytes;
+  size_t stride, state_bytes, round_bytes[2]{};
   int prepared_iteration = 0;
   struct Replay {
     id<MTLIndirectCommandBuffer> commands;
@@ -228,7 +252,8 @@ class PostflopSolve final : public MetalSolve {
     uint64_t hands = g.num_hands(0) + g.num_hands(1);
     uint64_t boardBytes =
         (g.showdowns.size() + 1) *
-        (2 * sizeof(BoardPrefixes) + hands * (sizeof(HandPrefixes) + 3 * sizeof(uint16_t)) + 106 * sizeof(uint16_t));
+        (2 * sizeof(BoardPrefixes) + hands * (sizeof(HandPrefixes) + 3 * sizeof(PrefixEntry)) +
+         106 * sizeof(PrefixEntry));
     uint64_t workspace = (value_rows + reach_rows) * stride * sizeof(float) + 2 * state_bytes;
     uint64_t peak = workspace + equity_bytes +
                     2 * (boardBytes + N * (sizeof(TraversalNode) + 4 * sizeof(unsigned)) +
@@ -257,6 +282,7 @@ class PostflopSolve final : public MetalSolve {
     }
     const size_t equity_bytes = 2 * table_words * sizeof(int16_t) + tables.size() * sizeof(AllinTable);
     pack_nodes(g, available, equity_bytes);
+    pack_hands(g);
     if (!levels.empty()) {
       propagate_reach = m.pipeline(@"propagate_reach", true);
       update_values = m.pipeline(@"update_values", true);
@@ -267,14 +293,13 @@ class PostflopSolve final : public MetalSolve {
     if (allin_range.count) allins = m.pipeline(@"allin", true);
     if (round_range.count) {
       const auto limit = m.dev.maxThreadgroupMemoryLength;
-      if (3 * round_channel_bytes(std::min(g.num_hands(0), g.num_hands(1))) <= limit)
+      if (3 * std::min(round_bytes[0], round_bytes[1]) <= limit)
         river_rounds = m.pipeline(@"river_betting_round", true);
-      if (3 * round_channel_bytes(std::max(g.num_hands(0), g.num_hands(1))) > limit)
+      if (3 * std::max(round_bytes[0], round_bytes[1]) > limit)
         wide_rounds = m.pipeline(@"river_betting_round_wide", true);
     }
     regrets.bind(m, g.regrets);
     strategy_sums.bind(m, g.strat);
-    pack_hands(g);
     pack_allins(g, tables, table_words);
     for (auto& b : params) b = m.buffer(sizeof(IterationParams));
   }
@@ -298,6 +323,10 @@ class PostflopSolve final : public MetalSolve {
     for (int p = 0; p < 2; ++p) {
       fold.groups[p].push_back({uint16_t(g.num_hands(p)), uint16_t(g.num_hands(1 - p))});
       BoardTables b(g, fold, p);
+      size_t prefixes = 0;
+      for (size_t i = 0; i < g.showdowns.size(); ++i)
+        prefixes = std::max(prefixes, size_t(b.boards[i].prefix_count));
+      round_bytes[p] = (prefixes + g.num_hands(1 - p)) * sizeof(float);
       boards[p] = copy_buffer(b.boards);
       indices[p] = copy_buffer(b.indices);
       heroes[p] = copy_buffer(b.heroes);
@@ -618,10 +647,11 @@ class PostflopSolve final : public MetalSolve {
     buffers[10] = indices[p];
     buffers[11] = heroes[p];
     auto O = g.num_hands(1 - p);
-    dispatch(terminals, terminal_range, (3 * O + 53) * sizeof(float));
-    dispatch(river_pairs, pair_range, (5 * O + 106) * sizeof(float));
+    const size_t prefix_bytes = round_bytes[p] - O * sizeof(float);
+    dispatch(terminals, terminal_range, std::max(prefix_bytes, (O + 53) * sizeof(float)));
+    dispatch(river_pairs, pair_range, prefix_bytes + (2 * O + 53) * sizeof(float));
     buffers[14] = rounds;
-    const size_t channel_bytes = round_channel_bytes(O);
+    const size_t channel_bytes = round_bytes[p];
     if (channel_bytes * 3 <= m.dev.maxThreadgroupMemoryLength)
       dispatch(river_rounds, round_range, channel_bytes * 3);
     else

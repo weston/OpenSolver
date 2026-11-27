@@ -5,11 +5,15 @@ struct TraversalNode {
   float chance_weight, win[2], loss[2], tie[2];
 };
 struct HandPrefixes {
-  unsigned short lo[3], hi[3], end[3];
+  unsigned short lo[3], hi[3], live;
   short same;
 };
+struct PrefixEntry {
+  unsigned short hand, slot;
+};
+enum : unsigned { empty_prefix = 0, total_prefix = 1, first_card_prefix = 2, first_rank_prefix = first_card_prefix + 52 };
 struct BoardPrefixes {
-  unsigned index_offset, hand_offset, start[54];
+  unsigned index_offset, hand_offset, start[54], prefix_count;
 };
 struct IterationParams {
   unsigned hands0, hands1, stride, p;

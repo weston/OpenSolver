@@ -85,41 +85,53 @@ kernel void advance_forced(TRAVERSAL_BUFFERS, device const float* old_regrets [[
   }
 }
 template <typename Sum = float, typename Reach, typename Entry>
-void river_prefixes(device const BoardPrefixes& b, device const ushort* indices, Reach reach, threadgroup Entry* prefix,
-                    uint tid) {
+void river_prefixes(device const BoardPrefixes& b, device const PrefixEntry* indices, Reach reach,
+                    threadgroup Entry* prefix, uint tid) {
   if (tid < 52) {
     uint start = b.start[tid + 1], end = b.start[tid + 2] - 1;
     Sum s = 0;
-    prefix[start] = 0;
+    if (start == end) prefix[first_card_prefix + tid] = 0;
     for (uint j = start + 1; j <= end; ++j) {
-      s += Sum(reach[indices[b.index_offset + j]]);
-      prefix[j] = s;
+      PrefixEntry entry = indices[b.index_offset + j];
+      s += Sum(reach[entry.hand]);
+      if (entry.slot) prefix[entry.slot] = s;
     }
   }
   if (tid >= 64 && tid < 96) {
     uint lane = tid - 64;
     Sum carry = 0;
-    if (!lane) prefix[0] = 0;
+    if (!lane) {
+      prefix[empty_prefix] = 0;
+      if (b.start[1] == 1) prefix[total_prefix] = 0;
+    }
     for (uint base = 1; base < b.start[1]; base += 32) {
       uint j = base + lane;
-      Sum w = j < b.start[1] ? Sum(reach[indices[b.index_offset + j]]) : Sum(0);
+      PrefixEntry entry = {};
+      if (j < b.start[1]) entry = indices[b.index_offset + j];
+      Sum w = j < b.start[1] ? Sum(reach[entry.hand]) : Sum(0);
       Sum t = simd_prefix_inclusive_sum(w) + carry;
       carry = simd_broadcast(t, 31);
-      if (j < b.start[1]) prefix[j] = t;
+      if (entry.slot) prefix[entry.slot] = t;
     }
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
 }
 
-float showdown_payoff(HandPrefixes m, threadgroup const float* prefix, float same, float win, float loss, float tie) {
-  float compat = prefix[m.end[0]] - prefix[m.end[1]] - prefix[m.end[2]] + same;
+template <typename Entry, typename Sum>
+Sum compatible_mass(threadgroup const Entry* prefix, uchar2 cards, Sum same) {
+  return Sum(prefix[total_prefix]) - Sum(prefix[first_card_prefix + cards.x]) -
+         Sum(prefix[first_card_prefix + cards.y]) + same;
+}
+
+float showdown_payoff(HandPrefixes m, threadgroup const float* prefix, float same, float mass, float win, float loss, float tie) {
+  float compat = m.live ? mass : 0.f;
   float weaker = prefix[m.lo[0]] - prefix[m.lo[1]] - prefix[m.lo[2]];
   float weaker_or_tied = prefix[m.hi[0]] - prefix[m.hi[1]] - prefix[m.hi[2]] + same;
   return fma(win - tie, weaker, fma(tie - loss, weaker_or_tied, loss * compat));
 }
 
 kernel void terminal(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
-                     device const ushort* indices [[buffer(10)]], device const HandPrefixes* heroes [[buffer(11)]],
+                     device const PrefixEntry* indices [[buffer(10)]], device const HandPrefixes* heroes [[buffer(11)]],
                      threadgroup float* prefix [[threadgroup(0)]], NODE_THREADS) {
   uint i = ids[k];
   TraversalNode n = nodes[i];
@@ -134,7 +146,7 @@ kernel void terminal(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buf
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid < 52) {
       float s = 0;
-      for (uint j = b.start[tid + 1] + 1; j < b.start[tid + 2]; ++j) s += live[indices[b.index_offset + j]];
+      for (uint j = b.start[tid + 1] + 1; j < b.start[tid + 2]; ++j) s += live[indices[b.index_offset + j].hand];
       prefix[tid] = s;
     }
     if (tid >= 64 && tid < 96) {
@@ -156,12 +168,14 @@ kernel void terminal(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buf
   river_prefixes(b, indices, reach, prefix, tid);
   for (uint h = tid; h < H; h += width) {
     HandPrefixes m = heroes[b.hand_offset + h];
-    values[n.value_row * q.stride + h] =
-        showdown_payoff(m, prefix, m.same >= 0 ? reach[m.same] : 0, n.win[q.p], n.loss[q.p], n.tie[q.p]);
+    float same = m.same >= 0 ? reach[m.same] : 0;
+    uchar2 c = cards[q.p * q.stride + h];
+    float mass = compatible_mass(prefix, c, same);
+    values[n.value_row * q.stride + h] = showdown_payoff(m, prefix, same, mass, n.win[q.p], n.loss[q.p], n.tie[q.p]);
   }
 }
 kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
-                            device const ushort* indices [[buffer(10)]],
+                            device const PrefixEntry* indices [[buffer(10)]],
                             device const HandPrefixes* heroes [[buffer(11)]],
                             device const float* old_regrets [[buffer(12)]], device const float* old_sums [[buffer(13)]],
                             threadgroup float* prefix [[threadgroup(0)]], NODE_THREADS) {
@@ -172,7 +186,7 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
   uint H = q.p ? q.hands1 : q.hands0, O = q.p ? q.hands0 : q.hands1;
   device const float* opp = (q.p ? oop_reach : ip_reach) + n.row[1 - q.p] * q.stride;
   bool updating = q.p == n.actor;
-  threadgroup float* call_reach = prefix + b.start[53];
+  threadgroup float* call_reach = prefix + b.prefix_count;
   threadgroup float* fold_reach = call_reach + O;
   threadgroup float* fold_mass = fold_reach + O;
   if (updating) {
@@ -189,7 +203,7 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid < 52) {
       float sum = 0;
-      for (uint j = b.start[tid + 1] + 1; j < b.start[tid + 2]; ++j) sum += fold_reach[indices[b.index_offset + j]];
+      for (uint j = b.start[tid + 1] + 1; j < b.start[tid + 2]; ++j) sum += fold_reach[indices[b.index_offset + j].hand];
       fold_mass[tid] = sum;
     }
     if (tid >= 64 && tid < 96) {
@@ -204,10 +218,10 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
     HandPrefixes m = heroes[b.hand_offset + h];
     uchar2 c = cards[q.p * q.stride + h];
     float same = m.same < 0 ? 0 : updating ? opp[m.same] : call_reach[m.same];
-    float cv = showdown_payoff(m, prefix, same, call.win[q.p], call.loss[q.p], call.tie[q.p]);
+    float compat = compatible_mass(prefix, c, same);
+    float cv = showdown_payoff(m, prefix, same, compat, call.win[q.p], call.loss[q.p], call.tie[q.p]);
     float v;
     if (updating) {
-      float compat = prefix[b.start[1] - 1] - prefix[b.start[c.x + 2] - 1] - prefix[b.start[c.y + 2] - 1] + same;
       float fv = fold_pay * compat;
       uint j = n.storage + h;
       float rc = old_regrets[j], rf = old_regrets[j + H];
@@ -360,7 +374,7 @@ float update_river_round(device const RiverRound& r, constant IterationParams& q
 }
 
 kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
-                                device const ushort* indices [[buffer(10)]],
+                                device const PrefixEntry* indices [[buffer(10)]],
                                 device const HandPrefixes* heroes [[buffer(11)]],
                                 device const float* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]],
                                 device const RiverRound* rounds [[buffer(14)]],
@@ -372,7 +386,7 @@ kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* b
   device const float* opp = (p ? oop_reach : ip_reach) + n.row[1 - p] * q.stride;
   device const float* own = (p ? ip_reach : oop_reach) + n.row[p] * q.stride;
   device const float* opp_r = q.phase ? regrets : old_r;
-  threadgroup packed_float3* reaches = prefix + b.start[53];
+  threadgroup packed_float3* reaches = prefix + b.prefix_count;
   bool leading = n.actor == p;
   for (uint j = tid; j < O; j += width) reaches[j] = round_reach(r, opp_r, opp[j], j, O, leading);
   threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -384,9 +398,8 @@ kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* b
     HandPrefixes m = heroes[b.hand_offset + h];
     float3 same = m.same >= 0 ? float3(reaches[m.same]) : 0.f;
     uchar2 c = cards[p * q.stride + h];
-    float3 mass = float3(prefix[b.start[1] - 1]) - float3(prefix[b.start[c.x + 2] - 1]) -
-                  float3(prefix[b.start[c.y + 2] - 1]) + same;
-    float3 live = float3(prefix[m.end[0]]) - float3(prefix[m.end[1]]) - float3(prefix[m.end[2]]) + same;
+    float3 mass = compatible_mass(prefix, c, same);
+    float3 live = m.live ? mass : float3(0);
     float3 lo = float3(prefix[m.lo[0]]) - float3(prefix[m.lo[1]]) - float3(prefix[m.lo[2]]);
     float3 hi = float3(prefix[m.hi[0]]) - float3(prefix[m.hi[1]]) - float3(prefix[m.hi[2]]) + same;
     float3 sd = fma(win - tie, lo, fma(tie - loss, hi, loss * live));
@@ -397,7 +410,7 @@ kernel void river_betting_round(TRAVERSAL_BUFFERS, device const BoardPrefixes* b
 }
 
 kernel void river_betting_round_wide(TRAVERSAL_BUFFERS, device const BoardPrefixes* boards [[buffer(9)]],
-                                     device const ushort* indices [[buffer(10)]],
+                                     device const PrefixEntry* indices [[buffer(10)]],
                                      device const HandPrefixes* heroes [[buffer(11)]],
                                      device const float* old_r [[buffer(12)]], device const float* old_s [[buffer(13)]],
                                      device const RiverRound* rounds [[buffer(14)]],
@@ -409,7 +422,7 @@ kernel void river_betting_round_wide(TRAVERSAL_BUFFERS, device const BoardPrefix
   device const float* opp = (p ? oop_reach : ip_reach) + n.row[1 - p] * q.stride;
   device const float* own = (p ? ip_reach : oop_reach) + n.row[p] * q.stride;
   device const float* opp_r = q.phase ? regrets : old_r;
-  threadgroup float* reaches = prefix + b.start[53];
+  threadgroup float* reaches = prefix + b.prefix_count;
   bool leading = n.actor == p;
 
   constexpr uint max_hands_per_thread = (1326 + 127) / 128;
@@ -422,10 +435,9 @@ kernel void river_betting_round_wide(TRAVERSAL_BUFFERS, device const BoardPrefix
       HandPrefixes m = heroes[b.hand_offset + h];
       uchar2 c = cards[p * q.stride + h];
       float same = m.same >= 0 ? reaches[m.same] : 0.f;
-      mass_by_hand[h / width][channel] =
-          prefix[b.start[1] - 1] - prefix[b.start[c.x + 2] - 1] - prefix[b.start[c.y + 2] - 1] + same;
+      mass_by_hand[h / width][channel] = compatible_mass(prefix, c, same);
       showdown_by_hand[h / width][channel] =
-          showdown_payoff(m, prefix, same, r.win[channel][p], r.loss[channel][p], r.tie[channel][p]);
+          showdown_payoff(m, prefix, same, mass_by_hand[h / width][channel], r.win[channel][p], r.loss[channel][p], r.tie[channel][p]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }

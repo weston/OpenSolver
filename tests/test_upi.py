@@ -2548,6 +2548,11 @@ def check_solve_device(exe):
         for cmd in ("build_tree", "set_accuracy 0", "go 1 steps", "wait_for_solver"):
             assert "ERROR" not in u.cmd(cmd), cmd
         check(u.cmd("show_strategy r:0") == stopped, "stopping at accuracy publishes only the checked iteration")
+        for cmd in ("clear_lines", "set_board 7s7h7d2c", "set_range OOP 22+,A2s+,K2s+,Q2s+,A2o+,K9o+",
+                    "set_range IP " + " ".join(["1"] * 1326), "add_line 0 0 0 100", "add_line 0 0 100"):
+            assert "ok!" in u.cmd(cmd), cmd
+        compare_strategies(("r:0:c:c:7c", "r:0:c:c:7c:b100", "r:0:c:c:7c:c"),
+                           "tied hands and blocked cards agree through a wide river bet and response")
     finally:
         u.close()
 

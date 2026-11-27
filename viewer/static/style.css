@@ -301,7 +301,10 @@ input.invalid, textarea.invalid { border-color: var(--danger); box-shadow: 0 0 0
 .node-title .sub { color: var(--text-3); font-weight: 500; font-size: 13px; text-overflow: ellipsis; overflow: hidden; }
 
 /* action strip: always the same height so the matrix never moves */
-.strip { width: var(--mx); height: 112px; flex: none; display: flex; flex-direction: column; gap: 9px; padding-top: 6px; }
+.strip { width: var(--mx); height: 112px; flex: none; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px 8px; padding-top: 6px; }
+.strip:has(.freqbar) { grid-template-rows: 12px 72px; }
+.strip .freqbar { grid-column: 1 / -1; }
+.strip .path-back { align-self: center; margin: 0; }
 .freqbar { height: 12px; display: flex; border-radius: 6px; overflow: hidden; background: var(--surface-3); flex: none; }
 .freqbar span { height: 100%; transition: flex-grow .35s ease; min-width: 0; }
 .freqbar span + span { box-shadow: -1px 0 0 var(--bg); }

@@ -439,16 +439,21 @@ function flopPicker(kids, current, onPick) {
 
 const STREET = ["", "", "", "FLOP", "TURN", "RIVER"];
 
+function backButton() {
+  const back = el("button", "path-back", "‹");
+  back.setAttribute("aria-label", "Back");
+  back.disabled = S.path.length <= 1;
+  back.onclick = goUp;
+  return back;
+}
+
 function renderPath() {
   const box = $("path");
   box.textContent = "";
   const P = S.path;
   let lastLen = -1;
-  // Back: up one node (same as the left-arrow key), disabled at the root.
-  const back = el("button", "path-back", "‹");
+  const back = backButton();
   back.title = "Up one node (←)";
-  back.disabled = P.length <= 1;
-  back.onclick = goUp;
   box.appendChild(back);
   const mark = (n) => {
     const cards = boardOf(n);
@@ -605,7 +610,7 @@ function renderTitle() {
 
 function renderStrip() {
   const box = $("strip");
-  box.textContent = "";
+  box.replaceChildren(backButton());
   const n = S.path[S.path.length - 1];
   if (isDec(n) && S.cur.freq) {
     const acts = actionsOf(S.cur, S.path.length - 1);
@@ -619,7 +624,7 @@ function renderStrip() {
       sp.onmouseleave = hideTip;
       bar.appendChild(sp);
     });
-    box.appendChild(bar);
+    box.prepend(bar);
     const row = el("div", "actions");
     acts.forEach((a, j) => {
       const b = el("button", "action");

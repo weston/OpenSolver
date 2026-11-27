@@ -18,6 +18,14 @@ check(localStorage.getItem('ws-drill-ahead') === '4', 'settings could not be sto
 tab('study');
 await wait(() => !$('btn-drill').classList.contains('hidden'));
 check($('matrix').children.length === 169, 'the solved tree did not load into Browse');
+const actionBack = () => document.querySelector('#strip .path-back');
+check(actionBack().disabled, 'Browse back should be disabled at the root');
+const firstAction = document.querySelector('#strip .action');
+check(actionBack().getBoundingClientRect().right <= firstAction.getBoundingClientRect().left, 'Browse back should sit left of the actions');
+firstAction.click();
+await wait(() => actionBack() && !actionBack().disabled);
+actionBack().click();
+await wait(() => actionBack()?.disabled && document.querySelector('#strip .action'));
 document.querySelector('#matrix .cell').click();
 await wait(() => document.querySelector('#side-hand .hand-all[aria-pressed=true]'));
 check(!document.querySelector('#side-hand table.combos'), 'the intermediate class view is still present');

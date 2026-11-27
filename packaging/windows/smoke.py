@@ -7,7 +7,7 @@ before it writes the installer.)
 Run with the app's own Python, so that what it proves is what a PC with nothing else installed has:
 the trimmed Python still holds every module the viewer imports, the viewer finds its page and its
 tools in the app folder, and the solver there starts, says the version the installer is named
-after, and solves a small tree. The viewer is started by the app's own launcher, OpenSolver.exe, with
+after, and solves a small tree (and, on a PC with a GPU driver, a turn tree on the GPU). The viewer is started by the app's own launcher, OpenSolver.exe, with
 a port of its own and a library, a job queue and a log in a temporary folder, so nothing of the
 user's is touched. Closing its window while a solve runs must ask first (and Cancel keep it all
 running); closing it when nothing runs must quit and leave nothing running; and a launcher killed
@@ -201,6 +201,21 @@ def main():
         check(done, "it is solved")
         node = req("/api/node?id=r:0")
         check(len(node.get("children", [])) >= 2, "and browsed")
+
+        # The GPU, where the PC has one: the solver loads the driver's OpenCL (or CUDA) at run time,
+        # nothing of it is in the app. A small turn tree solved through the viewer's Compute device.
+        if "gpu" in st.get("devices", []):
+            check(bool(st.get("gpu_name")), f"the viewer offers the GPU ({st.get('gpu_name')})")
+            req("/api/device", {"device": "gpu"})
+            req("/api/generate", dict(CFG, board="QhQc2c7d"))
+            req("/api/build", {})
+            req("/api/solve", {"accuracy": 1.0})
+            check(until(lambda: not req("/api/status")["solving"], 120), "a turn tree is solved")
+            used = req("/api/status").get("active_device")
+            check(used == "gpu", f"on the GPU (SOLVER: device {used})")
+            req("/api/device", {"device": "cpu"})
+        else:
+            print("  (no GPU driver found: the GPU solve is not checked)")
 
         # Closing the window while a solve runs asks first, and Cancel keeps everything running.
         req("/api/generate", LONG)

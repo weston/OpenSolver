@@ -58,10 +58,12 @@ CXX="${CXX:-g++}"
 WINDRES="${WINDRES:-windres}"
 PYTHON_HOST="${PYTHON_HOST:-$(command -v python3 || command -v python)}"
 
-# The solver must run on a PC with no MSYS2: nothing but Windows' own DLLs.
+# The solver must run on a PC with no MSYS2: nothing but Windows' own DLLs. Not even OpenCL.dll or
+# CUDA's: the GPU solve loads those at run time (src/opencl.cpp, src/cuda.cpp), so that a PC without
+# a GPU driver still starts the solver, and nothing of them is in the app.
 foreign=$(objdump -p "$SOLVER" | sed -n 's/^[[:space:]]*DLL Name: //p' | tr -d '\r' |
   grep -v -i -x -e 'kernel32.dll' -e 'msvcrt.dll' -e 'ucrtbase.dll' -e 'api-ms-win-.*\.dll' -e 'advapi32.dll' \
-    -e 'user32.dll' -e 'ws2_32.dll' -e 'shell32.dll' -e 'ole32.dll' -e 'bcrypt.dll' -e 'ntdll.dll' -e 'opencl.dll' || true)
+    -e 'user32.dll' -e 'ws2_32.dll' -e 'shell32.dll' -e 'ole32.dll' -e 'bcrypt.dll' -e 'ntdll.dll' || true)
 [ -z "$foreign" ] || { echo "$SOLVER needs DLLs a PC without MSYS2 does not have: $foreign (link it with -static)"; exit 1; }
 
 # The files are picked by what git tracks, but copied as they are here: say so when that differs

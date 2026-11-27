@@ -189,10 +189,13 @@ viewer prints goes to `%LOCALAPPDATA%\OpenSolver\Logs\viewer.log` (**Show Log**)
   `%USERPROFILE%\.wsolver`, as for a viewer run from a checkout.
 - **It is not code-signed.** The project has no code-signing certificate, so SmartScreen warns the
   first time the setup runs. See the [install instructions](#install-opensolver-on-windows).
-- **GPU.** The setup ships the solver as the build makes it and brings no GPU runtime along. Once
-  the GPU solve for Windows is available, AMD, NVIDIA and Intel GPUs whose drivers provide
-  OpenCL 2.0 can use it: the OpenCL runtime comes with the graphics driver, so there is nothing more
-  to install; keep the driver up to date.
+- **GPU.** The solver in the app can solve on the GPU (the viewer's **Compute device: GPU**; see
+  [GPU solving](#gpu-solving)), and the setup brings no GPU runtime of its own: the solver loads
+  the driver's at run time. AMD Radeon and Intel GPUs use OpenCL, which comes with the graphics
+  driver. NVIDIA GPUs use CUDA when NVRTC, the CUDA runtime compiler, is installed (the
+  [CUDA toolkit](https://developer.nvidia.com/cuda-downloads), found through `CUDA_PATH`), and the
+  NVIDIA driver's own OpenCL otherwise. Keep the graphics driver up to date. Without a GPU driver,
+  OpenSolver solves on the CPU.
 - **Before it is packed, the app is run.** `build.sh` starts the staged app's own launcher, which
   starts the viewer with the app's Python, and builds and solves a small tree through it. It checks
   that closing the launcher's window while a solve runs asks first, that quitting leaves no viewer

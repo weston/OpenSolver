@@ -12,6 +12,19 @@ await wait(() => $('drill-ahead').oninput);
 check([...document.querySelectorAll('.view-tab')].map(b => b.textContent).join(',') === 'Tree,Browse,Drill,Jobs,Settings', 'missing app tabs');
 
 tab('settings');
+const smart = $('smart-tree'), help = $('smart-tree-help'), tip = $('smart-tree-tip');
+const smartChecked = smart.checked;
+check(help && help.getBoundingClientRect().width > 0, 'Smart tree help button is missing');
+check(tip && !tip.getClientRects().length, 'Smart tree tooltip should start closed');
+help.click();
+const bounds = tip.getBoundingClientRect();
+check(bounds.height > 0 && document.elementFromPoint(bounds.left + 8, bounds.bottom - 8) === tip
+  && tip.textContent.includes('river bet sizes'), 'Smart tree tooltip is not visible above the setting');
+check(smart.checked === smartChecked, 'Opening the tooltip changed the tree setting');
+help.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+check(!tip.getClientRects().length, 'Escape did not dismiss the tooltip');
+smart.focus();
+check(tip.getClientRects().length, 'Focusing the checkbox did not show its description');
 $('drill-ahead').value = '4';
 $('drill-ahead').dispatchEvent(new Event('input', {bubbles: true}));
 check(localStorage.getItem('ws-drill-ahead') === '4', 'settings could not be stored');

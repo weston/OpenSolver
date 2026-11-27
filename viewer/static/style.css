@@ -1162,6 +1162,11 @@ button.rl-card.end { cursor: default; }
 .sub-settings { margin: 10px 0 0 8px; padding: 12px 12px 12px 14px; border-left: 2px solid var(--border-strong); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--surface-2); }
 .settings-layout { max-width: 640px; margin: 24px auto; padding: 0 24px; }
 .settings-fields { display: grid; gap: 20px; max-width: 360px; }
+.setting-help { position: relative; justify-self: start; display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; }
+.setting-help label.check { margin: 0; }
+.setting-help button { width: 24px; height: 24px; padding: 0; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--surface-2); color: var(--text-2); font-weight: 700; }
+.setting-help button:hover, .setting-help button:focus-visible { border-color: var(--accent); color: var(--accent); }
+.setting-help .tip { position: absolute; bottom: 100%; left: 0; width: min(300px, calc(100vw - 88px)); line-height: 1.45; pointer-events: auto; }
 .drill-loading { display: flex; flex-direction: column; justify-content: center; gap: 24px; min-height: 390px; padding: 32px; }
 .drill-loading h2 { font-size: 22px; margin: 0; }
 .drill-loading .pv-bar { margin: 0; height: 5px; }

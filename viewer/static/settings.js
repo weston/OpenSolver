@@ -32,6 +32,21 @@ export function initSettings() {
   const smart = document.getElementById("smart-tree");
   smart.checked = smartTree();
   smart.onchange = () => prefs.set("smart-tree", smart.checked);
+  const help = document.getElementById("smart-tree-help");
+  const tip = document.getElementById("smart-tree-tip");
+  const row = help.parentElement;
+  let pinned = false;
+  const showHelp = (open) => {
+    if (!open) pinned = false;
+    tip.hidden = !open;
+    help.setAttribute("aria-expanded", String(open));
+  };
+  row.onpointerenter = (e) => { if (e.pointerType !== "touch") showHelp(true); };
+  row.onpointerleave = () => { if (!row.contains(document.activeElement)) showHelp(false); };
+  row.onfocusin = () => showHelp(true);
+  row.onfocusout = (e) => { if (!row.contains(e.relatedTarget)) showHelp(false); };
+  help.onclick = () => { help.focus(); pinned = !pinned; showHelp(pinned); };
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !tip.hidden) showHelp(false); });
   const device = document.getElementById("solve-device");
   device.onchange = async () => {
     savingDevice = true;

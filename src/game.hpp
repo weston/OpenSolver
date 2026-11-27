@@ -429,7 +429,7 @@ class GameTree {
 
   const ActionNode& an(const GNode& n) const { return *anodes[n.anode]; }
 
-  // Index of the (5-card) showdown board, computing hand orderings on first use.
+  // Index of the five-card board in the showdown list.
   int showdown_board_id(const std::vector<int>& board);
   int allin_runouts_id(const std::vector<int>& board);
   // Fills AllinRunouts::e2 for the runout sets marked `table`, so Solver::showdown_value evaluates one
@@ -477,6 +477,8 @@ class GameTree {
   bool gpu_tables = false;
 
  private:
+  void rank_showdown_boards(size_t first);
+  void rank_showdown_board(ShowdownBoard& board) const;
   void store_allin_boards(AllinRunouts& ar);
   uint64_t showdown_board_bytes(uint64_t board_mask) const;
   std::unordered_map<uint64_t, int> showdown_index_;

@@ -489,6 +489,31 @@ static bool allin_tables_match() {
   return bad == 0 && terminals > 0;
 }
 
+static bool metal_postflop_allin_table_matches() {
+  if (!metal_available()) return true;
+  GameConfig cfg;
+  parse_cards("KhQs7d", cfg.board);
+  std::string err;
+  if (!parse_range("22+,A2s+,K5s+,Q8s+,J8s+,T7s+,97s+,86s+,76s,65s,A8o+,KTo+,QTo+,JTo", cfg.range[0], err))
+    return false;
+  cfg.range[1].fill(1);
+  cfg.range[1][0] = 0;
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 150;
+  cfg.lines.add = {{150}};
+  cfg.lines.force = {{150, 150}};
+  GameTree tree;
+  if (!tree.build(cfg, err) || tree.allins.size() != 1) return false;
+  auto& counts = tree.allins.front().e2;
+  auto expected = std::move(counts);
+  counts.clear();
+  tree.gpu_tables = true;
+  tree.build_allin_tables();
+  std::printf("[Metal postflop flop all-in] %zu hand pairs, counts %s\n", expected.size(),
+              counts == expected ? "identical" : "differ");
+  return !expected.empty() && counts == expected;
+}
+
 // #505: the deal of the flops. On all 1,755 flops at their class sizes two hands that share no card are
 // dealt C(48,3) = 17,296 of the 22,100 flops, whoever holds them, and what the two players get adds up
 // to the dead money: nobody else is at the table. The weights of the flops' 42,120 suit variants were
@@ -1236,6 +1261,7 @@ int main(int argc, char** argv) {
   fails += !decompress_midsolve();
   fails += !stochastic_sums();
   fails += !allin_tables_match();
+  fails += !metal_postflop_allin_table_matches();
   fails += !flop_deal_adds_up();
   fails += !reach_digits_sums();
   fails += !preflop_runout_tables();

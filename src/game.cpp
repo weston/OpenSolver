@@ -4,6 +4,7 @@
 #include "pfh2h.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <functional>
 #include <cstdlib>
@@ -92,10 +93,26 @@ int GameTree::showdown_board_id(const std::vector<int>& board) {
   uint64_t mask = board_mask(board);
   auto it = showdown_index_.find(mask);
   if (it != showdown_index_.end()) return it->second;
-  ShowdownBoard sb;
-  sb.mask = mask;
+  int id = static_cast<int>(showdowns.size());
+  showdowns.emplace_back().mask = mask;
+  showdown_index_[mask] = id;
+  return id;
+}
+
+void GameTree::rank_showdown_boards(size_t first) {
+  pool().parallel_for(static_cast<int>(showdowns.size() - first), [&](int offset) {
+    rank_showdown_board(showdowns[first + offset]);
+  });
+}
+
+void GameTree::rank_showdown_board(ShowdownBoard& sb) const {
+  const uint64_t mask = sb.mask;
+  uint64_t remaining = mask;
   int cs[7];
-  for (int i = 0; i < 5; ++i) cs[i] = board[i];
+  for (int i = 0; i < 5; ++i) {
+    cs[i] = std::countr_zero(remaining);
+    remaining &= remaining - 1;
+  }
   std::vector<uint32_t> str[2];
   for (int p = 0; p < 2; ++p) {
     std::vector<std::pair<uint32_t, uint16_t>> v;
@@ -132,10 +149,6 @@ int GameTree::showdown_board_id(const std::vector<int>& board) {
       gr.push_back({static_cast<uint16_t>(i), static_cast<uint16_t>(j)});
     }
   }
-  int id = static_cast<int>(showdowns.size());
-  showdowns.push_back(std::move(sb));
-  showdown_index_[mask] = id;
-  return id;
 }
 
 // Flop-deal normalization tables. Over the suit-symmetrized subset (variant weight w = weight / (W*|G|)),
@@ -210,7 +223,9 @@ void GameTree::store_allin_boards(AllinRunouts& ar) {
 }
 
 void GameTree::restore_allin_boards() {
+  const size_t first = showdowns.size();
   for (AllinRunouts& ar : allins) store_allin_boards(ar);
+  rank_showdown_boards(first);
 }
 
 int GameTree::allin_runouts_id(const std::vector<int>& board) {
@@ -331,11 +346,13 @@ void GameTree::plan_allins() {
     if (table_limit && memory_bytes_for(limit_compress, limit_preds) + cost[3] <= table_limit) best = 3;
     if (allin_plan >= 0) best = allin_plan & 3;
   }
+  const size_t first = showdowns.size();
   for (AllinRunouts& ar : allins) {
     if (ar.exact) continue;
     ar.table = (best >> (ar.cards.size() == 4)) & 1;
     if (!ar.table) store_allin_boards(ar);
   }
+  rank_showdown_boards(first);
 }
 
 namespace {
@@ -708,6 +725,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   std::vector<int> board = cfg.board;
   Filler f{*this, iso, {}, {}, {}};
   f.fill(0, aroot.get(), board);
+  rank_showdown_boards(0);
   plan_allins();
   select_rows(false);
   if (allocate) allocate_storage();
@@ -900,16 +918,21 @@ void GameTree::build_allin_tables() {
       ar.live.clear();
       for (int h = 0; h < H0; ++h)
         if (!(combo_mask(hands[0][h]) & mask)) ar.live.push_back(static_cast<uint16_t>(h));
-      if (use_gpu && ar.boards.empty() && ar.cards.size() == 3) {
-        std::vector<std::array<uint32_t, 4>> boards;
-        boards.reserve(ar.runouts);
-        for_each_runout(ar, [&](const std::vector<int>& cards) {
-          std::array<uint32_t, 4> suits{};
-          for (int card : cards) suits[card & 3] |= 1u << (card >> 2);
-          boards.push_back(suits);
-        });
+    }
+    const bool wide_postflop = !cfg.preflop && H0 * H1 >= 64 * 1024;
+    if (use_gpu && ar.cards.size() == 3 && ((tri && ar.boards.empty()) || wide_postflop)) {
+      std::vector<std::array<uint32_t, 4>> boards;
+      boards.reserve(ar.runouts);
+      for_each_runout(ar, [&](const std::vector<int>& cards) {
+        std::array<uint32_t, 4> suits{};
+        for (int card : cards) suits[card & 3] |= 1u << (card >> 2);
+        boards.push_back(suits);
+      });
+      try {
         metal_flop_table(*this, ar, boards);
         return;
+      } catch (const std::exception&) {
+        if (tri) throw;
       }
     }
     std::vector<uint8_t>& t8 = tri ? full8 : ar.e2b;

@@ -701,18 +701,29 @@ void metal_flop_table(const GameTree& g, AllinRunouts& ar, const std::vector<std
   @autoreleasepool {
     auto& m = metal();
     static auto rank = m.pipeline(@"rankhands"), count = m.pipeline(@"countpairs");
-    unsigned H = ar.live.size(), B = runout_boards.size(), Bp = (B + 31) & ~31;
-    if (H < 2) return;
-    std::vector<std::array<uint8_t, 2>> live_hands;
-    live_hands.reserve(H);
-    for (uint16_t h : ar.live) live_hands.push_back({g.hcard[0][0][h], g.hcard[0][1][h]});
-    ar.tri16.resize(H * (H - 1) / 2);
+    const bool compact = g.compact_tables();
+    const unsigned H = compact ? ar.live.size() : g.num_hands(0);
+    const unsigned O = compact ? H : g.num_hands(1);
+    const unsigned B = runout_boards.size(), Bp = (B + 31) & ~31u;
+    const unsigned ip_offset = compact ? 0 : (H + 3) & ~3u;
+    if (!H || !O || (compact && H < 2)) return;
+    const size_t entries = compact ? size_t(H) * (H - 1) / 2 : size_t(H) * O;
+    const unsigned hand_rows = ip_offset + O;
+    auto hands = m.buffer(hand_rows * sizeof(array<uint8_t, 2>));
+    auto* hand_cards = static_cast<array<uint8_t, 2>*>(hands.contents);
+    for (unsigned i = 0; i < H; ++i) {
+      unsigned h = compact ? ar.live[i] : i;
+      hand_cards[i] = {g.hcard[0][0][h], g.hcard[0][1][h]};
+    }
+    if (!compact) {
+      for (unsigned i = H; i < ip_offset; ++i) hand_cards[i] = hand_cards[0];
+      for (unsigned o = 0; o < O; ++o) hand_cards[ip_offset + o] = {g.hcard[1][0][o], g.hcard[1][1][o]};
+    }
     auto boards = m.buffer(runout_boards.size() * sizeof(runout_boards.front()));
-    auto hands = m.buffer(live_hands.size() * sizeof(live_hands.front()));
     memcpy(boards.contents, runout_boards.data(), boards.length);
-    memcpy(hands.contents, live_hands.data(), hands.length);
-    auto ranks = m.buffer(((H + 3) & ~3) * Bp * 4), result = m.buffer(ar.tri16.size() * 2);
-    unsigned dims[] = {H, B, Bp, unsigned(ar.valid)};
+    const unsigned padded_hands = (hand_rows + 3) & ~3u;
+    auto ranks = m.buffer(size_t(padded_hands) * Bp * sizeof(uint32_t)), result = m.buffer(entries * sizeof(uint16_t));
+    unsigned dims[] = {hand_rows, B, Bp, 0};
     auto cmd = m.command();
     auto enc = m.encoder(cmd);
     [enc setComputePipelineState:rank];
@@ -720,15 +731,25 @@ void metal_flop_table(const GameTree& g, AllinRunouts& ar, const std::vector<std
     [enc setBuffer:hands offset:0 atIndex:1];
     [enc setBuffer:ranks offset:0 atIndex:2];
     [enc setBytes:dims length:sizeof(dims) atIndex:3];
-    [enc dispatchThreads:MTLSizeMake(Bp, (H + 3) & ~3, 1) threadsPerThreadgroup:MTLSizeMake(32, 4, 1)];
+    [enc dispatchThreads:MTLSizeMake(Bp, padded_hands, 1) threadsPerThreadgroup:MTLSizeMake(32, 4, 1)];
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     [enc setComputePipelineState:count];
     [enc setBuffer:ranks offset:0 atIndex:0];
     [enc setBuffer:result offset:0 atIndex:2];
-    [enc dispatchThreadgroups:MTLSizeMake((H + 15) / 16, (H + 3) / 4, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+    unsigned pair_dims[] = {H, O, Bp, ip_offset};
+    int center = compact ? ar.valid : 0;
+    [enc setBytes:pair_dims length:sizeof(pair_dims) atIndex:3];
+    [enc setBytes:&center length:sizeof(center) atIndex:4];
+    [enc dispatchThreadgroups:MTLSizeMake((O + 15) / 16, (H + 3) / 4, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
     [enc endEncoding];
     m.finish(cmd);
-    memcpy(ar.tri16.data(), result.contents, ar.tri16.size() * 2);
+    if (compact) {
+      ar.tri16.resize(entries);
+      memcpy(ar.tri16.data(), result.contents, result.length);
+    } else {
+      ar.e2.resize(entries);
+      memcpy(ar.e2.data(), result.contents, result.length);
+    }
   }
 }
 }  // namespace pio

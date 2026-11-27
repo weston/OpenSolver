@@ -57,16 +57,18 @@ kernel void rankhands(device const uint4* boards, device const uchar2* hands, de
   s[c.y & 3] |= n;
   ranks[h * d.z + b] = dead ? 0 : score(s);
 }
-kernel void countpairs(device const uint* ranks, device const uchar2* hands, device short* tri, constant uint4& d,
+kernel void countpairs(device const uint* ranks, device const uchar2* hands, device short* table, constant uint4& d,
+                       constant int& center,
                        uint2 group [[threadgroup_position_in_grid]], uint t [[thread_index_in_threadgroup]]) {
   uint h0 = group.y * 4, o0 = group.x * 16 + (t / 32) * 4, lane = t % 32;
-  if (o0 >= h0 + 4 || o0 >= d.x) return;
+  bool compact = d.w == 0;
+  if (o0 >= d.y || (compact && o0 >= h0 + 4)) return;
   ushort val[4][4] = {};
   for (uint b = lane; b < d.z; b += 32) {
     uint a[4], o[4];
     for (uint l = 0; l < 4; ++l) {
       a[l] = ranks[(h0 + l) * d.z + b];
-      uint x = ranks[(o0 + l) * d.z + b];
+      uint x = ranks[(d.w + o0 + l) * d.z + b];
       o[l] = x ? x : 0xffffffffu;
     }
     for (uint h = 0; h < 4; ++h)
@@ -74,12 +76,13 @@ kernel void countpairs(device const uint* ranks, device const uchar2* hands, dev
   }
   for (uint i = 0; i < 4; ++i)
     for (uint j = 0; j < 4; ++j) {
-      int e = int(simd_sum(val[i][j])) - int(d.w);
+      int e = int(simd_sum(val[i][j])) - center;
       uint h = h0 + i, o = o0 + j;
-      if (!lane && h < d.x && o < h) {
-        uchar2 a = hands[h], b = hands[o];
+      if (!lane && h < d.x && o < d.y && (!compact || o < h)) {
+        uchar2 a = hands[h], b = hands[d.w + o];
         bool share = a.x == b.x || a.x == b.y || a.y == b.x || a.y == b.y;
-        tri[h * (h - 1) / 2 + o] = share ? 0 : short(e);
+        uint row = compact ? h * (h - 1) / 2 : h * d.y;
+        table[row + o] = share ? 0 : short(e);
       }
     }
 }

@@ -26,8 +26,8 @@ documentation; contains no PioSOLVER code.
   iterations than accumulating from the first.
 - Optional **16-bit compressed storage** (`small_strats`), roughly halving memory, with a `lossless`
   dump flag when exact records are wanted. `small_strats compact` (and `auto`, when full 16-bit rows don't
-  fit) also leaves out the river rows' board-blocked hands: about 7% less memory, about 14% more time per
-  iteration, identical results (AVX-512 VBMI2 builds, #418).
+  fit) also leaves out the river rows' board-blocked hands: about 8% less memory, about 14% more time per
+  iteration (M4: 0 to 15%), identical results (#418; every CPU build since #568, NEON expand/compress).
 - Decisions with one action (a forced check: no donk size, or a street the lines check down) store no
   regret or strategy rows: each player's share one row that stays zero, since their strategy is 1 (#567).
   Results and saves are unchanged. Memory of flop_srp_4 298 -> 138 MB (peak RSS on Metal 665 -> 344 MB),

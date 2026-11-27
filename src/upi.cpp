@@ -817,8 +817,9 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
     t->compressed = c.preflop || full > avail * 9 / 10 || (!for_gpu && full * th >= (uint64_t(2) << 30));
 #endif
   }
-  // Compact river rows (#239): ~7% less 16-bit storage for ~12% more time per iteration, so only on
-  // request or when full 16-bit rows don't fit either.
+  // Compact river rows (#239, every CPU build since #568): ~8% less 16-bit storage for ~12% more time per
+  // iteration (Zen 5; M4 10 threads, 60 iterations: flop_srp_4 +8%, threebet_mono +15%, deep +5%,
+  // flop_3bet 0), so only on request or when full 16-bit rows don't fit either.
   t->select_rows(t->compressed && (small_strats_ == "compact" || (small_strats_ == "auto" && small > avail * 9 / 10)));
   uint64_t need = t->memory_bytes_for(t->compressed, predictive_, t->compact_rows);  // preds is allocated after the build (#98)
   if (pessimistic) need = need * 2;  // rough stand-in for an unpaired rainbow board

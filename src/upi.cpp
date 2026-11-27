@@ -1,6 +1,6 @@
 // UPI core: input loop, output/END handling, settings, tree building, solving thread.
 #include "upi.hpp"
-#include "metal.hpp"
+#include "gpu.hpp"
 #include "flop_stability.hpp"
 
 #if defined(_WIN32)
@@ -163,7 +163,7 @@ uint64_t available_memory_bytes() {
 
 // ------------------------------------------------------------------------------------------------
 
-Upi::Upi() : algorithm_(metal_available() ? "v4_metal" : "auto") {
+Upi::Upi() : algorithm_(gpu_preferred() ? kGpuAlgorithm : "auto") {
   init_cards();
   cfg_.iso_flop = true;
   cfg_.iso_turn = false;
@@ -406,7 +406,7 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   const double target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
   if (stable_flop || algorithm_ == "original_pio" || algorithm_ == "pio_cfr")
     solver_->set_average_sampling(AverageSampling::Dense);
-  solver_->select_sampled_averaging(accuracy_solve ? target : 0., algorithm_ == "v4_metal");
+  solver_->select_sampled_averaging(accuracy_solve ? target : 0., gpu_algorithm(algorithm_));
   if (!sub && (accuracy_solve || target > 0.) && !solver_->is_bfloat_target(target))
     solver_->set_bfloat_regrets(false);
   if (solver_->fp16_sums() && (tree_->iterations >= 1024 ||
@@ -416,7 +416,7 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   solving_ = true;
   // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)
   std::string endl_str = end_string_.empty() ? "END" : end_string_;
-  const bool gpu = algorithm_ == "v4_metal";
+  const bool gpu = gpu_algorithm(algorithm_);
   solver_thread_ = std::thread([this, seconds, steps, gpu, stable_flop, sub = std::move(sub), endl_str = std::move(endl_str)] {
     solver_thread_main(seconds, steps, std::move(sub), endl_str, gpu, stable_flop);
   });
@@ -469,7 +469,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   };
   auto release_metal_memory = [&] {
     release_metal();
-    out_raw("SOLVER: device cpu (Metal ran out of memory)\n");
+    out_raw("SOLVER: device cpu (GPU ran out of memory)\n");
   };
   uint64_t metal_payoff_version = 0, metal_generation = 0;
   bool pool_set = !tune_threads;  // set under tree_mu_ below: a command may be using the pool now
@@ -504,7 +504,9 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       if (gpu && refresh_reach && (done == 0 || metal)) {
         const char* fallback = nullptr;
         if (sub || tree_->cfg.preflop) fallback = "subtree and preflop iterations use CPU";
-        else if (tree_->compressed || solver_->predictive || !tree_->preds.empty() || tree_->payoff().icm.enabled)
+        else if (tree_->compressed)
+          fallback = "16-bit storage requires CPU: the tree is too large for the GPU, or small_strats is on";
+        else if (solver_->predictive || !tree_->preds.empty() || tree_->payoff().icm.enabled)
           fallback = "storage or payoff model requires CPU";
         else if (metal && tree_->payoff_version != metal_payoff_version) fallback = "payoff changed";
         else if (std::any_of(tree_->nodes.begin(), tree_->nodes.end(), [](const GNode& n) { return n.flags != 0; }))
@@ -517,7 +519,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           out_raw(std::string("SOLVER: device cpu (") + fallback + ")\n");
         } else if (!metal) {
           try {
-            metal = make_metal_solve(*tree_, available_memory_bytes() * 9 / 10);
+            metal = make_gpu_solve(*tree_, available_memory_bytes() * 9 / 10);
             pause_requests_.sync_regrets = [&] { metal->publish_for_cpu(*tree_); };
             metal_payoff_version = tree_->payoff_version;
             out_raw("SOLVER: device gpu\n");
@@ -766,7 +768,7 @@ void Upi::plan_outcome_tables(GameTree& t, uint64_t avail, bool compress) const 
   t.table_limit = outcome_tables_ == "auto" ? avail * 9 / 10 : 0;
   t.limit_compress = compress;
   t.limit_preds = predictive_;
-  t.gpu_tables = algorithm_ == "v4_metal";
+  t.gpu_tables = gpu_algorithm(algorithm_);
   t.allin_plan = outcome_tables_ == "fast" ? 3 : -1;
 }
 
@@ -805,9 +807,14 @@ std::string Upi::build_from(GameConfig c, bool mem_ignore, bool pessimistic, con
 #if defined(__aarch64__) || defined(_M_ARM64)
     t->compressed = c.preflop || full > avail * 9 / 10;
 #else
+    // The bandwidth rule is for CPU iterations. A discrete GPU solves float32 only (16-bit storage
+    // sends the solve to the CPU), so under the GPU algorithm a tree that should fit the GPU (its rows
+    // and tables add about a quarter to the state) stays float32; one that would not keeps the CPU's choice.
     const uint64_t th = threads_ > 0 ? static_cast<uint64_t>(threads_)
                                      : std::max<uint64_t>(1, std::thread::hardware_concurrency());
-    t->compressed = c.preflop || full > avail * 9 / 10 || full * th >= (uint64_t(2) << 30);
+    const uint64_t gpu_mem = gpu_algorithm(algorithm_) && gpu_available() ? gpu_memory_bytes() : 0;
+    const bool for_gpu = gpu_mem && full / 4 * 5 <= gpu_mem / 10 * 9;
+    t->compressed = c.preflop || full > avail * 9 / 10 || (!for_gpu && full * th >= (uint64_t(2) << 30));
 #endif
   }
   // Compact river rows (#239): ~7% less 16-bit storage for ~12% more time per iteration, so only on
@@ -1474,17 +1481,23 @@ void Upi::register_commands() {
         "v4_large,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
         "pio_cfr,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)\n"
         "original_pio,DCFR,Discounted CFR (alpha 1.3, beta 0 then 0.5 after iteration 50, gamma 4)");
-    if (metal_available()) algorithms += "\nv4_metal,DCFR,Apple GPU (Metal), unpruned postflop traversal";
+    // v4_gpu is the GPU on any platform; v4_metal, its first name, stays for Apple Silicon clients
+    if (gpu_available()) {
+      algorithms += "\nv4_gpu,DCFR," + gpu_name() + ", unpruned postflop traversal";
+#if defined(__APPLE__) && defined(__aarch64__)
+      algorithms += "\nv4_metal,DCFR,Apple GPU (Metal), unpruned postflop traversal";
+#endif
+    }
     return algorithms;
   };
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
     static const char* valid[] = {"auto", "v4_small", "v4_large", "pio_cfr", "original_pio"};
-    if (a[0] == "v4_metal") {
-      if (!metal_available()) throw CmdError{"GPU unavailable"};
+    if (gpu_algorithm(a[0])) {
+      if (!gpu_available()) throw CmdError{"GPU unavailable: " + gpu_unavailable_reason()};
     } else if (std::find(std::begin(valid), std::end(valid), a[0]) == std::end(valid))
       throw CmdError{"incorrect or missing argument"};
-    if (solving_ && a[0] != algorithm_ && (a[0] == "v4_metal" || algorithm_ == "v4_metal"))
+    if (solving_ && gpu_algorithm(a[0]) != gpu_algorithm(algorithm_))
       throw CmdError{"stop the solver first"};
     algorithm_ = a[0];
     return std::string("set_algorithm ok!");

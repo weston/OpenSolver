@@ -21,6 +21,15 @@ METAL_OBJ := metal.o
 LDLIBS += -framework Metal -framework Foundation
 endif
 endif
+# Everywhere else the GPU solve is CUDA or OpenCL (src/gpu_solve.cpp), both loaded at run time: no SDK
+# or driver is needed to build, and without one the solver simply offers no GPU algorithm.
+ifeq ($(METAL_OBJ),)
+GPU_SRC  := src/gpu_solve.cpp src/opencl.cpp src/cuda.cpp
+SRC      += $(GPU_SRC)
+ifeq ($(shell uname -s),Linux)
+LDLIBS += -ldl
+endif
+endif
 OBJ      := $(SRC:src/%.cpp=build/%.o) $(addprefix build/,$(METAL_OBJ))
 
 all: solver
@@ -127,8 +136,10 @@ build/win/%.o: src/%.cpp $(wildcard src/*.hpp)
 	@mkdir -p build/win
 	$(WIN_CXX) -std=c++20 -O3 $(WIN_ARCH) -Wall -Wextra -DNDEBUG $(if $(ZLIB_DIR),-I$(ZLIB_DIR)) -c $< -o $@
 
-windows: $(WIN_OBJ)
-	$(WIN_CXX) -std=c++20 -O3 $(WIN_ARCH) -static $^ -o build/win/solver.exe $(if $(ZLIB_DIR),-L$(ZLIB_DIR)) -lz
+build/win/solver.exe: $(WIN_OBJ)
+	$(WIN_CXX) -std=c++20 -O3 $(WIN_ARCH) -static $^ -o $@ $(if $(ZLIB_DIR),-L$(ZLIB_DIR)) -lz
+
+windows: build/win/solver.exe
 
 bench: solver
 	python3 bench/run.py --out bench/results
@@ -289,6 +300,16 @@ build/macos/obj/%.o: src/%.cpp $(wildcard src/*.hpp) | build/macos/obj
 build/macos/solver: $(MACOS_OBJ)
 	$(CXX) $(MACOS_CXXFLAGS) $^ -o $@ $(LDLIBS)
 
+# The CUDA and OpenCL kernels: one source (postflop.cl, flop_table.cl) behind each API's header,
+# compiled by the driver (OpenCL) or NVRTC (CUDA) when the solver first uses the GPU.
+GPU_KERNELS := src/metal_layout.h src/postflop.cl src/flop_table.cl
+build/opencl_kernels.inc: src/gpu_opencl.h $(GPU_KERNELS) | build
+	{ echo 'R"CLC('; cat $^; echo ')CLC"'; } > $@
+build/cuda_kernels.inc: src/gpu_cuda.h $(GPU_KERNELS) | build
+	{ echo 'R"CUDA('; cat $^; echo ')CUDA"'; } > $@
+GPU_SOLVE_OBJ := build/gpu_solve.o build/win/gpu_solve.o $(PGO_DIR)/gen/gpu_solve.o $(PGO_DIR)/opt/gpu_solve.o
+$(GPU_SOLVE_OBJ): build/opencl_kernels.inc build/cuda_kernels.inc
+
 build/metal_kernels.inc: src/bfloat_regrets.hpp src/metal_layout.h src/postflop.metal src/flop_table.metal | build
 	{ echo 'R"MSL('; cat $^; echo ')MSL"'; } > $@
 
@@ -321,7 +342,31 @@ macos-app macos-pkg test-macos-app:
 	@echo "the macOS package is built on an Apple Silicon Mac"; exit 1
 endif
 
+# ----- Windows installer (#565) ------------------------------------------------
+# `make windows-installer` writes dist/OpenSolver-<version>-windows-x64-setup.exe (and
+# its .sha256): a per-user installer for OpenSolver.exe, which starts the viewer with
+# a Python of its own and opens it in the browser. Built natively in an MSYS2
+# UCRT64 shell (pacman -S mingw-w64-ucrt-x86_64-nsis for the installer compiler);
+# see README, "Windows", and packaging/windows/build.sh. `make windows-app` stages
+# the app in build/windows/stage/OpenSolver and runs it, without the installer.
+# The solver in it is the static build/win/solver.exe of `make windows` (no DLLs,
+# for any x86-64 CPU with AVX2 unless WIN_ARCH says otherwise); to package another
+# build, name it: make windows-installer WIN_INSTALLER_SOLVER=solver.exe
+WIN_INSTALLER_SOLVER ?= build/win/solver.exe
+ifneq ($(filter MINGW% MSYS% UCRT% CLANG%,$(shell uname -s)),)
+windows-app: $(WIN_INSTALLER_SOLVER)
+	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
+	VERSION=$(VERSION) WIN_ARCH="$(WIN_ARCH)" SOLVER=$(WIN_INSTALLER_SOLVER) packaging/windows/build.sh --app
+
+windows-installer: $(WIN_INSTALLER_SOLVER)
+	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
+	VERSION=$(VERSION) WIN_ARCH="$(WIN_ARCH)" SOLVER=$(WIN_INSTALLER_SOLVER) packaging/windows/build.sh
+else
+windows-app windows-installer:
+	@echo "the Windows installer is built on Windows, in an MSYS2 UCRT64 shell"; exit 1
+endif
+
 clean:
 	rm -rf build solver solver-release dist
 
-.PHONY: all test test-big flop-subsets windows bench release install uninstall dist macos-app macos-pkg test-macos-app clean
+.PHONY: all test test-big flop-subsets windows windows-app windows-installer bench release install uninstall dist macos-app macos-pkg test-macos-app clean

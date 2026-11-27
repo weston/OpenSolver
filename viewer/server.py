@@ -120,16 +120,28 @@ class Solver:
         self.send_raw("set_end_string " + END)
         self._read_response()  # banner lines, skipped until the first END
         self.version = self.cmd("show_version")
+        self.gpu_algorithm, self.gpu_name = None, None
         try:
             algorithms = self.cmd("list_algorithms").splitlines()
-            self.devices = ["cpu", "gpu"] if any(a.startswith("v4_metal,") for a in algorithms) else ["cpu"]
+            # v4_gpu (Metal, CUDA or OpenCL), or v4_metal from a solver that predates it
+            gpu = next((a for a in algorithms if a.startswith("v4_gpu,")), None) or \
+                next((a for a in algorithms if a.startswith("v4_metal,")), None)
+            self.devices = ["cpu", "gpu"] if gpu else ["cpu"]
+            if gpu:
+                fields = gpu.split(",")
+                self.gpu_algorithm = fields[0]
+                self.gpu_name = fields[2].strip() if len(fields) > 2 else "GPU"
         except SolverError:
             self.devices = ["cpu"]
         self.cpu_algorithm = "auto"
         self.device = "cpu"
         if "gpu" in self.devices:
-            self.cmd("set_algorithm v4_metal")
-            self.device = "gpu"
+            # the GPU when the solver prefers it (Metal); a discrete GPU is the user's choice
+            settings = self.cmd("show_settings").splitlines()
+            preferred = any(line.strip() in ("algorithm:v4_gpu", "algorithm:v4_metal") for line in settings)
+            if preferred or not any(line.startswith("algorithm:") for line in settings):
+                self.cmd("set_algorithm " + self.gpu_algorithm)
+                self.device = "gpu"
         self.active_device = None
 
     def _pump(self, generation, stream, q):
@@ -245,7 +257,7 @@ class Solver:
 
     def device_algorithm(self, device=None):
         with self.state_lock:
-            return "v4_metal" if (device or self.device) == "gpu" else self.cpu_algorithm
+            return self.gpu_algorithm if (device or self.device) == "gpu" else self.cpu_algorithm
 
     def state(self):
         with self.state_lock:
@@ -256,7 +268,7 @@ class Solver:
             return {"solving": self.solving, "flop_stability": self.flop_stability,
                     "stability_stage": latest.get("stability_stage"), "suspended": "refine" in self.holds,
                     "devices": self.devices, "device": self.device, "active_device": self.active_device,
-                    "dead": self.dead, "progress": list(self.progress),
+                    "gpu_name": self.gpu_name, "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
                     "tree": self.tree_present and not self.dead, "version": self.version,
                     "partial": partial, "loaded_file": self.loaded_file,

@@ -228,22 +228,49 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
   }
 }
 
-kernel void allin(TRAVERSAL_BUFFERS, device const uint* offsets [[buffer(9)]], device const float* eq [[buffer(10)]],
+template <typename Count>
+float4 allin_sums(device const Count* row, uint O, uint lane, float scale, uint p, device const float* reach,
+                  uint4 reaches, float4 spread, float4 loss) {
+  float4 sums = 0;
+  for (uint j = lane; j < O; j += 32) {
+    int count = row[j];
+    if (count < 0) continue;
+    float e = float(count) * scale;
+    if (p) e = 1.f - e;
+    float4 weights(reach[reaches.x + j], reach[reaches.y + j], reach[reaches.z + j], reach[reaches.w + j]);
+    sums = fma(weights, fma(spread, float4(e), loss), sums);
+  }
+  return sums;
+}
+
+kernel void allin(TRAVERSAL_BUFFERS, device const AllinTable* tables [[buffer(9)]],
+                  device const short* counts [[buffer(10)]], device const AllinBatch* batches [[buffer(14)]],
                   uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
                   ushort lane [[thread_index_in_simdgroup]]) {
-  uint i = ids[group.x];
-  TraversalNode n = nodes[i];
   uint h = group.y * 4 + tid / 32;
   uint H = q.p ? q.hands1 : q.hands0, O = q.p ? q.hands0 : q.hands1;
   if (h >= H) return;
-  device const float* ro = (q.p ? oop_reach : ip_reach) + n.row[1 - q.p] * q.stride;
-  float s = 0;
-  for (uint j = lane; j < O; j += 32) {
-    float e = eq[offsets[n.aux] + h * O + j];
-    if (e >= 0) s = fma(ro[j], fma(n.win[q.p] - n.loss[q.p], e, n.loss[q.p]), s);
+  device const AllinBatch& batch = batches[group.x];
+  uint4 reaches;
+  float4 spread, loss;
+  for (uint k = 0; k < 4; ++k) {
+    reaches[k] = batch.reach_offset[q.p][k];
+    spread[k] = batch.win_minus_loss[q.p][k];
+    loss[k] = batch.loss[q.p][k];
   }
-  s = simd_sum(s);
-  if (!lane) values[n.value_row * q.stride + h] = s;
+  device const float* reach = q.p ? oop_reach : ip_reach;
+  AllinTable table = tables[batch.table];
+  device const short* start = counts + table.word_offset;
+  float4 sums;
+  if (table.bytes_per_count == 1)
+    sums = allin_sums(reinterpret_cast<device const char*>(start) + h * O, O, lane, table.scale, q.p,
+                      reach, reaches, spread, loss);
+  else
+    sums = allin_sums(start + h * O, O, lane, table.scale, q.p, reach, reaches, spread, loss);
+  for (uint k = 0; k < 4; ++k) {
+    float s = simd_sum(sums[k]);
+    if (!lane && k < batch.count) values[batch.value_offset[k] + h] = s;
+  }
 }
 
 float2 binary_strategy(device const float* r, uint j, uint H) {

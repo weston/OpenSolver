@@ -197,8 +197,8 @@ class PostflopSolve final : public MetalSolve {
   Metal& m = metal();
   id<MTLComputePipelineState> propagate_reach, update_values, advance_forced, terminals, river_pairs, river_rounds,
       allins, wide_rounds;
-  id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], equity[2], offsets[2];
-  id<MTLBuffer> rounds;
+  id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], rounds;
+  id<MTLBuffer> equity[2], equity_tables, allin_batches;
   MetalRows regrets, strategy_sums;
   struct Range {
     size_t start, count;
@@ -223,18 +223,16 @@ class PostflopSolve final : public MetalSolve {
     return b;
   }
   void check_workspace(const GameTree& g, uint64_t available, uint64_t value_rows, uint64_t reach_rows,
-                       uint64_t mappings, uint64_t rounds) const {
+                       uint64_t mappings, uint64_t rounds, uint64_t batches, uint64_t equity_bytes) const {
     const size_t N = g.nodes.size();
-    const size_t pairs = size_t(g.num_hands(0)) * g.num_hands(1);
     uint64_t hands = g.num_hands(0) + g.num_hands(1);
     uint64_t boardBytes =
         (g.showdowns.size() + 1) *
         (2 * sizeof(BoardPrefixes) + hands * (sizeof(HandPrefixes) + 3 * sizeof(uint16_t)) + 106 * sizeof(uint16_t));
-    uint64_t equityBytes = 2 * g.allins.size() * pairs * sizeof(float);
     uint64_t workspace = (value_rows + reach_rows) * stride * sizeof(float) + 2 * state_bytes;
-    uint64_t peak = workspace +
-                    2 * (boardBytes + equityBytes + N * (sizeof(TraversalNode) + 4 * sizeof(unsigned)) +
-                         mappings * 2 * sizeof(unsigned) + rounds * sizeof(RiverRound)) +
+    uint64_t peak = workspace + equity_bytes +
+                    2 * (boardBytes + N * (sizeof(TraversalNode) + 4 * sizeof(unsigned)) +
+                         mappings * 2 * sizeof(unsigned) + rounds * sizeof(RiverRound) + batches * sizeof(AllinBatch)) +
                     128 * stride;
     if (mappings > UINT32_MAX || (g.showdowns.size() + 1) * (3 * stride + 53) > UINT32_MAX)
       throw std::runtime_error("tree exceeds Metal board index limits");
@@ -242,28 +240,42 @@ class PostflopSolve final : public MetalSolve {
       throw std::runtime_error("Metal workspace exceeds available memory");
   }
   explicit PostflopSolve(GameTree& g, uint64_t available) {
-    propagate_reach = m.pipeline(@"propagate_reach", true);
-    update_values = m.pipeline(@"update_values", true);
-    advance_forced = m.pipeline(@"advance_forced", true);
-    river_rounds = m.pipeline(@"river_betting_round", true);
-    river_pairs = m.pipeline(@"river_call_fold", true);
-    terminals = m.pipeline(@"terminal", true);
-    allins = m.pipeline(@"allin", true);
     stride = (std::max(g.num_hands(0), g.num_hands(1)) + 31) & ~size_t(31);
     state_bytes = g.storage_floats * sizeof(float);
-    const uint64_t indices = uint64_t(g.num_hands(0)) * g.num_hands(1) * g.allins.size();
+    const size_t pairs = size_t(g.num_hands(0)) * g.num_hands(1);
     if (!g.num_hands(0) || !g.num_hands(1) || g.nodes.size() * stride > UINT32_MAX || g.storage_floats > UINT32_MAX ||
-        indices > UINT32_MAX)
+        pairs * g.allins.size() > UINT32_MAX)
       throw std::runtime_error("tree exceeds Metal index limits");
     if (2 * g.nodes.size() * sizeof(TraversalNode) > available)
       throw std::runtime_error("Metal workspace exceeds available memory");
-    pack_nodes(g, available);
-    const size_t round_bytes = 3 * round_channel_bytes(std::max(g.num_hands(0), g.num_hands(1)));
-    if (round_range.count && round_bytes > m.dev.maxThreadgroupMemoryLength)
-      wide_rounds = m.pipeline(@"river_betting_round_wide", true);
+    vector<AllinTable> tables;
+    size_t table_words = 0;
+    for (const auto& ar : g.allins) {
+      const unsigned width = ar.e2b.empty() ? sizeof(int16_t) : sizeof(int8_t);
+      tables.push_back({unsigned(table_words), width, .5f * ar.scale});
+      table_words += (pairs * width + 1) / 2;
+    }
+    const size_t equity_bytes = 2 * table_words * sizeof(int16_t) + tables.size() * sizeof(AllinTable);
+    pack_nodes(g, available, equity_bytes);
+    if (!levels.empty()) {
+      propagate_reach = m.pipeline(@"propagate_reach", true);
+      update_values = m.pipeline(@"update_values", true);
+    }
+    if (forced_range[0].count || forced_range[1].count) advance_forced = m.pipeline(@"advance_forced", true);
+    if (terminal_range.count) terminals = m.pipeline(@"terminal", true);
+    if (pair_range.count) river_pairs = m.pipeline(@"river_call_fold", true);
+    if (allin_range.count) allins = m.pipeline(@"allin", true);
+    if (round_range.count) {
+      const auto limit = m.dev.maxThreadgroupMemoryLength;
+      if (3 * round_channel_bytes(std::min(g.num_hands(0), g.num_hands(1))) <= limit)
+        river_rounds = m.pipeline(@"river_betting_round", true);
+      if (3 * round_channel_bytes(std::max(g.num_hands(0), g.num_hands(1))) > limit)
+        wide_rounds = m.pipeline(@"river_betting_round_wide", true);
+    }
     regrets.bind(m, g.regrets);
     strategy_sums.bind(m, g.strat);
     pack_hands(g);
+    pack_allins(g, tables, table_words);
     for (auto& b : params) b = m.buffer(sizeof(IterationParams));
   }
 
@@ -289,28 +301,36 @@ class PostflopSolve final : public MetalSolve {
       boards[p] = copy_buffer(b.boards);
       indices[p] = copy_buffer(b.indices);
       heroes[p] = copy_buffer(b.heroes);
-      const int H = g.num_hands(p), O = g.num_hands(1 - p);
-      vector<float> equities(g.allins.size() * H * O);
-      vector<unsigned> equity_offsets(g.allins.size());
-      pool().parallel_for(int(g.allins.size()), [&](int k) {
-        const auto& ar = g.allins[k];
-        const size_t offset = size_t(k) * H * O;
-        equity_offsets[k] = offset;
-        uint64_t board = 0;
-        for (auto c : ar.cards) board |= card_bit(c);
-        for (int h = 0; h < H; ++h) {
-          uint64_t hero = combo_mask(g.hands[p][h]);
-          for (int o = 0; o < O; ++o) {
-            uint64_t opp = combo_mask(g.hands[1 - p][o]);
-            size_t j = p ? size_t(o) * H + h : size_t(h) * O + o;
-            float e = (ar.e2.empty() ? ar.e2b[j] : ar.e2[j]) * .5f * ar.scale;
-            equities[offset + size_t(h) * O + o] = (hero & opp) || ((hero | opp) & board) ? -1.f : (p ? 1.f - e : e);
-          }
-        }
-      });
-      equity[p] = copy_buffer(equities);
-      offsets[p] = copy_buffer(equity_offsets);
     }
+  }
+
+  template <typename Count, typename Outcomes>
+  static void pack_counts(const GameTree& g, uint64_t board, const Outcomes& outcomes, Count* oop, Count* ip) {
+    const int H = g.num_hands(0), O = g.num_hands(1);
+    for (int h = 0; h < H; ++h) {
+      const uint64_t hero = combo_mask(g.hands[0][h]);
+      for (int o = 0; o < O; ++o) {
+        const uint64_t opp = combo_mask(g.hands[1][o]);
+        const size_t pair = size_t(h) * O + o;
+        const Count count = (hero & opp) || ((hero | opp) & board) ? -1 : outcomes[pair];
+        oop[pair] = count;
+        ip[size_t(o) * H + h] = count;
+      }
+    }
+  }
+
+  void pack_allins(const GameTree& g, const vector<AllinTable>& tables, size_t table_words) {
+    equity_tables = copy_buffer(tables);
+    for (auto& buffer : equity) buffer = m.buffer(table_words * sizeof(int16_t));
+    pool().parallel_for(int(g.allins.size()), [&](int k) {
+      const auto& ar = g.allins[k];
+      auto* oop = static_cast<int16_t*>(equity[0].contents) + tables[k].word_offset;
+      auto* ip = static_cast<int16_t*>(equity[1].contents) + tables[k].word_offset;
+      uint64_t board = 0;
+      for (auto card : ar.cards) board |= card_bit(card);
+      if (ar.e2b.empty()) pack_counts(g, board, ar.e2, oop, ip);
+      else pack_counts(g, board, ar.e2b, reinterpret_cast<int8_t*>(oop), reinterpret_cast<int8_t*>(ip));
+    });
   }
 
   static bool pack_river_round(const GameTree& g, unsigned i, vector<RiverRound>& rounds) {
@@ -372,7 +392,7 @@ class PostflopSolve final : public MetalSolve {
 
   static size_t round_channel_bytes(unsigned hands) { return (4 * hands + 53) * sizeof(float); }
 
-  void pack_nodes(const GameTree& g, uint64_t available) {
+  void pack_nodes(const GameTree& g, uint64_t available, uint64_t equity_bytes) {
     const size_t N = g.nodes.size();
     vector<TraversalNode> packed_nodes(N);
     vector<uint8_t> covered(N);
@@ -527,10 +547,23 @@ class PostflopSolve final : public MetalSolve {
     std::stable_sort(allin_ids.begin(), allin_ids.end(), [&](unsigned a, unsigned b) {
       return packed_nodes[a].aux < packed_nodes[b].aux;
     });
-    allin_range = {list.size(), allin_ids.size()};
-    list.insert(list.end(), allin_ids.begin(), allin_ids.end());
+    vector<AllinBatch> batches;
+    for (unsigned i : allin_ids) {
+      const auto& n = packed_nodes[i];
+      if (batches.empty() || batches.back().table != n.aux || batches.back().count == 4)
+        batches.emplace_back().table = n.aux;
+      auto& batch = batches.back();
+      const unsigned k = batch.count++;
+      batch.value_offset[k] = n.value_row * stride;
+      for (unsigned p = 0; p < 2; ++p) {
+        batch.reach_offset[p][k] = n.row[1 - p] * stride;
+        batch.win_minus_loss[p][k] = n.win[p] - n.loss[p];
+        batch.loss[p][k] = n.loss[p];
+      }
+    }
+    allin_range = {0, batches.size()};
     check_workspace(g, available, value_rows, size_t(next_row[0]) + next_row[1], deals_by_node.size(),
-                    betting_rounds.size());
+                    betting_rounds.size(), batches.size(), equity_bytes);
     for (int p = 0; p < 2; ++p) {
       r[p] = m.buffer(next_row[p] * stride * 4);
       memcpy(r[p].contents, g.init_reach[p].data(), g.num_hands(p) * 4);
@@ -538,6 +571,7 @@ class PostflopSolve final : public MetalSolve {
     v = m.buffer(size_t(value_rows) * stride * sizeof(float));
     round_range = {0, betting_rounds.size()};
     rounds = copy_buffer(betting_rounds);
+    allin_batches = copy_buffer(batches);
     nodes = copy_buffer(packed_nodes);
     node_ids = copy_buffer(list);
     for (auto& entry : deals_by_node) {
@@ -592,7 +626,8 @@ class PostflopSolve final : public MetalSolve {
       dispatch(river_rounds, round_range, channel_bytes * 3);
     else
       dispatch(wide_rounds, round_range, channel_bytes);
-    buffers[9] = offsets[p];
+    buffers[14] = allin_batches;
+    buffers[9] = equity_tables;
     buffers[10] = equity[p];
     dispatch(allins, allin_range, 0, (g.num_hands(p) + 3) / 4);
     buffers[9] = iso;
@@ -624,8 +659,8 @@ class PostflopSolve final : public MetalSolve {
         auto& plan = replays[state_slot][p][phase == 0 && refresh_reach];
         if (!plan.commands) plan = record(g, p, phase == 0 && refresh_reach);
         auto enc = m.encoder(cmd);
-        id<MTLResource> read[] = {nodes,  node_ids,   params[p], cards, boards[p], indices[p],    heroes[p],
-                                  rounds, offsets[p], equity[p], iso,   perms[p],  regrets.input, strategy_sums.input};
+        id<MTLResource> read[] = {nodes, node_ids, params[p], cards, boards[p], indices[p], heroes[p], rounds,
+                                  allin_batches, equity_tables, equity[p], iso, perms[p], regrets.input, strategy_sums.input};
         id<MTLResource> write[] = {r[0], r[1], v, regrets.output, strategy_sums.output};
         [enc useResources:read count:sizeof(read) / sizeof(read[0]) usage:MTLResourceUsageRead];
         [enc useResources:write

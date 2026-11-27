@@ -2533,6 +2533,11 @@ def check_solve_device(exe):
             assert "ERROR" not in u.cmd(cmd), cmd
         compare_strategies(("r:0", "r:0:c:c:2c:c:c:3h", "r:0:c:c:2c:c:c:3h:b100"),
                            "compiled flop checkdowns and river actions preserve both public-card blockers")
+        for cmd in ("clear_lines", "add_line 240", "add_line 60 240", "add_line 100 240", "add_line 0 240",
+                    "add_line 0 60 240", "add_line 0 100 240", "add_line 0 0 90 240"):
+            assert "ERROR" not in u.cmd(cmd), cmd
+        compare_strategies(("r:0", "r:0:b100:b240", "r:0:c:b60:b240", "r:0:c:c:2c:b90"),
+                           "grouped flop and turn all-ins preserve each betting line's strategy")
         for cmd in ("build_tree", "set_info_freq 1", "set_accuracy 1000", "go 10 steps", "wait_for_solver"):
             assert "ERROR" not in u.cmd(cmd), cmd
         stopped = u.cmd("show_strategy r:0")

@@ -21,3 +21,13 @@ struct RiverRound {
   unsigned root, board, storage[4], final_raise;
   float win[3][2], loss[3][2], tie[3][2], fold[2][2];
 };
+
+struct AllinTable {
+  unsigned word_offset, bytes_per_count;
+  float scale;
+};
+
+struct AllinBatch {
+  unsigned table, count, value_offset[4], reach_offset[2][4];
+  float win_minus_loss[2][4], loss[2][4];
+};

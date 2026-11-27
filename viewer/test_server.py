@@ -616,6 +616,44 @@ class ViewerTest(unittest.TestCase):
             self.assertEqual(d["node"]["board"].replace(" ", ""), board)
             self.assertTrue(any(c["id"].startswith(first_kid) for c in d["children"]), d["children"])
 
+    def test_flop_stability_replaces_accuracy_for_a_single_solve(self):
+        cfg = dict(CFG, flop_bet="a", flop_bet_ip="a", flop_raise="", turn_bet="", turn_raise="",
+                   river_bet="", river_raise="", river_allin=False)
+        def build(board):
+            tree = dict(cfg, board=board)
+            if len(board) > 6:
+                tree.update(turn_bet="a", river_bet="a")
+            status, result = self.req("/api/generate", "POST", tree)
+            self.assertEqual(status, 200, result)
+            self.assertEqual(self.req("/api/build", "POST")[0], 200)
+
+        def solve(stability):
+            status, result = self.req("/api/solve", "POST", {"flop_stability": stability, "accuracy": 1000000})
+            self.assertEqual(status, 200, result)
+            self.solver.cmd("wait_for_solver", timeout=60)
+            return self.req("/api/progress")[1]
+
+        original = self.solver.device
+        try:
+            for device in self.solver.devices:
+                with self.subTest(device=device):
+                    self.assertEqual(self.req("/api/device", "POST", {"device": device})[0], 200)
+                    build("QhQc2c")
+                    progress = solve(True)
+                    self.assertTrue(progress["flop_stability"])
+                    self.assertEqual(progress["solver_status"], "stopped (flop strategy stable)")
+                    self.assertEqual(progress["active_device"], device)
+                    self.assertGreaterEqual(progress["iters"], 100)
+                    self.assertTrue(progress["progress"])
+                    self.assertEqual(solve(False)["solver_status"], "stopped (required accuracy reached)")
+            for later_board in ("QhQc2c4d", "QhQc2c4d5s"):
+                build(later_board)
+                progress = solve(True)
+                self.assertFalse(progress["flop_stability"])
+                self.assertEqual(progress["solver_status"], "stopped (required accuracy reached)")
+        finally:
+            self.req("/api/device", "POST", {"device": original})
+
     def test_smart_flop_solve_browses_and_saves_the_configured_river(self):
         cfg = dict(CFG, board="Kh9h4h", pot=100, stack=700, flop_bet="", flop_bet_ip="40",
                    turn_bet="", turn_bet_ip="100", river_bet="25,75,150,300", river_raise="50",

@@ -143,10 +143,10 @@ class Upi {
   void register_save_commands();
   void require_tree() const;
   void stop_solver(const char* reason = "requested");
-  void start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub = nullptr);
+  void start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub = nullptr, bool stable_flop = false);
   void prepare_solve();
   void solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
-                          const std::string& endl_str, bool gpu);
+                          const std::string& endl_str, bool gpu, bool stable_flop);
   void start_subtree_solve(const NodeRef& r, double seconds, long long steps);
   RootStats current_root_stats();
   void apply_payoff();

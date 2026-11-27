@@ -28,7 +28,14 @@ export function smartTree() {
   return prefs.get("smart-tree", true) === true;
 }
 
+export function flopStability() {
+  return prefs.get("flop-stability", false) === true;
+}
+
 export function initSettings() {
+  const stability = document.getElementById("flop-stability");
+  stability.checked = flopStability();
+  stability.onchange = () => prefs.set("flop-stability", stability.checked);
   const smart = document.getElementById("smart-tree");
   smart.checked = smartTree();
   smart.onchange = () => prefs.set("smart-tree", smart.checked);

@@ -19,7 +19,7 @@ import { initSettings, updateDevice } from "./settings.js";
 
 const $ = (id) => document.getElementById(id);
 
-const app = { view: "study", tree: false, solving: false, rootPot: 0, bb: 0, series: [], lastEvents: -1, loadedPath: null, loadedBatch: null };
+const app = { view: "study", tree: false, solving: false, rootPot: 0, rootCards: 0, bb: 0, series: [], lastEvents: -1, loadedPath: null, loadedBatch: null };
 
 /* ------------------------------------------------------------------ views */
 
@@ -61,9 +61,10 @@ async function refreshRootPot() {
     const p = await get("/api/path?id=r:0");
     const n = p.nodes[0];
     app.rootPot = (n.pot || []).reduce((a, b) => a + (b || 0), 0);
+    app.rootCards = (n.board || "").replace(/\s/g, "").length / 2;
     app.bb = bigBlindOf(n);   // a preflop tree (#492): its exploitability is told in bb/100
     return n;
-  } catch (e) { app.rootPot = 0; app.bb = 0; }
+  } catch (e) { app.rootPot = 0; app.rootCards = 0; app.bb = 0; }
 }
 
 /** The main solve's exploitability in the tree's own unit: % of the root's pot, bb/100 for a preflop tree. */
@@ -103,14 +104,16 @@ async function pollOnce() {
   // Solve further (#153): the subtree solve has its own scale (the node's pot, not the root's)
   const pt = st.partial && st.partial.point, ppot = st.partial && st.partial.pot;
   const ppct = pt && ppot ? (pt.explo / ppot) * 100 : null;
+  const stable = st.solver_status === "stopped (flop strategy stable)" && st.flop_stability;
   if (st.dead) setPill("err", "Solver stopped working — restart from Open");
   else if (st.suspended) setPill("solving", `Refining a street · ${pct != null ? pct + " · " : ""}main solve paused`);
   else if (st.solving && st.partial) setPill("solving", `Solving further · ${ppct != null ? fmt(ppct, 2) + "%" : "…"} · ${pt ? fmt(pt.t, 0) + "s" : "0s"}`);
   else if (st.solving) setPill("solving", `Solving${st.device === "gpu" ? " · " + (st.active_device || "cpu").toUpperCase() : ""} · ${pct != null ? pct : "…"} · ${last ? fmt(last.t, 0) + "s" : "0s"}`);
+  else if (stable) setPill("done", "Flop strategy stable");
   else if (last) setPill("done", `Solved · ${exploText(last.explo, "% pot") || "—"}`);
   else setPill("", app.tree ? "Tree ready" : "Idle");
   drawSpark($("pill-spark"), app.series, app.rootPot);
-  updateProgress(st, app.series, app.rootPot, app.bb);
+  updateProgress(st, app.series, app.rootPot, app.bb, app.rootCards);
   pollFurther(st, app.series);
   // the open save's job batch, for Study's Report button (#331); asked again only when the file changes
   if ((st.loaded_path || null) !== app.loadedPath) {
@@ -123,7 +126,7 @@ async function pollOnce() {
   previewStatus(st);
 
   if (wasSolving && !st.solving) {
-    toast(st.partial && st.partial.done && ppct != null
+    toast(stable ? "Flop strategy stable" : st.partial && st.partial.done && ppct != null
       ? `Solve further finished at ${fmt(ppct, 2)}% of the node's pot`
       : pct != null ? `Solve finished at ${exploText(last.explo, "% of the pot")}` : "Solve finished");
     if (app.view === "study" && app.tree) study.refresh();

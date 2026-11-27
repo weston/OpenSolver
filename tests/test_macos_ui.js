@@ -12,6 +12,10 @@ await wait(() => $('drill-ahead').oninput);
 check([...document.querySelectorAll('.view-tab')].map(b => b.textContent).join(',') === 'Tree,Browse,Drill,Jobs,Settings', 'missing app tabs');
 
 tab('settings');
+const stability = $('flop-stability');
+stability.click();
+check(localStorage.getItem('ws-flop-stability') === String(stability.checked), 'flop stopping preference was not saved');
+stability.click();
 $('drill-ahead').value = '4';
 $('drill-ahead').dispatchEvent(new Event('input', {bubbles: true}));
 check(localStorage.getItem('ws-drill-ahead') === '4', 'settings could not be stored');

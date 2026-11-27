@@ -4,7 +4,7 @@
 import { H, RANKS, SUITS, GLYPH, el, cardEl } from "./cards.js";
 import { startPreview, previewOn } from "./preview.js";
 import { parseRange, formatRange, rangeStats } from "./ranges.js";
-import { smartTree } from "./settings.js";
+import { smartTree, flopStability } from "./settings.js";
 import { get, post, toast, fail, prefs, fmt, fmtChips, fmtEvPct } from "./api.js";
 import { drawChart } from "./chart.js";
 import { openLibrary } from "./library.js";
@@ -151,7 +151,15 @@ class RangeEditor {
 
 /* ------------------------------------------------------------------ board picker */
 
+function syncAccuracy() {
+  const field = $("f-accuracy");
+  const resumeNeedsTarget = treeReady && rootCards > 3;
+  field.disabled = flopStability() && board.length === 3 && !resumeNeedsTarget;
+  if (field.disabled) field.classList.remove("invalid");
+}
+
 function drawBoard() {
+  syncAccuracy();
   const slots = $("board-slots");
   slots.textContent = "";
   for (let i = 0; i < 5; i++) {
@@ -389,7 +397,7 @@ function markDirty() {
 /* ------------------------------------------------------------------ build & solve */
 
 let busy = false;
-let treeReady = false, rootPotNow = 0;
+let treeReady = false, rootPotNow = 0, rootCards = 0;
 let treeBB = 0;   // chips in a big blind of the tree in the solver when it is a preflop tree, else 0
 function setBusy(b, label) {
   busy = b;
@@ -438,6 +446,8 @@ async function build() {
     builtSig = sig(f);
     treeReady = true;
     treeBB = 0;
+    rootCards = board.length;
+    syncAccuracy();
     rootPotNow = f.pot;   // the target of a Resume right after this build (before a poll sets it)
     const total = /TOTAL\D*(\d+)/.exec(b.node_count);
     let locked = "";
@@ -464,11 +474,12 @@ async function solve() {
   const bad = badNumbers(["f-accuracy"]);
   if (bad.length) { info(`Fix ${bad.join(", ")}.`, true); return; }
   const pot = rootPotNow || Number($("f-pot").value);
-  const accuracy = (Number($("f-accuracy").value) / 100) * pot;
+  const pct = Number($("f-accuracy").value);
+  const accuracy = ((Number.isFinite(pct) && pct > 0 ? pct : 0.3) / 100) * pot;
   if (solveStarting) return;  // a double click sent two solves; the second failed with "solver is running" (#386)
   solveStarting = true;
   try {
-    const r = await post("/api/solve", { accuracy, preview: previewOn() });
+    const r = await post("/api/solve", { accuracy, preview: previewOn(), flop_stability: flopStability() });
     if (!r.preview) toast("Solving…");
     startPreview(!!r.preview);
   } catch (e) { fail(e); } finally { solveStarting = false; }
@@ -502,11 +513,13 @@ async function buildAndSolve() {
 
 /** bb: chips in a big blind when the tree in the solver is a preflop tree (its exploitability is
  *  then shown in bb/100), else 0. EVs are a share of the root's pot for both kinds (#459). */
-export function updateProgress(st, series, rootPot, bb = 0) {
+export function updateProgress(st, series, rootPot, bb = 0, rootCardCount = 0) {
   const solving = st && st.solving;
   treeReady = !!(st && st.tree);
   if (rootPot) rootPotNow = rootPot;
   treeBB = treeReady ? bb : 0;
+  rootCards = treeReady ? rootCardCount : 0;
+  syncAccuracy();
   $("btn-stop").classList.toggle("hidden", !solving);
   $("btn-solve").classList.toggle("hidden", !!solving);
   $("btn-resume").classList.toggle("hidden", !!solving);
@@ -514,7 +527,10 @@ export function updateProgress(st, series, rootPot, bb = 0) {
   const pre = treeBB > 0;
   const pot = rootPot || Number($("f-pot").value) || 1;
   if (pre) drawChart($("chart"), series, treeBB, null, "bb/100");
-  else drawChart($("chart"), series, pot, Number($("f-accuracy").value));
+  else {
+    const useTarget = series?.length ? !st?.flop_stability : !$("f-accuracy").disabled;
+    drawChart($("chart"), series, pot, useTarget ? Number($("f-accuracy").value) : null);
+  }
   const last = series && series.length ? series[series.length - 1] : null;
   const box = $("solve-stats");
   box.textContent = "";
@@ -530,6 +546,7 @@ export function updateProgress(st, series, rootPot, bb = 0) {
 
 export function initBuild({ built }) {
   $("smart-tree").addEventListener("change", markDirty);
+  $("flop-stability").addEventListener("change", syncAccuracy);
   onBuilt = built || onBuilt;
   editors.OOP = new RangeEditor(document.querySelector('.editor[data-player="OOP"]'), "OOP", saveForm);
   editors.IP = new RangeEditor(document.querySelector('.editor[data-player="IP"]'), "IP", saveForm);

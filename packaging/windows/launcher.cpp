@@ -1,4 +1,4 @@
-// WSolver.exe: the Windows app's launcher (#565), the counterpart of packaging/macos/launcher.m.
+// OpenSolver.exe: the Windows app's launcher (#565), the counterpart of packaging/macos/launcher.m.
 //
 // It starts the viewer (viewer\server.py, with the Python and the solver.exe installed next to it),
 // opens it in the default browser, and shows a small window with the address, Open in Browser,
@@ -9,11 +9,11 @@
 // viewer never outlives its launcher (server.py's --exit-with-parent watches for that on Unix).
 //
 // The viewer takes port 8765 (or the one it had last time) when that is free and any free port
-// otherwise. What it prints goes to %LOCALAPPDATA%\WSolver\Logs\viewer.log (the run before is kept
+// otherwise. What it prints goes to %LOCALAPPDATA%\OpenSolver\Logs\viewer.log (the run before is kept
 // as viewer.log.1). Its library and job queue are where a viewer run from a checkout keeps them,
 // %USERPROFILE%\.wsolver: nothing of the user's is written next to the program.
 //
-// Opening WSolver again while it runs brings this window back and the page up again.
+// Opening OpenSolver again while it runs brings this window back and the page up again.
 // For packaging/windows/smoke.py: --no-browser, --new-instance (skip the one-instance check),
 // --log-dir DIR, and --port N, --library DIR, --jobs DIR, which are passed on to the viewer.
 #ifndef UNICODE
@@ -33,9 +33,9 @@
 
 namespace {
 
-const wchar_t kClass[] = L"WSolverLauncher";
-const wchar_t kMutex[] = L"Local\\WSolverLauncher";
-const wchar_t kRegKey[] = L"Software\\WSolver";
+const wchar_t kClass[] = L"OpenSolverLauncher";
+const wchar_t kMutex[] = L"Local\\OpenSolverLauncher";
+const wchar_t kRegKey[] = L"Software\\OpenSolver";
 const int kPort = 8765;                     // viewer/server.py's default
 const char kReady[] = "UI on http://";      // in the line the viewer prints when it is up
 
@@ -229,7 +229,7 @@ int preferredPort() {
 
 bool startViewer() {
   std::wstring dir = opt.logDir;
-  if (dir.empty()) dir = knownFolder(FOLDERID_LocalAppData) + L"\\WSolver\\Logs";
+  if (dir.empty()) dir = knownFolder(FOLDERID_LocalAppData) + L"\\OpenSolver\\Logs";
   SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
   logPath = dir + L"\\viewer.log";
   MoveFileExW(logPath.c_str(), (logPath + L".1").c_str(), MOVEFILE_REPLACE_EXISTING);   // the run before this one is kept
@@ -321,7 +321,7 @@ void failed(const std::wstring &what) {
   std::wstring tail = logTail();
   std::wstring text = what + L"\n\n" + (tail.empty() ? L"It printed nothing." : L"The end of its log:\n\n" + tail) +
                       L"\n\nOpen the log?";
-  if (MessageBoxW(win, text.c_str(), L"WSolver", MB_YESNO | MB_ICONERROR) == IDYES) showLog();
+  if (MessageBoxW(win, text.c_str(), L"OpenSolver", MB_YESNO | MB_ICONERROR) == IDYES) showLog();
   quitting = true;
   stopViewer();
   DestroyWindow(win);
@@ -339,7 +339,7 @@ bool quit(bool ask) {
       int answer = MessageBoxW(win,
                                solving ? L"A solve is running.\n\nQuitting stops it, and a tree that is not saved is lost."
                                        : L"The job queue is running.\n\nQuitting stops the job that is running.",
-                               L"Quit WSolver?", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
+                               L"Quit OpenSolver?", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
       asking = false;
       if (answer != IDOK) {
         if (!viewer) PostMessageW(win, WM_APP_ENDED, 0, 0);   // it ended meanwhile
@@ -348,7 +348,7 @@ bool quit(bool ask) {
     }
   }
   quitting = true;
-  setStatus(L"Stopping WSolver…", L"");
+  setStatus(L"Stopping OpenSolver…", L"");
   UpdateWindow(win);
   stopViewer();
   DestroyWindow(win);
@@ -386,7 +386,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       auto make = [&](const wchar_t *cls, const wchar_t *text, DWORD style, int id) {
         return CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0, h, (HMENU)(INT_PTR)id, nullptr, nullptr);
       };
-      statusLabel = make(L"STATIC", L"Starting WSolver…", SS_LEFT | SS_ENDELLIPSIS, 0);
+      statusLabel = make(L"STATIC", L"Starting OpenSolver…", SS_LEFT | SS_ENDELLIPSIS, 0);
       hintLabel = make(L"STATIC", L"", SS_LEFT, 0);
       openButton = make(L"BUTTON", L"Open in Browser", BS_DEFPUSHBUTTON | WS_TABSTOP | WS_DISABLED, ID_OPEN);
       logButton = make(L"BUTTON", L"Show Log", BS_PUSHBUTTON | WS_TABSTOP, ID_LOG);
@@ -433,8 +433,8 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
           DWORD port = (DWORD)_wtoi(url.c_str() + url.find_last_of(L':') + 1);
           RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"ViewerPort", REG_DWORD, &port, sizeof port);
         }
-        setStatus(L"WSolver is running at " + url,
-                  L"It opens in your browser. Closing this window stops WSolver and any solve it is running.");
+        setStatus(L"OpenSolver is running at " + url,
+                  L"It opens in your browser. Closing this window stops OpenSolver and any solve it is running.");
         EnableWindow(openButton, TRUE);
         if (opt.browser) openBrowser();
       }
@@ -499,15 +499,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       return 0;
     }
   }
-#ifdef WSOLVER_ISA
+#ifdef OPENSOLVER_ISA
   // The solver is built for this instruction set (Makefile: WIN_ARCH); on an older CPU it would
   // crash at its first instruction of it. Say so instead.
   __builtin_cpu_init();
-  if (!__builtin_cpu_supports(WSOLVER_ISA)) {
+  if (!__builtin_cpu_supports(OPENSOLVER_ISA)) {
     MessageBoxW(nullptr,
-                L"This computer's processor is too old for this build of WSolver: it needs "
+                L"This computer's processor is too old for this build of OpenSolver: it needs "
                 L"AVX2 (Intel Haswell, AMD Excavator or Ryzen, and later).",
-                L"WSolver", MB_OK | MB_ICONERROR);
+                L"OpenSolver", MB_OK | MB_ICONERROR);
     return 1;
   }
 #endif
@@ -543,7 +543,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   UINT sysDpi = GetDpiForSystem();
   RECT r{0, 0, MulDiv(460, sysDpi, 96), MulDiv(140, sysDpi, 96)};
   AdjustWindowRectExForDpi(&r, style, FALSE, 0, sysDpi);
-  HWND h = CreateWindowExW(0, kClass, L"WSolver", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,
+  HWND h = CreateWindowExW(0, kClass, L"OpenSolver", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,
                            r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   if (!h) return 1;
   // sized for the system DPI; on a monitor with another one, size it again for that
@@ -555,7 +555,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   ShowWindow(h, show);
   UpdateWindow(h);
 
-  if (!startViewer()) failed(L"The viewer inside WSolver could not be started.");
+  if (!startViewer()) failed(L"The viewer inside OpenSolver could not be started.");
 
   MSG m;
   while (GetMessageW(&m, nullptr, 0, 0) > 0) {

@@ -15,12 +15,12 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "WSolver"
-      VALUE "FileDescription", "WSolver"
+      VALUE "CompanyName", "OpenSolver"
+      VALUE "FileDescription", "OpenSolver"
       VALUE "FileVersion", "@VERSION4@"
-      VALUE "InternalName", "WSolver"
-      VALUE "OriginalFilename", "WSolver.exe"
-      VALUE "ProductName", "WSolver"
+      VALUE "InternalName", "OpenSolver"
+      VALUE "OriginalFilename", "OpenSolver.exe"
+      VALUE "ProductName", "OpenSolver"
       VALUE "ProductVersion", "@VERSION@"
     END
   END

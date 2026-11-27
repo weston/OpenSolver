@@ -7,7 +7,7 @@ before it writes the installer.)
 Run with the app's own Python, so that what it proves is what a PC with nothing else installed has:
 the trimmed Python still holds every module the viewer imports, the viewer finds its page and its
 tools in the app folder, and the solver there starts, says the version the installer is named
-after, and solves a small tree. The viewer is started by the app's own launcher, WSolver.exe, with
+after, and solves a small tree. The viewer is started by the app's own launcher, OpenSolver.exe, with
 a port of its own and a library, a job queue and a log in a temporary folder, so nothing of the
 user's is touched. Closing its window while a solve runs must ask first (and Cancel keep it all
 running); closing it when nothing runs must quit and leave nothing running; and a launcher killed
@@ -97,7 +97,7 @@ class Proc:
         return code.value
 
 
-def windows_of(pid, cls="WSolverLauncher"):
+def windows_of(pid, cls="OpenSolverLauncher"):
     """The visible top-level windows of class `cls` (#32770: a message box) that process `pid` has."""
     found = []
 
@@ -125,7 +125,7 @@ def start(app, tmp, run):
     """The launcher, as the Start menu starts it but for the options that keep it to `tmp`; and
     the address its viewer is on, read from its log (one of its own: not the last run's)."""
     logs = os.path.join(tmp, f"logs{run}")
-    launcher = subprocess.Popen([os.path.join(app, "WSolver.exe"), "--no-browser", "--new-instance",
+    launcher = subprocess.Popen([os.path.join(app, "OpenSolver.exe"), "--no-browser", "--new-instance",
                                  "--log-dir", logs, "--port", "0",
                                  "--library", os.path.join(tmp, "library"), "--jobs", os.path.join(tmp, "jobs")])
     log = os.path.join(logs, "viewer.log")
@@ -165,7 +165,7 @@ def main():
     import ssl   # the natural-language lock asks a service over https
     check(ssl.create_default_context().cert_store_stats()["x509_ca"] > 0, "the system's certificates are found")
 
-    tmp = tempfile.mkdtemp(prefix="wsolver-smoke-")
+    tmp = tempfile.mkdtemp(prefix="opensolver-smoke-")
     launcher = None
     try:
         launcher, base, line = start(app, tmp, 1)
@@ -183,7 +183,7 @@ def main():
 
         st = req("/api/status")
         check(st.get("ok") is True, "the solver in the app answers")
-        check(str(st.get("version", "")).endswith(" " + version), f"it is version {version} ({st.get('version')})")
+        check(st.get("version") == f"OpenSolver {version}", f"the packaged solver reports OpenSolver {version} ({st.get('version')})")
         static = os.path.join(app, "viewer", "static")
         names = sorted(os.listdir(static))
         same = [n for n in names if req("/" + n) == open(os.path.join(static, n), "rb").read()]

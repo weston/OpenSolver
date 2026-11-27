@@ -285,7 +285,7 @@ def test_windows_app():
     check(all(removed.count(t) == 2 for t in tops),
           f"the installer clears and the uninstaller removes each of the app's folders {tops} ({removed})")
     deleted = re.findall(r'Delete "\$INSTDIR\\([^"\\]+)"', nsi)
-    check({"WSolver.exe", "solver.exe", "${UNINSTALLER}"} <= set(deleted), f"and its programs ({deleted})")
+    check({"OpenSolver.exe", "solver.exe", "${UNINSTALLER}"} <= set(deleted), f"and its programs ({deleted})")
     check("RequestExecutionLevel user" in nsi and "$LOCALAPPDATA\\Programs\\" in nsi,
           "a per-user install, into %LOCALAPPDATA%\\Programs")
 
@@ -315,7 +315,7 @@ def test_windows_app():
         print("  (not Windows with g++: the launcher is not compiled)")
         return
     r = subprocess.run([gxx, "-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror", "-municode",
-                        "-D_WIN32_WINNT=0x0A00", '-DWSOLVER_ISA="x86-64-v3"', os.path.join(pk, "launcher.cpp")],
+                        "-D_WIN32_WINNT=0x0A00", '-DOPENSOLVER_ISA="x86-64-v3"', os.path.join(pk, "launcher.cpp")],
                        capture_output=True, text=True)
     check(r.returncode == 0, f"the launcher compiles without a warning {r.stderr.strip()[:300]}")
     if shutil.which("make"):

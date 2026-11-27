@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="WSolver.Launcher" version="1.0.0.0" processorArchitecture="amd64"/>
-  <description>WSolver</description>
+  <assemblyIdentity type="win32" name="OpenSolver.Launcher" version="1.0.0.0" processorArchitecture="amd64"/>
+  <description>OpenSolver</description>
   <!-- the buttons drawn as the rest of Windows draws them -->
   <dependency>
     <dependentAssembly>

@@ -343,12 +343,12 @@ macos-app macos-pkg test-macos-app:
 endif
 
 # ----- Windows installer (#565) ------------------------------------------------
-# `make windows-installer` writes dist/WSolver-<version>-windows-x64-setup.exe (and
-# its .sha256): a per-user installer for WSolver.exe, which starts the viewer with
+# `make windows-installer` writes dist/OpenSolver-<version>-windows-x64-setup.exe (and
+# its .sha256): a per-user installer for OpenSolver.exe, which starts the viewer with
 # a Python of its own and opens it in the browser. Built natively in an MSYS2
 # UCRT64 shell (pacman -S mingw-w64-ucrt-x86_64-nsis for the installer compiler);
 # see README, "Windows", and packaging/windows/build.sh. `make windows-app` stages
-# the app in build/windows/stage/WSolver and runs it, without the installer.
+# the app in build/windows/stage/OpenSolver and runs it, without the installer.
 # The solver in it is the static build/win/solver.exe of `make windows` (no DLLs,
 # for any x86-64 CPU with AVX2 unless WIN_ARCH says otherwise); to package another
 # build, name it: make windows-installer WIN_INSTALLER_SOLVER=solver.exe

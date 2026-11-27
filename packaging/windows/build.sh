@@ -1,9 +1,9 @@
 #!/bin/sh
-# Builds WSolver for Windows and its setup program (#565), the counterpart of packaging/macos/build.sh.
+# Builds OpenSolver for Windows and its setup program (#565), the counterpart of packaging/macos/build.sh.
 # Run through `make windows-installer` in an MSYS2 UCRT64 shell, which builds the solver for it
 # first and passes VERSION, WIN_ARCH and SOLVER.
 #
-#   packaging/windows/build.sh            stage the app, check that it runs, write dist/WSolver-<version>-windows-x64-setup.exe
+#   packaging/windows/build.sh            stage the app, check that it runs, write dist/OpenSolver-<version>-windows-x64-setup.exe
 #   packaging/windows/build.sh --app      stage the app and check that it runs, no installer
 #   packaging/windows/build.sh --files    print the repo files that go into the app (tests/test_packaging.py reads this)
 #
@@ -72,8 +72,8 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! git diff --quiet HEA
 fi
 
 OUT=build/windows
-APP="$OUT/stage/WSolver"
-SETUP="dist/WSolver-$VERSION-windows-x64-setup.exe"
+APP="$OUT/stage/OpenSolver"
+SETUP="dist/OpenSolver-$VERSION-windows-x64-setup.exe"
 
 # ----- the Python runtime ------------------------------------------------------------------------
 TARBALL="${PYTHON_TARBALL:-$OUT/cache/$PY_NAME}"
@@ -100,12 +100,12 @@ sed -e "s/@VERSION@/$VERSION/g" -e "s/@VERSION4@/$VERSION4/g" -e "s/@VERSIONCOMM
 "$WINDRES" -O coff "$OUT/res/launcher.rc" -o "$OUT/res/launcher.res"
 # The launcher says so when the CPU is too old for the solver (it would crash, not explain).
 ISA=
-case "$WIN_ARCH" in *x86-64-v3*) ISA='-DWSOLVER_ISA="x86-64-v3"' ;; esac
+case "$WIN_ARCH" in *x86-64-v3*) ISA='-DOPENSOLVER_ISA="x86-64-v3"' ;; esac
 # shellcheck disable=SC2086
 "$CXX" -std=c++20 -O2 -Wall -Wextra -municode -mwindows -static -D_WIN32_WINNT=0x0A00 $ISA \
-  "$HERE/launcher.cpp" "$OUT/res/launcher.res" -o "$APP/WSolver.exe" \
+  "$HERE/launcher.cpp" "$OUT/res/launcher.res" -o "$APP/OpenSolver.exe" \
   -lws2_32 -lshell32 -lole32 -luuid -lcomctl32 -ladvapi32 -luser32
-strip "$APP/WSolver.exe"
+strip "$APP/OpenSolver.exe"
 
 install -m 755 "$SOLVER" "$APP/solver.exe"
 files | while IFS= read -r f; do

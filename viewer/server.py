@@ -241,6 +241,10 @@ class Solver:
                 if resp.startswith("ERROR"):
                     raise SolverError(f"{line.strip()[:120]} -> {resp.splitlines()[0]}")
 
+    def device_algorithm(self, device=None):
+        with self.state_lock:
+            return "v4_metal" if (device or self.device) == "gpu" else self.cpu_algorithm
+
     def state(self):
         with self.state_lock:
             partial = dict(self.partial) if self.partial else None
@@ -660,7 +664,7 @@ def _api_main(solver, lib, method, path, query, body):
                 solver.cpu_algorithm = next((line.split(":", 1)[1].strip() for line in settings.splitlines()
                                              if line.startswith("algorithm:")), "auto")
             if device != solver.device:
-                solver.cmd("set_algorithm " + ("v4_metal" if device == "gpu" else solver.cpu_algorithm))
+                solver.cmd("set_algorithm " + solver.device_algorithm(device))
             with solver.state_lock:
                 solver.device = device
         return 200, {"device": device}

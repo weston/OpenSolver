@@ -73,9 +73,9 @@ class JobsService:
             self.current = job["id"]
             self.point = point
 
-    def _run(self, ids, batch):
+    def _run(self, ids, batch, get_algorithm):
         try:
-            counts = jobs.run(self.q, ids, batch, None, self.solver_exe, 0, self._log, self._progress)
+            counts = jobs.run(self.q, ids, batch, None, self.solver_exe, 0, self._log, self._progress, get_algorithm)
             self._log(f"finished: {counts['done']} done, {counts['failed']} failed")
         except Exception as e:   # JobError, or anything unexpected: show it rather than lose it
             with self.mu:
@@ -214,11 +214,11 @@ class JobsService:
             raise vsrv.SolverError(str(e))
         return {"added": len(added), "estimate": est.splitlines()}
 
-    def run(self, b):
+    def run(self, b, get_algorithm):
         with self.start_mu:  # two Run clicks at once must not start two runner threads (#362)
-            return self._start_run(b)
+            return self._start_run(b, get_algorithm)
 
-    def _start_run(self, b):
+    def _start_run(self, b, get_algorithm):
         if self.running():
             raise vsrv.SolverError("the queue is already running")
         if self.q.runner():
@@ -232,7 +232,7 @@ class JobsService:
             raise vsrv.SolverError("nothing queued to run")
         with self.mu:
             self.last_error = None
-        self.thread = threading.Thread(target=self._run, args=(ids, batch), daemon=True)
+        self.thread = threading.Thread(target=self._run, args=(ids, batch, get_algorithm), daemon=True)
         self.thread.start()
         return {"started": True}
 
@@ -373,8 +373,10 @@ class JobsService:
         if method != "POST":
             raise vsrv.SolverError("POST required")
         b = vsrv.need_body(body)
-        ops = {"/add": self.add, "/run": self.run, "/stop": self.stop, "/retry": self.retry,
+        ops = {"/add": self.add, "/stop": self.stop, "/retry": self.retry,
                "/remove": self.remove, "/move": self.move}
+        if sub == "/run":
+            return 200, self.run(b, solver.device_algorithm)
         if sub in ops:
             return 200, ops[sub](b)
         if sub == "/open":

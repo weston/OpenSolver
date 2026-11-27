@@ -1288,7 +1288,7 @@ class _StopWatch:
         return False
 
 
-def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progress=None, phase=None) -> str:
+def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progress=None, phase=None, algorithm=None) -> str:
     """Solve one job; returns its final status, or "skipped" if it was removed or changed (no
     longer queued) since the caller listed it. Raises KeyboardInterrupt through (job re-queued).
 
@@ -1326,6 +1326,8 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
         with _StopWatch(q, s) as watch:  # a stop --now during the build ends it; the job is re-queued
             s.cmd(f"set_threads {threads}")
             s.cmds(b["setup"])
+            if algorithm is not None and (algorithm != "auto" or "gpu" in s.devices):
+                s.cmd("set_algorithm " + algorithm)
             s.cmd(f"set_board {job['board']}")
             s.cmd("build_tree", timeout=7200)
         if watch.hit:  # the build finished just as the stop landed
@@ -1372,6 +1374,7 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
         # calc_results and the save run to the end, also after a stop --now: the solve is done, and
         # keeping it beats solving it again (the run then stops before the next job)
         res = parse_results(s.cmd("calc_results", timeout=3600))
+        res["device"] = st["active_device"]
         try:
             res["root"] = root_summary(s)
         except (vserver.SolverError, ValueError, IndexError):
@@ -1404,7 +1407,7 @@ def run_job(q: Queue, job: dict, solver_exe: str, threads: int, log=print, progr
 
 
 def run(q: Queue, ids: list[str] | None, batch: str | None, limit: int | None, solver_exe: str,
-        threads: int, log=print, progress=None) -> dict:
+        threads: int, log=print, progress=None, get_algorithm=None) -> dict:
     """Run queued jobs one at a time (all, the given ids, or one batch). Returns status counts."""
     if not os.path.isfile(solver_exe):
         raise JobError(f"solver not found: {solver_exe}")
@@ -1428,7 +1431,8 @@ def run(q: Queue, ids: list[str] | None, batch: str | None, limit: int | None, s
             pending = [j for j in q.jobs(batch) if j["status"] == "queued" and (not ids or j["id"] in ids)]
             if not pending:
                 break
-            status = run_job(q, pending[0], solver_exe, threads, log, progress)
+            algorithm = get_algorithm() if get_algorithm else None
+            status = run_job(q, pending[0], solver_exe, threads, log, progress, algorithm=algorithm)
             if status == "queued":  # stopped with --now: the request is done
                 try:
                     os.remove(q.stop_file)

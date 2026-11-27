@@ -312,6 +312,25 @@ class JobsApiTest(unittest.TestCase):
         self.assertEqual([b["name"] for b in d["batches"]], ["srp"])
         self.assertEqual([j["status"] for j in d["jobs"]].count("queued"), 1)
 
+    def test_03b_queued_jobs_use_the_current_device_on_run_and_retry(self):
+        if "gpu" not in self.solver.devices:
+            self.skipTest("requires a Metal device")
+        original = self.solver.state()["device"]
+        self.addCleanup(self.req, "/api/device", "POST", {"device": original})
+        name = "device-selection"
+        status, body = self.req("/api/jobs/add", "POST", {"name": name, "tree": TREE, "flops": "Kh9h4h", "max_iters": 5})
+        self.assertEqual(status, 200, body)
+        job = self.service.q.jobs(name)[0]
+        for device in ("cpu", "gpu"):
+            if device == "gpu":
+                self.assertEqual(self.req("/api/jobs/retry", "POST", {"ids": [job["id"]]})[0], 200)
+            self.assertEqual(self.req("/api/device", "POST", {"device": device})[0], 200)
+            self.assertEqual(self.req("/api/jobs/run", "POST", {"ids": [job["id"]]})[0], 200)
+            self.wait_idle()
+            finished = self.service.q.job(job["id"])
+            self.assertEqual(finished["status"], "done", finished)
+            self.assertEqual(finished["result"]["device"], device)
+
     def test_04_static(self):
         with urllib.request.urlopen(self.base + "/jobs.js", timeout=10) as f:
             self.assertIn("javascript", f.headers["Content-Type"])
@@ -373,7 +392,7 @@ class JobsApiTest(unittest.TestCase):
             raise RuntimeError("boom")
         jobs_api.jobs.run = crash
         try:
-            self.service._run(None, None)
+            self.service._run(None, None, self.solver.device_algorithm)
         finally:
             jobs_api.jobs.run = real
         self.assertEqual(q.job(j["id"])["status"], "queued")

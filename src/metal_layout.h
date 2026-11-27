@@ -28,6 +28,11 @@ struct RiverRound {
   float win[3][2], loss[3][2], tie[3][2], fold[2][2];
 };
 
+struct TwoBetRiver {
+  unsigned root, board, storage[4];
+  float win[4][2], loss[4][2], tie[4][2], fold[4][2];
+};
+
 struct AllinTable {
   unsigned word_offset, bytes_per_count;
   float scale;

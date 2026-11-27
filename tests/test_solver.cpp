@@ -1302,7 +1302,8 @@ static bool checkdowns_collapse() {
 // float32 and 16-bit storage.
 static bool one_action_rows() {
   bool ok = true;
-  for (int compressed = 0; compressed < 2; ++compressed) {
+  for (int mode = 0; mode < 3; ++mode) {  // float32, 16-bit, 16-bit with compact river rows (#568)
+    const bool compressed = mode > 0;
     GameConfig cfg;
     parse_cards("KhQs7d", cfg.board);
     std::string err;
@@ -1314,11 +1315,13 @@ static bool one_action_rows() {
     cfg.pot[2] = 100;
     cfg.eff_stack = 400;
     // A checked-down turn and river after the flop raise, no donk bets after the flop bet, and a check-down
-    // from the root: one-action decisions of both players on every later street.
-    cfg.lines.add = {{0, 50, 150, 150}, {50, 150, 400}, {0, 0}, {50, 50, 50, 100, 100}};
+    // from the root: one-action decisions of both players on every later street (and a river bet after two
+    // checked streets, so there are compact river rows to share the tree with).
+    cfg.lines.add = {{0, 50, 150, 150}, {50, 150, 400}, {0, 0}, {50, 50, 50, 100, 100}, {0, 0, 0, 0, 30, 30}};
     GameTree g;
     if (!g.build(cfg, err, false)) { std::printf("build: %s\n", err.c_str()); return false; }
     g.compressed = compressed;
+    g.select_rows(mode == 2);
     g.allocate_storage();
     // Layout
     uint64_t shared[2] = {UINT64_MAX, UINT64_MAX}, shared_q[2] = {UINT64_MAX, UINT64_MAX}, own = 0, all = 0,
@@ -1345,7 +1348,8 @@ static bool one_action_rows() {
     }
     const uint64_t shared_floats = (forced[0] ? g.num_hands(0) : 0) + (forced[1] ? g.num_hands(1) : 0);
     layout &= forced[0] > 0 && forced[1] > 0 && g.node_floats == all && g.storage_floats == own + shared_floats &&
-              (compressed ? g.regrets_q.size() : g.regrets.size()) == g.storage_floats;
+              (compressed ? g.regrets_q.size() : g.regrets.size()) == (mode == 2 ? g.storage_q : g.storage_floats) &&
+              g.compact_rows == (mode == 2) && (mode != 2 || g.storage_q < g.storage_floats);
     auto zero = [&] {
       for (int p = 0; p < 2; ++p) {
         const size_t H = g.num_hands(p);
@@ -1402,7 +1406,7 @@ static bool one_action_rows() {
     ok &= good;
     std::printf("[one-action rows] %s: %llu + %llu one-action decisions share 2 rows, rows %llu -> %llu floats, "
                 "layout %s, shared rows %s, strategies %s, exploitability %.3f: %s\n",
-                compressed ? "16-bit" : "float32", static_cast<unsigned long long>(forced[0]),
+                mode == 2 ? "16-bit compact" : compressed ? "16-bit" : "float32", static_cast<unsigned long long>(forced[0]),
                 static_cast<unsigned long long>(forced[1]), static_cast<unsigned long long>(g.node_floats),
                 static_cast<unsigned long long>(g.storage_floats), layout ? "ok" : "WRONG", zeros ? "zero" : "WRITTEN",
                 ones ? "1" : "WRONG", e, good ? "ok" : "FAILED");

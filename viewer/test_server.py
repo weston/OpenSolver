@@ -96,7 +96,7 @@ class ViewerTest(unittest.TestCase):
         with urllib.request.urlopen(self.base + "/", timeout=10) as f:
             html = f.read().decode()
             self.assertEqual(f.status, 200)
-        self.assertIn("<title>WSolver</title>", html)
+        self.assertIn("<title>OpenSolver</title>", html)
         # every module the page imports is served, with a JavaScript content type
         for name in ("app.js", "cards.js", "ranges.js", "api.js", "chart.js", "study.js", "build.js", "style.css"):
             with urllib.request.urlopen(self.base + "/" + name, timeout=10) as f:

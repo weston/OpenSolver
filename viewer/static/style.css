@@ -1,4 +1,4 @@
-/* WSolver viewer — design system and layout. Plain CSS, no build step.
+/* OpenSolver viewer — design system and layout. Plain CSS, no build step.
    Tokens first (both themes), then primitives, then the two views. */
 
 :root {

@@ -1,4 +1,4 @@
-# OpenUPI-Solver build. `make` builds ./solver; `make test` runs the unit and integration tests.
+# OpenSolver build. `make` builds ./solver; `make test` runs the unit and integration tests.
 # `make test-big` also runs the 25bb fixture section of test_upi.py (~4 GB of free RAM needed).
 # macOS's JavaScriptCore shell: runs the viewer's JS unit tests when Node is not installed
 JSC ?= /System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc
@@ -221,8 +221,8 @@ solver-release: $(OPT_OBJ)
 # ----- install ----------------------------------------------------------------
 # Standard PREFIX/DESTDIR install, so there is a supported way to put the solver
 # on a machine instead of running it out of the build tree.
-#   make install                      -> /usr/local/bin/wsolver
-#   make install PREFIX=$HOME/.local  -> ~/.local/bin/wsolver
+#   make install                      -> /usr/local/bin/opensolver
+#   make install PREFIX=$HOME/.local  -> ~/.local/bin/opensolver
 #   make install DESTDIR=/tmp/stage   -> staged, for packaging
 # INSTALL_BIN picks which binary to install; point it at solver-release to ship
 # the LTO build (see the release section above):
@@ -231,7 +231,7 @@ solver-release: $(OPT_OBJ)
 # is too generic for a shared bin directory.
 PREFIX      ?= /usr/local
 DESTDIR     ?=
-BINNAME     ?= wsolver
+BINNAME     ?= opensolver
 INSTALL_BIN ?= solver
 DOCDIR      ?= $(PREFIX)/share/doc/$(BINNAME)
 
@@ -245,7 +245,7 @@ uninstall:
 	rm -rf $(DESTDIR)$(DOCDIR)
 
 # ----- source distribution -----------------------------------------------------
-# `make dist` writes dist/wsolver-<version>-src.tar.gz plus a .sha256 next to it,
+# `make dist` writes dist/opensolver-<version>-src.tar.gz plus a .sha256 next to it,
 # so a recipient can verify what they got. VERSION is read from src/version.hpp
 # rather than duplicated here, and `git archive` means the tarball contains
 # exactly what is committed -- no build output, no stray local files.
@@ -266,8 +266,8 @@ dist:
 	@cat dist/$(DISTNAME).tar.gz.sha256
 
 # ----- macOS installer (#479) --------------------------------------------------
-# `make macos-pkg` writes dist/WSolver-<version>-macos-arm64.pkg (and its .sha256):
-# an installer for /Applications/WSolver.app, which holds the solver, the viewer
+# `make macos-pkg` writes dist/OpenSolver-<version>-macos-arm64.pkg (and its .sha256):
+# an installer for /Applications/OpenSolver.app, which holds the solver, the viewer
 # and a Python to run it, and starts the viewer when opened. See README, "macOS
 # installer", and packaging/macos/build.sh.
 # The solver in it is a build of its own: for any Apple Silicon Mac rather than
@@ -315,7 +315,7 @@ macos-pkg: build/macos/solver
 
 test-macos-app: macos-app
 	clang -fobjc-arc -O2 -Wall -Wextra -Werror -framework Cocoa -framework WebKit tests/test_macos_app.m -o build/macos/test_app
-	build/macos/stage/WSolver.app/Contents/Resources/python/bin/python3 -B -E -s packaging/macos/smoke.py build/macos/stage/WSolver.app $(VERSION) build/macos/test_app
+	build/macos/stage/OpenSolver.app/Contents/Resources/python/bin/python3 -B -E -s packaging/macos/smoke.py build/macos/stage/OpenSolver.app $(VERSION) build/macos/test_app
 else
 macos-app macos-pkg test-macos-app:
 	@echo "the macOS package is built on an Apple Silicon Mac"; exit 1

@@ -1,4 +1,4 @@
-# OpenUPI-Solver
+# OpenSolver
 
 [![CI](https://github.com/weston/WSolver/actions/workflows/ci.yml/badge.svg)](https://github.com/weston/WSolver/actions/workflows/ci.yml)
 
@@ -24,25 +24,24 @@ make release    # builds ./solver-release: LTO, native arch (add PGO=1 to also t
 make test       # unit tests + end-to-end UPI tests on a small tree (~1 min, < 1 GB RAM)
 make test-big   # same, but the end-to-end tests solve the real 25bb tree (~5-10 min, ~4 GB free RAM)
 python3 tools/fuzz.py invariants ./solver --seconds 300   # randomised checks; also concurrency, roundtrip, preflop, locks, truncated
-make install    # installs the binary as `wsolver` under /usr/local (see below)
+make install    # installs the binary as `opensolver` under /usr/local (see below)
 ./solver        # talk UPI on stdin/stdout
 ```
 
 ### Installing
 
-`make install` copies the binary to `$PREFIX/bin/wsolver` and the docs to
-`$PREFIX/share/doc/wsolver`, with `PREFIX` defaulting to `/usr/local`:
+`make install` copies the binary to `$PREFIX/bin/opensolver` and the docs to
+`$PREFIX/share/doc/opensolver`, with `PREFIX` defaulting to `/usr/local`:
 
 ```sh
-make install                        # /usr/local/bin/wsolver (may need sudo)
+make install                        # /usr/local/bin/opensolver (may need sudo)
 make install PREFIX=$HOME/.local    # no sudo needed
 make install DESTDIR=/tmp/stage     # staged install, for packaging
 make uninstall                      # removes both
 ```
 
-The installed command is `wsolver` rather than `solver`, which is too generic
-for a shared `bin` directory; override it with `BINNAME=`. To install the
-release build instead of the default one, point `INSTALL_BIN` at it:
+Override the installed command with `BINNAME=`. To install the release build,
+point `INSTALL_BIN` at it:
 
 ```sh
 make release && make install INSTALL_BIN=solver-release
@@ -50,12 +49,12 @@ make release && make install INSTALL_BIN=solver-release
 
 ### Source distribution
 
-`make dist` writes `dist/wsolver-<version>-src.tar.gz` and a matching `.sha256`
+`make dist` writes `dist/opensolver-<version>-src.tar.gz` and a matching `.sha256`
 so a recipient can verify what they downloaded:
 
 ```sh
 make dist
-shasum -a 256 -c dist/wsolver-0.1.0-src.tar.gz.sha256
+shasum -a 256 -c dist/opensolver-0.1.0-src.tar.gz.sha256
 ```
 
 It builds the tarball with `git archive`, so the contents are exactly what is
@@ -64,24 +63,24 @@ uncommitted or untracked files are being left out.
 
 ### macOS installer
 
-`make macos-pkg` writes `dist/WSolver-<version>-macos-arm64.pkg` and a matching `.sha256`: an
-installer that puts **WSolver.app** in `/Applications` (#479). The app is the solver and the
+`make macos-pkg` writes `dist/OpenSolver-<version>-macos-arm64.pkg` and a matching `.sha256`: an
+installer that puts **OpenSolver.app** in `/Applications` (#479). The app is the solver and the
 [viewer](#viewer) with everything they need, so the Mac it is installed on needs no compiler, no
 Python and no checkout. For Apple Silicon Macs with macOS 13.3 or later.
 
 ```sh
 make macos-pkg
-shasum -a 256 -c dist/WSolver-0.1.0-macos-arm64.pkg.sha256     # in dist/
-open dist/WSolver-0.1.0-macos-arm64.pkg
+shasum -a 256 -c dist/OpenSolver-0.1.0-macos-arm64.pkg.sha256     # in dist/
+open dist/OpenSolver-0.1.0-macos-arm64.pkg
 ```
 
-Opening WSolver starts the viewer and opens it in the browser. A small window shows the address,
+Opening OpenSolver starts the viewer and opens it in the browser. A small window shows the address,
 with **Open in Browser** and **Quit**; closing the window leaves the viewer running (a click on
-the Dock icon brings the page back), and quitting WSolver stops the viewer and its solvers. It asks
+the Dock icon brings the page back), and quitting OpenSolver stops the viewer and its solvers. It asks
 first while a solve or the job queue is running. The viewer takes port 8765 when that is free and
 any free port otherwise (when a viewer from a checkout is already running, say); the two then
 share the library and the job queue. What the viewer prints goes to
-`~/Library/Logs/WSolver/viewer.log` (File > Show Log).
+`~/Library/Logs/OpenSolver/viewer.log` (File > Show Log).
 
 - **What is in the app.** A launcher (`packaging/macos/launcher.m`), a solver built for any Apple
   Silicon Mac (`-mcpu=apple-m1` with LTO, where plain `make` builds for the machine it runs on),
@@ -102,9 +101,9 @@ share the library and the job queue. What the viewer prints goes to
   nothing is left running afterwards (`packaging/macos/smoke.py`); a package is written only when
   that passes. `make test` checks, without building anything, that every module the viewer imports
   and every file its page loads is on the list of what goes in.
-- **Uninstalling:** quit WSolver, then
-  `sudo rm -rf /Applications/WSolver.app && sudo pkgutil --forget com.wsolver.WSolver.pkg`.
-  `~/.wsolver` and `~/Library/Logs/WSolver` are yours to keep or delete.
+- **Uninstalling:** quit OpenSolver, then
+  `sudo rm -rf /Applications/OpenSolver.app && sudo pkgutil --forget com.wsolver.WSolver.pkg`.
+  `~/.wsolver` and `~/Library/Logs/OpenSolver` are yours to keep or delete.
 
 `make release` leaves the default build untouched and produces a second binary,
 `./solver-release`, with link-time optimization. Results are identical to the
@@ -1008,13 +1007,13 @@ explorer (`show_categories`, `show_cats`, ...) is byte-identical on 88 boards (`
 Against PioSOLVER 3.10 on the same PC (AMD Zen 5, 16 cores / 32 threads), both driven over UPI and run
 back to back, to the same target (0.6 chips, `set_info_freq auto`), 32 threads:
 
-| Tree | Memory | WSolver | PioSOLVER 3.10 |
+| Tree | Memory | OpenSolver | PioSOLVER 3.10 |
 |---|---|---|---|
 | `srp_big`: SRP flop, 710 lines | 13 GB (16-bit) | **41.9 s** (123 iterations) | 71.5 s |
 | `threebet_mono`: 3-bet pot, monotone flop | 542 MB | **2.93 s** (168 iterations) | 6.70 s |
 
 On these two trees Pio's convergence per iteration is close to ours, so the gap comes from how fast
-each iteration runs. On the smaller bench trees (40-307 MB, measured at #147) WSolver was 1.1-2.3x faster
+each iteration runs. On the smaller bench trees (40-307 MB, measured at #147) OpenSolver was 1.1-2.3x faster
 on one thread; at 32 threads it was about even on `deep` and 1.8x faster on `flop_srp_4` (Pio's sub-second times
 there are only upper bounds). Method, history and per-tree numbers: [bench/vs_pio.md](bench/vs_pio.md);
 where the time goes: [bench/where-the-time-goes.md](bench/where-the-time-goes.md).
@@ -1063,7 +1062,7 @@ src/categories.*   range explorer
 src/upi*.cpp       command processor, node queries, save/load
 tests/             unit tests (eval, range, categories, solver, flop subsets, tree builder) + end-to-end UPI test
 flops/             flop subsets for preflop trees and the job queue (wsolver_<N>.txt; README.md)
-packaging/macos/   what `make macos-pkg` builds WSolver.app and its installer from
+packaging/macos/   what `make macos-pkg` builds OpenSolver.app and its installer from
 tools/             helper scripts (tree_builder.py: bet-size config -> add_line commands; jobs.py: solve queue;
                    fuzz.py: randomised invariant / concurrency / save / preflop / lock / truncated-save checks over UPI;
                    flop_subsets.cpp/.hpp: chooses the flops and weights in flops/, `make flop-subsets`;

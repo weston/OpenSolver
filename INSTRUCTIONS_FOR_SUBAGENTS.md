@@ -1,6 +1,6 @@
 # Instructions for subagents
 
-You have been asked to work on **WSolver**, a heads-up no-limit hold'em solver with a
+You have been asked to work on **OpenSolver**, a heads-up no-limit hold'em solver with a
 PioSOLVER-compatible text interface (UPI).
 
 **Your job: turn open issues into pull requests, autonomously, one after another.** Do not ask the
@@ -31,8 +31,8 @@ passwords or tokens in chat.
 Then get the code:
 
 ```sh
-git clone git@github.com:weston/WSolver.git ~/WSolver    # or: gh repo clone weston/WSolver ~/WSolver
-cd ~/WSolver && git pull
+git clone git@github.com:weston/WSolver.git ~/OpenSolver    # or: gh repo clone weston/WSolver ~/OpenSolver
+cd ~/OpenSolver && git pull
 make && ./build/test_eval && ./build/test_solver          # must pass before you change anything
 ```
 

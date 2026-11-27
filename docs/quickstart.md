@@ -10,7 +10,7 @@ Every command and every piece of output below was run against the solver, not wr
 
 ```sh
 make                 # builds ./solver
-make install         # installs it as `wsolver` under /usr/local (may need sudo)
+make install         # installs it as `opensolver` under /usr/local (may need sudo)
 ```
 
 Or keep it local, no sudo and nothing written outside your home directory:

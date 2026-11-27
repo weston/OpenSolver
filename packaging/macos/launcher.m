@@ -84,11 +84,11 @@ static NSDictionary *getJSON(NSString *url) {
                                                NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                                        backing:NSBackingStoreBuffered
                                          defer:NO];
-  _win.title = @"WSolver";
+  _win.title = @"OpenSolver";
   _win.releasedWhenClosed = NO;
   _win.minSize = NSMakeSize(800, 600);
   [_win center];
-  [_win setFrameAutosaveName:@"WSolverWindow"];
+  [_win setFrameAutosaveName:@"OpenSolverWindow"];
   NSView *v = _win.contentView;
   _web = [[WKWebView alloc] initWithFrame:v.bounds configuration:[WKWebViewConfiguration new]];
   _web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -114,11 +114,11 @@ static NSDictionary *getJSON(NSString *url) {
   NSMenu *bar = [NSMenu new];
   NSMenuItem *appItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
   NSMenu *app = [NSMenu new];
-  [app addItemWithTitle:@"About WSolver" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+  [app addItemWithTitle:@"About OpenSolver" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
   [app addItem:[NSMenuItem separatorItem]];
-  [app addItemWithTitle:@"Hide WSolver" action:@selector(hide:) keyEquivalent:@"h"];
+  [app addItemWithTitle:@"Hide OpenSolver" action:@selector(hide:) keyEquivalent:@"h"];
   [app addItem:[NSMenuItem separatorItem]];
-  [app addItemWithTitle:@"Quit WSolver" action:@selector(terminate:) keyEquivalent:@"q"];
+  [app addItemWithTitle:@"Quit OpenSolver" action:@selector(terminate:) keyEquivalent:@"q"];
   appItem.submenu = app;
 
   NSMenuItem *fileItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
@@ -224,7 +224,7 @@ static NSDictionary *getJSON(NSString *url) {
 }
 
 - (void)startViewer {
-  NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/WSolver"];
+  NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/OpenSolver"];
   [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
   _logPath = [dir stringByAppendingPathComponent:@"viewer.log"];
   NSString *old = [_logPath stringByAppendingString:@".1"];   // the run before this one is kept

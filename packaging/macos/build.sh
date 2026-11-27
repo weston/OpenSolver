@@ -1,8 +1,8 @@
 #!/bin/sh
-# Builds WSolver.app and the installer package around it (#479). Run through `make macos-pkg`,
+# Builds OpenSolver.app and the installer package around it (#479). Run through `make macos-pkg`,
 # which builds the solver for it first and passes VERSION and MACOS_MIN.
 #
-#   packaging/macos/build.sh            stage the app, check that it runs, write dist/WSolver-<version>-macos-arm64.pkg
+#   packaging/macos/build.sh            stage the app, check that it runs, write dist/OpenSolver-<version>-macos-arm64.pkg
 #   packaging/macos/build.sh --files    print the repo files that go into the app (tests/test_packaging.py reads this)
 #
 # The app carries a Python of its own, so that it runs on a Mac with no developer tools: a
@@ -59,9 +59,9 @@ fi
 
 OUT=build/macos
 STAGE="$OUT/stage"
-APP="$STAGE/WSolver.app"
+APP="$STAGE/OpenSolver.app"
 RES="$APP/Contents/Resources"
-PKG="dist/WSolver-$VERSION-macos-arm64.pkg"
+PKG="dist/OpenSolver-$VERSION-macos-arm64.pkg"
 export COPYFILE_DISABLE=1   # no ._ files in what is copied or packed
 umask 022
 
@@ -81,7 +81,7 @@ rm -rf "$STAGE"
 mkdir -p "$APP/Contents/MacOS" "$RES"
 
 clang -fobjc-arc -O2 -Wall -Wextra -arch arm64 -mmacosx-version-min="$MACOS_MIN" \
-  -framework Cocoa -framework WebKit "$HERE/launcher.m" -o "$APP/Contents/MacOS/WSolver"
+  -framework Cocoa -framework WebKit "$HERE/launcher.m" -o "$APP/Contents/MacOS/OpenSolver"
 
 REVISION=$(git rev-parse HEAD 2>/dev/null || true)
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@MACOS_MIN@/$MACOS_MIN/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" \
@@ -141,7 +141,7 @@ cat > "$OUT/component.plist" <<PLIST
 <plist version="1.0">
 <array>
   <dict>
-    <key>RootRelativeBundlePath</key><string>WSolver.app</string>
+    <key>RootRelativeBundlePath</key><string>OpenSolver.app</string>
     <key>BundleIsRelocatable</key><false/>
     <key>BundleIsVersionChecked</key><false/>
     <key>BundleHasStrictIdentifier</key><true/>
@@ -150,9 +150,9 @@ cat > "$OUT/component.plist" <<PLIST
 </array>
 </plist>
 PLIST
-rm -f "$OUT/pkg/WSolver.pkg"
+rm -f "$OUT/pkg/OpenSolver.pkg"
 pkgbuild --root "$STAGE" --component-plist "$OUT/component.plist" --install-location /Applications \
-  --identifier "$BUNDLE_ID.pkg" --version "$VERSION" --ownership recommended "$OUT/pkg/WSolver.pkg" >/dev/null
+  --identifier "$BUNDLE_ID.pkg" --version "$VERSION" --ownership recommended "$OUT/pkg/OpenSolver.pkg" >/dev/null
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@MACOS_MIN@/$MACOS_MIN/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" \
   "$HERE/distribution.xml.in" > "$OUT/distribution.xml"
 rm -rf "$OUT/resources"

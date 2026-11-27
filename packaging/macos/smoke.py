@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Does the staged WSolver.app run? (#479; packaging/macos/build.sh runs this before it packs.)
+"""Does the staged OpenSolver.app run? (#479; packaging/macos/build.sh runs this before it packs.)
 
-    <app>/Contents/Resources/python/bin/python3 smoke.py <WSolver.app> <version>
+    <app>/Contents/Resources/python/bin/python3 smoke.py <OpenSolver.app> <version>
 
 Run with the app's own Python in an empty environment, so that what it proves is what a Mac with
 nothing else installed has: the trimmed Python still holds every module the viewer imports, the
@@ -86,7 +86,7 @@ def main():
 
         st = req("/api/status")
         check(st.get("ok") is True, "the solver in the bundle answers")
-        check(str(st.get("version", "")).endswith(" " + version), f"it is version {version} ({st.get('version')})")
+        check(st.get("version") == f"OpenSolver {version}", f"the packaged solver reports OpenSolver {version} ({st.get('version')})")
         static = os.path.join(res, "viewer", "static")
         names = sorted(os.listdir(static))
         same = [n for n in names if req("/" + n) == open(os.path.join(static, n), "rb").read()]

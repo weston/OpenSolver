@@ -1,4 +1,4 @@
-// WSolver viewer: boot, view switching, solver polling, top bar and file dialog.
+// OpenSolver viewer: boot, view switching, solver polling, top bar and file dialog.
 // ES modules, no build step. Talks to viewer/server.py.
 
 import { initHands } from "./cards.js";

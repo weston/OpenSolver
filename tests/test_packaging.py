@@ -44,7 +44,7 @@ def test_dist():
     check(v is not None, f"version readable from src/version.hpp ({v})")
     r = make("dist")
     check(r.returncode == 0, "make dist succeeds")
-    name = f"wsolver-{v}-src"
+    name = f"opensolver-{v}-src"
     tgz = os.path.join(ROOT, "dist", f"{name}.tar.gz")
     sha = tgz + ".sha256"
     check(os.path.exists(tgz), "tarball written")
@@ -105,17 +105,17 @@ def test_install():
     with tempfile.TemporaryDirectory() as td:
         r = make("install", f"DESTDIR={td}")
         check(r.returncode == 0, "make install succeeds (staged)")
-        binary = os.path.join(td, "usr", "local", "bin", "wsolver")
-        check(os.path.exists(binary), "binary installed as wsolver")
+        binary = os.path.join(td, "usr", "local", "bin", "opensolver")
+        check(os.path.exists(binary), "binary installed as opensolver")
         if os.path.exists(binary):
             check(os.access(binary, os.X_OK), "installed binary is executable")
             # Run the installed copy, not the one in the build tree: a broken install can still
             # leave a working ./solver behind.
             out = subprocess.run([binary], input="show_version\nexit\n",
                                  capture_output=True, text=True).stdout
-            check(version() in out, f"installed binary reports its version ({version()})")
+            check(f"OpenSolver {version()}" in out.splitlines(), "installed binary reports the OpenSolver version")
         for doc in ("README.md", "commands.md"):
-            check(os.path.exists(os.path.join(td, "usr", "local", "share", "doc", "wsolver", doc)),
+            check(os.path.exists(os.path.join(td, "usr", "local", "share", "doc", "opensolver", doc)),
                   f"doc installed: {doc}")
         r = make("uninstall", f"DESTDIR={td}")
         check(r.returncode == 0, "make uninstall succeeds")
@@ -124,11 +124,11 @@ def test_install():
 
     # BINNAME must carry through to the docs directory too, or a renamed install scatters.
     with tempfile.TemporaryDirectory() as td:
-        r = make("install", f"DESTDIR={td}", "PREFIX=/opt/ws", "BINNAME=wsolver-alt")
+        r = make("install", f"DESTDIR={td}", "PREFIX=/opt/ws", "BINNAME=opensolver-alt")
         check(r.returncode == 0, "make install honours PREFIX and BINNAME")
-        check(os.path.exists(os.path.join(td, "opt", "ws", "bin", "wsolver-alt")),
+        check(os.path.exists(os.path.join(td, "opt", "ws", "bin", "opensolver-alt")),
               "renamed binary at the custom prefix")
-        check(os.path.exists(os.path.join(td, "opt", "ws", "share", "doc", "wsolver-alt", "README.md")),
+        check(os.path.exists(os.path.join(td, "opt", "ws", "share", "doc", "opensolver-alt", "README.md")),
               "docs follow BINNAME")
 
 
@@ -144,7 +144,7 @@ def test_commands_doc():
 
 
 def test_macos_app():
-    """What `make macos-pkg` puts in WSolver.app (#479), as far as it can be checked without building
+    """What `make macos-pkg` puts in OpenSolver.app (#479), as far as it can be checked without building
     it (the build downloads a Python; packaging/macos/build.sh runs the built app itself, smoke.py).
     The failure this is for is the quiet one: a module the viewer starts to import, or a file its page
     starts to load, that the app does not carry -- everything passes here, and the installed app

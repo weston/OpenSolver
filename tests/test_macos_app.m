@@ -1,4 +1,4 @@
-#define main WSolverLauncherMain
+#define main OpenSolverLauncherMain
 #include "../packaging/macos/launcher.m"
 #undef main
 

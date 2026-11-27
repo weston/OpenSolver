@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to OpenUPI-Solver. Versions follow [semantic versioning](https://semver.org/).
+All notable changes to OpenSolver. Versions follow [semantic versioning](https://semver.org/).
 
 ## 0.1.0 — unreleased
 
@@ -93,7 +93,7 @@ documentation; contains no PioSOLVER code.
   default: it measures at parity and roughly doubles build time.
 - `make install` / `make uninstall` with `PREFIX`, `DESTDIR`, `BINNAME` and `INSTALL_BIN`.
 - `make dist` produces a checksummed source tarball.
-- `make macos-pkg` produces an installer for macOS (Apple Silicon, 13.3 or later): `WSolver.app` in
+- `make macos-pkg` produces an installer for macOS (Apple Silicon, 13.3 or later): `OpenSolver.app` in
   `/Applications`, holding the solver, the viewer and a Python to run it, so that it needs nothing
   else installed. Opening the app starts the viewer and opens it in the browser; quitting stops it.
   Not signed with a Developer ID (#479).

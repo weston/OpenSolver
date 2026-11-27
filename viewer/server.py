@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WSolver viewer server: drives ./solver over UPI and serves the browser UI on localhost.
+"""OpenSolver viewer server: drives ./solver over UPI and serves the browser UI on localhost.
 
 Python 3 standard library only. The solver is spawned once and driven one command at a
 time through a lock, the way tests/test_upi.py's Upi class does; asynchronous "SOLVER:"
@@ -1912,7 +1912,7 @@ def main(argv=None):
     srv.solver = solver
     srv.library = Library(args.library)
     srv.library.install_defaults()
-    print(f"WSolver viewer: solver {solver.exe!r}, library {srv.library.root!r}, "
+    print(f"OpenSolver viewer: solver {solver.exe!r}, library {srv.library.root!r}, "
           f"UI on http://127.0.0.1:{srv.server_port}", flush=True)
     if args.exit_with_parent is not None:
         # Started by a launcher that owns this viewer: if it dies without stopping us (a crash, a

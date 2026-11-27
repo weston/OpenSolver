@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one UPI script against OpenUPI-Solver and a real PioSOLVER, then diff each response.
+"""Run one UPI script against OpenSolver and a real PioSOLVER, then diff each response.
 
 Usage:
   python3 tests/pio_compare/compare.py SCRIPT [--out DIR] [--ours ./solver] [--pio-only|--ours-only]

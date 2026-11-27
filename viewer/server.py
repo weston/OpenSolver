@@ -76,6 +76,7 @@ class Solver:
         self.state_lock = threading.Lock()
         self.progress_cv = threading.Condition(self.state_lock)  # notified on every SOLVER event
         self.solving = False
+        self.flop_stability = False
         self.progress = []       # last periodic SOLVER: block (list of lines)
         self.solver_status = ""  # "started" / "stopped (<reason>)"
         self.events = 0          # bumped on every SOLVER event, for cheap polling
@@ -163,6 +164,7 @@ class Solver:
                         self.solver_status = msg
                         if msg.startswith("started"):
                             self.solving = True
+                            self.flop_stability = msg == "started (flop stability)"
                             self.active_device = "cpu"
                             self.progress = []
                         elif msg.startswith("device "):
@@ -250,7 +252,9 @@ class Solver:
             partial = dict(self.partial) if self.partial else None
             if partial:
                 partial["progress"] = list(partial["progress"])
-            return {"solving": self.solving, "suspended": "refine" in self.holds,
+            latest = self.series[-1] if self.flop_stability and self.progress and self.series else {}
+            return {"solving": self.solving, "flop_stability": self.flop_stability,
+                    "stability_stage": latest.get("stability_stage"), "suspended": "refine" in self.holds,
                     "devices": self.devices, "device": self.device, "active_device": self.active_device,
                     "dead": self.dead, "progress": list(self.progress),
                     "solver_status": self.solver_status, "events": self.events,
@@ -322,6 +326,7 @@ class Solver:
     def reset_series(self):
         with self.state_lock:
             self.series = []
+            self.flop_stability = False
             self.iter_seconds = None
             self._iter_mark = None
 
@@ -427,8 +432,11 @@ def parse_progress_point(block):
             continue
     if "running time" not in vals or "Exploitable for" not in vals:
         return None
-    return {"t": vals["running time"], "explo": vals["Exploitable for"],
-            "ev_oop": vals.get("EV OOP"), "ev_ip": vals.get("EV IP")}
+    point = {"t": vals["running time"], "explo": vals["Exploitable for"],
+             "ev_oop": vals.get("EV OOP"), "ev_ip": vals.get("EV IP")}
+    if "Flop stability stage" in vals:
+        point["stability_stage"] = int(vals["Flop stability stage"])
+    return point
 
 
 def parse_floats(line, expect=None):
@@ -878,14 +886,19 @@ def _api_main(solver, lib, method, path, query, body):
         acc = b.get("accuracy", 0.05)
         if isinstance(acc, bool) or not isinstance(acc, (int, float)) or not math.isfinite(acc) or acc < 0:
             raise SolverError("bad accuracy")
-        if solver.state()["solving"]:
-            # the solver ignores a second go, but clearing the partial state would file a running
-            # Solve further's progress under the main solve (#357)
-            raise SolverError("the solver is running (stop it first)")
-        # Report (and check the target) every 10 iterations: a smoother convergence chart (#115)
-        # and less overshoot past the target than the default 25.
-        solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", "go"])
-        solver.clear_partial()
+        stability = b.get("flop_stability", False)
+        if not isinstance(stability, bool):
+            raise SolverError("bad flop_stability")
+        with solver.cmd_lock:
+            if solver.state()["solving"]:
+                raise SolverError("the solver is running (stop it first)")
+            go = "go"
+            if stability:
+                root = parse_node_block(solver.cmd("show_node r:0"))
+                if len(root["board"].split()) == 3:
+                    go = "go stable_flop"
+            solver.cmds([f"set_accuracy {acc:g}", "set_info_freq auto", go])
+            solver.clear_partial()
         return 200, {"ok": True}
 
     if path == "/api/solve_node":

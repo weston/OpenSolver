@@ -2124,7 +2124,8 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
   ArenaScope sc;
   float* sigma = sc.a.alloc(static_cast<size_t>(A) * Hp);
   current_strategy(ni, sigma);
-  if (!(n.flags & GF_LOCKED)) {
+  // (one action, flagged or lazily loaded: nothing to update, and its shared rows, preds too, stay zero: #567)
+  if (!(n.flags & GF_LOCKED) && !GameTree::shares_row(n)) {
     float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
     float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
     // An unreached node had zero counterfactual values this round, so its instantaneous

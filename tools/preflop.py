@@ -1426,31 +1426,45 @@ def pick_flops(a: argparse.Namespace, s: Settings) -> tuple[str, list[tuple[str,
 
 
 def estimate_table(a: argparse.Namespace, s: Settings) -> list[str]:
+    """The table of `estimate`. A cell is the smallest tree's size; where the tree with outcome tables at
+    every level is another size (bets on the turn), both, smallest first, as `solve` and `check` say both
+    (#521). A row stops by the smallest tree, the one `--memory` refuses by. The viewer's cells are read
+    the same way: both sizes, smallest first, and no larger subset asked for once the smallest tree is
+    more than the machine has."""
     if a.flops:  # one column: the flops asked for
         name, flops = choose_flops(a.flops)
         sets = [(str(len(flops)), flops)]
     else:
         sets = [(str(c), read_flop_file(flop_path(c))) for c in SHIPPED if os.path.exists(flop_path(c))]
     depths = [s.depth] if s.postflop_config is not None or a.depth else list(DEPTHS)
-    out = ["Estimated memory of the tree, MB (16-bit storage; the solver's estimate_tree). Rows: the last street "
-           "with betting.", ""]
-    out.append(f"{'':<8}" + "".join(f"{c:>11}" for c, _ in sets) + "   flops")
     mem = physical_memory_mb()
     limit = a.limit * 1024 if a.limit else mem
+    rows: list[tuple[str, list[str]]] = []
+    two = False
     for depth in depths:
-        row: list[int | None] = []
+        row: list[str] = []
         over = False
         sd = tb.dataclasses.replace(s, depth=depth)
         for _, flops in sets:
             if over:
-                row.append(None)  # more flops only cost more
+                row.append("-")  # more flops only cost more
                 continue
-            row.append(estimate_mb(a.solver, sd, flops))
-            over = bool(limit) and row[-1] > limit
-        name = "file" if s.postflop_config is not None else depth
-        out.append(f"{name:<8}" + "".join(f"{'-':>11}" if v is None else f"{v:>11,}" for v in row))
+            small, with_tables = estimates_mb(a.solver, sd, flops)
+            row.append(f"{small:,}" if with_tables == small else f"{small:,}-{with_tables:,}")
+            two = two or with_tables != small
+            over = bool(limit) and small > limit
+        rows.append(("file" if s.postflop_config is not None else depth, row))
+    width = max([11] + [len(cell) + 2 for _, row in rows for cell in row])
+    out = ["Estimated memory of the tree, MB (16-bit storage; the solver's estimate_tree). Rows: the last street "
+           "with betting.", ""]
+    out.append(f"{'':<8}" + "".join(f"{c:>{width}}" for c, _ in sets) + "   flops")
+    out += [f"{name:<8}" + "".join(f"{cell:>{width}}" for cell in row) for name, row in rows]
+    if two:
+        out += ["", "Two sizes in a cell: the smallest tree, then the tree with outcome tables at every level, which the "
+                    "solver builds when they fit in nine tenths of the memory that is free."]
     if mem:
-        out += ["", f"This machine has {mem:,} MB. A row stops at the first size over "
+        first = "the first cell whose smallest tree is" if two else "the first size"
+        out += ["", f"This machine has {mem:,} MB. A row stops at {first} over "
                     + (f"--limit {a.limit:g} GB." if a.limit else "that (--limit GB for another bound).")]
     return out
 
@@ -1500,7 +1514,8 @@ def parser() -> argparse.ArgumentParser:
                    "chooses the largest shipped subset within it (default: half of this machine's), --flops over it is refused, "
                    "and the outcome tables the solver adds to a tree with turn bets are left out when they "
                    "would pass it (the solver process takes about 1.1 times the estimate)")
-    g.add_argument("--limit", type=float, help="estimate: stop a row once a cell is over this many GB")
+    g.add_argument("--limit", type=float, help="estimate: stop a row once a cell is over this many GB (the "
+                   "smallest tree, where a cell has two sizes)")
     g.add_argument("--accuracy", type=float, help="solve until exploitable for less than this many big blinds "
                    f"per 100 hands (default {SOLVE_ACCURACY:g}; check: {CHECK_ACCURACY:g}; with full ranges the "
                    "losses it prints are known to about four times this, in a game of a few hands they can "

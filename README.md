@@ -422,7 +422,8 @@ same hands a table keeps each pair of hands once, and only the hands the flop le
 the smallest tree keeps the boards instead, and the table above is that tree. Tables are the faster way
 to value an all-in on the turn as well, so the solver builds them there too when the tree with them fits
 in memory (`set_outcome_tables`, `auto` by default; `small` for the tree of the table): 888 MB for the
-802 of 10 flops, 2,270 for 2,039, 4,509 for 4,049, and iterations about twice as fast. The solver process
+802 of 10 flops, 2,270 for 2,039, 4,509 for 4,049, and iterations about twice as fast. `estimate` prints
+both in such a cell, smallest first (`802-888`), and stops a row by the smallest. The solver process
 takes more than the figure: 462 MB at its peak for the 200 flops estimated at 364, 3,455 for all 1,755 estimated at 3,194, 892 for 10 flops down to
 `turn` estimated at 802 (1,004 with the turn tables, estimated at 888). The estimate is not free at
 `turn` and `river`: the solver builds the tree without the

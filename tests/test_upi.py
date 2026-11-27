@@ -2498,8 +2498,13 @@ def check_flop_update_order(exe, test_metal=True):
             probe.close()
         if available:
             gpu = solve(algorithm="v4_metal")
-            check(max(abs(a - b) for a, b in zip(ip, gpu)) < 0.002,
-                  "Metal and CPU agree on the app's forced-check flop")
+            check(gpu == solve(medium, first="IP", algorithm="v4_metal") and
+                  gpu != solve(medium, first="OOP", algorithm="v4_metal"),
+                  "Metal applies the automatic flop order on every iteration")
+            cpu = solve(go="go 2 steps")
+            gpu = solve(go="go 2 steps", algorithm="v4_metal")
+            check(max(abs(a - b) for a, b in zip(cpu, gpu)) < 0.002,
+                  "Metal and CPU agree when the opening order first changes the average strategy")
 
 
 def check_solve_device(exe):

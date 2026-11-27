@@ -7,9 +7,11 @@ OpenSolver helps you study heads-up no-limit Texas Hold’em hands.
 Install and run OpenSolver on an **Apple Silicon Mac (M1 or newer)** with **macOS 13.3 or later**.
 To check your Mac, choose **Apple menu → About This Mac**.
 
-1. Ask the person who shared OpenSolver with you for the installer. Its name starts with **OpenSolver** and ends in **.pkg**.
-2. Find the installer in **Downloads** or wherever you saved it. Double-click it and follow the onscreen instructions.
+1. In Finder, double-click the **OpenSolver** installer (the file ending in **.pkg**).
+2. Follow the onscreen installation steps.
 3. Open **Finder → Applications** and double-click **OpenSolver**.
+
+The installer is currently [built from this repository](#macos-installer).
 
 If your Mac says it can’t verify the installer or app, and you trust where it came from, open
 **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.

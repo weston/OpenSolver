@@ -16,6 +16,31 @@ public UPI documentation; it contains no PioSOLVER code.
 New here? **[docs/quickstart.md](docs/quickstart.md)** walks through installing, solving a spot and
 reading the output in about five minutes. The rest of this file is reference and internals.
 
+## Install OpenSolver on macOS
+
+The desktop app requires an Apple Silicon Mac (M1 or later) and macOS 13.3 or later.
+The installer includes the solver, viewer, and Python runtime.
+
+1. Get an `OpenSolver-<version>-macos-arm64.pkg` from your maintainer or [build the installer](#macos-installer) from this checkout.
+2. Double-click the package in Finder and follow the Installer prompts.
+3. Open **OpenSolver** from **Applications**. The viewer opens in the app window.
+
+If macOS says it cannot verify the developer, use **System Settings → Privacy & Security → Open Anyway**
+after trying to open the package or app, provided you trust its source. [Apple’s instructions](https://support.apple.com/en-us/102445)
+
+### Keep OpenSolver up to date from GitHub
+
+Use [OpenSolver.command](packaging/macos/OpenSolver.command) to install and launch the latest version
+from the project's GitHub `main` branch. This option requires Xcode Command Line Tools and SSH access
+to the private repository.
+
+1. If you need the command-line tools, run `xcode-select --install` in Terminal.
+2. From this checkout, run `./packaging/macos/OpenSolver.command`, or double-click
+   **OpenSolver.command** in Finder.
+3. Use **OpenSolver.command** whenever you want to launch with an update check. It rebuilds and
+   installs **OpenSolver.app** when the Git revision changes. If GitHub is unreachable and the app
+   is already installed, the launcher opens the installed copy.
+
 ## Build and run
 
 ```sh
@@ -74,10 +99,9 @@ shasum -a 256 -c dist/OpenSolver-0.1.0-macos-arm64.pkg.sha256     # in dist/
 open dist/OpenSolver-0.1.0-macos-arm64.pkg
 ```
 
-Opening OpenSolver starts the viewer and opens it in the browser. A small window shows the address,
-with **Open in Browser** and **Quit**; closing the window leaves the viewer running (a click on
-the Dock icon brings the page back), and quitting OpenSolver stops the viewer and its solvers. It asks
-first while a solve or the job queue is running. The viewer takes port 8765 when that is free and
+Closing the app window leaves the viewer running. Click the Dock icon to reopen it.
+Quitting OpenSolver stops the viewer and its solvers, with a confirmation if a solve or the job
+queue is running. The viewer takes port 8765 when that is free and
 any free port otherwise (when a viewer from a checkout is already running, say); the two then
 share the library and the job queue. What the viewer prints goes to
 `~/Library/Logs/OpenSolver/viewer.log` (File > Show Log).
@@ -92,10 +116,8 @@ share the library and the job queue. What the viewer prints goes to
 - **Your data is not in the app.** Ranges, tree configs and the job queue stay in `~/.wsolver`,
   as for a viewer run from a checkout: installing a new version over an old one leaves them alone.
 - **It is not signed with a Developer ID or notarized.** The app is ad-hoc signed, which is what
-  lets it run on Apple Silicon at all; the package is unsigned. On the Mac that built it, it opens
-  like any other. On another Mac, a package that was downloaded or sent is held back by Gatekeeper
-  the first time: after trying to open it, allow it under System Settings > Privacy & Security >
-  **Open Anyway**. Signing needs an Apple Developer account, which the project does not have.
+  lets it run on Apple Silicon; the package is unsigned. See the [install instructions](#install-opensolver-on-macos)
+  if macOS asks you to approve it.
 - **Before it is packed, the app is run.** `build.sh` starts the staged app's viewer with the app's
   own Python in an empty environment, builds and solves a small tree through it and checks that
   nothing is left running afterwards (`packaging/macos/smoke.py`); a package is written only when

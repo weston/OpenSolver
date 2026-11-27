@@ -13,9 +13,16 @@ if [ ! -d "$APP_DIR/.git" ]; then
 fi
 
 cd "$APP_DIR"
-echo "Downloading the latest version ..."
-git fetch origin "$BRANCH"
-git switch -C "$BRANCH" "origin/$BRANCH"
+echo "Checking GitHub for updates ..."
+if ! git fetch "$REPO_URL" "$BRANCH"; then
+  if [ -d "$INSTALLED_APP" ]; then
+    echo "Update check failed. Opening the installed OpenSolver ..."
+    exec open "$INSTALLED_APP"
+  fi
+  echo "Update check failed. GitHub SSH access is required for the first install." >&2
+  exit 1
+fi
+git switch -C "$BRANCH" FETCH_HEAD
 REVISION=$(git rev-parse HEAD)
 INSTALLED_REVISION=$(/usr/libexec/PlistBuddy -c 'Print :OpenSolverSourceRevision' \
   "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || true)

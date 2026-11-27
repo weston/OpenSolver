@@ -252,7 +252,7 @@ struct BoardTables {
 class PostflopSolve final : public MetalSolve {
  public:
   Metal& m = metal();
-  id<MTLComputePipelineState> propagate_reach, update_values, advance_forced, terminals, river_pairs, river_rounds,
+  id<MTLComputePipelineState> propagate_reach, update_values, terminals, river_pairs, river_rounds,
       allins, wide_rounds, bet_checks, two_bets, wide_two_bets, lead_checks, wide_lead_checks;
   id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], rounds;
   id<MTLBuffer> equity[2], equity_tables, allin_batches, bet_check_nodes, two_bet_nodes, lead_check_nodes;
@@ -281,7 +281,7 @@ class PostflopSolve final : public MetalSolve {
   };
   vector<Range> levels;
   vector<array<Range, 2>> reach_levels;
-  Range terminal_range, pair_range, round_range, bet_check_range, two_bet_range, lead_check_range, allin_range, forced_range[2];
+  Range terminal_range, pair_range, round_range, bet_check_range, two_bet_range, lead_check_range, allin_range;
   size_t stride, state_bytes, round_bytes[2]{};
   bool stage_regrets = false, stage_sums = false;
   int prepared_iteration = 0;
@@ -292,6 +292,7 @@ class PostflopSolve final : public MetalSolve {
   struct {
     Replay plans[3][2][2][2][2];  // average mode, regret slot, strategy slot, updating player, refreshed reach
   } replays;
+  bool first_submission = true;
   bool write_sums = true;
   bool early_replay = false;
   NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* specialized_pipelines[3][2][3]{};
@@ -348,7 +349,6 @@ class PostflopSolve final : public MetalSolve {
       propagate_reach = m.pipeline(@"propagate_reach", true);
       update_values = m.pipeline(@"update_values", true);
     }
-    if (forced_range[0].count || forced_range[1].count) advance_forced = m.pipeline(@"advance_forced", true);
     if (terminal_range.count) terminals = m.pipeline(@"terminal", true);
     if (pair_range.count) river_pairs = m.pipeline(@"river_call_fold", true);
     if (allin_range.count) allins = m.pipeline(@"allin", true);
@@ -556,7 +556,6 @@ class PostflopSolve final : public MetalSolve {
   void pack_nodes(const GameTree& g, uint64_t available, uint64_t equity_bytes) {
     const size_t N = g.nodes.size();
     vector<TraversalNode> packed_nodes(N);
-    vector<uint8_t> covered(N);
     vector<RiverRound> betting_rounds, final_bets;
     vector<PairedRiverRound> lead_check_rounds;
     vector<TwoBetRiver> two_bet_rivers;
@@ -564,7 +563,6 @@ class PostflopSolve final : public MetalSolve {
     const bool rounds_fit = channel_bytes <= m.dev.maxThreadgroupMemoryLength;
     const bool bet_checks_fit = 2 * channel_bytes <= m.dev.maxThreadgroupMemoryLength;
     vector<unsigned> list, frontier{0}, terminal_ids, paired_ids, allin_ids;
-    array<vector<unsigned>, 2> forced;
     vector<array<unsigned, 2>> deals_by_node;
     std::unordered_map<uint64_t, unsigned> outcomes;
     for (unsigned j = 0; j < g.allins.size(); ++j) {
@@ -625,38 +623,21 @@ class PostflopSolve final : public MetalSolve {
           }
           continue;
         }
-        const bool skipped = covered[i];
-        bool table = false;
-        if (!skipped && n.kind == ANodeKind::Chance && showdown[i] != UINT32_MAX) {
+        if (n.kind == ANodeKind::Chance && showdown[i] != UINT32_MAX) {
           auto found = outcomes.find(g.chances[n.aux].board_mask);
           if (found != outcomes.end()) {
-            table = true;
             a.kind = AllIn;
             a.aux = found->second;
             auto pay = g.term_pay(g.nodes[showdown[i]]);
             std::copy_n(pay.w, 2, a.win);
             std::copy_n(pay.l, 2, a.loss);
             allin_ids.push_back(i);
+            continue;
           }
         }
-        if ((skipped || table) && n.kind == ANodeKind::Chance) {
-          for (unsigned k = 0; k < a.count; ++k) {
-            auto& child = packed_nodes[a.child + k];
-            covered[a.child + k] = true;
-            child.public_cards = (a.public_cards << 8) | (g.chances[n.aux].cards[k] + 1);
-            std::copy_n(a.reach_offset, 2, child.reach_offset);
-            next.push_back(a.child + k);
-          }
-          continue;
-        }
-        if (skipped && n.kind == ANodeKind::Showdown) continue;
         if (n.kind == ANodeKind::Decision || n.kind == ANodeKind::Chance) {
           a.kind = n.kind == ANodeKind::Chance ? Deal : Decision;
-          const bool single = a.kind == Decision && a.count == 1;
-          if (single)
-            forced[a.actor].push_back(i);
-          else
-            list.push_back(i);
+          if (a.kind != Decision || a.count > 1) list.push_back(i);
           if (a.kind == Deal) {
             const auto& ci = g.chances[n.aux];
             a.deals = deals_by_node.size();
@@ -673,7 +654,6 @@ class PostflopSolve final : public MetalSolve {
           a.child_value = value_rows;
           value_rows += a.count - reuse_first;
           for (unsigned k = 0; k < a.count; ++k) {
-            covered[a.child + k] = skipped;
             packed_nodes[a.child + k].public_cards =
                 a.kind == Deal ? (a.public_cards << 8) | (packed_nodes[a.child + k].card + 1) : a.public_cards;
             packed_nodes[a.child + k].value_row = reuse_first && k == 0 ? a.value_row : a.child_value + k - reuse_first;
@@ -720,10 +700,6 @@ class PostflopSolve final : public MetalSolve {
         by_player[p] = {start, list.size() - start};
       }
       reach_levels.push_back(by_player);
-    }
-    for (int p = 0; p < 2; ++p) {
-      forced_range[p] = {list.size(), forced[p].size()};
-      list.insert(list.end(), forced[p].begin(), forced[p].end());
     }
     terminal_range = {list.size(), terminal_ids.size()};
     list.insert(list.end(), terminal_ids.begin(), terminal_ids.end());
@@ -793,7 +769,7 @@ class PostflopSolve final : public MetalSolve {
       if (!span.count) return;
       auto c = [plan.commands indirectComputeCommandAtIndex:plan.count++];
       id<MTLComputePipelineState> selected = pipe;
-      const bool policy = early_replay && pipe != terminals && pipe != allins && pipe != advance_forced;
+      const bool policy = early_replay && pipe != terminals && pipe != allins;
       const bool writes_strategy = pipe != terminals && pipe != allins && pipe != propagate_reach;
       const AverageMode average = writes_strategy ? mode : DenseAverage;
       const bool compact = compact_regrets && pipe != terminals && pipe != allins;
@@ -822,7 +798,6 @@ class PostflopSolve final : public MetalSolve {
       if (refresh_reach) span = {reach[0].start, reach[0].count + reach[1].count};
       dispatch(propagate_reach, span);
     }
-    dispatch(advance_forced, forced_range[p]);
     buffers[9] = boards[p];
     buffers[10] = indices[p];
     buffers[11] = heroes[p];
@@ -858,7 +833,24 @@ class PostflopSolve final : public MetalSolve {
     return plan;
   }
 
+  void seed_forced_rows(const GameTree& g, const MetalRows& rows, size_t word_size) {
+    if (rows.input == rows.output) return;
+    const auto* input = static_cast<const uint8_t*>(rows.input.contents);
+    auto* output = static_cast<uint8_t*>(rows.output.contents);
+    parallel_state_blocks(g.nodes.size(), [&](size_t begin, size_t end) {
+      for (size_t i = begin; i < end; ++i) {
+        const auto& n = g.nodes[i];
+        if (n.kind != ANodeKind::Decision || n.num_children != 1) continue;
+        const size_t offset = word_size * n.storage;
+        const size_t bytes = word_size * g.num_hands(n.player);
+        if (memcmp(output + offset, input + offset, bytes) != 0)
+          memcpy(output + offset, input + offset, bytes);
+      }
+    });
+  }
+
   id<MTLCommandBuffer> submit(GameTree& g, Solver& s, int t, bool refresh_reach) {
+    refresh_reach |= first_submission;
     const bool compact = s.uses_bfloat_regrets(t);
     const bool half_sums = s.uses_fp16_sums(t);
     if (compact != compact_regrets || half_sums != compact_sums) {
@@ -907,6 +899,11 @@ class PostflopSolve final : public MetalSolve {
       }
     } else {
       strategy_sums.prepare(g.strat, refresh_reach);
+    }
+    if (refresh_reach) {
+      seed_forced_rows(g, regrets, compact_regrets ? sizeof(uint16_t) : sizeof(float));
+      seed_forced_rows(g, strategy_sums, compact_sums ? sizeof(uint16_t) : sizeof(float));
+      first_submission = false;
     }
     auto disc = [](double z) { return float(z / (1 + z)); };
     @autoreleasepool {

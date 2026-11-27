@@ -24,6 +24,10 @@ namespace pio {
 
 namespace {
 
+inline bool forced_action(const GNode& n) {
+  return n.num_children == 1 && !n.flags;
+}
+
 inline bool all_zero(const float* v, int n) {
   for (int i = 0; i < n; ++i)
     if (v[i] != 0.0f) return false;
@@ -1094,6 +1098,11 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
   const int H = g_.num_hands(n.player);
+  if (forced_action(n)) {
+    g_.ensure_loaded(n);
+    std::fill_n(out, H, 1.f);
+    return;
+  }
   ArenaScope sc;
   const bool need_s = (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) != 0;
   const float* S = need_s ? g_.strat_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr) : nullptr;
@@ -1377,13 +1386,17 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
   const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
   const int H = g_.num_hands(n.player);
+  if (forced_action(n)) {
+    g_.ensure_loaded(n);
+    std::fill_n(out, H, 1.f);
+    return;
+  }
   ArenaScope sc;
   const float* S = g_.strat_ro(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
   const uint16_t* half = report_fp16_sums_ ? report_fp16_sums_ + n.storage : nullptr;
   if (!n.flags && !g_.compressed && !predictive && !sqrt_weights_ && A <= 4) {
     const auto read_average = [&](const auto* sums, const auto* regrets) {
       switch (A) {
-        case 1: return average_float_strategy<1>(sums, regrets, out, H);
         case 2: return average_float_strategy<2>(sums, regrets, out, H);
         case 3: return average_float_strategy<3>(sums, regrets, out, H);
         case 4: return average_float_strategy<4>(sums, regrets, out, H);
@@ -1441,6 +1454,7 @@ void Solver::walk(Walk mode, uint32_t ni, int p, const float* rp, const float* r
 // two-phase river walk, #186, runs exactly the same code). out is the node's value under sigma.
 void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* rp, const float* ro, const float* sigma,
                               const float* cfv, const uint8_t* pruned, const float* out) {
+  if (forced_action(n)) return;
   const int A = n.num_children;
   const int Hp = g_.num_hands(p);
   ArenaScope sc;
@@ -1561,6 +1575,11 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
   const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
   const int A = n.num_children;
   const int actor = n.player;
+  if (forced_action(n) && !g_.lazy && g_.nodes[n.first_child].kind == ANodeKind::Decision &&
+      !(actor == p && prune_this_iter_)) {
+    river_down(n.first_child, p, rp, ro, out);
+    return;
+  }
   const int Ha = g_.num_hands(actor);
   float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
   current_strategy(ni, sigma);
@@ -1575,7 +1594,7 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
     // way back up, after the whole subtree and its showdown batch, and by then they have arrived
     // instead of stalling the update (threebet_mono, M4: -6% at 1 and 10 threads; Zen 5: -9% at 1
     // and 8 threads, -7% at 32). The regrets need no hint: current_strategy has just read them.
-    if (accumulate_) {
+    if (accumulate_ && !forced_action(n)) {
       if (g_.compressed) {
         const size_t len = g_.stored_size(n);
         const char* b = reinterpret_cast<const char*>(g_.strat_q.data() + g_.qo(n));
@@ -1826,6 +1845,11 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
     case ANodeKind::Decision: break;
   }
 
+  if (forced_action(n) && !g_.lazy && !(M == Walk::BestResponse && write_best_response) &&
+      !(M == Walk::CFR && n.player == p && prune_this_iter_) && (n.player == p || !all_zero(ro, Ho))) {
+    walk_t<M>(n.first_child, p, rp, ro, out);
+    return;
+  }
   const int A = n.num_children;
   const int actor = n.player;
   const int Ha = g_.num_hands(actor);
@@ -2086,6 +2110,10 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
     }
     return;
   }
+  if (forced_action(n) && !g_.lazy) {
+    strategy_only(n.first_child, p, rp);
+    return;
+  }
   const int A = n.num_children;
   if (n.player != p) {
     for (int a = 0; a < A; ++a) strategy_only(n.first_child + static_cast<uint32_t>(a), p, rp);
@@ -2307,7 +2335,7 @@ void Solver::symmetrize_root_street(int p, float* regrets, float* strategy) {
   const auto& ends = sym_orbit_end_[p];
   auto task = [&](int k) {
     const GNode& n = g_.nodes[sym_nodes_[p][static_cast<size_t>(k)]];
-    if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) return;
+    if (forced_action(n) || (n.flags & (GF_LOCKED | GF_COMBO_LOCKED))) return;
     const int A = n.num_children;
     ArenaScope sc;
     float* R = regrets ? regrets + n.storage : g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
@@ -2349,7 +2377,7 @@ void Solver::reset_strategy_sums() {
     const int hi = static_cast<int>(static_cast<int64_t>(N) * (chunk + 1) / nchunks);
     for (int ni = lo; ni < hi; ++ni) {
       const GNode& n = g_.nodes[ni];
-      if (n.kind != ANodeKind::Decision || (n.flags & GF_LOCKED)) continue;
+      if (n.kind != ANodeKind::Decision || forced_action(n) || (n.flags & GF_LOCKED)) continue;
       const int A = n.num_children, H = g_.num_hands(n.player);
       ArenaScope sc;
       float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * H) : nullptr);
@@ -2440,6 +2468,10 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
   const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
   const int A = n.num_children;
   const int actor = n.player;
+  if (forced_action(n) && !g_.lazy && g_.nodes[n.first_child].kind == ANodeKind::Decision) {
+    river_evbr_down(n.first_child, p, ro, ev, br);
+    return;
+  }
   const int Ha = g_.num_hands(actor);
   float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
   average_strategy(ni, sigma);
@@ -2689,6 +2721,10 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
     case ANodeKind::Decision: break;
   }
 
+  if (forced_action(n) && !g_.lazy && (n.player == p || !all_zero(ro, Ho))) {
+    walk_evbr(n.first_child, p, rp, ro, ev, br);
+    return;
+  }
   const int A = n.num_children;
   const int actor = n.player;
   const int Ha = g_.num_hands(actor);

@@ -2588,6 +2588,22 @@ def check_sampled_averaging(exe):
             raw[flags] = 7 | 16 | 64 | 128
             paired.write_bytes(gzip.compress(raw))
 
+            def root_record(data):
+                metadata = 22 + struct.unpack_from("<I", data, 18)[0]
+                return metadata + 8 + struct.unpack_from("<Q", data, metadata)[0]
+
+            order = run("show_hand_order").split()
+            oop = floats(run("show_range OOP r:0"))
+            ip = floats(run("show_range IP r:0"))
+            hands = sum(o > 0 or i > 0 for o, i in zip(oop, ip))
+            history = struct.pack(f"<{2 * hands}f", *[(-4., 16.)[h % 2] for h in range(hands)],
+                                  *[float(h % 7) for h in range(hands)])
+            root = root_record(raw)
+            assert raw[root:root + len(history)] == bytes(len(history))
+            raw[root:root + len(history)] = history
+            historical = Path(tmp, "historical-forced-check")
+            historical.write_bytes(gzip.compress(raw))
+
             def saved_mode(path):
                 data = gzip.decompress(path.read_bytes())
                 return data[21 + struct.unpack_from("<I", data, 18)[0]] & (16 | 32 | 64 | 128)
@@ -2692,6 +2708,30 @@ def check_sampled_averaging(exe):
                 run(f'load_tree "{mid}" full')
                 check(at99 != at97 and steps(1) == at99,
                       "a lossless split across the two-sweep update reproduces the iteration-99 strategy on " + device)
+                run(f'load_tree "{historical}" full')
+                u.solver_msgs.clear()
+                steps(13)
+                run(f'dump_tree "{mid}" lossless')
+                run(f'load_tree "{mid}" full')
+                check(steps(24) == next_average and run("calc_results") == actual,
+                      "historical forced rows leave the downstream strategy and best response unchanged on " + device)
+                run(f'dump_tree "{mid}" lossless')
+                saved = gzip.decompress(mid.read_bytes())
+                offset = root_record(saved)
+                check(saved[offset:offset + len(history)] == history,
+                      "the forced check retains both historical rows through packed sweeps, resume and reset on " + device)
+                if device == "v4_metal":
+                    assert ["SOLVER: device gpu"] in u.solver_msgs
+                expected = [float(weight > 0 and "2s" not in (hand[:2], hand[2:])) for weight, hand in zip(oop, order)]
+                check(floats(run("show_strategy r:0:c:c:2s")) == expected,
+                      "the forced turn check plays every in-range unblocked combo with probability one on " + device)
+                run("lock_node r:0")
+                before = [float(line.split(": ")[1]) for line in run("calc_results").splitlines()]
+                run("set_incentives_node r:0 7")
+                adjusted = [float(line.split(": ")[1]) for line in run("calc_results").splitlines()]
+                check(all(abs(value - prev - delta) < .002 for value, prev, delta in
+                          zip(adjusted, before, (7, 0, 7, 0, 0))),
+                      "a locked forced check still earns its incentive in both EV and best response on " + device)
                 for go in ("go", "go 1 steps", "go 0 seconds"):
                     run(f'load_tree "{paired}" full')
                     run("set_accuracy 0.1")

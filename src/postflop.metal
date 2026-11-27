@@ -100,21 +100,6 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
     values[n.value_row * q.stride + h] = node_value;
   }
 }
-kernel void advance_forced(TRAVERSAL_BUFFERS, device const RegretWord* old_regrets [[buffer(12)]],
-                           device const SumWord* old_sums [[buffer(13)]], NODE_THREADS) {
-  TraversalNode n = nodes[ids[k]];
-  uint hands = q.p ? q.hands1 : q.hands0;
-  device const float* reach = (q.p ? ip_reach : oop_reach) + n.reach_offset[q.p];
-  for (uint h = tid; h < hands; h += width) {
-    uint j = n.storage + h;
-    float r = load_regret(old_regrets[j]);
-    regrets[j] = store_regret(r * (r > 0 ? q.positive_discount : q.negative_discount));
-    float weight = reach[h];
-    if (blocked(cards[q.p * q.stride + h], n.public_cards)) weight = 0;
-    if (average_mode != SkipAverage)
-      strategy_sums[j] = q.accumulate ? SumWord(fma(float(old_sums[j]), q.average_discount, sum_scale * average_reach(weight, q))) : old_sums[j];
-  }
-}
 template <typename Sum = float, typename Reach, typename Entry>
 void river_prefixes(device const BoardPrefixes& b, device const PrefixEntry* indices, Reach reach,
                     threadgroup Entry* prefix, uint tid) {

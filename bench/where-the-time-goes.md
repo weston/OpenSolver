@@ -1214,6 +1214,8 @@ own flops and locked per hand class (every combo of a class plays the class's fr
   0.18 (100 bb: small blind -0.21, span -0.24 to -0.07, the review's run); in the one check of this
   section that recorded them, 50 shipped flops with turn bets, by 0.004, and on all flops without an
   ante the two values add up to zero (0.000 chips). Not corrected for: no rule for it that is not a guess.
+  (Since #513 the tool's solves deal a pair of hands at one weight for both players and a subset's two
+  values add up: the section on it below.)
   With an ante the two values add up to the ante and not to zero, and the sums are taken less it (the
   note used to count an ante of 2 as 200 bb/100 of uneven dealing, on all flops too; the fourth
   review's). Not quite to the ante when the fifth review ran: on all flops the solver's two values came
@@ -1298,6 +1300,9 @@ divides a hand's value by the weight of the flops the hand can see, averaged ove
 by reach; the weight the flops have for the *pair* of hands differs from that average unless every flop
 is in the tree. Exact pair weights cannot go through a walk that values a hand against a whole range
 at once; not changed.
+(Since #513, `set_zero_sum_subset on`, which the tool sends, gives a pair one weight that is a factor a
+hand times N times a factor of the opponent's hand, which does go through the walk; the figures of this
+section are from before it. The section on it is below.)
 
 For the spans this matters as follows. The low end of a value is the solve's sum less the opponent's
 best response, which is what the opponent's best reply would leave the player only if the sum did not
@@ -1480,3 +1485,137 @@ and 492 values off a spot, and one spot of five none, in one run of three.
   of the rows, pass every test. That is speed and not values; the timings above are the check.
 - One tree, one machine. To an accuracy with the tool was not timed; by the steps above it is the
   same number of steps.
+
+
+## A flop subset's game made constant-sum: one weight a pair for both players (#513)
+
+A pair of hands (h, o) can be dealt only the subset's flops that hold none of its four cards, with total
+weight N(h,o). By default `Solver::flop_deal` divides a hand's value by its own mean of N over the
+opponent's hands by reach, so a deal counts N(h,o) / mean N(h,.) for the one player and
+N(h,o) / mean N(.,o) for the other: two weights for one deal, a game that is not constant-sum, and
+values that do not add up to the dead money (the #497 notes above: a reference game whose value moved
+by 200 times its span).
+
+**What changed.** `set_zero_sum_subset on` (off by default, so every recorded figure and every Pio
+comparison stands) gives a pair one weight, a_h N(h,o) b_o. The factors are fitted once, when the tree
+is built, to the starting ranges: scaling the two sides in turn (Sinkhorn, at most 200 rounds, until no
+factor moves by 1e-9 of itself) until every hand of either player meets exactly its share of the
+opponent's starting range, then made equal for hands that a suit symmetry of the ranges exchanges. In
+the walk the opponent's reach goes in times its factor and the hand's value comes out times its own.
+Where the ranges at an exit are not the starting ones a hand's weights no longer add up to its share;
+the dead money (an ante) that is then not dealt is split, half to each player, so the two values add up
+to it at any strategies. Under ICM a half is worth what winning that many chips on top of the starting
+stack is worth to the player, as a terminal's chips are. On all flops N is one number and nothing
+changes. `tools/preflop.py` turns the switch on in its script; the viewer's own solves leave it off.
+
+**What the two values add up to**, less the ante, at the solutions the tool reached (shipped subsets,
+100 bb, flop depth, to 0.02 bb/100 without an ante and to 0.05 with one of 1 bb; bb/100):
+
+| flops | no ante: off | on | ante 1 bb: off | on |
+|---|---|---|---|---|
+| 10 | -0.035 | 0.000 | 0.036 | 0.000 |
+| 25 | 0.034 | 0.000 | 0.068 | 0.001 |
+| 50 | 0.003 | 0.000 | 0.025 | 0.000 |
+| 100 | -0.005 | 0.000 | -0.009 | 0.000 |
+| 200 | 0.001 | 0.000 | 0.003 | 0.000 |
+
+In the solver's test (three flops, three pairs of ranges from two hand classes against three to most of
+a range, dead money 0 and 1,000 chips, at four points of a solve) the sum is off by at most 0.0005
+chips with the switch on, and by 1.4 to 24.7 chips, one figure a game, with it off.
+
+**The two cases of the #499 reviews**, each solved once and checked three times (three flops, 12 bb;
+bb/100; a loss with its span, and what the two values of the reference solve added up to; each solve
+has 120 s). Before is main (`9226d08`) with its own tool, after is this branch with that main merged.
+
+`AA,72o` against `AKs`:
+
+| `--accuracy` | before: SB's loss | BB's loss | sum | after: SB's loss | BB's loss | sum |
+|---|---|---|---|---|---|---|
+| 0.05 | -2.555 (-2.565 to -2.463) | -0.464 (-0.482 to -0.378) | -2.770 | 0.001 (-0.042 to 0.147) | 0.002 (-0.055 to 0.093) | 0.000 |
+| 0.005 | -2.550 (-2.556 to -2.358) | -0.405 (-0.410 to -0.397) | -2.770 | 0.003 (0.001 to 0.012) | 0.002 (-0.005 to 0.006) | 0.000 |
+| 0.001 | -2.273 (-2.507 to -1.837) | -0.256 (-0.638 to 0.042) | -2.749 | 0.003 (-0.020 to 0.057) | 0.003 (-0.175 to 0.224) | 0.002 |
+
+`AA,KK:0.001,72o` against `KK,QQ`:
+
+| `--accuracy` | before: SB's loss | BB's loss | sum | after: SB's loss | BB's loss | sum |
+|---|---|---|---|---|---|---|
+| 0.05 | 0.240 (0.176 to 0.294) | -0.863 (-0.943 to -0.819) | -0.806 | -0.001 (-0.008 to 0.070) | 0.000 (-0.117 to 0.030) | 0.000 |
+| 0.02 | 0.231 (0.222 to 0.259) | -0.863 (-0.909 to -0.849) | -0.798 | -0.005 (-0.020 to 0.019) | 0.002 (-0.033 to 0.025) | 0.000 |
+| 0.005 | 0.047 (0.044 to 0.053) | -0.865 (-0.869 to -0.859) | -0.799 | -0.001 (-0.003 to 0.012) | 0.001 (-0.006 to 0.003) | 0.000 |
+
+Before, a result checked against its own game "lost" as much as -2.5 bb/100, and the small blind's
+figure in the second case went from 0.24 to 0.05 with the accuracy, outside both coarser spans. After,
+every loss is zero to within its span, the three spans of a figure have a part in common, and the loss
+of every check lies inside the span of every coarser one. The other way round it need not, a coarse
+check's figure being only as good as its own span, and once it does not: the second case's small blind
+at 0.02, -0.005, is 0.002 under the span of the check at 0.005. The first case at 0.001 does not reach
+its accuracy in its 120 s on either build (the reference stopped at 0.26 bb/100 before and at 0.04
+after; at 0.74 and 1.01 in an earlier run of the same two: a long solve of a tiny game gets worse,
+#517), which is why its spans are the wider ones.
+
+**What a subset's strategy gives up**, by `tools/preflop.py check`: each player's strategy from the
+subset's solve (the lines above, no ante) locked in a larger game and the other player solved against
+it to 0.02 bb/100; the loss is the game's value less what the locked strategy gets, with its span
+(bb/100). On all 1,755 flops (game 1.244 to the small blind, 1.232 to 1.260; 3194 MB, 4975 s for the
+whole check):
+
+| subset | switch | small blind's strategy loses | big blind's |
+|---|---|---|---|
+| 10 | off | 1.424 (1.392 to 1.460) | 1.033 (1.002 to 1.070) |
+| 10 | on | 1.403 (1.371 to 1.439) | 1.053 (1.023 to 1.091) |
+| 25 | off | 0.471 (0.439 to 0.507) | 0.531 (0.500 to 0.567) |
+| 25 | on | 0.469 (0.437 to 0.505) | 0.540 (0.508 to 0.576) |
+| 50 | off | 0.191 (0.160 to 0.228) | 0.166 (0.134 to 0.202) |
+| 50 | on | 0.191 (0.159 to 0.227) | 0.166 (0.134 to 0.201) |
+
+and in the 200-flop subset's game, solved with the switch on (1.214 to the small blind, 1.196 to
+1.235; 928 s):
+
+| subset | switch | small blind's strategy loses | big blind's |
+|---|---|---|---|
+| 10 | off | 1.379 (1.341 to 1.420) | 1.030 (0.994 to 1.073) |
+| 10 | on | 1.358 (1.320 to 1.399) | 1.049 (1.014 to 1.092) |
+| 25 | off | 0.443 (0.406 to 0.485) | 0.539 (0.502 to 0.581) |
+| 25 | on | 0.441 (0.403 to 0.482) | 0.548 (0.513 to 0.592) |
+| 50 | off | 0.183 (0.145 to 0.224) | 0.163 (0.126 to 0.204) |
+| 50 | on | 0.183 (0.146 to 0.225) | 0.164 (0.127 to 0.206) |
+| 100 | off | 0.047 (0.009 to 0.089) | 0.028 (-0.009 to 0.069) |
+| 100 | on | 0.046 (0.009 to 0.088) | 0.028 (-0.010 to 0.069) |
+The switch moves a loss by less than the check's span everywhere, and the two players' losses together
+by nothing that shows (2.457 off and 2.456 on at 10 flops on all flops, 1.002 and 1.009 at 25, 0.357
+and 0.357 at 50). At 10 flops it moves 0.02 from the one player to the other: the small blind's
+strategy loses 0.02 less and the big blind's 0.02 more, and at 25 flops 0.002 less and 0.009 more. Both
+reference games show the same shift to the third decimal, so it is the two solutions and not the
+checks' noise: with the switch on, the big blind's strategy from a 10-flop subset is that much worse on
+all flops and the small blind's that much better. From 50 flops on the two are one strategy as far as
+this check sees.
+
+**The time of an iteration** (ms; the tool's script for the default 100 bb tree, then `go 10 steps` and
+`go 40 steps`, the difference over 30; five rounds, least / middle / most; the machine otherwise idle;
+main is `9226d08`):
+
+| tree | main | this change, switch off | switch on |
+|---|---|---|---|
+| 50 flops, flop depth, no ante | 52.1 / 52.3 / 53.0 | 52.0 / 52.2 / 52.3 | 45.4 / 46.4 / 47.3 |
+| the same, ante 1 bb | 52.0 / 52.3 / 52.6 | 52.1 / 52.2 / 52.4 | 53.1 / 53.2 / 53.7 |
+| 10 flops, turn depth, no ante | 689.7 / 690.2 / 690.8 | 684.8 / 685.7 / 689.0 | 674.1 / 675.6 / 676.9 |
+
+Off, an iteration costs what it did. On and without dead money it costs 11% less at flop depth and 2%
+less at turn depth: the pass over the pairs of hands at every flop exit, which divided a hand's value by
+its mean of N, is not made (the factors go in with the reaches). With an ante the pass that splits the
+undealt dead money takes its place and an iteration costs 2% more than off. The trees build in the same
+0.9 s and 1.9 s either way. The turn tree with an ante was not timed.
+
+**Not done.**
+- The default is unchanged, and so is what Pio does on a subset: its values there follow a third rule
+  (probe 27 in `AGENTS.md`: ours without the switch times one number a player), not copied; and where its
+  solve on a subset ends is not found (#518).
+- The factors are fitted to the starting ranges once. At an exit reached with other ranges a hand is
+  dealt more or less than its share, which the split of the dead money pays for in the sum and not in
+  the hand's own value: the game is constant-sum, and it is a slightly different game from the default
+  one. What a subset's strategy gives up on all flops is the table above.
+- Two things in the code that no test tells apart from leaving them out: `read_config` clearing the
+  switch before it reads a file's flags (the configuration it fills is a new one, as for
+  `set_union_hands` beside it), and the factors made equal over the suit symmetries (the fitted ones
+  already agree to the last bit of a float in every tree tried; kept for the tree where they would not,
+  #300).

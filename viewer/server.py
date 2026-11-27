@@ -382,9 +382,10 @@ class Solver:
 
     def own_settings(self):
         """The commands that put back what a preflop build switched on (16-bit storage, collapsed
-        check-downs): sent before a postflop tree is set up or a file loaded, so that tree is the one a
+        check-downs, the constant-sum deal of a flop subset): sent before a postflop tree is set up or a file loaded, so that tree is the one a
         viewer that never built a preflop tree gets."""
-        return ["small_strats auto", "set_collapse_checkdowns off"] if self.preflop_touched else []
+        return (["small_strats auto", "set_collapse_checkdowns off", "set_zero_sum_subset off"]
+                if self.preflop_touched else [])
 
     def cmds_own(self, before, after, timeout=600):
         """`before`, the solver's own settings back if a preflop build changed them, `after`. The

@@ -1100,6 +1100,87 @@ def check_schematic_after_build(u):
     u.cmd("free_tree")
 
 
+def check_zero_sum_subset(u):
+    """set_zero_sum_subset (#513): on a flop subset a pair of hands gets one weight for both players, and the two
+    values add up to the dead money whatever the strategies are."""
+    print("[set_zero_sum_subset: a flop subset's game made constant-sum]")
+    results = lambda: [float(l.split(": ")[1]) for l in u.cmd("calc_results").split("\n")[:5]]
+    near = lambda a, b: len(a) == len(b) and all(abs(x - y) <= 0.0015 + 1e-5 * abs(x) for x, y in zip(a, b))
+
+    def build(flag, dead, late=False):
+        """Three flops of unequal weight under every exit of a small preflop tree, a bet to make on each. late: the
+        switch is the other way as the preflop tree is built, and set between that and its flops."""
+        u.cmd("free_tree")
+        first = {"on": "off", "off": "on"}[flag] if late else flag
+        for c in ([f"set_zero_sum_subset {first}"] if first else []) + [
+                "set_range OOP AA,QQ,AKs,T9s,32o", "set_range IP KK,JTs,72o,A5s", f"set_pot 100 50 {dead}", "set_eff_stack 1000",
+                "set_collapse_checkdowns on", "clear_preflop_lines", "add_preflop_line 250 250", "add_preflop_line 250 1000 1000",
+                "add_preflop_line 100 100", "build_preflop_tree"] + ([f"set_zero_sum_subset {flag}"] if late else []) + [
+                "reset_subset", "add_to_subset 30 Ks 8s 7h",
+                "add_to_subset 25 Qs Jh 4d", "add_to_subset 15 9s 9h 3d", "set_board Ks8s7h"]:
+            u.cmd(c)
+        for line, put in (("r:0:b250:c", 250), ("r:0:c:c", 100)):
+            for c in (f"set_pot {put} {put} {dead}", "set_eff_stack 1000", "clear_lines", f"add_line {put} {2 * put} 1000",
+                      f"add_line {2 * put} 1000", f"add_schematic_tree {line}"):
+                u.cmd(c)
+        u.cmd("add_all_flops")
+        u.cmd("set_accuracy 0")
+
+    def points(flag, dead, late=False):
+        """calc_results before any solving and after 1 and 20 more steps."""
+        build(flag, dead, late)
+        out = [results()]
+        for steps in (1, 20):
+            u.cmd(f"go {steps} steps"); u.cmd("wait_for_solver")
+            out.append(results())
+        return out
+
+    away = lambda pts, dead: max(abs(r[0] + r[1] - dead) for r in pts)
+    for dead in (0, 300):
+        never = points("", dead) if dead == 0 else None
+        check(u.cmd("set_zero_sum_subset on") == "set_zero_sum_subset ok!" and u.cmd("set_zero_sum_subset off") == "set_zero_sum_subset ok!",
+              "set_zero_sum_subset on and off accepted")
+        off, on = points("off", dead), points("on", dead)
+        if never is not None:
+            check(all(a == b for a, b in zip(never, off)), "off is what a session that never set it gets")
+        # calc_results prints three decimals of each value; the engine's float sums are good for 2e-3 here
+        check(away(on, dead) < 0.005, f"dead money {dead}: on, EV OOP + EV IP is the dead money before solving and after 1 and 21 "
+              f"steps (to {away(on, dead):.3f})")
+        check(not away(off, dead) < 0.005 and not near(off[-1], on[-1]),
+              f"off, it is not (away by up to {away(off, dead):.3f}): the two are different games on these three flops")
+        # the flops are built in the game the switch says as they are built: build_preflop_tree does not fix it
+        for flag, same in (("on", on), ("off", off)):
+            check(points(flag, dead, late=True) == same,
+                  f"dead money {dead}: set {flag} between build_preflop_tree and add_all_flops, the tree is the one "
+                  f"built with it {flag} from the start")
+    check(u.cmd("set_zero_sum_subset maybe").startswith("ERROR") and u.cmd("set_zero_sum_subset").startswith("ERROR"),
+          "set_zero_sum_subset rejects a bad or missing argument")
+
+    # A save records it, and load_tree sets it from the file: a loaded tree goes on in the game it was solved in.
+    with tempfile.TemporaryDirectory() as td:
+        saved = {}
+        for flag in ("on", "off"):
+            pts = points(flag, 300)
+            path = os.path.join(td, f"subset_{flag}.cfr")
+            check(u.cmd(f'dump_tree "{path}" lossless') == "dump_tree ok!", f"dump_tree with it {flag}")
+            saved[flag] = (path, pts[-1], u.cmd(f'show_save_version "{path}"').split("\n")[0])
+        for flag, other in (("on", "off"), ("off", "on")):
+            path, want, _ = saved[flag]
+            u.cmd("free_tree")
+            u.cmd(f"set_zero_sum_subset {other}")
+            ok = u.cmd(f'load_tree "{path}"') == "load_tree ok!"
+            got = results()
+            u.cmd("go 5 steps"); u.cmd("wait_for_solver")
+            later = results()
+            is_on = abs(later[0] + later[1] - 300) < 0.005
+            check(ok and near(got, want) and is_on == (flag == "on"),
+                  f"a tree saved with it {flag} loads into a session that has it {other} with its own values, and solves on "
+                  f"in its own game (sum {later[0] + later[1]:.3f} after 5 more steps)")
+        check(saved["on"][2] == saved["off"][2], f"the save's version is the same either way ({saved['on'][2]})")
+    for c in ("set_zero_sum_subset off", "set_collapse_checkdowns off", "reset_subset", "free_tree"):
+        u.cmd(c)
+
+
 def check_flop_subset_equity(u, exe):
     """#486: what a hand is worth at a preflop exit that deals a flop subset is what tools/flop_subsets.cpp says
     the subset gives (sum of weight * ahead over sum of weight * pairs, each flop standing for its suit
@@ -2602,6 +2683,7 @@ def main(exe, big=False):
         check_calc_ev_zero_reach(u)
         check_union_hands(u)
         check_collapse_checkdowns(u)
+        check_zero_sum_subset(u)
         check_outcome_tables(u)
         check_schematic_after_build(u)
         check_flop_subset_equity(u, exe)

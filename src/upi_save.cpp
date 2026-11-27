@@ -350,17 +350,19 @@ void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const s
     }
   }
   // Only truncated saves carry the root-results block (#195); other saves stay byte-identical.
-  // A union-hands tree (#302) then adds a flags byte, so its stats byte is written either way (0 = none).
-  if (stats || c.union_hands) {
+  // A tree with a flags byte (#302, #513) writes its stats byte either way (0 = none).
+  const uint8_t flags = static_cast<uint8_t>((c.union_hands ? 1 : 0) | (c.zero_sum_subset ? 2 : 0));
+  if (stats || flags) {
     w.put(static_cast<uint8_t>(stats ? 1 : 0));
     if (stats)
       for (int i = 0; i < 5; ++i) w.put(stats[i]);
   }
   // Optional trailing flags (#302): bit 0 = set_union_hands on. The hand lists, and so the storage
   // layout, depend on it: without it a union-hands save rebuilt with own-range lists and failed to load
-  // ("tree shape mismatch"). Written only when set, so every other save stays byte-identical; older
-  // readers stop before it.
-  if (c.union_hands) w.put(static_cast<uint8_t>(1));
+  // ("tree shape mismatch"). Bit 1 = set_zero_sum_subset on (#513): the layout is the same, the game the
+  // strategies were solved for is not, and a loaded tree goes on in it. Written only when one is set, so
+  // every other save stays byte-identical; older readers stop before it.
+  if (flags) w.put(flags);
 }
 
 void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::string>& info, long long& iters,
@@ -416,6 +418,7 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
   c.subset.clear();
   c.schematics.clear();
   c.union_hands = false;
+  c.zero_sum_subset = false;
   if (r.p == r.end) return;  // version 2 save
   c.preflop = r.get<uint8_t>() != 0;
   uint32_t ns = r.get<uint32_t>();
@@ -454,7 +457,9 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
   if (has_stats)
     for (int i = 0; i < 5; ++i) stats[i] = r.get<double>();
   if (r.p == r.end) return;
-  c.union_hands = (r.get<uint8_t>() & 1) != 0;  // #302
+  const uint8_t flags = r.get<uint8_t>();
+  c.union_hands = (flags & 1) != 0;       // #302
+  c.zero_sum_subset = (flags & 2) != 0;   // #513
 }
 
 struct LoadedConfig {

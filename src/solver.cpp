@@ -2105,6 +2105,16 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
 // Preflop exit: deal one of the subset flops. Each subset flop stands for its whole suit-isomorphism
 // class, so its values are averaged over every suit permutation valid for the ranges; this keeps the
 // preflop game suit-symmetric (and postflop isomorphism valid).
+//
+// With cfg.zero_sum_subset (#513) a pair of hands (h, o) is dealt with the weight a_h * N(h,o) * b_o for
+// both players (GameTree::flop_scale): N is the weight of the flops that hold no card of either hand,
+// which the walk below applies by itself, and the factors go on the opponent's reach before it and on
+// the hand's value after. The values are net of what a player put in, so with one weight per pair the
+// two players' values add up to the dead money times that weight; the dead money a pair's weight leaves
+// undealt (or deals twice) is split between the two, and the game is constant-sum at every pair of
+// strategies, as it is on all flops. Without the switch a hand's value is divided by its own mean of N
+// over the opponent's reach: each hand's total deal probability is exact (and its value, whenever N
+// does not vary across opponents), and a pair has one weight for each player.
 void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, const float* rp, const float* ro,
                        float* out) {
   const int o = 1 - p;
@@ -2112,6 +2122,9 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
   const int K = n.num_children;
   ArenaScope sc;
   float* res = sc.a.alloc(static_cast<size_t>(K) * Hp);
+  const bool one_weight = g_.cfg.zero_sum_subset;
+  const float* sp = g_.flop_scale[p].data();
+  const float* so = g_.flop_scale[o].data();
   auto zero_flop = [&](int pl, float* v, const std::array<uint8_t, 3>& f) {
     for (uint8_t c : f)
       for (uint16_t h : g_.hands_with_card[pl][c]) v[h] = 0.0f;
@@ -2121,7 +2134,11 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
     const auto& f = ci.flops[k];
     float* rk = res + static_cast<size_t>(k) * Hp;
     float* ro2 = tsc.a.alloc(Ho);
-    std::memcpy(ro2, ro, sizeof(float) * Ho);
+    if (one_weight) {
+      for (int j = 0; j < Ho; ++j) ro2[j] = ro[j] * so[j];
+    } else {
+      std::memcpy(ro2, ro, sizeof(float) * Ho);
+    }
     zero_flop(o, ro2, f);
     float* rp2 = tsc.a.alloc(Hp);
     std::memcpy(rp2, rp, sizeof(float) * Hp);
@@ -2154,10 +2171,18 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
       for (int h = 0; h < Hp; ++h) acc[h] += w * rk[ph[h]];
     }
   }
-  for (int h = 0; h < Hp; ++h) out[h] = static_cast<float>(acc[h]);
-  // Normalise: a pair (h, o) is dealt flop variant v with probability w_v / N(h,o). Divide our hand's
-  // value by the opponent-reach-weighted mean of N(h,o); this keeps each hand's total deal probability
-  // exact (and the value exact whenever N(h,o) does not vary across opponents).
+  // The dead money (an ante) that one weight a pair leaves undealt: half of it to each player. Under ICM
+  // that is what winning half of it is worth to the player, as a terminal's chips are (the game is not
+  // constant-sum there on all flops either; where a chip is worth a chip it is the game without ICM).
+  double half_dead = 0.5 * g_.an(n).dead;
+  if (const IcmModel& icm = g_.payoff().icm; icm.enabled && half_dead != 0.0)
+    half_dead = icm.value(p, icm.stacks[p] + half_dead) - icm.value(p, icm.stacks[p]);
+  if (one_weight) {
+    for (int h = 0; h < Hp; ++h) out[h] = static_cast<float>(acc[h] * sp[h]);
+    if (half_dead == 0.0) return;
+  } else {
+    for (int h = 0; h < Hp; ++h) out[h] = static_cast<float>(acc[h]);
+  }
   const float* Wp = g_.flop_compat[p].data();
   const float* nc = g_.flop_card[p].data();
   const float* np2 = g_.flop_pair[p].data();
@@ -2165,6 +2190,8 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
   const uint8_t* oc2 = g_.hcard[o][1].data();
   const uint16_t* ocombo = g_.hands[o].data();
   const auto& phands = g_.hands[p];
+  // Without the switch: a pair (h, o) is dealt flop variant v with probability w_v / N(h,o). Divide our
+  // hand's value by the opponent-reach-weighted mean of N(h,o).
   auto norm = [&](int h0, int h1) {
     for (int h = h0; h < h1; ++h) {
       if (out[h] == 0.0f) continue;
@@ -2181,12 +2208,28 @@ void Solver::flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, c
       out[h] = num > 0 ? static_cast<float>(out[h] * den / num) : 0.0f;
     }
   };
+  auto undealt = [&](int h0, int h1) {
+    for (int h = h0; h < h1; ++h) {
+      const uint64_t hm = combo_mask(phands[h]);
+      const float* nch = nc + static_cast<size_t>(h) * NUM_CARDS;
+      const float* nph = np2 + static_cast<size_t>(h) * NUM_COMBOS;
+      double all = 0, dealt = 0;
+      for (int j = 0; j < Ho; ++j) {
+        const float r = ro[j];
+        if (r == 0.0f || (combo_mask(ocombo[j]) & hm)) continue;
+        dealt += static_cast<double>(r) * so[j] * (Wp[h] - nch[oc1[j]] - nch[oc2[j]] + nph[ocombo[j]]);
+        all += r;
+      }
+      out[h] += static_cast<float>(half_dead * (all - dealt * sp[h]));
+    }
+  };
+  auto rows = [&](int h0, int h1) { one_weight ? undealt(h0, h1) : norm(h0, h1); };
   const int chunks = parallel ? std::min(Hp, 4 * pool().threads()) : 1;
   if (chunks > 1) {
-    std::function<void(int)> fn = [&](int c) { norm(c * Hp / chunks, (c + 1) * Hp / chunks); };
+    std::function<void(int)> fn = [&](int c) { rows(c * Hp / chunks, (c + 1) * Hp / chunks); };
     pool().parallel_for(chunks, fn);
   } else {
-    norm(0, Hp);
+    rows(0, Hp);
   }
 }
 

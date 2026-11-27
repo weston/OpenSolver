@@ -103,6 +103,14 @@ struct GameConfig {
   // nodes and the regret and strategy rows of the checks. Off by default (Pio keeps the nodes, and so
   // do we: they can be browsed, e.g. per turn card); see set_collapse_checkdowns.
   bool collapse_checkdowns = false;
+  // A preflop tree on a subset of the flops deals a pair of hands (h, o) the flops that hold none of its
+  // four cards, and their weight N(h,o) is not one number for every pair as it is on all flops. Off (the
+  // default, and what Pio's best-response values do): each player's hand is divided by its own mean of
+  // N over the opponent's reach, so every hand keeps its whole share of deals whatever the reaches are,
+  // but a pair has two weights and the two players' values do not add up to the dead money. On: one
+  // weight a pair for both players (GameTree::flop_scale), and the game is constant-sum as it is on all
+  // flops (#513); see set_zero_sum_subset.
+  bool zero_sum_subset = false;
   LineSet lines;
   int32_t start_pot() const { return pot[0] + pot[1] + pot[2]; }
   bool full_preflop() const { return preflop && !schematics.empty(); }
@@ -429,6 +437,11 @@ class GameTree {
   std::vector<float> flop_compat[2];  // per hand: compatible share of the subset flop weight
   std::vector<float> flop_card[2];    // [hand * 52 + card]: compatible weight of variants with that card
   std::vector<float> flop_pair[2];    // [hand * 1326 + combo]: compatible weight of variants with both cards
+  // Per hand, with cfg.zero_sum_subset (empty without): the factor that, with the opponent's, makes the
+  // pair (h, o) one weight for both players: flop_scale[p][h] * N(h,o) * flop_scale[1-p][o] (#513).
+  // Solver::flop_deal multiplies the opponent's reach by its factors going in and the hand's value by
+  // its own coming out.
+  std::vector<float> flop_scale[2];
   void compute_flop_compat();
 
   const ActionNode& an(const GNode& n) const { return *anodes[n.anode]; }

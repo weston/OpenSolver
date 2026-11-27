@@ -1,0 +1,50 @@
+# Probe 27: which weight a pair of hands gets at a preflop exit that deals a flop subset (2026-11-23, #513).
+# An unsolved preflop tree (uniform strategies in both solvers; no AA, which Pio never folds in its starting
+# strategy), three flops of unequal weight and narrow ranges, so the flops a pair can be dealt differ a lot
+# from pair to pair. Pio 3.10.1 answers "EV OOP: 18.571 / EV IP: 1.058", "OOP's MES: 57.188 / IP's MES: 51.130".
+# Ours answers the same MES and 18.619 / 1.340: Pio's values of a hand at a flop exit are ours times one
+# number a player (0.99677 for OOP, 0.94635 for IP at all three exits here), the one that makes the two
+# players' values at the exit add up to its pot. Not copied; AGENTS.md, "Preflop trees with flops", has the rule.
+# With `set_zero_sum_subset on` (an extension Pio refuses) ours answers 18.350 / 1.280 and other MES.
+set_range OOP QQ,AKs,T9s
+set_range IP KK,JTs,72o
+set_pot 10 5 0
+set_eff_stack 1000
+add_preflop_line 25 25
+add_preflop_line 25 100 100
+add_preflop_line 25 100 1000
+build_preflop_tree
+add_to_subset 30 Ks 8s 7h
+add_to_subset 25 Qs Jh 4d
+add_to_subset 15 9s 9h 3d
+set_board Ks8s7h
+set_pot 0 0 20
+set_eff_stack 990
+clear_lines
+add_line 10
+add_line 0 10
+add_schematic_tree r:0:c:c
+set_pot 0 0 50
+set_eff_stack 975
+clear_lines
+add_line 25
+add_line 0 25
+add_schematic_tree r:0:b25:c
+set_pot 0 0 200
+set_eff_stack 900
+clear_lines
+add_line 100
+add_line 0 100
+add_schematic_tree r:0:b25:b100:c
+add_all_flops
+calc_results
+calc_ev OOP r:0:c:c
+calc_ev IP r:0:c:c
+calc_ev OOP r:0:b25:c
+calc_ev IP r:0:b25:c
+calc_ev OOP r:0:b25:b100:c
+calc_ev IP r:0:b25:b100:c
+calc_ev OOP r:0
+calc_ev IP r:0
+calc_ev OOP r:0:b25:c:Ks8s7h
+calc_ev IP r:0:b25:c:QsJh4d

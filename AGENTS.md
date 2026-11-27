@@ -380,6 +380,21 @@ where relevant). The maintainer can run probes on request; ask in the issue.
   - Display: Pio's `show_range` inside a flop doesn't zero hands blocked by that flop's cards, and its
     `show_strategy` at preflop nodes prints the uniform strategy for out-of-range hands.
   - Pio crashes on `calc_results` after a failed `add_all_flops` (empty subset). Not copied.
+  - **On a flop subset Pio's values and its best responses are not of one game** (probe 27, #513: an unsolved
+    tree, three flops weighted 30 / 25 / 15, narrow ranges). Its `MES` lines are ours (57.188 / 51.130) and so
+    are the matchups of every `calc_ev`; its values of a hand at a flop exit are ours times **one number a
+    player** (0.99677 for OOP, 0.94635 for IP), which carries to the root (`EV OOP` 18.571 / `EV IP` 1.058
+    against our 18.619 / 1.340, `Exploitable for` 44.344 against 44.180). The number: the exit's value with
+    every pair of hands counted by the flops it can be dealt (the sum over pairs and flops of reach x reach x
+    flop weight x value, over the same sum without the value), over the matchup-weighted mean of the values of
+    a hand. With it the two players' values at an exit add up to its pot (20, 50 and 200 in the probe); ours
+    add up to 20.335, 50.838 and 203.353. A scratch build with that scaling in the evaluation walk alone
+    answered every line of the probe as Pio does. **Not copied**: a best response that the values do not
+    belong to leaves `Exploitable for` away from 0 at a solution (-1.377 where ours ends at 0.008 on a
+    tree of the same three flops with AKs against AA,72o, and Pio's own solve of that tree ends at 10.571
+    after 4,000 steps, with 72o worth -88.5 at the root where a fold is worth -50); what Pio's solver
+    itself plays against on a subset is not found (three guesses did not give its strategies; #518). `set_zero_sum_subset on` is ours alone: one weight a
+    pair for both players, so the game adds up and its best responses belong to it.
 - `calc_global_freq <node>` is the node's matchups (reach x compatible opponent reach) over **all** the
   root's matchups, so the turn and river cards' card removal counts: on probe 13's unsolved tree, after an
   As turn that blocks AA/AK/AQ/AJ combos, Pio 0.0692357 where the strategies alone give 1/12. No chance

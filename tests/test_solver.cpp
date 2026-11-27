@@ -613,11 +613,18 @@ static bool flop_deal_adds_up() {
       }
     }
     for (auto& [cards, count] : classes) cfg.subset.push_back({static_cast<float>(count), {cards[0], cards[1], cards[2]}});
+    // with set_zero_sum_subset off and on (#513): on all flops the two are one game
+    double values[2][2];
+    for (int one_weight = 0; one_weight < 2; ++one_weight) {
+    cfg.zero_sum_subset = one_weight != 0;
     GameTree g;
     if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
     // the tables of the deal: every pair of hands is dealt 17,296 flops of 22,100
     const double want = 17296.0 / 22100.0;
-    double worst = 0;
+    double worst = 0, one = 0;
+    const bool scaled = g.flop_scale[0].size() == static_cast<size_t>(g.num_hands(0)) &&
+                        g.flop_scale[1].size() == static_cast<size_t>(g.num_hands(1));
+    const bool unscaled = g.flop_scale[0].empty() && g.flop_scale[1].empty();
     for (int p = 0; p < 2; ++p)
       for (int h = 0; h < g.num_hands(p); ++h)
         for (int j = 0; j < g.num_hands(1 - p); ++j) {
@@ -627,18 +634,189 @@ static bool flop_deal_adds_up() {
                            g.flop_card[p][static_cast<size_t>(h) * NUM_CARDS + g.hcard[1 - p][1][j]] +
                            g.flop_pair[p][static_cast<size_t>(h) * NUM_COMBOS + g.hands[1 - p][j]];
           worst = std::max(worst, std::abs(n / want - 1));
+          if (scaled) one = std::max(one, std::abs(n * g.flop_scale[p][h] * g.flop_scale[1 - p][j] - 1));  // no pair is scaled
         }
     // The values before any solving, every action as likely as the next. A float holds the four terms
     // of a pair's count to 6e-8 each and a value of 1,000 to 6e-5; main was out by 3.5e-4 and by 0.1.
     Solver s(g);
     const RootStats st = s.root_stats();
     const double off = st.ev[0] + st.ev[1] - dead;
-    const bool ok = exits == 3 && worst < 1e-6 && std::abs(off) < 2e-3;
-    std::printf("[flop deal] %s v %s, %zu flops, %d exits to them: a pair of hands is dealt 17,296 of 22,100 flops to "
-                "%.1e of that, and the two values (%.4f, %.4f) add up to the dead %d to %+.5f  %s\n",
-                ranges[0], ranges[1], classes.size(), exits, worst, st.ev[0], st.ev[1], dead, off, ok ? "OK" : "FAILED");
+    values[one_weight][0] = st.ev[0], values[one_weight][1] = st.ev[1];
+    const double moved = std::max(std::abs(values[one_weight][0] - values[0][0]), std::abs(values[one_weight][1] - values[0][1]));
+    const bool ok = exits == 3 && worst < 1e-6 && one < 1e-6 && (one_weight ? scaled : unscaled) && std::abs(off) < 2e-3 && moved < 2e-3;
+    std::printf("[flop deal] %s v %s, %zu flops, %d exits to them, set_zero_sum_subset %s: a pair of hands is dealt 17,296 of "
+                "22,100 flops to %.1e of that%s, and the two values (%.4f, %.4f) add up to the dead %d to %+.5f%s  %s\n",
+                ranges[0], ranges[1], classes.size(), exits, one_weight ? "on" : "off", worst,
+                one_weight ? (", at a weight of 1 to " + std::to_string(one)).c_str() : "", st.ev[0], st.ev[1], dead, off,
+                one_weight ? (", the values of the switch off to " + std::to_string(moved)).c_str() : "", ok ? "OK" : "FAILED");
     all = all && ok;
+    }
   }
+  return all;
+}
+
+// #513: a subset of the flops. A pair of hands is dealt the flops that hold none of its four cards, and off
+// all flops that is not the same weight for every pair. Without set_zero_sum_subset each player's hand is
+// divided by its own mean of the weights, so one pair has two, the two values do not add up to the dead
+// money and move apart as the strategies change (2.8 chips of a 150 chip pot with three flops). With it
+// the factors of GameTree::flop_scale give a pair one weight, with which every hand meets its whole share
+// of the opponent's starting range; the values add up to the dead money before any solving and after
+// it, with dead money and without.
+static bool flop_subset_one_weight() {
+  const char* spots[3][2] = {{"AKs", "AA,72o"}, {"QQ,T9s,32o", "AA,KQs,72o"}, {"22+,A2s+,K9s+,QTs+,JTs,ATo+,KJo+", "55+,A8s+,KTs+,QJs,AJo+,KQo"}};
+  const char* flops[3] = {"Ks8s7h", "QsJh4d", "9s9h3d"};
+  const float weights[3] = {30, 25, 15};
+  const int stack = 800;
+  bool all = true;
+  for (auto& ranges : spots)
+    for (int dead : {0, 1000}) {
+      GameConfig cfg;
+      cfg.preflop = true;
+      cfg.collapse_checkdowns = true;
+      std::string err;
+      for (int p = 0; p < 2; ++p) {
+        RangeWeights w;
+        if (!parse_range(ranges[p], w, err)) return false;
+        for (int i = 0; i < NUM_COMBOS; ++i) cfg.range[p][i] = w[i];
+      }
+      cfg.pot[0] = 100, cfg.pot[1] = 50, cfg.pot[2] = dead;
+      cfg.eff_stack = stack;
+      cfg.lines.add = {{250, 250}, {250, 800, 800}, {100, 350, 350}, {100, 350, 800, 800}, {100, 100}};
+      {  // every exit short of all-in goes to the flops, with a bet to make there
+        GameTree pf;
+        if (!pf.build(cfg, err, false)) { std::printf("preflop build: %s\n", err.c_str()); return false; }
+        for (const ActionNode* an : pf.anodes) {
+          if (!an->preflop_exit || an->line.back() >= stack) continue;
+          Schematic sc;
+          sc.exit_line = an->line;
+          sc.pot[0] = sc.pot[1] = an->line.back();
+          sc.pot[2] = dead;
+          sc.eff_stack = stack;  // as the tool gives it: the whole stack, with what is in counted in the lines
+          const int in = an->line.back();  // a flop line goes on from what is in
+          sc.lines.add = {{in, in}, {in, stack, stack}, {stack, stack}};
+          cfg.schematics.push_back(sc);
+        }
+      }
+      for (int k = 0; k < 3; ++k) {
+        std::vector<int> cards;
+        if (!parse_cards(flops[k], cards) || cards.size() != 3) return false;
+        cfg.subset.push_back({weights[k], {cards[0], cards[1], cards[2]}});
+      }
+      // the switch off (the default): no factors, and what the two values add up to at the same four points
+      double apart = 0;
+      bool unscaled = false;
+      {
+        GameTree g0;
+        if (!g0.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+        unscaled = g0.flop_scale[0].empty() && g0.flop_scale[1].empty();
+        Solver s0(g0);
+        int t0 = 0;
+        for (int upto : {0, 1, 4, 30}) {
+          for (; t0 < upto;) s0.iterate(++t0);
+          const RootStats st = s0.root_stats();
+          apart = std::max(apart, std::abs(st.ev[0] + st.ev[1] - dead));
+        }
+      }
+      cfg.zero_sum_subset = true;
+      GameTree g;
+      if (!g.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+      // the factors: one weight a pair, uneven as the subset is, and every hand's weights against the
+      // opponent's range add up to its share of the range; hands a suit symmetry exchanges have one factor
+      double share = 0, least = 1e30, most = 0;
+      bool same = true;
+      for (int p = 0; p < 2; ++p)
+        for (int h = 0; h < g.num_hands(p); ++h) {
+          double dealt = 0, met = 0;
+          for (int j = 0; j < g.num_hands(1 - p); ++j) {
+            if (combo_mask(g.hands[p][h]) & combo_mask(g.hands[1 - p][j])) continue;
+            const double n = static_cast<double>(g.flop_compat[p][h]) -
+                             g.flop_card[p][static_cast<size_t>(h) * NUM_CARDS + g.hcard[1 - p][0][j]] -
+                             g.flop_card[p][static_cast<size_t>(h) * NUM_CARDS + g.hcard[1 - p][1][j]] +
+                             g.flop_pair[p][static_cast<size_t>(h) * NUM_COMBOS + g.hands[1 - p][j]];
+            const double w = n * g.flop_scale[p][h] * g.flop_scale[1 - p][j];
+            if (g.init_reach[1 - p][j] > 0 && g.init_reach[p][h] > 0) least = std::min(least, w), most = std::max(most, w);
+            dealt += g.init_reach[1 - p][j] * w;
+            met += g.init_reach[1 - p][j];
+          }
+          if (met > 0 && dealt > 0) share = std::max(share, std::abs(dealt / met - 1));
+          for (uint8_t pm : g.perm_all) same = same && g.flop_scale[p][g.perm_hand[p][pm][h]] == g.flop_scale[p][h];
+        }
+      // the values: before any solving, and as the strategies move
+      Solver s(g);
+      double off = 0, exploitable = 0;
+      int t = 0;
+      for (int upto : {0, 1, 4, 30}) {
+        for (; t < upto;) s.iterate(++t);
+        const RootStats st = s.root_stats();
+        off = std::max(off, std::abs(st.ev[0] + st.ev[1] - dead));
+        exploitable = st.exploitability;
+      }
+      // Under ICM each half of the undealt dead money is worth what winning that many chips is worth to the
+      // player. Where a chip is worth a chip that is the game above, and where it is worth two the two
+      // values add up to twice the dead money: not so with the halves left out, or counted in chips. And
+      // where it is worth one to the one player and three to the other, each value in the player's own
+      // chips: not so with a half valued as the other player's.
+      const double worths[3][2] = {{1, 1}, {2, 2}, {1, 3}};
+      double icm_off[3] = {0, 0, 0};
+      for (int k = 0; k < 3; ++k) {
+        PayoffModel pm;
+        pm.icm.enabled = true;
+        pm.icm.stacks[0] = pm.icm.stacks[1] = 10000;
+        for (int p = 0; p < 2; ++p) pm.icm.points[p] = {{0.0, 0.0}, {20000.0, 20000.0 * worths[k][p]}};
+        GameTree gi;
+        gi.set_payoff(pm);
+        if (!gi.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+        Solver si(gi);
+        int ti = 0;
+        for (int upto : {0, 1, 4, 30}) {
+          for (; ti < upto;) si.iterate(++ti);
+          const RootStats st = si.root_stats();
+          icm_off[k] = std::max(icm_off[k], std::abs(st.ev[0] / worths[k][0] + st.ev[1] / worths[k][1] - dead));
+        }
+      }
+      // Which chips: the ones on top of the stack the player starts with. A chip won is worth two here and
+      // a chip lost one, and the second table differs from the first only where no stack of this game ends
+      // (under 1,000, and between the 9,200 of a lost all-in and the 9,650 of the largest fold), so the two
+      // have to give the same values: not so with a half valued from an empty stack, or as chips lost.
+      double icm_moved = 0;
+      {
+        double ev[2][4][2];
+        for (int k = 0; k < 2; ++k) {
+          PayoffModel pm;
+          pm.icm.enabled = true;
+          pm.icm.stacks[0] = pm.icm.stacks[1] = 10000;
+          for (int p = 0; p < 2; ++p) {
+            if (k == 0) pm.icm.points[p] = {{0.0, 0.0}, {10000.0, 10000.0}, {20000.0, 30000.0}};
+            else pm.icm.points[p] = {{0.0, 500.0},      {1000.0, 1000.0},   {9200.0, 9200.0},  {9500.0, 9300.0},
+                                     {9650.0, 9650.0}, {10000.0, 10000.0}, {20000.0, 30000.0}};
+          }
+          GameTree gi;
+          gi.set_payoff(pm);
+          if (!gi.build(cfg, err)) { std::printf("build: %s\n", err.c_str()); return false; }
+          Solver si(gi);
+          int ti = 0, at = 0;
+          for (int upto : {0, 1, 4, 30}) {
+            for (; ti < upto;) si.iterate(++ti);
+            const RootStats st = si.root_stats();
+            ev[k][at][0] = st.ev[0], ev[k][at++][1] = st.ev[1];
+          }
+        }
+        for (int at = 0; at < 4; ++at)
+          for (int p = 0; p < 2; ++p) icm_moved = std::max(icm_moved, std::abs(ev[0][at][p] - ev[1][at][p]));
+      }
+      const bool ok = g.perm_all.size() > 1 && same && unscaled && most - least > 0.01 && share < 1e-5 && off < 2e-3 &&
+                      exploitable >= -2e-3 && icm_off[0] < 2e-3 && icm_off[1] < 2e-3 && icm_off[2] < 2e-3 && icm_moved < 2e-3;
+      std::printf("[flop subset] %s v %s, 3 flops, dead %d, set_zero_sum_subset on: a pair's weight %.3f to %.3f, one for both "
+                  "players; a hand's weights add up to its share of the range to %.1e, %s factor for hands that are one hand; the "
+                  "two values add up to the dead money to %.5f at four points of a solve (exploitable for %.3f at the last; "
+                  "with the switch off, %s factors, to %.3f); under ICM, each value in the player's own chips, they add "
+                  "up to it to %.5f with a chip worth a chip, %.5f with a chip worth two, %.5f with one worth one to "
+                  "the big blind and three to the small blind; with a chip won worth two and one lost worth one, the values "
+                  "move by %.5f with the table where no stack ends  %s\n",
+                  ranges[0], ranges[1], dead, least, most, share, same ? "one" : "NOT ONE", off, exploitable,
+                  unscaled ? "no" : "SOME", apart, icm_off[0], icm_off[1], icm_off[2], icm_moved, ok ? "OK" : "FAILED");
+      all = all && ok;
+    }
   return all;
 }
 
@@ -1342,6 +1520,7 @@ int main(int argc, char** argv) {
   fails += !allin_tables_match();
   fails += !metal_postflop_allin_table_matches();
   fails += !flop_deal_adds_up();
+  fails += !flop_subset_one_weight();
   fails += !reach_digits_sums();
   fails += !preflop_runout_tables();
   fails += !river_batch_matches();

@@ -29,7 +29,14 @@ export function smartTree() {
   return prefs.get("river-sizing", "adaptive") === "single" ? "single" : true;
 }
 
+export function flopStability() {
+  return prefs.get("flop-stability", false) === true;
+}
+
 export function initSettings() {
+  const stability = document.getElementById("flop-stability");
+  stability.checked = flopStability();
+  stability.onchange = () => prefs.set("flop-stability", stability.checked);
   const smart = document.getElementById("smart-tree");
   const sizing = document.getElementById("river-sizing");
   smart.checked = Boolean(smartTree());

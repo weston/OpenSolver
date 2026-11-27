@@ -195,7 +195,7 @@ class RefineManager(vresolve.ResolveManager):
             return True
         with self.main.state_lock:
             return not self.main.solving and not self.main.suspended and \
-                "required accuracy" in self.main.solver_status
+                self.main.solver_status in ("stopped (required accuracy reached)", "stopped (flop strategy stable)")
 
     def _main_running(self):
         """A main solve is under way (or parked for a refine): only then does a new refine start (#369:

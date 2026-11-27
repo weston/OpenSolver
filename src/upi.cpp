@@ -1,6 +1,7 @@
 // UPI core: input loop, output/END handling, settings, tree building, solving thread.
 #include "upi.hpp"
 #include "metal.hpp"
+#include "flop_stability.hpp"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -388,7 +389,7 @@ void Upi::prepare_solve() {
   if (!tree_->load_all(lerr)) throw CmdError{"cannot read the tree's file: " + lerr};
 }
 
-void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub) {
+void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub, bool stable_flop) {
   require_tree();
   release_hold();  // every way a solve starts (go, go_partial, ...) drops a pending hold
   if (solving_) return;
@@ -405,8 +406,8 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)
   std::string endl_str = end_string_.empty() ? "END" : end_string_;
   const bool gpu = algorithm_ == "v4_metal";
-  solver_thread_ = std::thread([this, seconds, steps, gpu, sub = std::move(sub), endl_str = std::move(endl_str)] {
-    solver_thread_main(seconds, steps, std::move(sub), endl_str, gpu);
+  solver_thread_ = std::thread([this, seconds, steps, gpu, stable_flop, sub = std::move(sub), endl_str = std::move(endl_str)] {
+    solver_thread_main(seconds, steps, std::move(sub), endl_str, gpu, stable_flop);
   });
 }
 
@@ -425,8 +426,9 @@ void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps)
 }
 
 void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
-                             const std::string& endl_str, bool gpu) {
-  out_raw("SOLVER: started\n");
+                             const std::string& endl_str, bool gpu, bool stable_flop) {
+  out_raw(stable_flop ? "SOLVER: started (flop stability)\n" : "SOLVER: started\n");
+  FlopStability stability;
   double best_e = std::numeric_limits<double>::infinity();  // 16-bit stall detection (#182)
   int stalled = 0;
   bool sched_auto = false;  // the auto report schedule is set up (read under tree_mu_ below, #364)
@@ -562,8 +564,13 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       // there; ours never reported, so a target never stopped the solve)
       if (!info_auto_ && sub_freq == 0 && el - last_report_t >= 0.5) report = true;
       if (report) last_report_t = el;
-      if (limit) report = true;
+      const auto stage = stable_flop ? stability.observe(tick - discount_restart_, *tree_, *solver_)
+                                     : FlopStability::Stage::Sampling;
+      const bool stable = stage == FlopStability::Stage::Stable;
+      const bool final_report = limit || stable;
+      if (final_report) report = true;
       if (report) {
+        const double accuracy = stable_flop ? 0.0 : accuracy_;
         double target;
         if (sub) {
           RootStats pst{};
@@ -572,21 +579,27 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           // A "partial:" first line marks the block as a subtree solve's (the viewer routes it
           // away from the whole-tree convergence series).
           out_raw("SOLVER:\npartial: " + sub->id + "\n" + stats_block(st, el) + endl_str + "\n");
-          target = accuracy_fraction_ ? accuracy_ * sub->pot : accuracy_;
+          target = accuracy_fraction_ ? accuracy * sub->pot : accuracy;
         } else {
-          if (metal && !limit) {
+          if (metal && !final_report) {
             try {
               st = metal->evaluate_and_prepare(*tree_, *solver_, static_cast<int>(tick + 1 - discount_restart_));
             } catch (const std::bad_alloc&) {
               release_metal_memory();
             }
           }
-          if (!metal || limit) st = solver_->root_stats();
+          if (!metal || final_report) st = solver_->root_stats();
           cached_root_stats_ = st;
-          out_raw("SOLVER:\n" + stats_block(st, solve_seconds_) + endl_str + "\n");
-          target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
+          std::string stats = stats_block(st, solve_seconds_);
+          if (stable_flop) stats += "Flop stability stage: " + std::to_string(static_cast<int>(stage)) + "\n";
+          out_raw("SOLVER:\n" + stats + endl_str + "\n");
+          target = accuracy_fraction_ ? accuracy * tree_->cfg.start_pot() : accuracy;
         }
-        if (accuracy_ > 0 && st.exploitability <= target) {
+        if (stable) {
+          reason = "flop strategy stable";
+          break;
+        }
+        if (accuracy > 0 && st.exploitability <= target) {
           reason = "required accuracy reached";
           break;
         }
@@ -594,7 +607,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
         // rounding the strategy sums to nearest; they are rounded stochastically now (#272, game.hpp),
         // and this stays as a safety net. Under small_strats auto, a whole-tree solve whose last three reports set no new best while above
         // its target switches to float32 if that fits, once, and carries on from the same state.
-        if (!sub && tree_->compressed && small_strats_ == "auto" && accuracy_ > 0) {
+        if (!sub && tree_->compressed && small_strats_ == "auto" && accuracy > 0) {
           if (st.exploitability < best_e) {
             best_e = st.exploitability;
             stalled = 0;
@@ -616,7 +629,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           // solves accumulate from their first iteration, see Solver::iterate_subtree).
           const long long reset_t = !sub && solver_->avg_reset && solver_->avg_delay > 0
                                         ? discount_restart_ + solver_->avg_delay + 1 : 0;
-          next_report_ = auto_sched_.next(tick, st.exploitability, accuracy_ > 0 ? target : 0.0, reset_t);
+          next_report_ = auto_sched_.next(tick, st.exploitability, accuracy > 0 ? target : 0.0, reset_t);
         }
       }
       if (limit) {
@@ -957,7 +970,10 @@ void Upi::register_commands() {
     release_hold();
     double secs = 0;
     long long steps = 0;
-    if (!a.empty()) {
+    const bool stable_flop = a.size() == 1 && a[0] == "stable_flop";
+    if (stable_flop && (tree_->cfg.preflop || tree_->cfg.board.size() != 3))
+      throw CmdError{"flop strategy stability requires a flop root"};
+    if (!a.empty() && !stable_flop) {
       // Pio 3.10 (probed): the unit is required; an amount below 1 step or at most 0 seconds still
       // runs one iteration (0 here would otherwise mean "no limit" and never stop).
       double v = arg_double(a, 0, "amount");
@@ -970,7 +986,7 @@ void Upi::register_commands() {
     prepare_solve();  // what can fail, before the answer: one response per command (#376)
     out_raw(std::string("go ok!\n") + (end_string_.empty() ? "" : end_string_ + "\n"));
     try {
-      start_solver(secs, steps);
+      start_solver(secs, steps, nullptr, stable_flop);
     } catch (const std::exception& e) {  // answered already: report it as the solver would
       out_raw(std::string("SOLVER: stopped (error: ") + e.what() + ")\n");
     } catch (const CmdError& e) {

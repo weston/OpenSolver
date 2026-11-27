@@ -85,7 +85,7 @@ async function tick() {
     P.timer = setTimeout(tick, 400);
     return;
   }
-  const solved = !st.solving && (st.iters || 0) > 0 && /required accuracy/.test(st.solver_status || "");
+  const solved = !st.solving && (st.iters || 0) > 0 && /required accuracy|flop strategy stable/.test(st.solver_status || "");
   const ready = st.solving || solved;   // else: stopped before the strategy was readable
   const detail = { untouched: !P.touched, secs: (performance.now() - P.t0) / 1000, solving: !!st.solving };
   endWait();

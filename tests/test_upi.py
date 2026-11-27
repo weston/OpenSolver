@@ -2422,10 +2422,18 @@ def check_flop_update_order(exe, test_metal=True):
     from server import tree_build_command
 
     medium = "build_tree smart_rivers"
-    automatic = tree_build_command("build_tree", True)
+    automatic = medium + " auto_flop_order"
+    opening = tree_build_command("build_tree", True)
+    metal_available = False
+    if test_metal:
+        probe = Upi(exe)
+        try:
+            metal_available = "v4_metal," in probe.cmd("list_algorithms")
+        finally:
+            probe.close()
 
     def solve(build=automatic, *, board="Ah3cQd", lines=("0 30 90",), first=None, storage="off",
-              override=None, load=None, save=None, go="go 4 steps", algorithm="auto", predictive=False):
+              override=None, load=None, save=None, go="go 4 steps", algorithm="auto", predictive=False, edit=False, recalc=False, ranges=("KK,JJ,87s", "QQ,TT,AQs")):
         u = Upi(exe)
         try:
             def run(command):
@@ -2443,17 +2451,24 @@ def check_flop_update_order(exe, test_metal=True):
                 run("load_tree " + load + " full")
             else:
                 for cmd in ("set_board " + board, "set_pot 0 0 100", "set_eff_stack 300",
-                            "set_range OOP KK,JJ,87s", "set_range IP QQ,TT,AQs"):
+                            "set_range OOP " + ranges[0], "set_range IP " + ranges[1]):
                     run(cmd)
                 for line in (*lines, "0 0 0 0 10", "0 0 0 0 30", "0 0 0 0 65"):
                     run("add_line " + line)
                 run(build)
                 if predictive:
                     run("set_predictive on")
+            if edit:
+                run("set_strategy r:0:c " + ".8 " * 1326 + ".2 " * 1326)
+            run("set_info_freq 8")
+            if recalc:
+                run("set_recalc_accuracy 1 1 1")
+                run("show_strategy r:0:c:c:2s:c:c:5h")
             if override:
                 run("set_first_iteration_player " + override)
-            run(go)
-            run("wait_for_solver")
+            for command in go.splitlines():
+                run(command)
+                run("wait_for_solver")
             if algorithm == "v4_metal":
                 assert ["SOLVER: device gpu"] in u.solver_msgs
             if save:
@@ -2462,6 +2477,19 @@ def check_flop_update_order(exe, test_metal=True):
         finally:
             u.close()
 
+    opening_ranges = ("KK,JJ,87s,AQs,98s,TT,44,22,AKo", "99,77,TT,AQs,KJs,55,66,ATo")
+
+    def check_opening(algorithm):
+        opts = {"algorithm": algorithm, "ranges": opening_ranges}
+        nine = solve(opening, go="go 9 steps", **opts)
+        check(nine != solve(automatic, go="go 9 steps", **opts) and
+              nine == solve(opening, go="go 8 steps\ngo 1 steps", **opts),
+              "opening regret matching switches consistently after eight steps on " + algorithm)
+        check(solve(opening, edit=True, **opts) == solve(automatic, edit=True, **opts),
+              "opening regret matching respects explicit mixed strategies on " + algorithm)
+        return nine
+
+    opening_cpu = check_opening("auto")
     ip = solve(medium, first="IP")
     oop = solve(medium, first="OOP")
     check(ip != oop and solve(medium) == oop and solve() == ip,
@@ -2473,12 +2501,29 @@ def check_flop_update_order(exe, test_metal=True):
                   dict(storage="on"), dict(build="build_tree auto_flop_order"),
                   dict(build="build_tree single_river_size auto_flop_order")):
         check(solve(**setup) == solve(first="OOP", **setup), "retains the standard order for " + str(setup))
+    check(solve(opening, storage="on") == solve(automatic, storage="on") and
+          solve(opening, predictive=True) == solve(automatic, predictive=True) and
+          solve(opening, first="IP") == ip,
+          "compressed rows, predictive CFR and explicit player selection use conventional regret weights")
     extra = ("0 30 90", "0 50 110")
     check(solve(lines=extra) == solve(first="IP", lines=extra), "two opening IP bet sizes also start IP")
     partial = "go_partial r:0:c 4 steps"
-    check(solve(go=partial) == solve(medium, go=partial), "a subtree solve keeps its own update order")
+    check(solve(opening, go=partial) == solve(go=partial) == solve(medium, go=partial), "a subtree solve keeps its own update order")
     with tempfile.TemporaryDirectory() as tmp:
         marked, unmarked = (os.path.join(tmp, n + ".cfr") for n in ("auto", "standard"))
+        opening_save = os.path.join(tmp, "opening.cfr")
+        solve(opening, save=opening_save, ranges=opening_ranges)
+        continued = solve(load=opening_save, go="go 5 steps")
+        check(continued == solve(load=opening_save, go="go 4 steps\ngo 1 steps") and
+              continued != solve(load=opening_save, go="go 5 steps", first="IP"),
+              "lossless resume retains the opening until the eighth iteration across go commands")
+        def check_recalc(algorithm):
+            opts = {"load": opening_save, "go": "go 5 steps", "algorithm": algorithm, "recalc": True}
+            check(solve(**opts) == solve(override="IP", **opts),
+                  "training a missing river ends the opening on " + algorithm)
+        check_recalc("auto")
+        if metal_available:
+            check_recalc("v4_metal")
         solve(save=marked)
         solve(medium, save=unmarked)
         resumed = solve(load=marked)
@@ -2490,21 +2535,18 @@ def check_flop_update_order(exe, test_metal=True):
                   "a marked save respects the current solve mode and explicit order for " + str(mode))
         check(solve(load=unmarked) == solve(load=unmarked, first="OOP"),
               "a save without an ordering flag retains the UPI default")
-    if test_metal:
-        probe = Upi(exe)
-        try:
-            available = "v4_metal," in probe.cmd("list_algorithms")
-        finally:
-            probe.close()
-        if available:
-            gpu = solve(algorithm="v4_metal")
-            check(gpu == solve(medium, first="IP", algorithm="v4_metal") and
-                  gpu != solve(medium, first="OOP", algorithm="v4_metal"),
-                  "Metal applies the automatic flop order on every iteration")
-            cpu = solve(go="go 2 steps")
-            gpu = solve(go="go 2 steps", algorithm="v4_metal")
-            check(max(abs(a - b) for a, b in zip(cpu, gpu)) < 0.002,
-                  "Metal and CPU agree when the opening order first changes the average strategy")
+    if metal_available:
+        opening_gpu = check_opening("v4_metal")
+        check(max(abs(a - b) for a, b in zip(opening_cpu, opening_gpu)) < .002,
+              "CPU and Metal agree after switching to ordinary regret weights")
+        gpu = solve(algorithm="v4_metal")
+        check(gpu == solve(medium, first="IP", algorithm="v4_metal") and
+              gpu != solve(medium, first="OOP", algorithm="v4_metal"),
+              "Metal applies the automatic flop order on every iteration")
+        cpu = solve(go="go 2 steps")
+        gpu = solve(go="go 2 steps", algorithm="v4_metal")
+        check(max(abs(a - b) for a, b in zip(cpu, gpu)) < 0.002,
+              "Metal and CPU agree when the opening order first changes the average strategy")
 
 
 def check_solve_device(exe):

@@ -110,6 +110,8 @@ struct RootStats {
   double exploitability = 0;
 };
 
+enum class FlopOpening : uint8_t { Ordinary, SquareRoot, Edited };
+
 class Solver {
  public:
   explicit Solver(GameTree& g) : g_(g) {}
@@ -118,6 +120,21 @@ class Solver {
   int first_player = 0;  // set_first_iteration_player
   bool flop_ip_first = false;
   bool uses_flop_ip_first() const { return flop_ip_first && !predictive && !g_.compressed; }
+  FlopOpening flop_opening() const { return opening_; }
+  bool sqrt_regret_weights() const { return sqrt_weights_; }
+  void set_flop_opening(FlopOpening opening) {
+    opening_ = opening;
+    update_flop_opening();
+  }
+  void update_flop_opening() {
+    sqrt_weights_ = opening_ == FlopOpening::SquareRoot && uses_flop_ip_first() && g_.iterations < 8;
+  }
+  void cancel_flop_opening() {
+    if (opening_ == FlopOpening::SquareRoot) set_flop_opening(FlopOpening::Edited);
+  }
+  void restart_flop_opening() {
+    set_flop_opening(opening_ == FlopOpening::Edited ? FlopOpening::SquareRoot : opening_);
+  }
   int whole_tree_first_player() const { return uses_flop_ip_first() ? 1 : first_player; }
   bool parallel = true;
   bool write_best_response = false;  // BestResponse walks store the pure BR strategy (set_mes)
@@ -319,6 +336,8 @@ class Solver {
   GameTree& g_;
   float pos_mult_ = 1, neg_mult_ = 1, strat_mult_ = 1;
   bool accumulate_ = true;  // t > avg_delay: whether this iteration feeds the strategy sum
+  FlopOpening opening_ = FlopOpening::Ordinary;
+  bool sqrt_weights_ = false;
   bool prune_this_iter_ = false;  // set by iterate/iterate_subtree; read-only during walks
 };
 

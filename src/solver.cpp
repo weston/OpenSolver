@@ -1101,7 +1101,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   // node's first update), so this reduces to plain regret matching at t=1.
   const float* P = (predictive && !g_.preds.empty()) ? g_.preds.data() + n.storage : nullptr;
 #if PIO_SHOWDOWN_AVX512
-  if (!P && A <= 16) {
+  if (!P && !sqrt_weights_ && A <= 16) {
     // One pass per 16 hands with every action's row in registers: positive parts, their sum, then
     // normalise (uniform where all regrets are <= 0). The same operations in the same order as the
     // generic three-pass loops below (sum over actions in order, 1/sum, o * inv + add as an fma), so
@@ -1162,7 +1162,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   } else
 #endif
 #if PIO_SHOWDOWN_AVX2
-  if (!P && A <= 16) {
+  if (!P && !sqrt_weights_ && A <= 16) {
     // AVX2 form of the single pass (#175 / NEON #222) for x86 builds without AVX-512: 8 hands at a
     // time with every action's row in registers. The generic loops' operations in the same order.
     g_.ensure_loaded(n);
@@ -1211,7 +1211,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
   } else
 #endif
 #if PIO_SHOWDOWN_NEON
-  if (!P && A <= 16) {
+  if (!P && !sqrt_weights_ && A <= 16) {
     // NEON form of the AVX-512 single pass above (#175): 4 hands at a time with every action's row in
     // registers, instead of three passes through arena rows. The generic loops' operations in the same
     // order (r + 0, max with 0, sum over actions in order, 1/sum, fma(v, inv, add)): identical floats.
@@ -1268,6 +1268,7 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     for (int h = 0; h < H; ++h) {
       float v = r[h] + (pr ? pr[h] : 0.0f);
       v = v > 0.0f ? v : 0.0f;
+      if (sqrt_weights_) v = std::sqrt(v);
       o[h] = v;
       sum[h] += v;
     }
@@ -1359,7 +1360,7 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
     std::memcpy(out, S, sizeof(float) * A * H);
     return;
   }
-  if (!n.flags && !g_.compressed && !predictive && A <= 4) {
+  if (!n.flags && !g_.compressed && !predictive && !sqrt_weights_ && A <= 4) {
     const float* regrets = g_.regrets.data() + n.storage;
     switch (A) {
       case 1: return average_float_strategy<1>(S, regrets, out, H);
@@ -2330,6 +2331,7 @@ void Solver::reset_strategy_sums() {
 }
 
 void Solver::iterate_subtree(uint32_t ni, int t, const float* r0, const float* r1) {
+  cancel_flop_opening();
   g_.round_seed = (static_cast<uint32_t>(t) * 0x27D4EB2Fu + 0x165667B1u) ^ 0x5BD1E995u ^ ni;
   double td = static_cast<double>(t);
   double pa = std::pow(td, params.alpha);

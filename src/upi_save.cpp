@@ -35,6 +35,8 @@ namespace {
 
 constexpr uint8_t kConfigUnionHands = 1;  // #302
 constexpr uint8_t kConfigFlopIpFirst = 2;
+constexpr uint8_t kConfigSquareRootOpening = 4;
+constexpr uint8_t kConfigEditedOpening = 8;
 constexpr char kMagic[8] = {'O', 'U', 'P', 'I', 'S', 'A', 'V', '2'};
 constexpr char kTrailer[8] = {'O', 'U', 'P', 'I', 'E', 'N', 'D', '!'};
 // 6: version 5 with check-downs built as one showdown node (set_collapse_checkdowns on, #484). The tree
@@ -298,7 +300,7 @@ Header read_header(GzIn& in) {
 }
 
 void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const std::vector<std::string>& info,
-                  long long iters, double secs, const double* stats, bool flop_ip_first) {
+                  long long iters, double secs, const double* stats, bool flop_ip_first, FlopOpening opening) {
   w.put(static_cast<uint8_t>(c.board.size()));
   for (int x : c.board) w.put(static_cast<uint8_t>(x));
   for (int i = 0; i < 3; ++i) w.put(c.pot[i]);
@@ -351,7 +353,9 @@ void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const s
       }
     }
   }
-  const uint8_t flags = (c.union_hands ? kConfigUnionHands : 0) | (flop_ip_first ? kConfigFlopIpFirst : 0);
+  const uint8_t flags = (c.union_hands ? kConfigUnionHands : 0) | (flop_ip_first ? kConfigFlopIpFirst : 0) |
+                        (opening == FlopOpening::SquareRoot ? kConfigSquareRootOpening : 0) |
+                        (opening == FlopOpening::Edited ? kConfigEditedOpening : 0);
   if (stats || flags) {
     w.put(static_cast<uint8_t>(stats ? 1 : 0));
     if (stats)
@@ -361,7 +365,7 @@ void write_config(Writer& w, const GameConfig& c, const PayoffModel& pm, const s
 }
 
 void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::string>& info, long long& iters,
-                 double& secs, bool& has_stats, double* stats, bool& flop_ip_first) {
+                 double& secs, bool& has_stats, double* stats, bool& flop_ip_first, FlopOpening& opening) {
   has_stats = false;
   uint8_t n = r.get<uint8_t>();
   if (n != 0 && (n < 3 || n > 5)) throw CmdError{"file format error (board)"};  // 0 = preflop tree
@@ -454,6 +458,8 @@ void read_config(Reader& r, GameConfig& c, PayoffModel& pm, std::vector<std::str
   const uint8_t flags = r.get<uint8_t>();
   c.union_hands = (flags & kConfigUnionHands) != 0;
   flop_ip_first = (flags & kConfigFlopIpFirst) != 0;
+  if (flags & kConfigSquareRootOpening) opening = FlopOpening::SquareRoot;
+  if (flags & kConfigEditedOpening) opening = FlopOpening::Edited;
 }
 
 struct LoadedConfig {
@@ -465,6 +471,7 @@ struct LoadedConfig {
   double secs = 0;
   bool has_stats = false;
   bool flop_ip_first = false;
+  FlopOpening opening = FlopOpening::Ordinary;
   double stats[5] = {0, 0, 0, 0, 0};
 };
 
@@ -476,7 +483,7 @@ LoadedConfig read_config_section(GzIn& in) {
   std::string buf(len, '\0');
   in.read(buf.data(), len);
   Reader r{buf.data(), buf.data() + buf.size()};
-  read_config(r, lc.cfg, lc.pm, lc.info, lc.iters, lc.secs, lc.has_stats, lc.stats, lc.flop_ip_first);
+  read_config(r, lc.cfg, lc.pm, lc.info, lc.iters, lc.secs, lc.has_stats, lc.stats, lc.flop_ip_first, lc.opening);
   return lc;
 }
 
@@ -787,7 +794,8 @@ std::string Upi::cmd_dump_tree(const Args& a) {
     stats_p = g.saved_stats;
   }
   Writer w;
-  write_config(w, g.cfg, g.payoff(), tree_info_, g.iterations, solve_seconds_, stats_p, lossless && solver_->uses_flop_ip_first());
+  write_config(w, g.cfg, g.payoff(), tree_info_, g.iterations, solve_seconds_, stats_p, lossless && solver_->uses_flop_ip_first(),
+               lossless && solver_->uses_flop_ip_first() ? solver_->flop_opening() : FlopOpening::Ordinary);
   out.put(static_cast<uint32_t>(w.buf.size()));
   out.write(w.buf.data(), w.buf.size());
   Writer m;
@@ -973,6 +981,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   solver_->river_batch = Solver::river_batch_for(*tree_);
   solver_->first_player = first_player_.value_or(0);
   solver_->flop_ip_first = !first_player_ && lc.flop_ip_first;
+  if (solver_->flop_ip_first) solver_->set_flop_opening(lc.opening);
   solver_->params = dcfr_;  // settings persist over load_tree the way they do over build_tree
   apply_pcfr_settings();
   solver_->pruning = pruning_;

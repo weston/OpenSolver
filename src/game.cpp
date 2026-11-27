@@ -404,6 +404,8 @@ struct Filler {
   // deal (which is over the subset's flops, not every runout).
   std::vector<int8_t> forced_known;        // per action node: 0 not looked at, 1 a forced path, 2 not
   std::vector<const ActionNode*> forced_end;
+  // #567: the row every decision of a player with one action shares (UINT64_MAX until the first one).
+  uint64_t shared_row[2] = {UINT64_MAX, UINT64_MAX};
   const ActionNode* forced_showdown(const ActionNode* an) {
     const size_t id = static_cast<size_t>(an->id);
     if (forced_known.size() <= id) {
@@ -447,10 +449,22 @@ struct Filler {
       case ANodeKind::Decision: {
         n.aux = static_cast<uint32_t>(g.num_decisions++);
         g.dec_board.push_back(board_mask(board));
-        n.storage = g.storage_floats;
-        g.storage_floats += an->children.size() * g.hands[an->player].size();
         n.num_children = static_cast<uint16_t>(an->children.size());
-        {
+        g.round_key.push_back(static_cast<uint32_t>(g.node_floats));
+        g.node_floats += an->children.size() * g.hands[an->player].size();
+        if (GameTree::shares_row(n)) {
+          // One action, one strategy: nothing to store (#567). The node reads the player's shared row,
+          // which nothing writes, so it stays zero, as the node's own rows did.
+          if (shared_row[an->player] == UINT64_MAX) {
+            shared_row[an->player] = g.storage_floats;
+            g.storage_floats += g.hands[an->player].size();
+            g.storage_compact += g.hands[an->player].size();
+          }
+          n.storage = shared_row[an->player];
+          g.keep_cand.push_back(0);
+        } else {
+          n.storage = g.storage_floats;
+          g.storage_floats += an->children.size() * g.hands[an->player].size();
           const uint16_t c = keep_set(board);
           g.keep_cand.push_back(c);
           g.storage_compact += an->children.size() * (c ? g.keep_sets[c - 1].kept[an->player]
@@ -590,6 +604,8 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   combo_lock_s.clear();
   incentives.clear();
   storage_floats = 0;
+  node_floats = 0;
+  round_key.clear();
   num_decisions = 0;
   checkdowns = 0;
   keep_sets.clear();
@@ -727,6 +743,7 @@ bool GameTree::build(const GameConfig& c, std::string& err, bool allocate) {
   std::vector<int> board = cfg.board;
   Filler f{*this, iso, {}, {}, {}};
   f.fill(0, aroot.get(), board);
+  if (storage_floats == node_floats) std::vector<uint32_t>().swap(round_key);  // no shared row: n.storage is the key
   rank_showdown_boards(0);
   plan_allins();
   select_rows(false);
@@ -757,10 +774,19 @@ void GameTree::select_rows(bool compact) {
   qoff.clear();
   if (compact_rows) qoff.resize(num_decisions);
   storage_q = 0;
+  uint64_t shared_q[2] = {UINT64_MAX, UINT64_MAX};  // the one-action decisions' full row (#567)
   for (GNode& n : nodes) {
     if (n.kind != ANodeKind::Decision) continue;
     n.pad = compact_rows ? keep_cand[n.aux] : 0;
     if (!compact_rows) continue;
+    if (shares_row(n)) {
+      if (shared_q[n.player] == UINT64_MAX) {
+        shared_q[n.player] = storage_q;
+        storage_q += stored_size(n);
+      }
+      qoff[n.aux] = shared_q[n.player];
+      continue;
+    }
     qoff[n.aux] = storage_q;
     storage_q += stored_size(n);
   }
@@ -952,7 +978,7 @@ uint64_t GameTree::memory_bytes_for(bool compress, bool with_preds, bool compact
   // Predictive CFR's `preds` is never compressed and is allocated after the build, so the
   // pre-allocation check has to be told about it (#98).
   if (with_preds || !preds.empty()) b += storage_floats * sizeof(float);
-  b += nodes.size() * sizeof(GNode) + dec_board.size() * sizeof(uint64_t);
+  b += nodes.size() * sizeof(GNode) + dec_board.size() * sizeof(uint64_t) + round_key.size() * sizeof(uint32_t);
   b += chances.size() * (sizeof(ChanceInfo) + 64);
   for (auto& s : showdowns)
     b += (s.ent[0].size() + s.ent[1].size()) * sizeof(SdEntry) + (s.groups[0].size() + s.groups[1].size()) * 4 +
@@ -1114,8 +1140,23 @@ const float* GameTree::strat_ro(const GNode& n, float* scratch) const {
   return scratch;
 }
 
+namespace {
+// #567: what regrets_rw / strat_rw hand out for a decision with one action, whose rows are shared and must
+// stay zero: a per-thread copy of those zeros that the caller may overwrite. Its commit stores nothing.
+float* shared_row_sink(int which, size_t len, float* scratch) {
+  thread_local std::vector<float> sink[2];
+  if (!scratch) {
+    sink[which].resize(len);
+    scratch = sink[which].data();
+  }
+  std::fill_n(scratch, len, 0.0f);
+  return scratch;
+}
+}  // namespace
+
 float* GameTree::regrets_rw(const GNode& n, float* scratch) {
   ensure_loaded(n);
+  if (shares_row(n)) return shared_row_sink(0, node_size(n), scratch);
   if (!compressed) return regrets.data() + n.storage;
   regrets_ro(n, scratch);
   return scratch;
@@ -1123,6 +1164,7 @@ float* GameTree::regrets_rw(const GNode& n, float* scratch) {
 
 float* GameTree::strat_rw(const GNode& n, float* scratch) {
   ensure_loaded(n);
+  if (shares_row(n)) return shared_row_sink(1, node_size(n), scratch);
   if (!compressed) return strat.data() + n.storage;
   strat_ro(n, scratch);
   return scratch;
@@ -1135,6 +1177,7 @@ void GameTree::regrets_commit(const GNode& n, const float* data, float maxabs) {
 }
 
 void GameTree::regrets_store(const GNode& n, const float* data, float maxabs) {
+  if (shares_row(n)) return;
   const size_t len = node_size(n);
   float m = maxabs;
   if (m < 0) {
@@ -1196,7 +1239,7 @@ void GameTree::ensure_combo_lock_copies() {
 }
 
 void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
-  if (!compressed) return;
+  if (!compressed || shares_row(n)) return;
   ensure_loaded(n);
   const size_t len = node_size(n);
   std::vector<float> fixed;
@@ -1232,7 +1275,7 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
   // Stochastic rounding (see round_seed): floor(x + u), u uniform in [0, 1) read from a fixed table of
   // uniforms at an offset that a hash of the node's slot and the iteration's seed picks.
   const float* U = rounding_uniforms();
-  uint32_t h = static_cast<uint32_t>(n.storage) * 0x9E3779B1u ^ round_seed;
+  uint32_t h = (round_key.empty() ? static_cast<uint32_t>(n.storage) : round_key[n.aux]) * 0x9E3779B1u ^ round_seed;
   h ^= h >> 16;
   h *= 0x85EBCA6Bu;
   h ^= h >> 13;
@@ -1253,6 +1296,7 @@ void GameTree::strat_commit(const GNode& n, const float* data, float maxval) {
 }
 
 void GameTree::strat_store(const GNode& n, const float* data, float maxval) {
+  if (shares_row(n)) return;
   const size_t len = node_size(n);
   float m = maxval;
   if (m < 0) {

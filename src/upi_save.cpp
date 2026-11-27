@@ -639,6 +639,13 @@ void read_record_quant(In& in, GameTree& t, const GNode& n, int prec, std::vecto
 template <class In>
 void read_record(In& in, GameTree& t, const GNode& n, uint8_t file_mode, int prec, std::vector<float>& fr,
                  std::vector<float>& fs) {
+  if (GameTree::shares_row(n)) {
+    // One action: the record (zeros, or whatever an older build left there) is read past; the node's shared
+    // row stays zero (#567). Its strategy is 1 either way.
+    fr.resize(record_bytes(t, n, file_mode) / sizeof(float));  // every record is whole floats
+    in.read(fr.data(), fr.size() * sizeof(float));
+    return;
+  }
   if (file_mode & kModeQuant) return read_record_quant(in, t, n, prec, fr, fs);
   size_t len = t.node_size(n);
   if ((file_mode & 1) && t.compressed) {
@@ -818,7 +825,7 @@ std::string Upi::cmd_dump_tree(const Args& a) {
   out.write(w.buf.data(), w.buf.size());
   Writer m;
   m.put(static_cast<uint64_t>(g.nodes.size()));
-  m.put(static_cast<uint64_t>(g.storage_floats));
+  m.put(static_cast<uint64_t>(g.node_floats));  // per node, as before one-action decisions shared a row (#567)
   for (auto& n : g.nodes) m.put(n.flags);
   m.put(static_cast<uint32_t>(g.combo_lock.size()));
   for (auto& [ni, mk] : g.combo_lock) {
@@ -916,7 +923,7 @@ std::string Upi::cmd_load_tree(const Args& a) {
   in.read(mbuf.data(), mlen);
   Reader r{mbuf.data(), mbuf.data() + mbuf.size()};
   uint64_t nn = r.get<uint64_t>(), sf = r.get<uint64_t>();
-  if (nn != t->nodes.size() || sf != t->storage_floats) throw CmdError{"file format error (tree shape mismatch)"};
+  if (nn != t->nodes.size() || sf != t->node_floats) throw CmdError{"file format error (tree shape mismatch)"};
   for (auto& n : t->nodes) n.flags = r.get<uint8_t>();
   // Every entry must name a decision node of this tree and have that node's size, and every lock
   // flag its entry (#360: a crafted file read out of bounds in show_locked_combos and the walk).

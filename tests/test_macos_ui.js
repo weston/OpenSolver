@@ -39,12 +39,29 @@ check(document.querySelectorAll('#side-hand .hand-combo[aria-pressed=true]').len
 const response = document.querySelector('#side-hand .blk-response');
 check(response?.querySelector('thead th:nth-child(2)').textContent === 'Full range', 'opponent responses lost the full-range label');
 check(response.querySelector('thead th:nth-child(3)').textContent.startsWith('Holding') && response.querySelectorAll('thead .pc').length === 2, 'opponent responses do not identify the held cards');
-check(response.querySelectorAll('tbody tr:first-child .blk-response-bar').length === 2, 'opponent frequencies are not shown as separate comparisons');
-for (const row of response.querySelectorAll('tbody tr')) {
-  const frequencies = [...row.querySelectorAll('.blk-response-bar i')].map(bar => parseFloat(bar.style.width));
+const responseBars = [...response.querySelectorAll('thead .freqbar')];
+const responseRows = [...response.querySelectorAll('tbody tr')];
+check(responseBars.length === 2 && responseBars.every(bar => bar.children.length === responseRows.length), 'opponent response mixes should have one stacked bar per range');
+for (const [index, row] of responseRows.entries()) {
+  const frequencies = responseBars.map(bar => 100 * Number(bar.children[index].style.flexGrow));
   const delta = Number(row.querySelector('.blk-response-delta').textContent.replace('−', '-'));
   check(Math.abs(delta - (frequencies[1] - frequencies[0])) < 0.51, 'opponent frequency delta does not match Holding minus Full range');
 }
+const comboButtons = () => [...document.querySelectorAll('#side-hand .hand-combo')];
+const selectedHands = () => comboButtons().filter(button => button.getAttribute('aria-pressed') === 'true');
+comboButtons()[1].click();
+await wait(() => selectedHands().length === 2);
+const mix = [...document.querySelectorAll('#side-hand > .freqbar span')].map(segment => Number(segment.style.flexGrow));
+check(mix.length === document.querySelectorAll('#side-hand .mix-row:not(.hand-mix-head)').length
+  && Math.abs(mix.reduce((sum, f) => sum + f, 0) - 1) < 0.0001, 'selected hands do not share one strategy bar');
+check(location.hash.split('hand=')[1]?.split(',').length === 2, 'the selected subset is missing from the URL');
+comboButtons()[0].click();
+await wait(() => selectedHands().length === 1);
+check(selectedHands()[0] === comboButtons()[1], 'deselecting a combo cleared another combo');
+comboButtons()[1].click();
+await wait(() => !selectedHands().length && !document.querySelector('#side-hand .hand-blockers'));
+document.querySelector('#side-hand .hand-all').click();
+await wait(() => document.querySelector('#side-hand .hand-blockers')?.dataset.combo === 'all');
 document.querySelector('.side-tabs [data-side=blockers]').click();
 await wait(() => document.querySelector('#side-blockers .blk-cards'));
 check(!document.querySelector('#side-blockers .blk-sum, #side-blockers .hand-combos, #side-blockers .blk-removed'), 'range blockers includes specific-hand details');

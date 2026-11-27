@@ -927,9 +927,7 @@ label.check input { accent-color: var(--accent); }
 .blk-response-hand .pc .s { display: block; }
 .blk-response-frequency b { display: block; font-size: 11px; font-weight: 600; margin-bottom: 3px; }
 .blk-response-frequency.full { color: var(--text-2); }
-.blk-response-frequency.full i { opacity: .45; }
-.blk-response-bar { height: 5px; overflow: hidden; border-radius: 3px; background: var(--surface-3); }
-.blk-response-bar i { display: block; height: 100%; border-radius: inherit; }
+.blk-response .freqbar { height: 6px; margin-top: 4px; }
 .blk-shift { display: flex; flex-direction: column; gap: 2px; }
 .blk-shift-row { display: grid; grid-template-columns: minmax(0, 11em) minmax(40px, 1fr) 3.4em; gap: 10px; align-items: center; padding: 3px 4px; border-radius: 5px; font-size: 12px; }
 .blk-shift-row:hover { background: var(--surface-2); }

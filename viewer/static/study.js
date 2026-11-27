@@ -30,7 +30,7 @@ const S = {
   range: null,       // /api/range of the current node
   ev: {},            // player -> /api/ev of the current node
   pinned: null,      // class pinned by click
-  handCombo: null,
+  handCombos: null,
   hover: null,
   catsPlayer: null,  // OOP/IP override in that tab; null = the actor
   catHl: null,       // Set of classes highlighted by a hovered category row
@@ -202,7 +202,10 @@ export async function gotoNode(id) {
     Object.assign(S, { id, path: p.nodes, history: p.history || [], eff: p.eff_stack || 0, cur, dec, decId, range: null, ev: {}, loaded: true,
                        variant: p.variant || null });
     if (S.pinned && !Object.prototype.hasOwnProperty.call(H.byClass, S.pinned)) S.pinned = null;
-    if (S.handCombo && blockedBy(boardOf(dec?.node || node))(S.handCombo)) S.handCombo = null;
+    if (S.handCombos) {
+      const blocked = blockedBy(boardOf(dec?.node || node));
+      S.handCombos = S.handCombos.filter(combo => !blocked(combo));
+    }
     // a pinned/hovered category is board-dependent: it does not survive navigation
     clearCategorySelection();
     if (S.mode !== "strategy") await loadModeData();
@@ -690,7 +693,7 @@ function ensureCells() {
     c.append(fill, lbl, val);
     c.onmouseenter = () => { S.hover = cls; if (!S.pinned) renderSide(); };
     c.onmouseleave = () => { S.hover = null; };
-    c.onclick = () => { S.handCombo = null; S.pinned = S.pinned === cls ? null : cls; markSel(); renderSide(); syncUrl(); };
+    c.onclick = () => { S.handCombos = null; S.pinned = S.pinned === cls ? null : cls; markSel(); renderSide(); syncUrl(); };
     m.appendChild(c);
     return { cls, c, fill, val };
   });
@@ -818,7 +821,7 @@ function renderBetaPanel() {
 async function renderHand() {
   const box = $("side-hand");
   const cls = S.pinned || S.hover;
-  const selectedCombo = S.handCombo;
+  const selected = S.handCombos;
   const d = S.dec;
   if (!cls || !d || !d.freq) {
     box.textContent = "";
@@ -834,15 +837,16 @@ async function renderHand() {
     loadBlockers(),
   ]);
   if (!blockers) return;
-  if (seq !== S.seq || S.side !== "hand" || cls !== (S.pinned || S.hover) || selectedCombo !== S.handCombo) return;
+  if (seq !== S.seq || S.side !== "hand" || cls !== (S.pinned || S.hover) || selected !== S.handCombos) return;
   box.textContent = "";
   const handPot = potOf(d.node);
   const blocked = blockedBy(boardOf(d.node));
-  const indices = selectedCombo ? [H.index.get(selectedCombo)] : H.byClass[cls];
-  const weight = selectedCombo ? d.reach[indices[0]] || 0 : 0;
-  const cw = selectedCombo ? { w: weight, combos: weight, n: 1 } : classWeight(d.reach, cls, blocked);
+  const indices = selected ? selected.map(combo => H.index.get(combo)) : H.byClass[cls].filter(i => !blocked(H.order[i]));
+  const combos = indices.reduce((sum, i) => sum + (d.reach[i] || 0), 0);
+  const cw = { w: indices.length ? combos / indices.length : 0, combos, n: indices.length };
+  const single = indices.length === 1 && selected ? H.order[indices[0]] : null;
   const head = el("div", "hand-head");
-  head.appendChild(selectedCombo ? comboEl(selectedCombo, "") : el("div", "cls", cls));
+  head.appendChild(single ? comboEl(single, "") : el("div", "cls", cls));
   const meta = el("div", "meta");
   meta.innerHTML = `${d.actor} · weight <b>${fmt(cw.w * 100, 0)}%</b><br>${fmt(cw.combos, 2)} of ${cw.n} combos${S.pinned ? " · pinned" : ""}`;
   head.appendChild(meta);
@@ -850,6 +854,7 @@ async function renderHand() {
 
   if (cw.combos > 0) {
     box.appendChild(el("h3", null, "Strategy"));
+    const bar = el("div", "freqbar");
     const mix = el("div", "mix");
     const columns = el("div", "mix-row hand-mix-head");
     columns.append(el("span"), el("span"), el("span", "", "Frequency"), el("span", "", "EV (% pot)"));
@@ -861,28 +866,33 @@ async function renderHand() {
         const value = evs[index]?.data.ev[i], weight = d.ev?.matchups?.[i] || 0;
         if (value != null && weight > 0) { ev += value * weight; mass += weight; }
       }
+      const frequency = s / cw.combos;
+      const segment = el("span");
+      segment.style.background = a.color;
+      segment.style.flexGrow = frequency;
+      bar.appendChild(segment);
       const r = el("div", "mix-row");
       const sw = el("span", "sw"); sw.style.background = a.color;
-      r.append(sw, el("span", null, a.label), el("span", "v num", fmt((s / cw.combos) * 100) + "%"),
+      r.append(sw, el("span", null, a.label), el("span", "v num", fmt(frequency * 100) + "%"),
         el("span", "hand-action-ev num", mass > 0 ? fmtEvPct(ev / mass, handPot, 1) : "—"));
       mix.appendChild(r);
     });
-    box.appendChild(mix);
+    box.append(bar, mix);
   }
 
   const comboHead = el("div", "hand-combos-head");
   const all = el("button", "btn small hand-all", "All");
   all.type = "button";
-  all.setAttribute("aria-pressed", selectedCombo ? "false" : "true");
-  all.onclick = () => { S.handCombo = null; S.pinned = cls; hideTip(); renderSide(); syncUrl(); };
+  all.setAttribute("aria-pressed", selected ? "false" : "true");
+  all.onclick = () => { S.handCombos = null; S.pinned = cls; hideTip(); renderSide(); syncUrl(); };
   comboHead.append(el("h3", null, "Combos"), all);
-  box.append(comboHead, handComboPicker(d, cls, selectedCombo, acts, evs, blockers.data.hero_eq));
-  if (selectedCombo || cw.combos > 0) {
+  box.append(comboHead, handComboPicker(d, cls, selected, acts, evs, blockers.data.hero_eq));
+  if (single || cw.combos > 0) {
     const section = el("section", "hand-blockers");
-    section.dataset.combo = selectedCombo || "all";
+    section.dataset.combo = selected ? selected.join(",") : "all";
     section.appendChild(el("h3", null, "Blockers"));
     box.appendChild(section);
-    renderHandBlockers(section, selectedCombo, cls, blockers);
+    renderHandBlockers(section, single, cls, indices, blockers);
   }
 }
 
@@ -1132,12 +1142,10 @@ function loadBlockers() {
     (data) => ({ data, P: prepareBlockers(data, H.order) }));
 }
 
-function renderHandBlockers(box, combo, cls, ent) {
+function renderHandBlockers(box, combo, cls, indices, ent) {
   const d = S.dec;
   const { data, P } = ent;
-  const blocked = blockedBy(boardOf(data.node));
-  const rep = combo ? comboReport(P, H.index.get(combo))
-    : classReport(P, H.byClass[cls].filter((i) => !blocked(H.order[i])));
+  const rep = combo ? comboReport(P, indices[0]) : classReport(P, indices);
   const pi = S.path.findIndex((p) => p.id === S.decId);
   renderBlockerSummary(box, data, combo || cls, rep);
   renderResponses(box, data, P, rep, actionsOf(d, pi), pi, combo || cls);
@@ -1168,7 +1176,7 @@ function handComboPicker(data, cls, selected, acts, evs, equity) {
     const b = el("button", "blk-combo hand-combo");
     b.type = "button";
     b.setAttribute("aria-label", displayCombo(combo));
-    b.setAttribute("aria-pressed", !selected || combo === selected ? "true" : "false");
+    b.setAttribute("aria-pressed", selected?.includes(combo) ? "true" : "false");
     const head = el("span", "hand-combo-cards");
     head.appendChild(comboEl(combo, "xs"));
     const w = data.reach[i] || 0;
@@ -1197,8 +1205,9 @@ function handComboPicker(data, cls, selected, acts, evs, equity) {
 }
 
 function selectHandCombo(combo) {
-  S.handCombo = H.order[H.index.get(combo)];
-  S.pinned = comboClass(S.handCombo);
+  const selected = S.handCombos || [];
+  S.handCombos = selected.includes(combo) ? selected.filter(c => c !== combo) : [...selected, combo];
+  S.pinned = comboClass(combo);
   S.side = "hand";
   hideTip();
   markSel();
@@ -1252,9 +1261,20 @@ function renderResponses(box, data, P, rep, acts, pi, selection) {
     const sw = el("span", "sw"); sw.style.background = a.color;
     caption.append(sw, document.createTextNode("After "), who(data.actor), document.createTextNode(" " + a.label));
     const head = el("thead"), header = el("tr");
+    const full = el("th", "", "Full range");
     const holding = el("th", "blk-response-hand");
     holding.append(el("span", "", "Holding"), selection.length === 4 ? comboEl(selection, "xs") : el("b", "", selection));
-    header.append(el("th", "", "Action"), el("th", "", "Full range"), holding, el("th", "blk-response-delta", "Δ pp"));
+    for (const [cell, frequencies] of [[full, rep.before.responses[k].freq], [holding, rep.after.responses[k].freq]]) {
+      const bar = el("div", "freqbar");
+      for (const va of vas) {
+        const segment = el("span");
+        segment.style.background = va.color;
+        segment.style.flexGrow = frequencies[va.k];
+        bar.appendChild(segment);
+      }
+      cell.appendChild(bar);
+    }
+    header.append(el("th", "", "Action"), full, holding, el("th", "blk-response-delta", "Δ pp"));
     for (const th of header.children) th.scope = "col";
     head.appendChild(header);
     const body = el("tbody");
@@ -1268,11 +1288,7 @@ function renderResponses(box, data, P, rep, acts, pi, selection) {
       const handFrequency = rep.after.responses[k].freq[va.k];
       for (const [range, frequency] of [["full", fullFrequency], ["hand", handFrequency]]) {
         const cell = el("td", "blk-response-frequency " + range);
-        const bar = el("div", "blk-response-bar"), fill = el("i");
-        fill.style.width = (frequency * 100).toFixed(2) + "%";
-        fill.style.background = va.color;
-        bar.appendChild(fill);
-        cell.append(el("b", "num", pctOf(frequency)), bar);
+        cell.appendChild(el("b", "num", pctOf(frequency)));
         row.appendChild(cell);
       }
       const delta = el("td", "blk-response-delta");
@@ -1731,7 +1747,7 @@ export function initStudy() {
       e.preventDefault();
       goUp();
     } else if (e.key === "Escape") {
-      S.pinned = null; S.handCombo = null; clearCategorySelection();
+      S.pinned = null; S.handCombos = null; clearCategorySelection();
       markSel(); renderSide();
     }
   });
@@ -1750,7 +1766,7 @@ function urlState() {
   if (S.player) s += "&player=" + S.player;
   if (S.side !== "hand") s += "&side=" + S.side;
   if (S.pinned) s += "&pin=" + S.pinned;
-  if (S.handCombo) s += "&hand=" + S.handCombo;
+  if (S.handCombos) s += "&hand=" + S.handCombos.join(",");
   return s;
 }
 
@@ -1758,10 +1774,16 @@ export function applyUrlState(params) {
   if (["strategy", "range", "ev"].includes(params.mode)) S.mode = params.mode;
   if (["OOP", "IP"].includes(params.player)) S.player = params.player;
   if (SIDES.includes(params.side)) S.side = params.side;
-  if (params.pin && Object.prototype.hasOwnProperty.call(H.byClass, params.pin)) S.pinned = params.pin;
-  if (params.hand && H.index.has(params.hand)) {
-    S.handCombo = H.order[H.index.get(params.hand)];
-    S.pinned = comboClass(S.handCombo);
+  if (params.pin && Object.prototype.hasOwnProperty.call(H.byClass, params.pin)) {
+    S.pinned = params.pin;
+    S.handCombos = null;
+  }
+  if (typeof params.hand === "string") {
+    const combos = [...new Set(params.hand.split(",").filter(c => H.index.has(c)).map(c => H.order[H.index.get(c)]))];
+    if (combos.length) {
+      S.pinned = comboClass(combos[0]);
+      S.handCombos = combos.filter(c => comboClass(c) === S.pinned);
+    } else if (!params.hand && S.pinned) S.handCombos = [];
   }
   document.querySelectorAll("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.mode === S.mode));
 }
@@ -1828,7 +1850,7 @@ export const study = {
   get inSubgame() { return !!S.variant; },
   refresh() { invalidate(); return gotoNode(S.loaded ? S.id : "r:0"); },
   reset(node = "r:0", combo = null) {
-    S.pinned = null; S.handCombo = null;
+    S.pinned = null; S.handCombos = null;
     $("side-hand").replaceChildren();
     if (combo) { S.player = null; applyUrlState({ hand: combo, side: "hand", mode: "strategy" }); }
     invalidate(); S.variant = null; return gotoNode(node);

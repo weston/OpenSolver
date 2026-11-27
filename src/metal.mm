@@ -65,7 +65,7 @@ struct Metal {
     if (!buffer) throw std::bad_alloc();
     return buffer;
   }
-  id<MTLCommandBuffer> command() {
+  id<MTLCommandBuffer> command(id<MTLCommandQueue> queue) {
     auto cmd = [queue commandBuffer];
     if (!cmd) throw std::bad_alloc();
     return cmd;
@@ -156,9 +156,9 @@ struct SumCheckpoint {
     used = m.buffer(sizeof(uint32_t));
   }
 
-  void capture(Metal& m, id<MTLBuffer> source) {
+  void capture(Metal& m, id<MTLCommandQueue> queue, id<MTLBuffer> source) {
     *static_cast<uint32_t*>(used.contents) = 0;
-    auto cmd = m.command();
+    auto cmd = m.command(queue);
     auto enc = m.encoder(cmd);
     [enc setComputePipelineState:pipeline];
     id<MTLBuffer> buffers[] = {source, masks, offsets, literals, used};
@@ -276,6 +276,7 @@ struct BoardTables {
 class PostflopSolve final : public MetalSolve {
  public:
   Metal& m = metal();
+  id<MTLCommandQueue> queue = [m.dev newCommandQueue];
   id<MTLComputePipelineState> propagate_reach, update_values, advance_forced, terminals, river_pairs, river_rounds,
       allins, wide_rounds, bet_checks, two_bets, wide_two_bets, lead_checks, wide_lead_checks;
   id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], rounds;
@@ -336,6 +337,7 @@ class PostflopSolve final : public MetalSolve {
     stage_regrets = peak + state_bytes > limit;
   }
   explicit PostflopSolve(GameTree& g, uint64_t available) {
+    if (!queue) throw std::bad_alloc();
     stride = (std::max(g.num_hands(0), g.num_hands(1)) + 31) & ~size_t(31);
     state_bytes = g.storage_floats * sizeof(float);
     const size_t pairs = size_t(g.num_hands(0)) * g.num_hands(1);
@@ -864,7 +866,7 @@ class PostflopSolve final : public MetalSolve {
     if (!checkpoint_bytes) strategy_sums.prepare(g.strat, refresh_reach);
     auto disc = [](double z) { return float(z / (1 + z)); };
     @autoreleasepool {
-      auto cmd = m.command();
+      auto cmd = m.command(queue);
       const bool symmetrize = t % 4 == 0 && g.perm_all.size() > 1;
       for (unsigned phase = 0; phase < 2; ++phase) {
         unsigned p = phase ^ s.first_player;
@@ -895,7 +897,7 @@ class PostflopSolve final : public MetalSolve {
         if (phase == 0 && symmetrize) {
           m.finish(cmd);
           symmetrize_output(s, p);
-          cmd = m.command();
+          cmd = m.command(queue);
         }
       }
       [cmd commit];
@@ -933,7 +935,7 @@ class PostflopSolve final : public MetalSolve {
   void iterate(GameTree& g, Solver& s, int t, bool refresh_reach) override {
     if (refresh_reach || prepared_iteration != t) {
       @autoreleasepool {
-        if (checkpoint_bytes) checkpoint.capture(m, strategy_sums.input);
+        if (checkpoint_bytes) checkpoint.capture(m, queue, strategy_sums.input);
         try {
           auto cmd = submit(g, s, t, refresh_reach);
           finish_iteration(cmd, g, s, t);
@@ -990,7 +992,7 @@ void metal_flop_table(const GameTree& g, AllinRunouts& ar, const std::vector<std
     const unsigned padded_hands = (hand_rows + 3) & ~3u;
     auto ranks = m.buffer(size_t(padded_hands) * Bp * sizeof(uint32_t)), result = m.buffer(entries * sizeof(uint16_t));
     unsigned dims[] = {hand_rows, B, Bp, 0};
-    auto cmd = m.command();
+    auto cmd = m.command(m.queue);
     auto enc = m.encoder(cmd);
     [enc setComputePipelineState:rank];
     [enc setBuffer:boards offset:0 atIndex:0];

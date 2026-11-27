@@ -223,9 +223,10 @@
         </div>
         <label class="check"><input id="flop-stability" type="checkbox">Stop when flop strategy is stable</label>
         <div id="device-settings" class="device-settings hidden">
-          <label class="field"><span>Compute device</span><select id="solve-device"><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
+          <label class="field"><span>Compute device</span><select id="solve-device"><option value="auto">Auto: the faster for each tree</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
+          <p id="auto-choice" class="muted bench-intro hidden" role="status"></p>
           <div class="bench" id="device-bench">
-            <p class="muted bench-intro">Not sure which is faster here? The benchmark times how long the HUNL 4BP, 3BP and SRP default trees take to reach 1% of pot on each device, built with your Smart tree setting, in a solver of its own, so your tree stays open. It usually takes under a minute.</p>
+            <p class="muted bench-intro">The benchmark solves four trees from 46 MB to 7 GB on each device, in a solver of its own, so your tree stays open. Auto uses what it measures to pick the faster device for each tree you build, by its size. It usually takes under a minute.</p>
             <div class="btn-row">
               <button id="bench-start" class="btn" type="button">Benchmark CPU and GPU</button>
               <button id="bench-cancel" class="btn ghost hidden" type="button">Cancel</button>
@@ -235,7 +236,7 @@
               <span id="bench-step" class="muted"></span>
             </div>
             <table id="bench-table" class="bench-table hidden">
-              <thead><tr><th>Tree</th><th>CPU</th><th>GPU</th><th>Faster</th></tr></thead>
+              <thead><tr><th>Tree</th><th>Size</th><th>CPU</th><th>GPU</th><th>Faster</th></tr></thead>
               <tbody id="bench-rows"></tbody>
             </table>
             <p id="bench-unfit" class="muted bench-intro hidden"></p>

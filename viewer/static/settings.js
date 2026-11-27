@@ -24,9 +24,32 @@ export function updateDevice(st) {
   if (gpu) gpu.textContent = st.gpu_name ? `GPU (${st.gpu_name})` : "GPU";
   if (!savingDevice) field.value = st.device;
   field.disabled = savingDevice || st.solving || st.dead || benchRunning;
+  const changed = currentDevice !== st.device;
   currentDevice = st.device;
   mainSolving = st.solving || st.dead;
+  if (changed && benchShown) renderBench(benchShown);   // its verdict mentions the device set
+  autoChoice(st);
   benchButtons();
+}
+
+const megabytes = (mb) => (mb == null ? "—" : mb >= 1000 ? (mb / 1000).toFixed(1) + " GB" : Math.round(mb) + " MB");
+
+// What Auto picked for the tree built last, and why (#569).
+function autoChoice(st) {
+  const line = $("auto-choice"), c = st.auto_choice;
+  let text = "";
+  if (st.device === "auto" && benchShown) {
+    if (!benchShown.profiled && !benchRunning) text = "Auto has no measurements yet, so it uses the CPU. Run the benchmark below to let it choose.";
+    else if (c && st.tree) {
+      const size = c.megabytes != null ? ` (${megabytes(c.megabytes)})` : "";
+      const by = c.speedup != null && c.device === "gpu" ? `, about ${c.speedup.toFixed(2)}× faster`
+        : c.speedup != null && c.speedup < 1 ? `, about ${(1 / c.speedup).toFixed(2)}× faster` : "";
+      text = `For this tree${size} Auto chose the ${deviceName(c.device)}${by}: ${c.why}.`;
+      if (c.device === "gpu" && st.active_device === "cpu") text += " It does not fit the GPU's memory, so it solves on the CPU.";
+    } else text = "Auto picks the device when you build a tree.";
+  }
+  line.textContent = text;
+  line.classList.toggle("hidden", !text);
 }
 
 // ---- the device benchmark (#569): which device solves faster on this machine ----
@@ -41,7 +64,7 @@ function benchButtons() {
   $("bench-cancel").classList.toggle("hidden", !benchRunning);
   const rec = benchShown?.recommendation;
   const apply = $("bench-apply");
-  apply.classList.toggle("hidden", benchRunning || !rec || rec.device === currentDevice);
+  apply.classList.toggle("hidden", benchRunning || !rec || rec.device === currentDevice || currentDevice === "auto");
   if (rec) apply.textContent = `Use the ${deviceName(rec.device)}`;
 }
 
@@ -57,8 +80,9 @@ function renderBench(st) {
     const tr = document.createElement("tr");
     const gpu = r.gpu_note ? "doesn't fit" : seconds(r.gpu);
     const faster = r.gpu_note ? "CPU either way" : r.cpu == null || r.gpu == null ? "…"
+      : Math.max(r.cpu, r.gpu) < 1.05 * Math.min(r.cpu, r.gpu) ? "about even"
       : r.cpu < r.gpu ? `CPU ${(r.gpu / r.cpu).toFixed(2)}×` : `GPU ${(r.cpu / r.gpu).toFixed(2)}×`;
-    for (const text of [r.tree, r.gpu_note ? "not timed" : r.cpu == null ? "…" : seconds(r.cpu), gpu, faster]) {
+    for (const text of [r.tree, megabytes(r.megabytes), r.gpu_note ? "not timed" : r.cpu == null ? "…" : seconds(r.cpu), gpu, faster]) {
       tr.insertCell().textContent = text;
     }
     return tr;
@@ -78,30 +102,26 @@ function renderBench(st) {
       : rec.verdict === "same"
       ? `The CPU and GPU took about as long (${seconds(rec.cpu)} and ${seconds(rec.gpu)} in all). Either is fine${when}.`
       : `The ${deviceName(rec.device)} is ${rec.ratio.toFixed(2)}× faster on the trees that fit both: ${seconds(rec.cpu)} on the CPU, ${seconds(rec.gpu)} on the GPU in all${when}.`
-        + (rec.device === currentDevice ? ` It is already selected.` : "");
+        + (currentDevice === "auto" ? " Auto picks for each tree by its size." : rec.device === currentDevice ? " It is already selected." : "");
   }
   const error = st.error && st.error !== "cancelled" ? st.error : "";
   $("bench-error").classList.toggle("hidden", !error);
   $("bench-error").textContent = error ? `The benchmark stopped: ${error}` : "";
   benchButtons();
-  if (!benchRunning && rec) prefs.set("device-benchmark", st);
 }
 
 async function pollBench() {
   clearTimeout(benchTimer);
   try {
-    const st = await get("/api/device/benchmark");
-    if (!st.running && !st.results?.length && !st.error) {
-      const saved = prefs.get("device-benchmark", null);   // the last result, from before a restart
-      renderBench(saved && saved.recommendation ? saved : st);
-    } else renderBench(st);
+    renderBench(await get("/api/device/benchmark"));   // with no run this session, the saved profile
+    const st = benchShown;
     if (st.running) benchTimer = setTimeout(pollBench, 1000);
   } catch (e) { benchTimer = setTimeout(pollBench, 3000); }
 }
 
 function initBench() {
   $("bench-start").onclick = async () => {
-    try { renderBench(await post("/api/device/benchmark", { smart_tree: smartTree() })); pollBench(); }
+    try { renderBench(await post("/api/device/benchmark")); pollBench(); }
     catch (e) { fail(e); }
   };
   $("bench-cancel").onclick = async () => {
@@ -119,6 +139,10 @@ function initBench() {
     } catch (e) { fail(e); }
     finally { $("bench-apply").disabled = false; }
   };
+  // Auto with nothing measured: measure now, unless a solve is running
+  $("solve-device").addEventListener("change", (e) => {
+    if (e.target.value === "auto" && !benchShown?.profiled && !benchRunning && !mainSolving) $("bench-start").click();
+  });
   pollBench();
 }
 

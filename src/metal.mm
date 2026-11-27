@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -64,7 +65,7 @@ struct Metal {
     if (!buffer) throw std::bad_alloc();
     return buffer;
   }
-  id<MTLCommandBuffer> command() {
+  id<MTLCommandBuffer> command(id<MTLCommandQueue> queue) {
     auto cmd = [queue commandBuffer];
     if (!cmd) throw std::bad_alloc();
     return cmd;
@@ -133,6 +134,53 @@ struct MetalRows {
       std::swap(input, output);
     } else if (!current.empty()) {
       memcpy(current.data(), output.contents, current.size() * sizeof(float));
+    }
+  }
+};
+
+struct SumCheckpoint {
+  id<MTLComputePipelineState> pipeline;
+  id<MTLBuffer> masks, offsets, literals, used;
+  uint32_t count = 0, capacity = 0;
+
+  static size_t groups(size_t words) { return (words + 1023) / 1024; }
+  static size_t directory_bytes(size_t words) { return (33 * groups(words) + 1) * sizeof(uint32_t); }
+
+  void allocate(Metal& m, size_t words, size_t budget) {
+    count = uint32_t(words);
+    capacity = uint32_t((budget - directory_bytes(words)) / sizeof(uint32_t));
+    pipeline = m.pipeline(@"checkpoint_sums");
+    masks = m.buffer(32 * groups(words) * sizeof(uint32_t));
+    offsets = m.buffer(groups(words) * sizeof(uint32_t));
+    literals = m.buffer(size_t(capacity) * sizeof(uint32_t));
+    used = m.buffer(sizeof(uint32_t));
+  }
+
+  void capture(Metal& m, id<MTLCommandQueue> queue, id<MTLBuffer> source) {
+    *static_cast<uint32_t*>(used.contents) = 0;
+    auto cmd = m.command(queue);
+    auto enc = m.encoder(cmd);
+    [enc setComputePipelineState:pipeline];
+    id<MTLBuffer> buffers[] = {source, masks, offsets, literals, used};
+    for (unsigned i = 0; i < 5; ++i) [enc setBuffer:buffers[i] offset:0 atIndex:i];
+    const uint32_t limits[] = {count, capacity};
+    [enc setBytes:limits length:sizeof(limits) atIndex:5];
+    [enc dispatchThreadgroups:MTLSizeMake(groups(count), 1, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+    [enc endEncoding];
+    m.finish(cmd);
+    if (*static_cast<uint32_t*>(used.contents) > capacity) throw std::bad_alloc();
+  }
+
+  void restore(float* sums) const {
+    const auto* bits = static_cast<const uint32_t*>(masks.contents);
+    const auto* positions = static_cast<const uint32_t*>(offsets.contents);
+    const auto* words = static_cast<const uint32_t*>(literals.contents);
+    std::fill_n(sums, count, 0.0f);
+    for (size_t g = 0; g < groups(count); ++g) {
+      uint32_t pos = positions[g];
+      for (unsigned k = 0; k < 32; ++k)
+        for (uint32_t mask = bits[g * 32 + k]; mask; mask &= mask - 1)
+          sums[g * 1024 + k * 32 + std::countr_zero(mask)] = std::bit_cast<float>(words[pos++]);
     }
   }
 };
@@ -228,6 +276,7 @@ struct BoardTables {
 class PostflopSolve final : public MetalSolve {
  public:
   Metal& m = metal();
+  id<MTLCommandQueue> queue = [m.dev newCommandQueue];
   id<MTLComputePipelineState> propagate_reach, update_values, advance_forced, terminals, river_pairs, river_rounds,
       allins, wide_rounds, bet_checks, two_bets, wide_two_bets, lead_checks, wide_lead_checks;
   id<MTLBuffer> nodes, node_ids, r[2], v, cards, iso, perms[2], boards[2], indices[2], heroes[2], rounds;
@@ -241,6 +290,8 @@ class PostflopSolve final : public MetalSolve {
   Range terminal_range, pair_range, round_range, bet_check_range, two_bet_range, lead_check_range, allin_range, forced_range[2];
   size_t stride, state_bytes, round_bytes[2]{};
   bool stage_regrets = false, stage_sums = false;
+  size_t checkpoint_bytes = 0;
+  SumCheckpoint checkpoint;
   int prepared_iteration = 0;
   struct Replay {
     id<MTLIndirectCommandBuffer> commands;
@@ -272,13 +323,21 @@ class PostflopSolve final : public MetalSolve {
     if (mappings > UINT32_MAX || (g.showdowns.size() + 1) * (3 * stride + 53) > UINT32_MAX)
       throw std::runtime_error("tree exceeds Metal board index limits");
     const uint64_t limit = m.dev.recommendedMaxWorkingSetSize;
-    if (peak > available || peak > limit)
-      throw std::runtime_error("Metal workspace exceeds available memory");
+    if (peak > available || peak > limit) {
+      const uint64_t reduced = peak - state_bytes;
+      if (g.iterations > 0 && available > reduced && limit > peak)
+        checkpoint_bytes = std::min(available - reduced, limit - peak);
+      if (checkpoint_bytes <= SumCheckpoint::directory_bytes(g.storage_floats))
+        throw std::runtime_error("Metal workspace exceeds available memory");
+      stage_regrets = peak + checkpoint_bytes + state_bytes > limit;
+      return;
+    }
     // Zero-copy rows also bind the published CPU arrays for the duration of each command.
     stage_sums = peak + 2 * state_bytes > limit;
     stage_regrets = peak + state_bytes > limit;
   }
   explicit PostflopSolve(GameTree& g, uint64_t available) {
+    if (!queue) throw std::bad_alloc();
     stride = (std::max(g.num_hands(0), g.num_hands(1)) + 31) & ~size_t(31);
     state_bytes = g.storage_floats * sizeof(float);
     const size_t pairs = size_t(g.num_hands(0)) * g.num_hands(1);
@@ -326,7 +385,13 @@ class PostflopSolve final : public MetalSolve {
         wide_rounds = m.pipeline(@"river_betting_round_wide", true);
     }
     regrets.bind(m, g.regrets, stage_regrets);
-    strategy_sums.bind(m, g.strat, stage_sums);
+    if (checkpoint_bytes) {
+      strategy_sums.input = strategy_sums.output = MetalRows::shared(m, g.strat);
+      if (!strategy_sums.input) throw std::runtime_error("Metal cannot share the published strategy storage");
+      checkpoint.allocate(m, g.strat.size(), checkpoint_bytes);
+    } else {
+      strategy_sums.bind(m, g.strat, stage_sums);
+    }
     pack_allins(g, tables, table_words);
     for (auto& b : params) b = m.buffer(sizeof(IterationParams));
   }
@@ -798,10 +863,10 @@ class PostflopSolve final : public MetalSolve {
 
   id<MTLCommandBuffer> submit(GameTree& g, Solver& s, int t, bool refresh_reach) {
     regrets.prepare(g.regrets, refresh_reach);
-    strategy_sums.prepare(g.strat, refresh_reach);
+    if (!checkpoint_bytes) strategy_sums.prepare(g.strat, refresh_reach);
     auto disc = [](double z) { return float(z / (1 + z)); };
     @autoreleasepool {
-      auto cmd = m.command();
+      auto cmd = m.command(queue);
       const bool symmetrize = t % 4 == 0 && g.perm_all.size() > 1;
       for (unsigned phase = 0; phase < 2; ++phase) {
         unsigned p = phase ^ s.first_player;
@@ -832,7 +897,7 @@ class PostflopSolve final : public MetalSolve {
         if (phase == 0 && symmetrize) {
           m.finish(cmd);
           symmetrize_output(s, p);
-          cmd = m.command();
+          cmd = m.command(queue);
         }
       }
       [cmd commit];
@@ -851,6 +916,7 @@ class PostflopSolve final : public MetalSolve {
   }
 
   RootStats evaluate_and_prepare(GameTree& g, Solver& s, int next) override {
+    if (checkpoint_bytes) return s.root_stats();
     @autoreleasepool {
       auto cmd = submit(g, s, next, false);
       RootStats stats;
@@ -869,13 +935,19 @@ class PostflopSolve final : public MetalSolve {
   void iterate(GameTree& g, Solver& s, int t, bool refresh_reach) override {
     if (refresh_reach || prepared_iteration != t) {
       @autoreleasepool {
-        auto cmd = submit(g, s, t, refresh_reach);
-        finish_iteration(cmd, g, s, t);
+        if (checkpoint_bytes) checkpoint.capture(m, queue, strategy_sums.input);
+        try {
+          auto cmd = submit(g, s, t, refresh_reach);
+          finish_iteration(cmd, g, s, t);
+        } catch (...) {
+          if (checkpoint_bytes) checkpoint.restore(g.strat.data());
+          throw;
+        }
       }
     }
     prepared_iteration = 0;
     regrets.publish(g.regrets);
-    strategy_sums.publish(g.strat);
+    if (!checkpoint_bytes) strategy_sums.publish(g.strat);
     state_slot ^= 1;
   }
 };
@@ -920,7 +992,7 @@ void metal_flop_table(const GameTree& g, AllinRunouts& ar, const std::vector<std
     const unsigned padded_hands = (hand_rows + 3) & ~3u;
     auto ranks = m.buffer(size_t(padded_hands) * Bp * sizeof(uint32_t)), result = m.buffer(entries * sizeof(uint16_t));
     unsigned dims[] = {hand_rows, B, Bp, 0};
-    auto cmd = m.command();
+    auto cmd = m.command(m.queue);
     auto enc = m.encoder(cmd);
     [enc setComputePipelineState:rank];
     [enc setBuffer:boards offset:0 atIndex:0];

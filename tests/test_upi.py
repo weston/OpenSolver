@@ -2417,6 +2417,40 @@ def check_save_robustness(exe):
               f"go / go_partial on an unreadable lazy tree answer once each ({blocks[:3]})")
 
 
+def check_metal_resume_memory(exe):
+    setup = ["set_threads 1", "small_strats off", "set_algorithm auto", "set_accuracy 0", "set_info_freq 100",
+             "set_outcome_tables fast", "set_board Ah3cQd", "set_range OOP KK,JJ,87s,AKs",
+             "set_range IP QQ,TT,AQs,KQs", "set_pot 0 0 100", "set_eff_stack 300", "set_isomorphism 1 1",
+             "add_line 0 30 90", "add_line 0 0 30", "add_line 0 0 0 35 110", "add_line 0 0 0 0 10",
+             "add_line 0 0 0 0 30", "add_line 0 0 0 0 65", "add_line 0 0 0 0 0 50 120", "build_tree smart_rivers"]
+
+    def resume(steps, free_mb, algorithm):
+        commands = [*setup, f"go {steps} steps", "wait_for_solver", "set_algorithm " + algorithm,
+                    "set_info_freq 1", "go 4 steps", "wait_for_solver", "echo RESUMED", "show_iters",
+                    "show_strategy r:0:c", "show_strategy r:0:c:c:7d:c", "calc_results", "exit"]
+        out = subprocess.run([exe], input="\n".join(commands) + "\n", text=True, capture_output=True,
+                             env=dict(os.environ, WSOLVER_FREE_MB=str(free_mb)), check=True, timeout=120).stdout
+        before, marker, snapshot = out.partition("RESUMED\n")
+        assert marker and "ERROR" not in out and snapshot.startswith(str(steps + 4) + "\n"), out
+        return [line for line in before.splitlines() if line.startswith("SOLVER: device")], snapshot
+
+    gpu = "SOLVER: device gpu"
+    unshared = ["SOLVER: device cpu (Metal cannot share the published strategy storage)"]
+    regular, expected = resume(48, 1024, "v4_metal")
+    compact, actual = resume(48, 31, "v4_metal")
+    check(regular == [gpu], "the reference continuation uses Metal")
+    if compact == unshared:
+        _, expected = resume(48, 1024, "auto")
+        check(actual == expected, "an unshareable strategy allocation resumes exactly on CPU")
+    else:
+        check(compact == [gpu] and actual == expected,
+              "the sparse checkpoint resumes with the same flop and turn strategies and root values")
+    _, expected = resume(1, 1024, "auto")
+    fallback, actual = resume(1, 31, "v4_metal")
+    check(fallback in ([gpu, "SOLVER: device cpu (Metal ran out of memory)"], unshared) and actual == expected,
+          "a dense checkpoint or unshareable storage resumes exactly on CPU")
+
+
 def check_solve_device(exe):
     u = Upi(exe)
     try:
@@ -2425,6 +2459,7 @@ def check_solve_device(exe):
             check(u.cmd("set_algorithm v4_metal").startswith("ERROR"), "unavailable GPU refused")
             return
 
+        check_metal_resume_memory(exe)
         setup = ("set_board Kh9h4h2c", "set_pot 0 0 100", "set_eff_stack 400",
                  "set_range OOP 99+,ATs+,AKo", "set_range IP 77+,KTs+,AQo+",
                  "add_line 0 50 50 120", "add_line 50 150 400", "set_pruning off",

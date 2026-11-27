@@ -24,23 +24,23 @@ export function updateDevice(st) {
   field.disabled = savingDevice || st.solving || st.dead;
 }
 
+const smartTreeModes = { off: false, medium: true, strong: "single" };
+
+function smartTreeLevel() {
+  const level = prefs.get("smart-tree-level", null);
+  if (Object.hasOwn(smartTreeModes, level)) return level;
+  if (prefs.get("smart-tree", true) !== true) return "off";
+  return prefs.get("river-sizing", "adaptive") === "single" ? "strong" : "medium";
+}
+
 export function smartTree() {
-  if (prefs.get("smart-tree", true) !== true) return false;
-  return prefs.get("river-sizing", "adaptive") === "single" ? "single" : true;
+  return smartTreeModes[smartTreeLevel()];
 }
 
 export function initSettings() {
   const smart = document.getElementById("smart-tree");
-  const sizing = document.getElementById("river-sizing");
-  smart.checked = Boolean(smartTree());
-  sizing.value = prefs.get("river-sizing", "adaptive");
-  const sizingField = document.getElementById("river-sizing-field");
-  sizingField.classList.toggle("hidden", !smart.checked);
-  smart.onchange = () => {
-    prefs.set("smart-tree", smart.checked);
-    sizingField.classList.toggle("hidden", !smart.checked);
-  };
-  sizing.onchange = () => prefs.set("river-sizing", sizing.value);
+  smart.value = smartTreeLevel();
+  smart.onchange = () => prefs.set("smart-tree-level", smart.value);
   const device = document.getElementById("solve-device");
   device.onchange = async () => {
     savingDevice = true;

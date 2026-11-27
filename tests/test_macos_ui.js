@@ -13,14 +13,17 @@ check([...document.querySelectorAll('.view-tab')].map(b => b.textContent).join('
 
 tab('settings');
 const { smartTree } = await import('/settings.js');
-check(smartTree() === true, 'smart tree should start with adaptive sizing');
-$('river-sizing').value = 'single';
-$('river-sizing').dispatchEvent(new Event('change', { bubbles: true }));
-check(smartTree() === 'single', 'single river sizing was not selected');
-$('smart-tree').click();
-check(smartTree() === false && $('river-sizing-field').classList.contains('hidden'), 'full tree should use configured sizes');
-$('smart-tree').click();
-check(smartTree() === 'single', 'enabling Smart tree should restore the selected sizing');
+const smart = $('smart-tree');
+check(smart.value === 'medium' && smartTree() === true, 'Medium should use adaptive sizing by default');
+localStorage.setItem('ws-river-sizing', '"single"');
+check(smartTree() === 'single', 'existing one-size preferences should use Strong');
+localStorage.setItem('ws-smart-tree', 'false');
+check(smartTree() === false, 'existing disabled preferences should use Off');
+for (const [level, mode] of [['off', false], ['medium', true], ['strong', 'single']]) {
+  smart.value = level;
+  smart.dispatchEvent(new Event('change', { bubbles: true }));
+  check(smartTree() === mode, level + ' selected the wrong tree');
+}
 $('drill-ahead').value = '4';
 $('drill-ahead').dispatchEvent(new Event('input', {bubbles: true}));
 check(localStorage.getItem('ws-drill-ahead') === '4', 'settings could not be stored');

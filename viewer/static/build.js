@@ -530,7 +530,6 @@ export function updateProgress(st, series, rootPot, bb = 0) {
 
 export function initBuild({ built }) {
   $("smart-tree").addEventListener("change", markDirty);
-  $("river-sizing").addEventListener("change", markDirty);
   onBuilt = built || onBuilt;
   editors.OOP = new RangeEditor(document.querySelector('.editor[data-player="OOP"]'), "OOP", saveForm);
   editors.IP = new RangeEditor(document.querySelector('.editor[data-player="IP"]'), "IP", saveForm);

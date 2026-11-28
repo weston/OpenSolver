@@ -1528,7 +1528,9 @@ static bool river_batch_matches() {
 // 115K-node flop solve (the viewer's fast-preview sketch, target 0.165 chips, delay 32): the restart
 // at iteration 33 lifts exploitability from 2.2 to 4.9, just under the previous report's 5.25. A
 // trend fitted across that reads as no progress and waited the longest gap (to 49, at 0.82 chips);
-// starting afresh reports at 41 (1.23 chips), which is when the preview's first threshold is met.
+// starting afresh reported at 41 (1.23 chips), which is when the preview's first threshold is met.
+// Since #603 the first report, far above the target before the restart, goes straight to 41; the trend
+// starts afresh there (the next at 51).
 static bool auto_report_schedule() {
   AutoReportSchedule s;
   const double target = 0.165;

@@ -106,6 +106,7 @@ case "$WIN_ARCH" in *x86-64-v3*) ISA='-DOPENSOLVER_ISA="x86-64-v3"' ;; esac
 # When the source is from (its commit's time): what the launcher's update check compares
 REVISION=$(git rev-parse HEAD 2>/dev/null || true)
 BUILT=$(git log -1 --format=%ct HEAD 2>/dev/null || echo 0)
+[ "$BUILT" != 0 ] || echo "WARNING: no git here, so this build has no build time: it will never offer an update, nor be offered as one"
 # shellcheck disable=SC2086
 "$CXX" -std=c++20 -O2 -Wall -Wextra -municode -mwindows -static -D_WIN32_WINNT=0x0A00 $ISA -DOPENSOLVER_BUILT="$BUILT" \
   "$HERE/launcher.cpp" "$OUT/res/launcher.res" -o "$APP/OpenSolver.exe" \

@@ -72,6 +72,8 @@ HANDLE job, viewer;               // the job object; the viewer's process (null 
 std::atomic<bool> quitting{false};
 bool failedOnce, asking;
 std::wstring installer;           // a downloaded update, started once the window has gone
+void *readyUpdate;                // a finished download waiting for a question on screen to be answered
+const UINT_PTR kUpdateTimer = 1;
 
 std::wstring here() {
   std::wstring p(MAX_PATH, L'\0');
@@ -517,6 +519,15 @@ std::wstring builtDate(long long seconds) {
 }
 
 DWORD WINAPI checkForUpdate(void *) {
+  // what an earlier update left: its installer has run by now (one still running is not deleted)
+  std::wstring dir = knownFolder(FOLDERID_LocalAppData) + L"\\OpenSolver\\Updates";
+  WIN32_FIND_DATAW fd;
+  HANDLE found = FindFirstFileW((dir + L"\\*.exe").c_str(), &fd);
+  if (found != INVALID_HANDLE_VALUE) {
+    do DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+    while (FindNextFileW(found, &fd));
+    FindClose(found);
+  }
   std::string text;
   bool got = httpGet(updateFolder() + L"latest.txt", [&](const char *p, DWORD n) {
     text.append(p, n);
@@ -544,7 +555,10 @@ DWORD WINAPI downloadUpdate(void *arg) {
   } else {
     uint64_t size = 0, done = 0;
     int shown = -1;
-    bool got = httpGet(updateFolder() + widen(d->offer["file"]), [&](const char *p, DWORD n) {
+    // ?sha256=: a URL of its own for each build, so that a cached copy of an earlier one with the same
+    // name is never what arrives (raw.githubusercontent.com caches for minutes)
+    std::wstring from = updateFolder() + widen(d->offer["file"]) + L"?sha256=" + widen(d->offer["sha256"]);
+    bool got = httpGet(from, [&](const char *p, DWORD n) {
       DWORD w = 0;
       if (!WriteFile(f, p, n, &w, nullptr) || w != n) return false;
       done += n;
@@ -688,22 +702,39 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       if (!quitting && (int)wp >= 0)
         SetWindowTextW(statusLabel, (L"Downloading the update… " + std::to_wstring((int)wp) + L"%").c_str());
       return 0;
-    case WM_APP_DOWNLOADED: {
-      auto *d = (Download *)lp;
-      if (!quitting) {
-        restoreStatus();
-        if (!d->error.empty()) {
-          std::wstring text = L"The update could not be installed.\n\n" + d->error +
-                              L"\n\nOpenSolver will offer it again the next time it opens.";
-          MessageBoxW(h, text.c_str(), L"OpenSolver update", MB_OK | MB_ICONWARNING);
-        } else {
-          installer = d->path;   // started once this window has gone: see wWinMain
-          if (!quit(true)) installer.clear();
-        }
+    case WM_APP_DOWNLOADED:
+      if (asking) {   // a question is on screen (this runs inside its message loop): after it is answered
+        readyUpdate = (void *)lp;
+        SetTimer(h, kUpdateTimer, 250, nullptr);
+        return 0;
       }
-      delete d;
+      {
+        auto *d = (Download *)lp;
+        if (!quitting && !failedOnce) {
+          restoreStatus();
+          if (!d->error.empty()) {
+            std::wstring text = L"The update could not be installed.\n\n" + d->error +
+                                L"\n\nOpenSolver will offer it again the next time it opens.";
+            asking = true;
+            MessageBoxW(h, text.c_str(), L"OpenSolver update", MB_OK | MB_ICONWARNING);
+            asking = false;
+            if (!viewer && !quitting) PostMessageW(h, WM_APP_ENDED, 0, 0);   // it ended while asking
+          } else {
+            installer = d->path;   // started once this window has gone: see wWinMain
+            if (!quit(true)) installer.clear();
+          }
+        }
+        delete d;
+      }
       return 0;
-    }
+    case WM_TIMER:
+      if (wp == kUpdateTimer && !asking) {
+        KillTimer(h, kUpdateTimer);
+        void *d = readyUpdate;
+        readyUpdate = nullptr;
+        if (d) PostMessageW(h, WM_APP_DOWNLOADED, 0, (LPARAM)d);
+      }
+      return 0;
     case WM_APP_SHOW:   // opened again
       if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
       SetForegroundWindow(h);
@@ -768,6 +799,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   // A Ctrl+C is how the viewer is stopped: it must not be ignored by inheritance (a process
   // started in a new process group ignores it, and passes that on).
   SetConsoleCtrlHandler(nullptr, FALSE);
+  CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);   // as ShellExecute wants
   INITCOMMONCONTROLSEX icc{sizeof icc, ICC_STANDARD_CLASSES};
   InitCommonControlsEx(&icc);
   WSADATA wsa;
@@ -809,7 +841,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   UpdateWindow(h);
 
   if (!startViewer()) failed(L"The viewer inside OpenSolver could not be started.");
-  if (!GetEnvironmentVariableW(L"OPENSOLVER_NO_UPDATE_CHECK", nullptr, 0) && OPENSOLVER_BUILT > 0)
+  // (an empty OPENSOLVER_NO_UPDATE_CHECK counts as unset, as on the Mac: 1 is the size of "")
+  if (GetEnvironmentVariableW(L"OPENSOLVER_NO_UPDATE_CHECK", nullptr, 0) <= 1 && OPENSOLVER_BUILT > 0)
     CloseHandle(CreateThread(nullptr, 0, checkForUpdate, nullptr, 0, nullptr));
 
   MSG m;

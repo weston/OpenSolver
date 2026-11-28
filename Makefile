@@ -340,7 +340,7 @@ macos-pkg: build/macos/solver
 # update to (installers/macos, read by the launcher at startup): commit the three files.
 publish-macos-pkg:
 	@test -f dist/macos-latest.txt || { echo "make macos-pkg first"; exit 1; }
-	cp dist/OpenSolver-$(VERSION)-macos-arm64.pkg dist/OpenSolver-$(VERSION)-macos-arm64.pkg.sha256 installers/macos/
+	f=$$(sed -n 's/^file //p' dist/macos-latest.txt) && cp "dist/$$f" "dist/$$f.sha256" installers/macos/
 	cp dist/macos-latest.txt installers/macos/latest.txt
 
 test-macos-app: macos-app
@@ -375,7 +375,7 @@ windows-installer: $(WIN_INSTALLER_SOLVER)
 # update to (installers/windows, read by the launcher at startup): commit the three files.
 publish-windows-installer:
 	@test -f dist/windows-latest.txt || { echo "make windows-installer first"; exit 1; }
-	cp dist/OpenSolver-$(VERSION)-windows-x64-setup.exe dist/OpenSolver-$(VERSION)-windows-x64-setup.exe.sha256 installers/windows/
+	f=$$(sed -n 's/^file //p' dist/windows-latest.txt) && cp "dist/$$f" "dist/$$f.sha256" installers/windows/
 	cp dist/windows-latest.txt installers/windows/latest.txt
 else
 windows-app windows-installer publish-windows-installer:

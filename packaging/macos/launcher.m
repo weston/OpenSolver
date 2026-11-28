@@ -481,18 +481,21 @@ static NSString *builtDate(long long seconds) {
   [a beginSheetModalForWindow:_win completionHandler:nil];
 }
 
-/** The downloaded, checked installer: opened, and the app quits so that it can be replaced. */
+/** The downloaded, checked installer: the app quits (asking first while a solve or the job queue
+ *  runs) and opens it, so that nothing of the app is running when it is replaced. */
 - (void)openInstaller:(NSString *)path {
+  if (![self mayQuit]) return;   // left in the temporary folder; offered again at the next launch
   if (![[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]]) {
     [self updateFailed:@"The installer could not be opened."];
     return;
   }
-  [NSApp terminate:nil];   // asks first when a solve or the job queue runs
+  _quitting = YES;
+  [self stopViewer];
+  [NSApp terminate:nil];
 }
 
 - (void)downloadUpdate:(NSDictionary<NSString *, NSString *> *)offer {
   NSString *name = offer[@"file"], *expected = offer[@"sha256"].lowercaseString;
-  NSURL *url = [NSURL URLWithString:[updateFolder() stringByAppendingString:name]];
   NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"OpenSolver-update"];
   NSString *dest = [dir stringByAppendingPathComponent:name];
   NSAlert *sheet = [NSAlert new];
@@ -504,6 +507,10 @@ static NSString *builtDate(long long seconds) {
   bar.maxValue = 1;
   sheet.accessoryView = bar;
   [sheet addButtonWithTitle:@"Cancel"];
+  __block BOOL cancelled = NO;
+  // ?sha256=: a URL of its own for each build, so that a cached copy of an earlier one with the same
+  // name is never what arrives (raw.githubusercontent.com caches for minutes)
+  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@%@?sha256=%@", updateFolder(), name, expected]];
   NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url
       completionHandler:^(NSURL *location, NSURLResponse *resp, NSError *err) {
     // the downloaded file is removed when this returns: it is moved first, here
@@ -525,7 +532,8 @@ static NSString *builtDate(long long seconds) {
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       self->_download = nil;
-      if (self->_win.attachedSheet) [self->_win endSheet:self->_win.attachedSheet returnCode:NSModalResponseStop];
+      if (sheet.window.sheetParent) [self->_win endSheet:sheet.window returnCode:NSModalResponseStop];
+      if (cancelled) return;   // Cancel came after the download had finished
       if (why) {
         if (why.length) [self updateFailed:why];
         return;
@@ -535,7 +543,9 @@ static NSString *builtDate(long long seconds) {
   }];
   _download = task;
   [sheet beginSheetModalForWindow:_win completionHandler:^(NSModalResponse answer) {
-    if (answer == NSAlertFirstButtonReturn) [task cancel];   // Cancel (a finished download ends it with Stop)
+    if (answer != NSAlertFirstButtonReturn) return;   // a finished download ends it with Stop
+    cancelled = YES;
+    [task cancel];
   }];
   NSTimer *timer = [NSTimer timerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *t) {
     if (self->_download != task) {
@@ -580,7 +590,15 @@ static NSString *builtDate(long long seconds) {
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
   (void)app;
   if (_quitting || !_pid) return NSTerminateNow;
-  if (_url) {
+  if (![self mayQuit]) return NSTerminateCancel;
+  _quitting = YES;
+  [self stopViewer];
+  return NSTerminateNow;
+}
+
+/** NO when a solve or the job queue runs and the user says not to stop it. */
+- (BOOL)mayQuit {
+  if (_url && _pid) {
     BOOL solving = [getJSON([_url stringByAppendingString:@"/api/status"])[@"solving"] boolValue];
     BOOL jobs = [getJSON([_url stringByAppendingString:@"/api/jobs/state"])[@"running"] boolValue];
     if (solving || jobs) {
@@ -595,13 +613,11 @@ static NSString *builtDate(long long seconds) {
       _asking = NO;
       if (answer != NSAlertFirstButtonReturn) {
         if (!_pid) dispatch_async(dispatch_get_main_queue(), ^{ [self viewerEnded]; });   // it ended meanwhile
-        return NSTerminateCancel;
+        return NO;
       }
     }
   }
-  _quitting = YES;
-  [self stopViewer];
-  return NSTerminateNow;
+  return YES;
 }
 
 @end

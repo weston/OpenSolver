@@ -86,6 +86,7 @@ clang -fobjc-arc -O2 -Wall -Wextra -arch arm64 -mmacosx-version-min="$MACOS_MIN"
 REVISION=$(git rev-parse HEAD 2>/dev/null || true)
 # When the source is from (its commit's time): what the app's update check compares (launcher.m)
 BUILT=$(git log -1 --format=%ct HEAD 2>/dev/null || echo 0)
+[ "$BUILT" != 0 ] || echo "WARNING: no git here, so this build has no build time: it will never offer an update, nor be offered as one"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@MACOS_MIN@/$MACOS_MIN/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" \
   -e "s/@REVISION@/$REVISION/g" -e "s/@BUILT@/$BUILT/g" \
   "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"

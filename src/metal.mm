@@ -29,8 +29,8 @@ const char kernel_source[] =
 struct Metal {
   id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
   id<MTLCommandQueue> queue = [dev newCommandQueue];
-  id<MTLLibrary> library, compact_library[2];
-  std::once_flag compact_once[2];
+  id<MTLLibrary> library, compact_library[2][2];
+  std::once_flag compact_once[2][2];
   id<MTLLibrary> compile(bool compact, bool half_sums = false) {
     NSError* error = nil;
     auto options = [MTLCompileOptions new];
@@ -43,7 +43,8 @@ struct Metal {
 #else
     options.fastMathEnabled = NO;
 #endif
-    if (compact) options.preprocessorMacros = @{@"WSOLVER_BFLOAT": @1, @"WSOLVER_FP16_SUMS": @(half_sums)};
+    if (compact || half_sums)
+      options.preprocessorMacros = @{@"WSOLVER_BFLOAT": @(compact), @"WSOLVER_FP16_SUMS": @(half_sums)};
     auto result = [dev newLibraryWithSource:[NSString stringWithUTF8String:kernel_source] options:options error:&error];
     if (!result) fail(error);
     return result;
@@ -57,8 +58,12 @@ struct Metal {
   }
   id<MTLComputePipelineState> pipeline(NSString* name, bool replay = false, bool early = false,
                                        AverageMode average_mode = DenseAverage, bool compact = false, bool half_sums = false) {
-    if (compact) std::call_once(compact_once[half_sums], [&] { compact_library[half_sums] = compile(true, half_sums); });
-    auto selected_library = compact ? compact_library[half_sums] : library;
+    auto selected_library = library;
+    if (compact || half_sums) {
+      auto& cached = compact_library[compact][half_sums];
+      std::call_once(compact_once[compact][half_sums], [&] { cached = compile(compact, half_sums); });
+      selected_library = cached;
+    }
     NSError* error = nil;
     auto descriptor = [MTLComputePipelineDescriptor new];
     descriptor.label = name;
@@ -259,18 +264,26 @@ class PostflopSolve final : public MetalSolve {
   MetalRows regrets, strategy_sums;
   bool compact_regrets = false, regrets_current_on_cpu = true;
   bool compact_sums = false, sums_current_on_cpu = true;
-  void publish_for_cpu(GameTree& g) override {
-    if (!sums_current_on_cpu) {
-      const auto* source = static_cast<const uint16_t*>(strategy_sums.input.contents);
-      transfer_state(source, g.strat.data(), g.strat.size(), [](uint16_t word) { return fp16_sum_value(word); });
-      sums_current_on_cpu = true;
-    }
+  void publish_sums(GameTree& g) {
+    if (sums_current_on_cpu) return;
+    const auto* source = static_cast<const uint16_t*>(strategy_sums.input.contents);
+    transfer_state(source, g.strat.data(), g.strat.size(), [](uint16_t word) { return fp16_sum_value(word); });
+    sums_current_on_cpu = true;
+  }
+
+  void publish_regrets(GameTree& g) {
     if (regrets_current_on_cpu) return;
     const auto* source = static_cast<const uint16_t*>(regrets.input.contents);
     transfer_state(source, g.regrets.data(), g.regrets.size(),
                    [](uint16_t word) { return std::bit_cast<float>(bfloat_regret_bits(word)); });
     regrets_current_on_cpu = true;
   }
+
+  void publish_for_cpu(GameTree& g) override {
+    publish_sums(g);
+    publish_regrets(g);
+  }
+
   void prepare_regrets(const GameTree& g) {
     auto* dest = static_cast<uint16_t*>(regrets.input.contents);
     transfer_state(g.regrets.data(), dest, g.regrets.size(),
@@ -292,10 +305,9 @@ class PostflopSolve final : public MetalSolve {
   struct {
     Replay plans[3][2][2][2][2];  // average mode, regret slot, strategy slot, updating player, refreshed reach
   } replays;
-  bool first_submission = true;
   bool write_sums = true;
   bool early_replay = false;
-  NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* specialized_pipelines[3][2][3]{};
+  NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* specialized_pipelines[4][2][3]{};
   id<MTLBuffer> params[2];
   template <class V>
   id<MTLBuffer> copy_buffer(const V& x) {
@@ -372,8 +384,7 @@ class PostflopSolve final : public MetalSolve {
       if (3 * std::max(round_bytes[0], round_bytes[1]) > limit)
         wide_rounds = m.pipeline(@"river_betting_round_wide", true);
     }
-    regrets.bind(m, g.regrets, stage_regrets);
-    strategy_sums.bind(m, g.strat, stage_sums);
+
     pack_allins(g, tables, table_words);
     for (auto& b : params) b = m.buffer(sizeof(IterationParams));
   }
@@ -773,9 +784,9 @@ class PostflopSolve final : public MetalSolve {
       const bool writes_strategy = pipe != terminals && pipe != allins && pipe != propagate_reach;
       const AverageMode average = writes_strategy ? mode : DenseAverage;
       const bool compact = compact_regrets && pipe != terminals && pipe != allins;
-      if (compact || policy || average != DenseAverage) {
-        const bool half_sums = compact && compact_sums;
-        auto& variants = specialized_pipelines[unsigned(compact) + unsigned(half_sums)][policy][average];
+      const bool half_sums = writes_strategy && compact_sums;
+      if (compact || half_sums || policy || average != DenseAverage) {
+        auto& variants = specialized_pipelines[unsigned(compact) + 2 * unsigned(half_sums)][policy][average];
         if (!variants) variants = [NSMutableDictionary new];
         selected = variants[pipe.label];
         if (!selected) {
@@ -850,13 +861,16 @@ class PostflopSolve final : public MetalSolve {
   }
 
   id<MTLCommandBuffer> submit(GameTree& g, Solver& s, int t, bool refresh_reach) {
-    refresh_reach |= first_submission;
     const bool compact = s.uses_bfloat_regrets(t);
     const bool half_sums = s.uses_fp16_sums(t);
-    if (compact != compact_regrets || half_sums != compact_sums) {
-      publish_for_cpu(g);
+    const bool bind_regrets = !regrets.input || compact != compact_regrets;
+    const bool bind_sums = !strategy_sums.input || half_sums != compact_sums;
+    const bool upload_regrets = refresh_reach || bind_regrets;
+    const bool upload_sums = refresh_reach || bind_sums;
+    if (bind_regrets || bind_sums) {
       replays = {};
-      if (compact != compact_regrets) {
+      if (bind_regrets) {
+        publish_regrets(g);
         regrets = {};
         compact_regrets = compact;
         if (compact) {
@@ -866,7 +880,8 @@ class PostflopSolve final : public MetalSolve {
           regrets.bind(m, g.regrets, stage_regrets);
         }
       }
-      if (half_sums != compact_sums) {
+      if (bind_sums) {
+        publish_sums(g);
         strategy_sums = {};
         compact_sums = half_sums;
         if (half_sums) {
@@ -888,23 +903,20 @@ class PostflopSolve final : public MetalSolve {
     const AverageMode mode = average.weight == 1.f ? DenseAverage : average.weight == 0.f ? SkipAverage : WeightedAverage;
     write_sums = mode != SkipAverage;
     if (compact_regrets) {
-      if (refresh_reach) prepare_regrets(g);
+      if (upload_regrets) prepare_regrets(g);
     } else {
-      regrets.prepare(g.regrets, refresh_reach);
+      regrets.prepare(g.regrets, upload_regrets);
     }
     if (compact_sums) {
-      if (refresh_reach) {
+      if (upload_sums) {
         auto* destination = static_cast<uint16_t*>(strategy_sums.input.contents);
         transfer_state(g.strat.data(), destination, g.strat.size(), [](float value) { return fp16_sum_word(value); });
       }
     } else {
-      strategy_sums.prepare(g.strat, refresh_reach);
+      strategy_sums.prepare(g.strat, upload_sums);
     }
-    if (refresh_reach) {
-      seed_forced_rows(g, regrets, compact_regrets ? sizeof(uint16_t) : sizeof(float));
-      seed_forced_rows(g, strategy_sums, compact_sums ? sizeof(uint16_t) : sizeof(float));
-      first_submission = false;
-    }
+    if (upload_regrets) seed_forced_rows(g, regrets, compact_regrets ? sizeof(uint16_t) : sizeof(float));
+    if (upload_sums) seed_forced_rows(g, strategy_sums, compact_sums ? sizeof(uint16_t) : sizeof(float));
     auto disc = [](double z) { return float(z / (1 + z)); };
     @autoreleasepool {
       auto cmd = m.command();
@@ -961,8 +973,8 @@ class PostflopSolve final : public MetalSolve {
     @autoreleasepool {
       const uint16_t* committed = nullptr;
       const uint16_t* committed_sums = nullptr;
-      if (compact_regrets && s.uses_bfloat_regrets(next) && compact_sums == s.uses_fp16_sums(next)) {
-        committed = static_cast<const uint16_t*>(regrets.input.contents);
+      if (compact_regrets == s.uses_bfloat_regrets(next) && compact_sums == s.uses_fp16_sums(next)) {
+        if (compact_regrets) committed = static_cast<const uint16_t*>(regrets.input.contents);
         if (compact_sums) committed_sums = static_cast<const uint16_t*>(strategy_sums.input.contents);
       } else {
         publish_for_cpu(g);
@@ -970,7 +982,7 @@ class PostflopSolve final : public MetalSolve {
       auto cmd = submit(g, s, next, false);
       RootStats stats;
       try {
-        stats = committed ? s.root_stats_from_bfloat16(committed, committed_sums) : s.root_stats();
+        stats = committed || committed_sums ? s.root_stats_from_packed(committed, committed_sums) : s.root_stats();
       } catch (...) {
         [cmd waitUntilCompleted];
         throw;

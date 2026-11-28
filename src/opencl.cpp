@@ -226,8 +226,8 @@ class OpenCL final : public Backend {
     // IEEE division and square root like the CPU (OpenCL's default allows 2.5 ulp); no fast math.
     std::string options = "-cl-std=CL1.2";
     if (correct_division) options += " -cl-fp32-correctly-rounded-divide-sqrt";
-    if (variant != kFloatState) options += " -D WSOLVER_BFLOAT=1";
-    if (variant == kBfloatRegretsHalfSums) options += " -D WSOLVER_FP16_SUMS=1";
+    if (variant == kBfloatRegrets || variant == kBfloatRegretsHalfSums) options += " -D WSOLVER_BFLOAT=1";
+    if (variant == kBfloatRegretsHalfSums || variant == kFloatRegretsHalfSums) options += " -D WSOLVER_FP16_SUMS=1";
     if (cl.BuildProgram(p, 1, &dev, options.c_str(), nullptr, nullptr) != CL_SUCCESS) {
       size_t n = 0;
       cl.GetProgramBuildInfo(p, dev, CL_PROGRAM_BUILD_LOG, 0, nullptr, &n);

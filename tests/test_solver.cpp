@@ -50,7 +50,7 @@ static bool bfloat_regret_reports() {
   game.storage_floats = actual_storage;
   solver.select_sampled_averaging(std::nextafter(.3, 1.), true);
   if (solver.uses_bfloat_regrets(8) || !solver.uses_bfloat_regrets(9) ||
-      solver.uses_fp16_sums(8) || !solver.uses_fp16_sums(9) ||
+      !solver.uses_fp16_sums(1) || !solver.uses_fp16_sums(8) || !solver.uses_fp16_sums(9) ||
       !solver.uses_fp16_sums(1024) || solver.uses_fp16_sums(1025)) return false;
   auto retained = solver.strategy_average_step(99);
   if (solver.strategy_average_step(97).weight <= 3.f || solver.strategy_average_step(98).weight != 0.f ||
@@ -72,12 +72,12 @@ static bool bfloat_regret_reports() {
   const auto expected = solver.root_stats();
   std::fill(game.regrets.begin(), game.regrets.end(), 17.f);
   const auto stale = solver.root_stats();
-  const auto reported = solver.root_stats_from_bfloat16(words.data());
+  const auto reported = solver.root_stats_from_packed(words.data());
   if (std::memcmp(&expected, &reported, sizeof(expected)) || !std::memcmp(&stale, &reported, sizeof(stale))) return false;
 
   std::fill(game.strat.begin(), game.strat.end(), 1.f);
-  const auto stale_sums = solver.root_stats_from_bfloat16(words.data());
-  const auto paired = solver.root_stats_from_bfloat16(words.data(), sums.data());
+  const auto stale_sums = solver.root_stats_from_packed(words.data());
+  const auto paired = solver.root_stats_from_packed(words.data(), sums.data());
   if (std::memcmp(&expected, &paired, sizeof(expected)) || !std::memcmp(&stale_sums, &paired, sizeof(paired))) return false;
 
   parse_cards("Ah3hQh", cfg.board);

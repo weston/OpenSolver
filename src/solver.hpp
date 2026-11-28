@@ -206,7 +206,7 @@ class Solver {
   }
   bool late_pairs_ = false;  // a sampled solve to the default 0.3% of pot pairs its later iterations (#598)
   bool fp16_sums() const { return fp16_sums_; }
-  bool uses_fp16_sums(int t) const { return fp16_sums_ && t <= 1024 && uses_bfloat_regrets(t); }
+  bool uses_fp16_sums(int t) const { return fp16_sums_ && t <= 1024 && bfloat_regrets_ && uses_sampled_averaging(); }
   void set_fp16_sums(bool enabled) {
     fp16_sums_ = enabled && bfloat_regrets_;
     if (fp16_sums_) {
@@ -395,7 +395,7 @@ class Solver {
 
   // Stats from the tree root.
   RootStats root_stats();
-  RootStats root_stats_from_bfloat16(const uint16_t* committed_regrets, const uint16_t* committed_sums = nullptr) const;
+  RootStats root_stats_from_packed(const uint16_t* committed_regrets, const uint16_t* committed_sums = nullptr) const;
 
   // Strategies at decision node (A * H[acting]): current (regret matching) / average.
   void current_strategy(uint32_t ni, float* out) const;

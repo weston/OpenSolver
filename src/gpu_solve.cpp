@@ -312,7 +312,8 @@ class Solve final : public MetalSolve {
   // One player's update: reach down the tree, terminal values, then values and regrets back up.
   // strategy: the rows the strategies are read from, the regrets unless given (a hybrid report: the sums)
   void enqueue_phase(const GameTree& g, unsigned p, bool refresh_reach, const IterationParams& params, Buf strategy = 0) {
-    const Variant variant = compact_sums ? kBfloatRegretsHalfSums : compact_regrets ? kBfloatRegrets : kFloatState;
+    const Variant variant = compact_sums ? (compact_regrets ? kBfloatRegretsHalfSums : kFloatRegretsHalfSums)
+                                         : (compact_regrets ? kBfloatRegrets : kFloatState);
     std::vector<Arg> args = {arg(nodes.buf), arg(ids.buf), value(params), arg(r[0].buf), arg(r[1].buf), arg(v.buf),
                              arg(strategy ? strategy : regrets.buf), arg(sums.buf), arg(cards.buf), value(uint32_t(0))};
     for (const auto& reach : plan.reach_levels) {
@@ -461,7 +462,7 @@ class Solve final : public MetalSolve {
     prepared_iteration = next;  // on the device only: the tree (or staging) keeps the measured state
     RootStats stats;
     try {
-      stats = committed ? s.root_stats_from_bfloat16(committed, committed_sums) : s.root_stats();
+      stats = committed ? s.root_stats_from_packed(committed, committed_sums) : s.root_stats();
     } catch (...) {
       b.finish();
       throw;

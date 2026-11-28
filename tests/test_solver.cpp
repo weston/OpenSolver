@@ -106,7 +106,7 @@ static bool sampled_averaging_election() {
   if (solver.uses_sampled_averaging()) return false;
   ++game.storage_floats;
   solver.prepare_sampled_averaging();
-  solver.select_sampled_averaging(1.51);
+  solver.select_sampled_averaging(5.01);  // looser than 1% of pot (#612): dense, and the choice stands
   solver.select_sampled_averaging(1.5);
   if (solver.uses_sampled_averaging()) return false;
   solver.restart_flop_opening();

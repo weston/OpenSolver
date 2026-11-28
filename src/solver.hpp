@@ -196,15 +196,17 @@ class Solver {
   void select_sampled_averaging(double target_chips, bool metal = false) {
     if (average_sampling_ != AverageSampling::AwaitingFirstGo) return;
     const bool compact = bfloat_regrets_ && metal && is_bfloat_target(target_chips);
-    const bool tight_target = target_chips > 0 && target_chips <= 0.003 * g_.cfg.start_pot();
-    set_average_sampling(g_.iterations == 0 && (tight_target || compact) ? AverageSampling::Bounded : AverageSampling::Dense);
+    // targets measured in #612 (0.1-1% of pot): sampled averaging up to 1%, its late pairs from 0.2%
+    const double pot = g_.cfg.start_pot(), eps = 1e-9 * pot;
+    const bool sampled_target = target_chips > 0 && target_chips <= 0.01 * pot + eps;
+    set_average_sampling(g_.iterations == 0 && (sampled_target || compact) ? AverageSampling::Bounded : AverageSampling::Dense);
     set_bfloat_regrets(compact);
-    late_pairs_ = uses_sampled_averaging() && is_bfloat_target(target_chips);
+    late_pairs_ = uses_sampled_averaging() && target_chips >= 0.002 * pot - eps && target_chips <= 0.01 * pot + eps;
   }
   AverageStep strategy_average_step(int t) const {
     return average_step(t, params.gamma, avg_delay, avg_reset, uses_sampled_averaging(), uses_fp16_sums(t), late_pairs_);
   }
-  bool late_pairs_ = false;  // a sampled solve to the default 0.3% of pot pairs its later iterations (#598)
+  bool late_pairs_ = false;  // a sampled solve to 0.2-1% of pot pairs its later iterations (#598, #612)
   bool fp16_sums() const { return fp16_sums_; }
   bool uses_fp16_sums(int t) const { return fp16_sums_ && t <= 1024 && bfloat_regrets_ && uses_sampled_averaging(); }
   void set_fp16_sums(bool enabled) {

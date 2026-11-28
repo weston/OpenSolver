@@ -2499,8 +2499,10 @@ def check_flop_update_order(exe, test_metal=True):
           "the app's forced-check rainbow flop starts IP, ordinary UPI starts OOP")
     check(solve(first="OOP") == oop and solve(override="OOP") == oop,
           "an explicit OOP order wins before and after the automatic build")
-    for setup in (dict(board="Ah3hQd"), dict(board="AhAcQd"), dict(lines=("0 30 90", "25")),
-                  dict(lines=("0 300",)), dict(predictive=True), dict(build="build_tree auto_flop_order"),
+    for setup in (dict(board="Ah3hQd"), dict(board="AhAcQd"), dict(lines=("0 30 90", "25"))):
+        check(solve(**setup) == solve(first="IP", **setup) != solve(first="OOP", **setup),
+              "a flop of any suits, paired, or where OOP may bet starts IP too (#591): " + str(setup))
+    for setup in (dict(lines=("0 300",)), dict(predictive=True), dict(build="build_tree auto_flop_order"),
                   dict(build="build_tree single_river_size auto_flop_order")):
         check(solve(**setup) == solve(first="OOP", **setup), "retains the standard order for " + str(setup))
     check(solve(storage="on") == solve(first="IP", storage="on") != solve(first="OOP", storage="on"),
@@ -2692,6 +2694,17 @@ def check_sampled_averaging(exe):
                 check(continued == uninterrupted and continued != full37 and run("calc_results") == reported,
                       "compact reports and a lossless restart reproduce the uninterrupted solve on " + device)
                 packed_results.append(floats(continued))
+                run(f'load_tree "{paired}" full')
+                run("set_info_freq 1000")
+                early_average = steps(12)
+                early_result = run("calc_results")
+                run(f'load_tree "{paired}" full')
+                run("set_info_freq 1")
+                steps(6)
+                run(f'dump_tree "{mid}" lossless')
+                run(f'load_tree "{mid}" full')
+                check(steps(6) == early_average and run("calc_results") == early_result,
+                      "an opening FP16 average survives a lossless restart and the regret precision change on " + device)
                 run(f'load_tree "{paired}" full')
                 published = steps(33)
                 check(steps(2) == published, "skipped sweeps retain the packed average on " + device)

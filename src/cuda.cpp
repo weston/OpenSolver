@@ -286,8 +286,8 @@ class Cuda final : public Backend {
         throw std::runtime_error("NVRTC could not create the program");
       std::vector<std::string> options = {"--gpu-architecture=compute_" + std::to_string(target), "--fmad=false",
                                           "--prec-div=true", "--prec-sqrt=true"};
-      if (variant != kFloatState) options.push_back("-DWSOLVER_BFLOAT=1");
-      if (variant == kBfloatRegretsHalfSums) options.push_back("-DWSOLVER_FP16_SUMS=1");
+      if (variant == kBfloatRegrets || variant == kBfloatRegretsHalfSums) options.push_back("-DWSOLVER_BFLOAT=1");
+      if (variant == kBfloatRegretsHalfSums || variant == kFloatRegretsHalfSums) options.push_back("-DWSOLVER_FP16_SUMS=1");
       std::vector<const char*> argv;
       for (const auto& o : options) argv.push_back(o.c_str());
       const nvrtcResult result = rtc.CompileProgram(prog, int(argv.size()), argv.data());

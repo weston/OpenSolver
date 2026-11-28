@@ -50,14 +50,15 @@ static bool bfloat_regret_reports() {
   game.storage_floats = actual_storage;
   solver.select_sampled_averaging(std::nextafter(.3, 1.), true);
   if (solver.uses_bfloat_regrets(8) || !solver.uses_bfloat_regrets(9) ||
-      solver.uses_fp16_sums(8) || !solver.uses_fp16_sums(9) ||
+      !solver.uses_fp16_sums(1) || !solver.uses_fp16_sums(8) || !solver.uses_fp16_sums(9) ||
       !solver.uses_fp16_sums(1024) || solver.uses_fp16_sums(1025)) return false;
   auto retained = solver.strategy_average_step(99);
   if (solver.strategy_average_step(97).weight <= 3.f || solver.strategy_average_step(98).weight != 0.f ||
       retained.weight != float(1. + std::pow(99. / 100., 4.)) ||
       retained.discount != float(std::pow(98. / 100., 4.)) ||
       solver.strategy_average_step(192).weight != 0.f || solver.strategy_average_step(193).weight <= 1.f ||
-      solver.strategy_average_step(194).weight != 1.f) return false;
+      // a solve to the default 0.3% keeps pairing (#598): 194 is skipped, 195 takes both
+      solver.strategy_average_step(194).weight != 0.f || solver.strategy_average_step(195).weight <= 1.f) return false;
   game.iterations = 9;
   solver.update_flop_opening();
   std::vector<uint16_t> words(game.storage_floats);
@@ -71,12 +72,12 @@ static bool bfloat_regret_reports() {
   const auto expected = solver.root_stats();
   std::fill(game.regrets.begin(), game.regrets.end(), 17.f);
   const auto stale = solver.root_stats();
-  const auto reported = solver.root_stats_from_bfloat16(words.data());
+  const auto reported = solver.root_stats_from_packed(words.data());
   if (std::memcmp(&expected, &reported, sizeof(expected)) || !std::memcmp(&stale, &reported, sizeof(stale))) return false;
 
   std::fill(game.strat.begin(), game.strat.end(), 1.f);
-  const auto stale_sums = solver.root_stats_from_bfloat16(words.data());
-  const auto paired = solver.root_stats_from_bfloat16(words.data(), sums.data());
+  const auto stale_sums = solver.root_stats_from_packed(words.data());
+  const auto paired = solver.root_stats_from_packed(words.data(), sums.data());
   if (std::memcmp(&expected, &paired, sizeof(expected)) || !std::memcmp(&stale_sums, &paired, sizeof(paired))) return false;
 
   parse_cards("Ah3hQh", cfg.board);
@@ -1527,22 +1528,27 @@ static bool river_batch_matches() {
 // 115K-node flop solve (the viewer's fast-preview sketch, target 0.165 chips, delay 32): the restart
 // at iteration 33 lifts exploitability from 2.2 to 4.9, just under the previous report's 5.25. A
 // trend fitted across that reads as no progress and waited the longest gap (to 49, at 0.82 chips);
-// starting afresh reports at 41 (1.23 chips), which is when the preview's first threshold is met.
+// starting afresh reported at 41 (1.23 chips), which is when the preview's first threshold is met.
+// Since #603 the first report, far above the target before the restart, goes straight to 41; the trend
+// starts afresh there (the next at 51).
 static bool auto_report_schedule() {
   AutoReportSchedule s;
   const double target = 0.165;
   const long long reset = 33;
-  long long a = s.next(10, 29.38, target, reset), b = s.next(a, 11.74, target, reset);
-  long long c = s.next(b, 5.25, target, reset), d = s.next(c, 4.88, target, reset);
+  // far above the target before the restart (#603): the next report comes 8 iterations after it, then a
+  // fresh trend; near the target the schedule is as before
+  long long a = s.next(10, 29.38, target, reset), b = s.next(a, 4.88, target, reset);
+  AutoReportSchedule near;
+  long long n = near.next(10, 1.0, target, reset);
   AutoReportSchedule old;   // no restart passed: the trend runs across it
   long long od = old.next(old.next(old.next(old.next(10, 29.38, target, 0), 11.74, target, 0), 5.25, target, 0), 4.88, target, 0);
   // Without set_avg_delay the restart test never fires; a restart before the first report neither.
   AutoReportSchedule n1, n2;
   long long e1 = n1.next(n1.next(40, 2.0, target, 0), 1.0, target, 0);
   long long e2 = n2.next(n2.next(40, 2.0, target, 33), 1.0, target, 33);
-  bool ok = a == 15 && b == 22 && c == 33 && d == 41 && od == 49 && e1 == e2;
-  std::printf("[auto reports] after the average restarts: next report %lld (old schedule %lld), %s\n", d, od,
-              ok ? "ok" : "WRONG");
+  bool ok = a == 41 && b == 51 && n == 15 && od == 49 && e1 == e2;
+  std::printf("[auto reports] after the average restarts: reports at 10, %lld, %lld (old schedule %lld), near the target %lld: %s\n",
+              a, b, od, n, ok ? "ok" : "WRONG");
   return ok;
 }
 

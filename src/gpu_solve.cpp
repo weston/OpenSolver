@@ -9,6 +9,7 @@
 #if !(defined(__APPLE__) && defined(__aarch64__))
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -311,7 +312,8 @@ class Solve final : public MetalSolve {
   // One player's update: reach down the tree, terminal values, then values and regrets back up.
   // strategy: the rows the strategies are read from, the regrets unless given (a hybrid report: the sums)
   void enqueue_phase(const GameTree& g, unsigned p, bool refresh_reach, const IterationParams& params, Buf strategy = 0) {
-    const Variant variant = compact_sums ? kBfloatRegretsHalfSums : compact_regrets ? kBfloatRegrets : kFloatState;
+    const Variant variant = compact_sums ? (compact_regrets ? kBfloatRegretsHalfSums : kFloatRegretsHalfSums)
+                                         : (compact_regrets ? kBfloatRegrets : kFloatState);
     std::vector<Arg> args = {arg(nodes.buf), arg(ids.buf), value(params), arg(r[0].buf), arg(r[1].buf), arg(v.buf),
                              arg(strategy ? strategy : regrets.buf), arg(sums.buf), arg(cards.buf), value(uint32_t(0))};
     for (const auto& reach : plan.reach_levels) {
@@ -460,7 +462,7 @@ class Solve final : public MetalSolve {
     prepared_iteration = next;  // on the device only: the tree (or staging) keeps the measured state
     RootStats stats;
     try {
-      stats = committed ? s.root_stats_from_bfloat16(committed, committed_sums) : s.root_stats();
+      stats = committed ? s.root_stats_from_packed(committed, committed_sums) : s.root_stats();
     } catch (...) {
       b.finish();
       throw;
@@ -614,11 +616,15 @@ class Subtrees final : public SubtreeDevice {
     std::lock_guard<std::mutex> lock(b.mu);
     for (int q = 0; q < 2; ++q)
       b.write(s->r[q].buf, 0, host_reach[q].data(), host_reach[q].size() * sizeof(float), false);
-    s->enqueue_phase(g, unsigned(p), true, s->params_for(g, solver, t, unsigned(phase), unsigned(p)));
+    // p's own reach below the roots is the last pass's (p's strategy has not changed since), as in a whole-tree
+    // solve; both after the device was set up, filled, or used for a report's average-strategy reaches
+    s->enqueue_phase(g, unsigned(p), refresh_reach, s->params_for(g, solver, t, unsigned(phase), unsigned(p)));
+    refresh_reach = false;
     b.read(s->v.buf, 0, host_values.data(), host_values.size() * sizeof(float), false);
     b.flush();
     pending = true;
     device_newer = true;
+    device_zero = false;
   }
   const float* values(int j) override {
     finish();
@@ -639,6 +645,7 @@ class Subtrees final : public SubtreeDevice {
         q.average_mode = SkipAverage;
         q.mode = mode;
         s->enqueue_phase(g, p, true, q, s->sums.buf);
+        refresh_reach = true;
         auto& out = check[p][mode - 1];
         out.resize(host_values.size());
         b.read(s->v.buf, 0, out.data(), out.size() * sizeof(float), false);
@@ -701,9 +708,13 @@ class Subtrees final : public SubtreeDevice {
     finish();
     std::lock_guard<std::mutex> lock(b.mu);
     ProfileScope ps(b, "hybrid: copy to the GPU");
+    refresh_reach = true;
     if (!tree.compressed) {
       for (const auto& st : subtrees) {
         if (!st.floats) continue;
+        if (device_zero && all_zero(tree.regrets.data() + st.tree, st.floats) &&
+            all_zero(tree.strat.data() + st.tree, st.floats))
+          continue;  // a fresh tree: the device's zeros already
         b.write(s->regrets.buf, st.device * sizeof(float), tree.regrets.data() + st.tree, st.floats * sizeof(float), false);
         b.write(s->sums.buf, st.device * sizeof(float), tree.strat.data() + st.tree, st.floats * sizeof(float), false);
       }
@@ -714,6 +725,21 @@ class Subtrees final : public SubtreeDevice {
       float* rg = stage[0][0].data();
       float* sm = stage[0][1].data();
       for (const Chunk& k : chunks) {
+        if (device_zero) {  // a fresh tree's rows are zeros, which the device has already
+          std::atomic<bool> rows{false};
+          for_nodes(k, [&](const GNode& n, size_t) {
+            if (rows.load(std::memory_order_relaxed)) return;
+            const size_t count = tree.stored_size(n);
+            const int16_t* q = tree.regrets_q.data() + tree.qo(n);
+            const uint16_t* sq = tree.strat_q.data() + tree.qo(n);
+            for (size_t i = 0; i < count; ++i)
+              if (q[i] | sq[i]) {
+                rows = true;
+                return;
+              }
+          });
+          if (!rows) continue;
+        }
         for_nodes(k, [&](const GNode& n, size_t at) {
           const size_t count = size_t(n.num_children) * tree.num_hands(n.player);
           const float* r = tree.regrets_ro(n, rg + at);
@@ -784,6 +810,20 @@ class Subtrees final : public SubtreeDevice {
   std::vector<float> host_reach[2], host_values, check[2][2];  // check: [player][EV, best response]
   std::mutex wait_mu;
   bool pending = false, device_newer = false;
+  bool device_zero = true;  // the device's rows are the zeros they were allocated with
+  bool refresh_reach = true;  // the next pass propagates both players' reaches
+  // a float range of the tree, in parallel
+  static bool all_zero(const float* x, size_t n) {
+    std::atomic<bool> nonzero{false};
+    const int tasks = int(std::min<size_t>(64, std::max<size_t>(1, n >> 16)));
+    std::function<void(int)> fn = [&](int t) {
+      const size_t lo = n * size_t(t) / size_t(tasks), hi = n * size_t(t + 1) / size_t(tasks);
+      for (size_t i = lo; i < hi && !nonzero.load(std::memory_order_relaxed); ++i)
+        if (x[i] != 0.f) nonzero = true;
+    };
+    pool().parallel_for(tasks, fn);
+    return !nonzero;
+  }
 };
 }  // namespace
 }  // namespace gpu

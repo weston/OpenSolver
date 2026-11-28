@@ -16,7 +16,7 @@ namespace pio {
 namespace gpu {
 
 // Kernel builds: plain float32 state, bfloat16 regrets, bfloat16 regrets with fp16 strategy sums.
-enum Variant { kFloatState, kBfloatRegrets, kBfloatRegretsHalfSums, kVariants };
+enum Variant { kFloatState, kBfloatRegrets, kBfloatRegretsHalfSums, kFloatRegretsHalfSums, kVariants };
 
 using Buf = uint64_t;  // a device allocation: a cl_mem or a CUdeviceptr; 0 is none
 

@@ -72,7 +72,9 @@ def recommend(results, current):
         return None
     cpu, gpu = sum(r["cpu"] for r in done), sum(r["gpu"] for r in done)
     if max(cpu, gpu) <= CLOSE_RATIO * min(cpu, gpu):
-        return {"device": current, "ratio": round(max(cpu, gpu) / min(cpu, gpu), 2), "verdict": "same",
+        # about the same: keep the device in use, or the CPU (no setup, every tree) under Auto or CPU + GPU
+        return {"device": current if current in ("cpu", "gpu") else "cpu",
+                "ratio": round(max(cpu, gpu) / min(cpu, gpu), 2), "verdict": "same",
                 "cpu": round(cpu, 2), "gpu": round(gpu, 2)}
     device = "gpu" if gpu < cpu else "cpu"
     return {"device": device, "ratio": round(max(cpu, gpu) / min(cpu, gpu), 2), "verdict": "faster",

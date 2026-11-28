@@ -157,6 +157,7 @@ class Solver {
   bool hybrid_measure = false;
   double hybrid_device_seconds = 0, hybrid_cpu_seconds = 0;
   bool flop_ip_first = false;
+  bool half_precision_opening = false;  // built IP first: bfloat16 regrets and fp16 sums allowed (#591, #596)
   bool uses_flop_ip_first() const { return flop_ip_first && !predictive; }  // float32 or 16-bit (#578)
   FlopOpening flop_opening() const { return opening_; }
   bool sqrt_regret_weights() const { return sqrt_weights_; }
@@ -173,8 +174,9 @@ class Solver {
   }
   void restart_flop_opening() {
     const bool previously_eligible = average_sampling_ != AverageSampling::Dense;
-    const bool allow_fp16 = g_.cfg.river_sizing == RiverSizing::Smart || fp16_sums_;
-    const bool allow_bfloat = g_.cfg.river_sizing == RiverSizing::Smart || bfloat_regrets_;
+    const bool smart = g_.cfg.river_sizing == RiverSizing::Smart && half_precision_opening;
+    const bool allow_fp16 = smart || fp16_sums_;
+    const bool allow_bfloat = smart || bfloat_regrets_;
     set_average_sampling(AverageSampling::Dense);
     set_flop_opening(opening_ == FlopOpening::Edited ? FlopOpening::SquareRoot : opening_);
     if (std::any_of(g_.nodes.begin(), g_.nodes.end(), [](const GNode& n) { return n.flags != 0; })) return;
@@ -202,12 +204,14 @@ class Solver {
     const bool tight_target = target_chips > 0 && target_chips <= 0.003 * g_.cfg.start_pot();
     set_average_sampling(g_.iterations == 0 && (tight_target || compact) ? AverageSampling::Bounded : AverageSampling::Dense);
     set_bfloat_regrets(compact);
+    late_pairs_ = uses_sampled_averaging() && is_bfloat_target(target_chips);
   }
   AverageStep strategy_average_step(int t) const {
-    return average_step(t, params.gamma, avg_delay, avg_reset, uses_sampled_averaging(), uses_fp16_sums(t));
+    return average_step(t, params.gamma, avg_delay, avg_reset, uses_sampled_averaging(), uses_fp16_sums(t), late_pairs_);
   }
+  bool late_pairs_ = false;  // a sampled solve to the default 0.3% of pot pairs its later iterations (#598)
   bool fp16_sums() const { return fp16_sums_; }
-  bool uses_fp16_sums(int t) const { return fp16_sums_ && t <= 1024 && uses_bfloat_regrets(t); }
+  bool uses_fp16_sums(int t) const { return fp16_sums_ && t <= 1024 && bfloat_regrets_ && uses_sampled_averaging(); }
   void set_fp16_sums(bool enabled) {
     fp16_sums_ = enabled && bfloat_regrets_;
     if (fp16_sums_) {
@@ -396,7 +400,7 @@ class Solver {
 
   // Stats from the tree root.
   RootStats root_stats();
-  RootStats root_stats_from_bfloat16(const uint16_t* committed_regrets, const uint16_t* committed_sums = nullptr) const;
+  RootStats root_stats_from_packed(const uint16_t* committed_regrets, const uint16_t* committed_sums = nullptr) const;
 
   // Strategies at decision node (A * H[acting]): current (regret matching) / average.
   void current_strategy(uint32_t ni, float* out) const;

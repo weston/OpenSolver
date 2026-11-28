@@ -482,8 +482,8 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   uint64_t metal_payoff_version = 0, metal_generation = 0;
   // A hybrid solve (#582, v4_hybrid): the GPU solves some of a flop tree's turn subtrees in every pass
   // while the CPU walks the others. The share of the turn cards starts where the last solve settled
-  // (half at first), as much as fits the GPU, and is set once from iteration 2, timed one device after
-  // the other. WSOLVER_HYBRID=<share> (a developer switch) fixes it, and turns the hybrid on under the
+  // (half at first), as much as fits the GPU, and is set once from iterations 19 and 20, timed one
+  // device after the other. WSOLVER_HYBRID=<share> (a developer switch) fixes it, and turns the hybrid on under the
   // CPU algorithms too.
   std::unique_ptr<SubtreeDevice> hybrid;
   uint64_t hybrid_generation = 0;
@@ -491,9 +491,18 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   const bool hybrid_wanted = !gpu && (algorithm_ == "v4_hybrid" || fixed_share);
   double share = fixed_share ? std::clamp(std::atof(fixed_share), 0.0, 1.0) : hybrid_share_;
   double hybrid_setup_seconds = 0;
+  long long hybrid_first_tick = 0;
+  // WSOLVER_HYBRID_DEBUG=1: where a hybrid solve's time went, on stderr at the end
+  const bool hybrid_debug = std::getenv("WSOLVER_HYBRID_DEBUG") != nullptr;
+  double debug_setup = 0, debug_reports = 0, debug_publish = 0, debug_iterations = 0;
+  auto seconds_since = [](std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+  };
   auto release_hybrid = [&] {
     if (!hybrid) return;
+    const auto t0 = std::chrono::steady_clock::now();
     hybrid->publish(*tree_);
+    debug_publish += seconds_since(t0);
     solver_->subtrees = nullptr;
     pause_requests_.sync_regrets = {};
     hybrid.reset();
@@ -518,6 +527,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       pause_requests_.sync_regrets = [&] { hybrid->publish(*tree_); };
       hybrid_generation = pause_requests_.generation;
       hybrid_setup_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      debug_setup += hybrid_setup_seconds;
       return {};
     }
     return why;
@@ -621,19 +631,27 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
             release_metal_memory();
           }
         }
-        // Iteration 2, one device after the other; or a device that times its own passes (#589) over iterations
-        // 5-8 with both at work, once the GPU's clocks are up: measured alone, early, Metal's passes took twice
-        // their time in the solve, and the share it gave was 0.58 where 0.7-0.75 was fastest (M1 Ultra, 3BP).
+        // Two iterations timed one device after the other: 19 and 20, where the CPU prunes (from 17) and one
+        // of them adds to the sampled average; or the second and third of a solve that resumes later. A device
+        // that times its own passes (#589) is measured with both at work, over four iterations from 19 (from the
+        // fourth of a resumed solve, once the GPU's clocks are up): timed alone, Metal's passes took twice their
+        // time in the solve, and gave 0.58 where 0.7-0.75 was fastest (M1 Ultra, 3BP).
+        if (done == 0) hybrid_first_tick = tick;
+        const bool late = hybrid_first_tick > 18;
         const bool concurrent = hybrid && hybrid->times_passes();
-        const long long first = concurrent ? 4 : 1, window = concurrent ? 4 : 1;
-        const bool measure = hybrid && done >= first && done < first + window && !fixed_share;
+        const long long window = concurrent ? 4 : 2, from = late ? (concurrent ? 3 : 1) : 19;
+        const long long at = late ? done : tick;
+        const bool measure = hybrid && !fixed_share && at >= from && at < from + window;
+        const bool decide = measure && at == from + window - 1;
         if (measure) {
+          if (!solver_->hybrid_measure) solver_->hybrid_device_seconds = solver_->hybrid_cpu_seconds = 0;
           solver_->hybrid_measure = true;
-          if (done == first) solver_->hybrid_device_seconds = solver_->hybrid_cpu_seconds = 0;
         }
+        const auto iteration_start = std::chrono::steady_clock::now();
         if (!metal) solver_->iterate(tick, solver_->whole_tree_first_player());
-        if (measure) solver_->hybrid_measure = false;
-        if (measure && done == first + window - 1) {
+        if (hybrid) debug_iterations += seconds_since(iteration_start);
+        if (decide) {
+          solver_->hybrid_measure = false;
           // per pass: the device's time for its share g * share, the CPU's c * (1 - share); even at g * s = c * (1 - s)
           const double g = solver_->hybrid_device_seconds / window / std::max(share, 1e-3);
           const double c = solver_->hybrid_cpu_seconds / window / std::max(1 - share, 1e-3);
@@ -722,7 +740,9 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
             if (metal) metal->publish_for_cpu(*tree_);
             // a hybrid solve measures its own rows on the device (#582); the tree gets them at the end
             solver_->hybrid_reports = hybrid != nullptr;
+            const auto report_start = std::chrono::steady_clock::now();
             st = solver_->root_stats();
+            if (hybrid) debug_reports += seconds_since(report_start);
             solver_->hybrid_reports = false;
           }
           cached_root_stats_ = st;
@@ -782,7 +802,11 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   {
     std::lock_guard<std::mutex> lk(tree_mu_);
     release_metal();
+    const bool was_hybrid = hybrid != nullptr;
     release_hybrid();
+    if (hybrid_debug && was_hybrid)
+      std::fprintf(stderr, "hybrid: setup %.3f s, iterations %.3f s, reports %.3f s, copies to the tree %.3f s\n",
+                   debug_setup, debug_iterations, debug_reports, debug_publish);
   }
   // Not solving any more *before* "stopped" is printed: a go sent on seeing it must start a new solve,
   // not find this thread still flagged as solving and be dropped (#364).
@@ -826,18 +850,21 @@ void Upi::stop_solver(const char* reason) {
 
 // ------------------------------------------------------------------------------------------------
 
+// The app's Smart flops that update IP first, with the square-root opening (#554): a flop where OOP may
+// check and IP can then bet short of all-in. It began on unpaired rainbow flops with a forced check; every
+// flop, and OOP bets beside the check, take the order since #591: Ryzen 9 9950X, 32 threads, to 0.3% of pot, HUNL SRP on AsQs5s 29.0 ->
+// 24.6 s, Ks7s2d 59.2 -> 53.5 s, KdKh5c 81.0 -> 69.2 s, Ts6s6d 62.7 -> 60.0 s, 7s7d2c 71.0 -> 72.8 s (the
+// one loss); HUNL 3BP on AhKd3c 7.04 -> 6.68 s, Kh9h4c 5.18 -> 4.89 s, Qs8s3s 3.10 -> 2.85 s, Td7c5h
+// 7.95 -> 6.74 s.
 static bool flop_ip_opens_betting(const GameTree& tree) {
-  const auto& board = tree.cfg.board;
-  if (tree.cfg.river_sizing != RiverSizing::Smart || board.size() != 3) return false;
-  for (int i = 0; i < 3; ++i) {
-    for (int j = i + 1; j < 3; ++j) {
-      if (card_suit(board[i]) == card_suit(board[j]) || card_rank(board[i]) == card_rank(board[j])) return false;
-    }
-  }
+  if (tree.cfg.river_sizing != RiverSizing::Smart || tree.cfg.board.size() != 3) return false;
   const auto& oop = *tree.aroot;
-  if (oop.kind != ANodeKind::Decision || oop.player != 0 || oop.actions.size() != 1 ||
-      oop.actions[0].kind != ActKind::Check) return false;
-  const auto& ip = *oop.children[0];
+  if (oop.kind != ANodeKind::Decision || oop.player != 0) return false;
+  size_t check = oop.actions.size();
+  for (size_t k = 0; k < oop.actions.size(); ++k)
+    if (oop.actions[k].kind == ActKind::Check) check = k;
+  if (check == oop.actions.size()) return false;
+  const auto& ip = *oop.children[check];
   if (ip.kind != ANodeKind::Decision || ip.player != 1 || ip.actions.back().kind != ActKind::Check) return false;
   return std::any_of(ip.actions.begin(), ip.actions.end(), [&](const Action& action) {
     return action.kind == ActKind::Bet && action.total < tree.cfg.eff_stack;
@@ -866,6 +893,10 @@ std::string Upi::cmd_build_tree(const Args& a) {
   solver_->flop_ip_first = auto_flop_order && !first_player_ && flop_ip_opens_betting(*tree_);
   if (sqrt_opening && solver_->uses_flop_ip_first()) {
     solver_->set_flop_opening(FlopOpening::SquareRoot);
+    // with bfloat16 regrets and fp16 sums on the GPU (0.3% targets) on every such flop, as with the ordinary
+    // opening (#586); Solver::set_bfloat_regrets keeps suit-symmetric flops (paired, two-tone, monotone) out.
+    // M4 Metal, to 0.3%: HUNL 3BP AhKd3c 11.92 -> 9.71 s, Qs8h4d 13.13 -> 10.31 s, 9c7d2h 11.71 -> 9.63 s (#596)
+    solver_->half_precision_opening = true;
     solver_->prepare_sampled_averaging();
   } else if (solver_->sampled_smart_tree()) {
     // With bfloat16 regrets and fp16 sums on the GPU too, on Medium trees (#586): HUNL 3BP to 0.3% on

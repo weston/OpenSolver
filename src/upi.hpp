@@ -103,12 +103,17 @@ struct AutoReportSchedule {
     if (target > 0 && e > target && last_t > 0 && t > last_t && last_e > e) {
       double k = std::log(last_e / e) / std::log(static_cast<double>(t) / static_cast<double>(last_t));
       k = std::clamp(k, 0.5, 4.0);
-      const double tstar = static_cast<double>(t) * std::pow(e / target, 1.0 / k);
+      // aimed 2% below the target: a report that just misses costs another report (#603)
+      const double tstar = static_cast<double>(t) * std::pow(e / (0.98 * target), 1.0 / k);
       const long long g = static_cast<long long>(std::ceil(tstar - static_cast<double>(t)));
       gap = std::clamp<long long>(g, 2, std::max<long long>(5, t / 2));
     }
     last_t = t;
     last_e = e;
+    // Before the average restarts, a report far above the target cannot stop the solve, and the restart
+    // lifts exploitability anyway: the next one comes 8 iterations after it (#603: HUNL SRP's 4 reports
+    // before iteration 33, ~0.35 s each on CPU and GPU, become 1)
+    if (reset_t > 0 && t < reset_t && target > 0 && e > 8 * target) return std::max(t + gap, reset_t + 8);
     return t + gap;
   }
 };

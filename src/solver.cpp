@@ -1406,7 +1406,10 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
         case 4: return average_float_strategy<4>(sums, regrets, out, H);
       }
     };
-    if (half) return read_average(half, report_bfloat16_regrets_ + n.storage);
+    if (half) {
+      if (report_bfloat16_regrets_) return read_average(half, report_bfloat16_regrets_ + n.storage);
+      return read_average(half, g_.regrets.data() + n.storage);
+    }
     if (report_bfloat16_regrets_) return read_average(S, report_bfloat16_regrets_ + n.storage);
     return read_average(S, g_.regrets.data() + n.storage);
   }
@@ -3035,7 +3038,7 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
 }
 
 
-RootStats Solver::root_stats_from_bfloat16(const uint16_t* committed_regrets, const uint16_t* committed_sums) const {
+RootStats Solver::root_stats_from_packed(const uint16_t* committed_regrets, const uint16_t* committed_sums) const {
   Solver reader = *this;
   reader.report_bfloat16_regrets_ = committed_regrets;
   reader.report_fp16_sums_ = committed_sums;
@@ -3051,6 +3054,7 @@ RootStats Solver::root_stats() {
   if (subtrees && hybrid_reports && !write_best_response && cpu_roots_for_ == subtrees) {
     device_reach(0, g_.init_reach[0].data(), g_.init_reach[1].data(), true);
     subtrees->launch_check();
+    const auto rt0 = std::chrono::steady_clock::now();
     for (int p = 0; p < 2; ++p) {
       const int o = 1 - p, Ho = g_.num_hands(o);
       cpu_ev_[p].assign(cpu_roots_.size() * cpu_root_stride_, 0.0f);
@@ -3069,7 +3073,12 @@ RootStats Solver::root_stats() {
       else
         for (int i = 0; i < static_cast<int>(cpu_roots_.size()); ++i) fn(i);
     }
+    const auto rt1 = std::chrono::steady_clock::now();
     subtrees->finish();
+    if (std::getenv("WSOLVER_HYBRID_DEBUG"))
+      std::fprintf(stderr, "hybrid report: CPU %.3f s, then GPU wait %.3f s\n",
+                   std::chrono::duration<double>(rt1 - rt0).count(),
+                   std::chrono::duration<double>(std::chrono::steady_clock::now() - rt1).count());
     hybrid_check_ = true;
   }
   struct CheckOff {

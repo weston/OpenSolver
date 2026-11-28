@@ -66,7 +66,8 @@ await wait(() => actionBack() && !actionBack().disabled);
 actionBack().click();
 await wait(() => actionBack()?.disabled && document.querySelector('#strip .action'));
 document.querySelector('#matrix .cell').click();
-await wait(() => document.querySelector('#side-hand .hand-all[aria-pressed=true]'));
+await wait(() => document.querySelector('#side-hand .hand-head .cls')?.textContent === 'AA'
+  && document.querySelector('#side-hand .hand-all[aria-pressed=true]'));
 check(!document.querySelector('#side-hand table.combos'), 'the intermediate class view is still present');
 check(document.querySelectorAll('#side-hand .hand-combo-values').length > 0, 'combos are missing their equity and EV');
 document.querySelector('#side-hand .hand-combo').click();

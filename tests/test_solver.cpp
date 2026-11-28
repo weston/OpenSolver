@@ -1642,6 +1642,22 @@ static bool auto_report_schedule() {
   return ok;
 }
 
+static bool report_after_slow_interval() {
+  const double target = 1.5;
+  AutoReportSchedule srp;
+  srp.next(114, 3.85660049, target, 33);
+  const auto follow_up = srp.next(164, 2.69101149, target, 33);
+  const auto crossing = srp.next(follow_up, 2.00486589, target, 33);
+
+  AutoReportSchedule turn;
+  turn.next(114, 5.03810430, target, 33);
+  const auto steady = turn.next(171, 2.50236574, target, 33);
+  const bool ok = follow_up == 191 && crossing == 207 && steady == 233;
+  std::printf("[auto reports] slow SRP interval: %lld then %lld, steady turn: %lld: %s\n",
+              follow_up, crossing, steady, ok ? "ok" : "WRONG");
+  return ok;
+}
+
 static bool smart_river_spr() {
   ActionTreeParams params;
   params.dead = 100;
@@ -1685,6 +1701,7 @@ int main(int argc, char** argv) {
   fails += !low_reach_average_strategy();
   fails += !parallel_equivalence();
   fails += !auto_report_schedule();
+  fails += !report_after_slow_interval();
   fails += !smart_river_spr();
   // #71 convergence experiments still converge: predictive regret matching (PCFR+-style,
   // matching input R + last instantaneous regret) and a delayed strategy average.

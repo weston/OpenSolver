@@ -588,7 +588,8 @@ iterations, and under a late DCFR clock (mild discounts) their first regrets lin
   bytes for packed rows in every loop); FP8-like (2-4 mantissa bits) 485-1240.
 - *Sampled sums for longer* (stride 4 to elapsed 128): 3BP 144 iterations against 124. Stride 4
   throughout: SRP 250. Pairs to the end only for the 0.3% default (#599); to 0.1% they cost 263
-  against 208.
+  against 208. Since #615 they are on from 0.2% to 1% of pot (faster there on CPU and on CPU + GPU) and
+  off at 0.1%, where they leave the average a noise floor that 3BP stalls on (270 iterations against 210).
 
 **Chance sampling for the whole solve** (each turn deal visits some of its river cards, values scaled to
 match; the exact exploitability still decides when to stop): 3BP to 0.3% of pot, all cards 126 iterations
@@ -615,6 +616,57 @@ their sampling noise is not averaged away.
   of `terminal` and `update_values` with 1884 ms: the time is the prefix scans themselves (one per showdown,
   each over the board's ~3,000-entry table and the opponent's 963 reaches, ~250,000 a pass), not the value
   rows around them.
+
+## A predicted warm start, and a river-strategy network (#623)
+
+Can a prediction (a neural network trained on our own solves) start the exact solver close enough that it
+certifies the target in far fewer iterations? Measured on HUNL 3BP (Medium Smart tree, `smart_rivers`, no
+square-root opening), 130 iterations to 0.3% of pot from nothing, by restarting a fresh solve from the
+solved average strategy (an experiment command, not merged):
+
+| start | iterations to 0.3% |
+|---|---|
+| nothing | 130 |
+| the solved strategy as regrets x 1,000 (a bare strategy) | 126-136: the first iteration overwrites it |
+| the solved regrets kept, the sums zeroed | 126 |
+| the solved strategy as regrets x 1e8 | 10 (certified at the first report) |
+| the same with 2% / 5% / 10% / 30% of each hand mixed with a random strategy (x 1e7) | 57 / 71 / 94 / 162 |
+| 5% mixed, regrets x 1e6 / x 3e6 | 109 / 41 |
+| flop and turn only (rivers from nothing), x 3e6 | 107-111 |
+
+So a prediction helps only with the solver's confidence (regrets at each node's own scale, not a strategy),
+only when it is within a few percent of each hand's strategy (5% mixing, a total-variation distance of ~0.025,
+halves the iterations; 30% is slower than nothing), and only if it covers the rivers: the flop and turn alone
+save 17%.
+
+**A value network at the turn (DeepStack's depth-limited solving) cannot beat a direct solve to an exact
+target.** It replaces the rivers inside the flop and turn's iterations, but the rivers must still be solved
+for the full tree's exploitability to certify. With the flop and turn frozen at their solved strategies (x 1e8)
+and the rivers from nothing, 3BP takes 148 iterations to 0.3% (147 again), more than the 130 of the whole
+solve from nothing: the frozen streets are themselves only 0.3% good, so the rivers must be tighter still.
+
+**A first river-strategy network is far from the ~0.025 needed.** Data: 300 random flops of HUNL 3BP solved
+to 0.3% on CPU and GPU, 5% of each solve's river roots (the first decision after the river deal, ~880 a flop
+with more than one action), 301K records; 45 flops held out. Inputs per hand: its reach, its equity against
+the opponent's range with card removal, its strength among all live hands, the share of the opponent's
+range it blocks, and the opponent's reach and equity; per record, histograms of both ranges over equity and
+the stack to pot. A per-hand network (128 wide) with a reach-weighted pool of the range, scoring each action
+by its size; reach-weighted cross-entropy. Reach-weighted total-variation distance to the solved strategy on
+the held-out flops:
+
+| | error |
+|---|---|
+| uniform over the actions | 0.468 |
+| each record's own range-average strategy (an oracle) | 0.332 |
+| network, 31K records, 2 epochs | 0.228 |
+| network, 258K records, 3 epochs (~14 min each on the CPU) | 0.203 / 0.186 / 0.181 |
+| the same spots solved again: 0.3% on the CPU against 0.3% on CPU and GPU | 0.029 |
+| the same spots solved again: 0.3% against 0.1% | 0.068 |
+
+Eight times the data took the error from 0.23 to 0.18, and the epochs flatten. Many river hands are near
+indifferent, so solves of one spot disagree by 0.03-0.07 themselves: matching one solution is a stricter
+test than the solver needs, but the network is still 3-6x off that floor, at the easiest node of the river,
+and a warm start would need every river decision. Not pursued further.
 
 ## CPU on the M4 after #599: smaller wins (#617)
 

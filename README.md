@@ -990,7 +990,7 @@ GPU, with one of three backends:
 
 | GPU | Backend | Needs |
 |---|---|---|
-| Apple Silicon | Metal | macOS; the default device there |
+| Apple Silicon | Metal | macOS; the default device there (flop trees on the CPU and GPU together) |
 | NVIDIA (Maxwell or later) | CUDA | the NVIDIA driver, and NVRTC, the CUDA runtime compiler: `nvrtc64_*.dll` / `libnvrtc.so` from the [CUDA toolkit](https://developer.nvidia.com/cuda-downloads) (found through `CUDA_PATH`) or next to the solver. Without NVRTC the NVIDIA driver's own OpenCL is used |
 | AMD Radeon, Intel, others | OpenCL 1.2 | the GPU driver (AMD Adrenalin ships OpenCL); 32 KB of work-group memory |
 
@@ -1021,7 +1021,7 @@ the algorithm's first name, is still accepted.
   meet at the flop. A report measures each device's subtrees where they are, so the GPU's rows go to
   the tree only between solves and for commands run during one. The GPU's share of the turn cards
   starts at half (or where the last solve in the same process settled), as much of it as fits 80% of
-  the GPU's memory, and is set once from iteration 2, timed one device after the other. The tree keeps
+  the GPU's memory, and is set once from iterations 19 and 20, timed one device after the other. The tree keeps
   the CPU's storage (16-bit where `small_strats auto` picks it); the GPU holds its share in float32, so
   a tree larger than the GPU solves with a smaller share. A turn or river tree, a subtree solve, locks,
   ICM and predictive CFR solve on the CPU (`SOLVER: device cpu (<why>)`).
@@ -1036,8 +1036,10 @@ the algorithm's first name, is still accepted.
   **On Apple Silicon** (#589) memory is shared, so the GPU solves its share in the tree's own float32 rows,
   in place: nothing is copied, and the solve takes about the CPU solve's memory, where the GPU alone keeps
   a second copy of the whole state. A 16-bit tree (`small_strats on`, or float32 does not fit) solves on
-  the CPU. The share starts at three quarters and is set once from iterations 5-8, with both devices at
-  work. On an M1 Ultra (20 threads, 64-core GPU), the viewer's Smart trees to 0.3% of pot (2026-11-27;
+  the CPU. The share starts at three quarters and is set once from iterations 19-22, with both devices at
+  work. **It is the default there for flop trees:** a solver given no `set_algorithm` solves a whole flop
+  tree on the CPU and GPU together and any other tree on the GPU alone; `set_algorithm v4_metal` (or
+  `v4_gpu`) keeps every tree on the GPU, and `show_settings` reports `v4_metal` either way. On an M1 Ultra (20 threads, 64-core GPU), the viewer's Smart trees to 0.3% of pot (2026-11-27;
   memory is the peak footprint):
 
   | tree | CPU | GPU | CPU and GPU |

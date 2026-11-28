@@ -26,6 +26,8 @@ documentation; contains no PioSOLVER code.
   7.1 -> 4.4 s, HUNL SRP 95 -> 62 s (it does not fit the GPU alone). The viewer's Auto device uses it
   for flop trees. On Apple Silicon too (#589), where the GPU updates the tree's own rows in place: on an
   M1 Ultra, against the GPU alone, HUNL 3BP 4.4 -> 3.4 s and 5.8 -> 2.2 GB, HUNL SRP 51 -> 37 s and 42 -> 15 GB.
+  It is the default there for flop trees: a solver given no `set_algorithm` solves a flop tree on both and
+  any other tree on the GPU; `set_algorithm v4_metal` keeps every tree on the GPU.
 - Vector-form **Discounted CFR** with exact card removal and no abstraction. Defaults α=1.3, γ=4,
   β=0 then 0.5 after iteration 50; `set_dcfr` overrides the exponents.
 - **Regret-based pruning** on by default (`set_pruning`). Skips traverser actions whose current

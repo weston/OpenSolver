@@ -2996,7 +2996,7 @@ def check_solve_device(exe):
 
 
 def check_hybrid(exe):
-    """v4_hybrid (#582): a discrete GPU and the CPU each solve some of a flop tree's turn subtrees."""
+    """v4_hybrid (#582, #589): the GPU and the CPU each solve some of a flop tree's turn subtrees."""
     probe = Upi(exe)
     try:
         available = "v4_hybrid," in probe.cmd("list_algorithms")
@@ -3019,7 +3019,7 @@ def check_hybrid(exe):
                 reply = u.cmd(command)
                 assert not reply.startswith("ERROR"), (command, reply)
                 return reply
-            for command in ("set_algorithm " + algorithm, "set_threads 4", "small_strats " + storage,
+            for command in (*(["set_algorithm " + algorithm] if algorithm else []), "set_threads 4", "small_strats " + storage,
                             "set_board " + board, "set_pot 0 0 100", "set_eff_stack 300",
                             "set_range OOP KK,JJ,87s,AQs,98s,TT,44,22,AKo,KQs,T9s",
                             "set_range IP 99,77,TT,AQs,KJs,55,66,ATo,QJs,A5s",
@@ -3077,6 +3077,18 @@ def check_hybrid(exe):
     turn = solve(["go 4 steps"], board="Ah3cQd7s", lines=("0 30 90", "0 0 30"))
     check(turn["devices"][:1] == ["SOLVER: device cpu (only flop trees solve on both)"],
           f"a turn tree solves on the CPU ({turn['devices']})")
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        # Apple Silicon's default (#589): a flop tree on both, any other tree on the GPU; set_algorithm, even
+        # v4_metal, then applies to every tree
+        default = solve(["go 4 steps"], algorithm=None, share=None)
+        chosen = solve(["go 4 steps"], share=None)
+        default_turn = solve(["go 4 steps"], algorithm=None, share=None, board="Ah3cQd7s", lines=("0 30 90", "0 0 30"))
+        metal = solve(["go 4 steps"], algorithm="v4_metal", share=None)
+        check(default["devices"][:1] == chosen["devices"][:1] == ["SOLVER: device hybrid (GPU 75%)"] and
+              default["strategy"] == chosen["strategy"] and default_turn["devices"][:1] == ["SOLVER: device gpu"] and
+              metal["devices"][:1] == ["SOLVER: device gpu"],
+              f"by default a flop tree solves on both and a turn tree on the GPU; v4_metal is the GPU alone "
+              f"({default['devices'][:1]}, {default_turn['devices'][:1]}, {metal['devices'][:1]})")
 
 
 def main(exe, big=False):

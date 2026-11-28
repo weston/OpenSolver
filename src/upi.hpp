@@ -153,7 +153,8 @@ class Upi {
   void start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub = nullptr, bool stable_flop = false);
   void prepare_solve();
   void solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
-                          const std::string& endl_str, bool gpu, bool stable_flop);
+                          const std::string& endl_str, bool gpu, bool hybrid_solve, bool stable_flop);
+  std::string solve_algorithm(bool subtree) const;
   void start_subtree_solve(const NodeRef& r, double seconds, long long steps);
   RootStats current_root_stats();
   void apply_payoff();
@@ -285,6 +286,10 @@ class Upi {
   int threads_ = 0;
   double step_ = 1.0;
   std::string algorithm_;
+  // Apple Silicon's default (#589), until set_algorithm: a whole flop tree solves on the CPU and the GPU together,
+  // everything else as v4_metal. show_settings reports v4_metal, which the viewer reads as "prefers the GPU".
+  bool algorithm_default_ = false;
+  bool solve_gpu_ = false;  // the running solve's algorithm is the GPU's
   std::string tree_alg_ = "auto";  // algorithm the current tree was built with
   std::string small_strats_ = "auto";
   std::string outcome_tables_ = "auto";  // set_outcome_tables

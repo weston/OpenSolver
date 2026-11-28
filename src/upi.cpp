@@ -763,6 +763,9 @@ std::string Upi::cmd_build_tree(const Args& a) {
   if (sqrt_opening && solver_->uses_flop_ip_first()) {
     solver_->set_flop_opening(FlopOpening::SquareRoot);
     solver_->prepare_sampled_averaging();
+  } else if (solver_->sampled_smart_tree()) {
+    // Sampled averaging only: bfloat16 regrets and fp16 sums stay with the square-root opening (#559)
+    solver_->prepare_sampled_averaging(false, false);
   }
   return result;
 }

@@ -844,20 +844,19 @@ void Upi::stop_solver(const char* reason) {
 
 // ------------------------------------------------------------------------------------------------
 
-// The app's Smart flops that update IP first, with the square-root opening (#554): an unpaired flop where
-// OOP may check and IP can then bet short of all-in. strict: the flops it began on, rainbow with a forced
-// check, where bfloat16 regrets and fp16 sums are allowed too (#559). Unpaired flops of any suits, and
-// OOP bets beside the check, take the order since #591: Ryzen 9 9950X, 32 threads, to 0.3% of pot, HUNL
-// SRP on AsQs5s 29.0 -> 24.6 s, on Ks7s2d 59.2 -> 53.5 s; HUNL 3BP on AhKd3c 7.04 -> 6.68 s, Kh9h4c 5.18 ->
-// 4.89 s, Qs8s3s 3.10 -> 2.85 s, Td7c5h 7.95 -> 6.74 s. A paired flop is no faster (SRP on 7s7d2c 71.0 ->
-// 72.8 s), so it keeps the standard order.
+// The app's Smart flops that update IP first, with the square-root opening (#554): a flop where OOP may
+// check and IP can then bet short of all-in. strict: the flops it began on, unpaired rainbow with a forced
+// check, where bfloat16 regrets and fp16 sums are allowed too (#559). Every flop, and OOP bets beside the
+// check, take the order since #591: Ryzen 9 9950X, 32 threads, to 0.3% of pot, HUNL SRP on AsQs5s 29.0 ->
+// 24.6 s, Ks7s2d 59.2 -> 53.5 s, KdKh5c 81.0 -> 69.2 s, Ts6s6d 62.7 -> 60.0 s, 7s7d2c 71.0 -> 72.8 s (the
+// one loss); HUNL 3BP on AhKd3c 7.04 -> 6.68 s, Kh9h4c 5.18 -> 4.89 s, Qs8s3s 3.10 -> 2.85 s, Td7c5h
+// 7.95 -> 6.74 s.
 static bool flop_ip_opens_betting(const GameTree& tree, bool strict = false) {
   const auto& board = tree.cfg.board;
   if (tree.cfg.river_sizing != RiverSizing::Smart || board.size() != 3) return false;
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 3 && strict; ++i) {
     for (int j = i + 1; j < 3; ++j) {
-      if (card_rank(board[i]) == card_rank(board[j]) || (strict && card_suit(board[i]) == card_suit(board[j])))
-        return false;
+      if (card_rank(board[i]) == card_rank(board[j]) || card_suit(board[i]) == card_suit(board[j])) return false;
     }
   }
   const auto& oop = *tree.aroot;

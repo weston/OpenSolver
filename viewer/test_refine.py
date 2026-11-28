@@ -280,7 +280,13 @@ class RefineIntegrationTest(unittest.TestCase):
                             ready = self.view_and_wait(TURN)
                             self.assertIsNone(ready["error"])
                             self.assertTrue(ready["ready"]["smart_turn"])
-                            self.assertEqual(self.mgr.rsolver.state()["active_device"], device)
+                            # the device it solves on: Auto's pick for the tree; a turn re-solve on both
+                            # devices is a turn tree, which solves on the CPU (#582)
+                            picked = device
+                            if device == "auto":
+                                picked = (self.main.auto_choice or {}).get("device", "cpu")
+                            self.assertEqual(self.mgr.rsolver.state()["active_device"],
+                                             "cpu" if picked == "hybrid" else picked)
                             live = self.req("/api/strategy?id=" + TURN)[1]
                             self.assertTrue(live["refined"]["smart_turn"])
                             self.assertNotEqual(live["freq"], initial["freq"])

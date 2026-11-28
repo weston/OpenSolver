@@ -992,8 +992,27 @@ the algorithm's first name, is still accepted.
   (seconds to 0.2% of pot, CPU vs GPU, `bench/run.py --threads 32`, 2026-11-27: flop_3bet 0.12 vs **0.09**, flop_srp_2 0.20 vs 0.41, flop_srp_4 0.34 vs 0.67, deep 0.61 vs 0.79, threebet_mono 3.31 vs 4.12, 25bb fixture 41.6 vs 48.4 with float32 state on the GPU; a new process also compiles the kernels once, about 0.3 s), so a discrete GPU is not the default device: try both on your own trees, the
   viewer's Compute device setting switches between them. The CUDA backend has not been measured
   (it has not yet run on an NVIDIA GPU).
+- **CPU and GPU together** (`set_algorithm v4_hybrid`, a discrete GPU; the viewer's Compute device
+  **CPU and GPU together**). The turn subtrees of a flop tree do not depend on each other within a
+  pass, so the GPU solves those of some of the turn cards while the CPU walks the others, and the two
+  meet at the flop. A report measures each device's subtrees where they are, so the GPU's rows go to
+  the tree only between solves and for commands run during one. The GPU's share of the turn cards
+  starts at half (or where the last solve in the same process settled), as much of it as fits 80% of
+  the GPU's memory, and is set once from iteration 2, timed one device after the other. The tree keeps
+  the CPU's storage (16-bit where `small_strats auto` picks it); the GPU holds its share in float32, so
+  a tree larger than the GPU solves with a smaller share. A turn or river tree, a subtree solve, locks,
+  ICM and predictive CFR solve on the CPU (`SOLVER: device cpu (<why>)`).
+  On the RX 9060 XT with 32 Zen 5 threads, the viewer's Smart trees to 0.3% of pot (2026-11-27):
+
+  | tree | CPU | GPU | CPU and GPU |
+  |---|---|---|---|
+  | HUNL 4BP (224 MB, 16-bit) | 0.86 s | 0.94 s | **0.80 s** |
+  | HUNL 3BP (1.3 GB) | 7.1 s | 7.5 s | **4.4 s** |
+  | HUNL SRP (9.1 GB) | 95 s | does not fit | **62 s** (GPU 44%) |
+
 - **Auto device (viewer).** With a discrete GPU the viewer's Compute device starts on **Auto: the
-  faster for each tree**. When you build a tree, Auto reads the solver's estimate of its size: a tree
+  faster for each tree**. A flop tree goes to the CPU and GPU together when the solver offers it. For
+  any other tree, Auto reads the solver's estimate of its size when you build it: a tree
   larger than the GPU takes (`show_gpu`) goes to the CPU, and any other to whichever device measured
   faster on trees that size on this machine. It picks again when you switch to Auto with a tree built.
   The measurements come from a benchmark that solves four trees from 46 MB to 7 GB (32-bit storage) on

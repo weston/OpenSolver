@@ -10,9 +10,19 @@
 #include "metal.hpp"
 
 namespace pio {
+class SubtreeDevice;
 // The GPU solve's algorithm: v4_gpu on any platform, or v4_metal, its name from when Metal was the only
 // backend.
 inline bool gpu_algorithm(const std::string& a) { return a == "v4_gpu" || a == "v4_metal"; }
+// A flop tree's turn subtrees shared between a discrete GPU and the CPU (#582); not on Apple Silicon.
+inline bool hybrid_algorithm(const std::string& a) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  (void)a;
+  return false;
+#else
+  return a == "v4_hybrid";
+#endif
+}
 #if defined(__APPLE__) && defined(__aarch64__)
 constexpr const char* kGpuAlgorithm = "v4_metal";  // what the solver starts with where it prefers the GPU
 #else
@@ -32,6 +42,7 @@ inline void gpu_flop_table(const GameTree& tree, AllinRunouts& runouts,
                            const std::vector<std::array<uint32_t, 4>>& boards) {
   metal_flop_table(tree, runouts, boards);
 }
+inline std::unique_ptr<SubtreeDevice> make_gpu_subtrees(GameTree&, uint64_t, double) { return {}; }
 #else
 // The first call looks for a GPU and loads its driver; kernels are compiled on first use.
 bool gpu_available();
@@ -42,5 +53,7 @@ bool gpu_preferred();
 uint64_t gpu_memory_bytes();  // the GPU's own memory
 std::unique_ptr<MetalSolve> make_gpu_solve(GameTree& tree, uint64_t available);
 void gpu_flop_table(const GameTree& tree, AllinRunouts& runouts, const std::vector<std::array<uint32_t, 4>>& boards);
+// A hybrid solve's device (#582): the turn subtrees of about `share` of the turn cards, on the GPU.
+std::unique_ptr<SubtreeDevice> make_gpu_subtrees(GameTree& tree, uint64_t available, double share);
 #endif
 }  // namespace pio

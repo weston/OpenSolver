@@ -127,8 +127,10 @@ class Solver:
             # v4_gpu (Metal, CUDA or OpenCL), or v4_metal from a solver that predates it
             gpu = next((a for a in algorithms if a.startswith("v4_gpu,")), None) or \
                 next((a for a in algorithms if a.startswith("v4_metal,")), None)
-            # auto: the device_bench profile picks CPU or GPU for each tree as it is built (#569)
-            self.devices = ["cpu", "gpu", "auto"] if gpu else ["cpu"]
+            # auto: the device_bench profile picks CPU or GPU for each tree as it is built (#569);
+            # hybrid: a discrete GPU and the CPU each solve some of a flop tree's turn subtrees (#582)
+            self.hybrid = gpu is not None and any(a.startswith("v4_hybrid,") for a in algorithms)
+            self.devices = (["cpu", "gpu", "hybrid", "auto"] if self.hybrid else ["cpu", "gpu", "auto"]) if gpu else ["cpu"]
             if gpu:
                 fields = gpu.split(",")
                 self.gpu_algorithm = fields[0]
@@ -142,6 +144,7 @@ class Solver:
                     pass
         except SolverError:
             self.devices = ["cpu"]
+            self.hybrid = False
         self.cpu_algorithm = "auto"
         self.device = "cpu"
         self.auto_choice = None   # under the auto device: the pick for the tree built last (op_build)
@@ -275,6 +278,8 @@ class Solver:
             device = device or self.device
             if device == "auto":   # what the current tree was built for, the CPU before any
                 device = self.auto_choice["device"] if self.auto_choice else "cpu"
+            if device == "hybrid":
+                return "v4_hybrid"
             return self.gpu_algorithm if device == "gpu" else self.cpu_algorithm
 
     def state(self):
@@ -601,7 +606,12 @@ def auto_decide(solver):
         megabytes = vbench.tree_megabytes(solver.cmd(tree_build_command("estimate_schematic_tree", smart)))
     except SolverError:
         megabytes = None
-    if _bench is not None:
+    board = "".join(str((solver.built_sizes or {}).get("board") or "").split())
+    if solver.hybrid and len(board) == 6:
+        # a flop tree: both devices at once, the GPU's share of the turn cards set by their speeds (#582)
+        choice = {"device": "hybrid", "speedup": None,
+                  "why": "on a flop tree the CPU and the GPU each solve some of the turn cards, at once"}
+    elif _bench is not None:
         choice = _bench.choose(megabytes)
     else:
         choice = vbench.predict([], megabytes, solver.gpu_tree_limit_mb)

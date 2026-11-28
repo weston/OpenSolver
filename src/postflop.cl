@@ -257,10 +257,10 @@ KERNEL void update_values(TRAVERSAL_ARGS, G const uint2* iso, G const ushort* pe
         const float w = updating
             ? (sum > 0 ? regret_weight(load_regret(regrets[n.storage + a * H + h]), sw) / sum : 1.f / n.count)
             : 1.f;
-        node_value = fma(w, val, node_value);
+        node_value = updating && q.mode == 2 ? (a ? max(node_value, val) : val) : fma(w, val, node_value);
       }
     }
-    if (updating)
+    if (updating && !q.mode)
       for (uint a = 0; a < n.count; ++a) {
         const uint j = n.storage + a * H + h;
         const float r = load_regret(regrets[j]);
@@ -358,7 +358,11 @@ KERNEL void river_call_fold(TRAVERSAL_ARGS, TABLE_ARGS SCRATCH_PARAM) {
       const float total = regret_weight(rc, sw) + regret_weight(rf, sw);
       const float sc = total > 0 ? regret_weight(rc, sw) / total : .5f;
       const float sf = total > 0 ? regret_weight(rf, sw) / total : .5f;
-      v = fma(sf, fv, sc * cv);
+      v = q.mode == 2 ? max(cv, fv) : fma(sf, fv, sc * cv);
+      if (q.mode) {
+        values[n.value_row * q.stride + h] = v;
+        continue;
+      }
       regrets[j] = store_regret(discounted(rc, cv - v, q));
       regrets[j + H] = store_regret(discounted(rf, fv - v, q));
       const float reach = blocked(c, n.public_cards) ? 0.f : (q.p ? ip_reach : oop_reach)[n.reach_offset[q.p] + h];
@@ -431,6 +435,11 @@ FN float update_actions(G RegretWord* regrets, G SumWord* sums, const IterationP
                         float reach, uint n, const float* policy, const float* cfv) {
   float value = policy[0] * cfv[0];
   for (uint a = 1; a < n; ++a) value = fma(policy[a], cfv[a], value);
+  if (q.mode == 2) {
+    value = cfv[0];
+    for (uint a = 1; a < n; ++a) value = max(value, cfv[a]);
+  }
+  if (q.mode) return value;
   for (uint a = 0; a < n; ++a) {
     const uint k = j + a * H;
     regrets[k] = store_regret(discounted(load_regret(regrets[k]), cfv[a] - value, q));

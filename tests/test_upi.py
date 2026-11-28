@@ -26,8 +26,8 @@ END = "END"
 
 
 class Upi:
-    def __init__(self, exe):
-        self.p = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+    def __init__(self, exe, env=None):
+        self.p = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1, env=env)
         self.q = queue.Queue()
         self.solver_msgs = []
         threading.Thread(target=self._pump, daemon=True).start()
@@ -2982,7 +2982,74 @@ def check_solve_device(exe):
         u.close()
 
 
+def check_hybrid(exe):
+    """v4_hybrid (#582): a discrete GPU and the CPU each solve some of a flop tree's turn subtrees."""
+    probe = Upi(exe)
+    try:
+        available = "v4_hybrid," in probe.cmd("list_algorithms")
+    finally:
+        probe.close()
+    if not available:
+        print("[hybrid] skipped: no discrete GPU")
+        return
+    print("[hybrid]")
+
+    def solve(gos, algorithm="v4_hybrid", share="0.5", storage="off", board="Ah3cQd",
+              lines=("0 30 90", "0 0 0 0 10", "0 0 0 0 30", "0 0 0 0 65")):
+        env = dict(os.environ)
+        env.pop("WSOLVER_HYBRID", None)
+        if share:
+            env["WSOLVER_HYBRID"] = share   # a fixed share: the same split in every solve
+        u = Upi(exe, env)
+        try:
+            def run(command):
+                reply = u.cmd(command)
+                assert not reply.startswith("ERROR"), (command, reply)
+                return reply
+            for command in ("set_algorithm " + algorithm, "set_threads 4", "small_strats " + storage,
+                            "set_board " + board, "set_pot 0 0 100", "set_eff_stack 300",
+                            "set_range OOP KK,JJ,87s,AQs,98s,TT,44,22,AKo,KQs,T9s",
+                            "set_range IP 99,77,TT,AQs,KJs,55,66,ATo,QJs,A5s",
+                            *("add_line " + line for line in lines), "build_tree smart_rivers", "set_info_freq 5",
+                            "set_accuracy 0"):
+                run(command)
+            for go in gos:
+                run(go)
+                run("wait_for_solver")
+            reports = [float(line.split(": ")[1]) for block in u.solver_msgs for line in block
+                       if line.startswith("Exploitable for:")]
+            measured = float(next(line for line in run("calc_results").splitlines()
+                                  if line.startswith("Exploitable for:")).split(": ")[1])
+            devices = [block[0] for block in u.solver_msgs if block and block[0].startswith("SOLVER: device")]
+            return {"reports": reports, "measured": measured, "devices": devices,
+                    "strategy": run("show_strategy r:0:c")}
+        finally:
+            u.close()
+
+    one = solve(["go 20 steps"])
+    check(any(d.startswith("SOLVER: device hybrid") for d in one["devices"]), f"a flop tree solves on both ({one['devices']})")
+    check(abs(one["reports"][-1] - one["measured"]) <= 1e-4 * max(1.0, one["measured"]),
+          f"the last report, measured on both devices, is the published tree's ({one['reports'][-1]} vs {one['measured']})")
+    two = solve(["go 10 steps", "go 10 steps"])
+    check(two["strategy"] == one["strategy"],
+          "10 + 10 steps continue exactly where 20 are: the rows go back to the tree and up again unchanged")
+    cpu = solve(["go 20 steps"], algorithm="auto", share=None)
+    check(not any("hybrid" in d for d in cpu["devices"]) and abs(one["measured"] - cpu["measured"]) <= 0.1 * cpu["measured"],
+          f"it converges like the CPU ({one['measured']:.4f} vs {cpu['measured']:.4f} after 20 iterations)")
+    sixteen = solve(["go 20 steps"], storage="on")
+    check(any(d.startswith("SOLVER: device hybrid") for d in sixteen["devices"]) and
+          abs(sixteen["reports"][-1] - sixteen["measured"]) <= 1e-3 * max(1.0, sixteen["measured"]),
+          f"on 16-bit rows too ({sixteen['reports'][-1]} vs {sixteen['measured']})")
+    auto = solve(["go 6 steps"], share=None)
+    check(any(d.startswith("SOLVER: device hybrid (GPU ") for d in auto["devices"]),
+          f"without a fixed share it picks one ({auto['devices']})")
+    turn = solve(["go 4 steps"], board="Ah3cQd7s", lines=("0 30 90", "0 0 30"))
+    check(turn["devices"][:1] == ["SOLVER: device cpu (only flop trees solve on both)"],
+          f"a turn tree solves on the CPU ({turn['devices']})")
+
+
 def main(exe, big=False):
+    check_hybrid(exe)
     check_solve_device(exe)
     check_flop_update_order(exe)
     check_sampled_averaging(exe)

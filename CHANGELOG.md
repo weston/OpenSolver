@@ -18,6 +18,11 @@ documentation; contains no PioSOLVER code.
   CUDA and OpenCL, drivers loaded at run time. Matches the CPU to rounding; README "GPU solving".
   In the viewer, the Auto device picks the faster device for each tree by its size, from a benchmark
   of both devices on Settings.
+- **CPU and GPU together** (`set_algorithm v4_hybrid`, #582): with a discrete GPU, a flop tree's turn
+  subtrees are shared between the GPU and the CPU in every pass, the share set by their speeds and the
+  GPU's memory. On an RX 9060 XT with 32 Zen 5 threads, the viewer's Smart trees to 0.3% of pot: HUNL 3BP
+  7.1 -> 4.4 s, HUNL SRP 95 -> 62 s (it does not fit the GPU alone). The viewer's Auto device uses it
+  for flop trees.
 - Vector-form **Discounted CFR** with exact card removal and no abstraction. Defaults α=1.3, γ=4,
   β=0 then 0.5 after iteration 50; `set_dcfr` overrides the exponents.
 - **Regret-based pruning** on by default (`set_pruning`). Skips traverser actions whose current

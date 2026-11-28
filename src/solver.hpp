@@ -199,10 +199,12 @@ class Solver {
     const bool tight_target = target_chips > 0 && target_chips <= 0.003 * g_.cfg.start_pot();
     set_average_sampling(g_.iterations == 0 && (tight_target || compact) ? AverageSampling::Bounded : AverageSampling::Dense);
     set_bfloat_regrets(compact);
+    late_pairs_ = uses_sampled_averaging() && is_bfloat_target(target_chips);
   }
   AverageStep strategy_average_step(int t) const {
-    return average_step(t, params.gamma, avg_delay, avg_reset, uses_sampled_averaging(), uses_fp16_sums(t));
+    return average_step(t, params.gamma, avg_delay, avg_reset, uses_sampled_averaging(), uses_fp16_sums(t), late_pairs_);
   }
+  bool late_pairs_ = false;  // a sampled solve to the default 0.3% of pot pairs its later iterations (#598)
   bool fp16_sums() const { return fp16_sums_; }
   bool uses_fp16_sums(int t) const { return fp16_sums_ && t <= 1024 && uses_bfloat_regrets(t); }
   void set_fp16_sums(bool enabled) {

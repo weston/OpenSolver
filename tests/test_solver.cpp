@@ -57,7 +57,8 @@ static bool bfloat_regret_reports() {
       retained.weight != float(1. + std::pow(99. / 100., 4.)) ||
       retained.discount != float(std::pow(98. / 100., 4.)) ||
       solver.strategy_average_step(192).weight != 0.f || solver.strategy_average_step(193).weight <= 1.f ||
-      solver.strategy_average_step(194).weight != 1.f) return false;
+      // a solve to the default 0.3% keeps pairing (#598): 194 is skipped, 195 takes both
+      solver.strategy_average_step(194).weight != 0.f || solver.strategy_average_step(195).weight <= 1.f) return false;
   game.iterations = 9;
   solver.update_flop_opening();
   std::vector<uint16_t> words(game.storage_floats);

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -325,8 +326,9 @@ class Solver {
   void river_cfr(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   void river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   // The same for the exploitability check's fused walk (walk_evbr): on-policy values and best responses.
-  void river_evbr(uint32_t ni, int p, const float* ro, float* ev, float* br);
-  void river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br);
+  using RiverPolicies = std::span<const std::pair<uint32_t, float*>>;
+  void river_evbr(uint32_t ni, int p, const float* ro, float* ev, float* br, RiverPolicies policies = {});
+  void river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br, RiverPolicies policies);
   template <class E>
   void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
   template <class E>
@@ -412,6 +414,11 @@ class Solver {
   double root_matchups() const;
 
  private:
+  struct PairedRiverReports {
+    std::vector<uint8_t> ready;
+    ZVec<float> values;
+  };
+
   template <Walk M>
   void walk_t(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   template <typename F>
@@ -436,7 +443,8 @@ class Solver {
   void flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, const float* rp, const float* ro, float* out);
   // Evaluate and BestResponse in one traversal (root_stats): ev = on-policy values, br = best
   // response values, both for player p against the opponent's average strategy.
-  void walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br);
+  void walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br,
+                 PairedRiverReports* paired = nullptr);
   void fold_value(const GNode& n, int p, const float* ro, float* out) const;
   void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
                       float* compat = nullptr, const SdFold* fold = nullptr) const;

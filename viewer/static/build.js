@@ -249,10 +249,27 @@ function saveForm() {
 }
 
 function loadForm() {
-  applyForm(prefs.get("build", null));
+  const saved = prefs.get("build", null);
+  applyForm(saved);
   const sp = prefs.get("spot", null);
   if (sp && sp.sig === sig(spotForm())) spot = sp;
   markSpot();
+  if (!saved) openDefaultSpot();
+}
+
+const DEFAULT_SPOT = "HUNL 3BP";
+
+/** A Tree tab with no form of its own (a first launch, or the app on a port it has not had before)
+ *  opens the library's HUNL 3BP spot; the built-in form above stays if that spot has been deleted. */
+async function openDefaultSpot() {
+  let c = null;
+  try { c = (await get(`/api/library/get?kind=config&name=${encodeURIComponent(DEFAULT_SPOT)}`)).content; } catch (e) { return; }
+  if (!c || typeof c !== "object" || prefs.get("build", null)) return;  // gone, or the form was edited meanwhile
+  applyForm(c);
+  validateSizes();
+  prefs.set("build", readForm());
+  setSpot(DEFAULT_SPOT);
+  markDirty();
 }
 
 /** Put a saved config (or null for the defaults) into the form. */

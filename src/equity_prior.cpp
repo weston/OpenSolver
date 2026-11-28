@@ -201,6 +201,7 @@ class PriorSolver {
   }
 
   void seed() const {
+    const auto partner = paired_river_decisions();
     constexpr size_t chunk_size = 1024;
     pool().parallel_for(static_cast<int>((game.nodes.size() + chunk_size - 1) / chunk_size), [&](int chunk) {
       const size_t start = chunk * chunk_size;
@@ -208,6 +209,8 @@ class PriorSolver {
       for (size_t i = start; i < end; ++i) {
         const auto& node = game.nodes[i];
         if (node.kind != ANodeKind::Decision || node.num_children == 1) continue;
+        const uint32_t other = partner[node.aux];
+        if (other < i) continue;
         const int p = node.player, hands = game.num_hands(p);
         const auto board = game.dec_board[node.aux];
         const auto& strengths =
@@ -233,6 +236,9 @@ class PriorSolver {
             for (int h = 0; h < hands; ++h) target[h] = interpolate(strengths.hands[p][h]);
           }
         }
+        if (other != UINT32_MAX)
+          std::copy_n(game.regrets.data() + node.storage, game.node_size(node),
+                      game.regrets.data() + game.nodes[other].storage);
       }
     });
   }
@@ -242,6 +248,26 @@ class PriorSolver {
   const StrengthModel& model;
   std::vector<ActionRows> rows;
   float positive_discount = 0;
+
+  std::vector<uint32_t> paired_river_decisions() const {
+    std::vector<uint32_t> partner(game.dec_board.size(), UINT32_MAX);
+    std::vector<std::vector<uint32_t>> first_on_board(game.anodes.size());
+    for (uint32_t i = 0; i < game.nodes.size(); ++i) {
+      const auto& node = game.nodes[i];
+      if (node.kind != ANodeKind::Decision || node.board_len != 5 || node.num_children == 1) continue;
+      auto& first = first_on_board[node.anode];
+      if (first.empty()) first.resize(model.rivers.size(), UINT32_MAX);
+      auto& previous = first[model.river_index.at(game.dec_board[node.aux])];
+      if (previous == UINT32_MAX) {
+        previous = i;
+      } else {
+        partner[game.nodes[previous].aux] = i;
+        partner[node.aux] = previous;
+        previous = UINT32_MAX;
+      }
+    }
+    return partner;
+  }
 
   void size_rows(uint32_t i) {
     const auto& node = game.nodes[i];

@@ -148,17 +148,24 @@ static bool equity_prior_startup() {
   const int blocked = cpu_game.local[0][parse_combo("8c7c")];
   const int bottom = cpu_game.local[0][parse_combo("8h7h")];
   const int kings = cpu_game.local[0][parse_combo("KsKh")];
-  bool distinct_ranks = false;
+  bool distinct_ranks = false, saw_reversed_runout = false;
+  std::map<uint32_t, const float*> first_on_river;
   for (const auto& node : cpu_game.nodes) {
     if (node.kind != ANodeKind::Decision || node.board_len != 5 || node.player != 0 ||
         node.num_children == 1 || cpu_game.dec_board[node.aux] != river) continue;
+    const float* regrets = cpu_game.regrets.data() + node.storage;
+    auto [first, inserted] = first_on_river.try_emplace(node.anode, regrets);
+    if (!inserted) {
+      if (std::memcmp(first->second, regrets, cpu_game.node_size(node) * sizeof(float))) return false;
+      saw_reversed_runout = true;
+    }
     for (int a = 0; a < node.num_children; ++a) {
       const float* row = cpu_game.regrets.data() + node.storage + a * cpu_game.num_hands(0);
       if (row[blocked] != row[bottom]) return false;
       distinct_ranks |= row[kings] != row[bottom];
     }
   }
-  if (!distinct_ranks) return false;
+  if (!distinct_ranks || !saw_reversed_runout) return false;
   elect(gpu);
   auto device = metal_available() ? make_metal_solve(gpu_game, UINT64_MAX) : nullptr;
   gpu.apply_equity_prior(true);

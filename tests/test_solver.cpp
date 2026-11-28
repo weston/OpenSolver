@@ -1528,22 +1528,27 @@ static bool river_batch_matches() {
 // 115K-node flop solve (the viewer's fast-preview sketch, target 0.165 chips, delay 32): the restart
 // at iteration 33 lifts exploitability from 2.2 to 4.9, just under the previous report's 5.25. A
 // trend fitted across that reads as no progress and waited the longest gap (to 49, at 0.82 chips);
-// starting afresh reports at 41 (1.23 chips), which is when the preview's first threshold is met.
+// starting afresh reported at 41 (1.23 chips), which is when the preview's first threshold is met.
+// Since #603 the first report, far above the target before the restart, goes straight to 41; the trend
+// starts afresh there (the next at 51).
 static bool auto_report_schedule() {
   AutoReportSchedule s;
   const double target = 0.165;
   const long long reset = 33;
-  long long a = s.next(10, 29.38, target, reset), b = s.next(a, 11.74, target, reset);
-  long long c = s.next(b, 5.25, target, reset), d = s.next(c, 4.88, target, reset);
+  // far above the target before the restart (#603): the next report comes 8 iterations after it, then a
+  // fresh trend; near the target the schedule is as before
+  long long a = s.next(10, 29.38, target, reset), b = s.next(a, 4.88, target, reset);
+  AutoReportSchedule near;
+  long long n = near.next(10, 1.0, target, reset);
   AutoReportSchedule old;   // no restart passed: the trend runs across it
   long long od = old.next(old.next(old.next(old.next(10, 29.38, target, 0), 11.74, target, 0), 5.25, target, 0), 4.88, target, 0);
   // Without set_avg_delay the restart test never fires; a restart before the first report neither.
   AutoReportSchedule n1, n2;
   long long e1 = n1.next(n1.next(40, 2.0, target, 0), 1.0, target, 0);
   long long e2 = n2.next(n2.next(40, 2.0, target, 33), 1.0, target, 33);
-  bool ok = a == 15 && b == 22 && c == 33 && d == 41 && od == 49 && e1 == e2;
-  std::printf("[auto reports] after the average restarts: next report %lld (old schedule %lld), %s\n", d, od,
-              ok ? "ok" : "WRONG");
+  bool ok = a == 41 && b == 51 && n == 15 && od == 49 && e1 == e2;
+  std::printf("[auto reports] after the average restarts: reports at 10, %lld, %lld (old schedule %lld), near the target %lld: %s\n",
+              a, b, od, n, ok ? "ok" : "WRONG");
   return ok;
 }
 

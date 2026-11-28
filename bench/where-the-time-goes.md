@@ -547,11 +547,12 @@ auto`, to 0.3% of pot, after #579:
 ## CPU and GPU together on Apple Silicon (#589)
 
 M1 Ultra (20 threads: 16 P + 4 E cores, 64-core GPU, 128 GB), the viewer's Smart trees to 0.3% of pot,
-2026-11-27. Memory is the peak footprint (`/usr/bin/time -l`):
+2026-11-27, after #587. Memory is the peak footprint (`/usr/bin/time -l`). Each is a second run of the binary:
+the first compiles the Metal kernels (4BP on the GPU alone: 0.83 s first, 0.63 s after).
 
 | tree | CPU (`v4_large`) | GPU (`v4_gpu`) | CPU and GPU (`v4_hybrid`) |
 |---|---|---|---|
-| HUNL 4BP | 1.14 s, 63 it, 0.48 GB | 0.87 s, 64 it, 1.06 GB | **0.63 s**, 63 it, **0.45 GB** |
+| HUNL 4BP | 1.15 s, 63 it, 0.48 GB | 0.63 s, 64 it, 1.06 GB | **0.60 s**, 63 it, **0.45 GB** |
 | HUNL 3BP | 9.39 s, 123 it, 2.67 GB | 4.37 s, 123 it, 5.80 GB | **3.40 s**, 123 it, **2.21 GB** |
 | HUNL SRP | 122.8 s, 227 it, 19.0 GB | 50.7 s, 224 it, 41.8 GB | **36.8 s**, 221 it, **15.3 GB** |
 

@@ -1042,7 +1042,7 @@ the algorithm's first name, is still accepted.
 
   | tree | CPU | GPU | CPU and GPU |
   |---|---|---|---|
-  | HUNL 4BP | 1.14 s, 0.48 GB | 0.87 s, 1.06 GB | **0.63 s, 0.45 GB** |
+  | HUNL 4BP | 1.15 s, 0.48 GB | 0.63 s, 1.06 GB | **0.60 s, 0.45 GB** |
   | HUNL 3BP | 9.4 s, 2.7 GB | 4.4 s, 5.8 GB | **3.4 s, 2.2 GB** |
   | HUNL SRP | 123 s, 19 GB | 51 s, 42 GB | **37 s, 15 GB** (GPU 75%) |
 

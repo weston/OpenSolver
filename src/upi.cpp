@@ -471,7 +471,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
 #endif
   std::unique_ptr<MetalSolve> metal;
   auto release_metal = [&] {
-    if (metal) metal->publish_for_cpu(*tree_);
+    if (metal) metal->finish_for_cpu(*tree_);
     pause_requests_.sync_regrets = {};
     metal.reset();
   };

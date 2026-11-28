@@ -586,6 +586,12 @@ size, 5.6 GB) takes 175 iterations and 25.6 s on CPU and GPU itself, so it is no
   throughout: SRP 250. Pairs to the end only for the 0.3% default (#599); to 0.1% they cost 263
   against 208.
 
+**Chance sampling for the whole solve** (each turn deal visits some of its river cards, values scaled to
+match; the exact exploitability still decides when to stop): 3BP to 0.3% of pot, all cards 126 iterations
+(6.4 s); a hashed half of them 1,595 iterations (44 s); half by rotation (every card every second
+iteration) stalled at 18 chips after 225 s. With gamma 4 the average leans on the last iterations, so
+their sampling noise is not averaged away.
+
 **The GPU on SRP, ruled out or not worth it:**
 - *A work-group per river subtree*, walked depth first so its reach and value rows stay in the cache
   (`river_tree`, a prototype): 10.2 s of kernel time at width 256, 8.8 s at 64, 8.6 s at 128, against

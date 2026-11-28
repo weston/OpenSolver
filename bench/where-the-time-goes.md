@@ -616,6 +616,32 @@ their sampling noise is not averaged away.
   each over the board's ~3,000-entry table and the opponent's 963 reaches, ~250,000 a pass), not the value
   rows around them.
 
+## CPU on the M4 after #599: smaller wins (#617)
+
+Apple M4 (4P + 6E), 10 threads, `v4_large`. 10 s `sample` profiles, worker threads only (they are ~100%
+busy; the idle samples are the main thread and an idle workqueue thread):
+HUNL 3BP (float32): `showdown_batch` 47%, `current_strategy` 20%, `river_down` 7%, `river_cfr` 7%,
+`traverser_update` 5%. HUNL SRP (16-bit): `showdown_batch` 49%, matching 12%, `river_cfr` 7%, `river_down`
+6%, `traverser_update` 5.5%, `regrets_store` 3.3%, `decode_rows` 3.2%, `average_strategy` 3%,
+`allin_table_value` 3%.
+
+**Kept** (bit-identical: `abcmp`, 6 bench trees x float32 / 16-bit / Metal, outputs and saves byte for byte):
+- *Regret matching specialised on A = 2..6* (`match_neon`): the run-time-A NEON loop kept its rows on the
+  stack and ran a loop per action for 4 hands; 8 hands a step with all rows in registers. threebet_mono 60
+  steps 1.671 -> 1.577 s, 16-bit 1.828 -> 1.709; srp_big 16-bit 41.68 -> 39.14 s. While matching runs it
+  reads ~2.2 GB of 3BP regrets an iteration at close to the M4's ~120 GB/s, so this is about its floor.
+- *The 16-bit regret update reads the stored rows* (`regret_row_max_q`, full rows without locks or
+  incentives) instead of a decode into scratch and a second pass over it: srp_big 16-bit 39.14 -> 38.94 s.
+- *A traverser river node's value in one pass* (`back_up_own<A>`, A = 2..4 with nothing pruned):
+  38.94 -> 38.67 s.
+
+All three, to 0.3% of pot: HUNL 3BP 16.49 -> 15.43 s (126 iterations both), HUNL SRP 224.4 -> 209.0 s
+(230 both).
+
+**Ruled out:** software prefetch in the NEON matching loop (3BP 16.3 -> 16.6 s: the hardware prefetcher
+already streams the rows); the lanes kernel's output through a hand-ordered buffer and a 4 x 4 transpose
+(15.4 -> 16.1 s; measured slower before too, below).
+
 ## Showdown terminals per river subtree, measured on arm64 (#186)
 
 #186 wants a river subtree's showdown terminals evaluated in one sweep over the board's strength

@@ -575,6 +575,10 @@ on CPU and GPU (225 iterations: 49.3 s of iterations, 3.8 s of reports, 1.8 s of
 alpha 1.3 / gamma 4 (the defaults) 226 iterations; gamma 3 228, gamma 5 229; alpha 1.2 328, alpha 1.5 282;
 beta 0.25 after 50 273. `avg_delay` 24 / 40 on 3BP: 121 / 128 against 124. The Strong tree (single river
 size, 5.6 GB) takes 175 iterations and 25.6 s on CPU and GPU itself, so it is no cheap warm start.
+**A warm start for the flop and turn does not help either**: a CPU solve whose river rows (regrets and
+sums, 1.2M decisions) are zeroed at iteration W, so its flop and turn are as good as they get, needs 461
+iterations to 0.3% at W 120 and 575 at W 200, against 226 from nothing: the rivers are what takes the
+iterations, and under a late DCFR clock (mild discounts) their first regrets linger.
 
 **Bytes per value, ruled out:**
 - *No strategy sums on the river* (its average falls back to the current strategy): 3BP 124 -> 858

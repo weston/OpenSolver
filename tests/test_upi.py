@@ -2499,8 +2499,10 @@ def check_flop_update_order(exe, test_metal=True):
           "the app's forced-check rainbow flop starts IP, ordinary UPI starts OOP")
     check(solve(first="OOP") == oop and solve(override="OOP") == oop,
           "an explicit OOP order wins before and after the automatic build")
-    for setup in (dict(board="Ah3hQd"), dict(board="AhAcQd"), dict(lines=("0 30 90", "25")),
-                  dict(lines=("0 300",)), dict(predictive=True), dict(build="build_tree auto_flop_order"),
+    for setup in (dict(board="Ah3hQd"), dict(lines=("0 30 90", "25"))):
+        check(solve(**setup) == solve(first="IP", **setup) != solve(first="OOP", **setup),
+              "an unpaired flop of any suits, and one where OOP may bet, start IP too (#591): " + str(setup))
+    for setup in (dict(board="AhAcQd"), dict(lines=("0 300",)), dict(predictive=True), dict(build="build_tree auto_flop_order"),
                   dict(build="build_tree single_river_size auto_flop_order")):
         check(solve(**setup) == solve(first="OOP", **setup), "retains the standard order for " + str(setup))
     check(solve(storage="on") == solve(first="IP", storage="on") != solve(first="OOP", storage="on"),

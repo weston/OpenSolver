@@ -544,6 +544,27 @@ auto`, to 0.3% of pot, after #579:
   `-save-temps` in the build options writes the ISA: 52-64 VGPRs, wave32, 88 bytes of scratch (the
   arguments), no spills.
 
+## A hybrid solve's time (#582, #591)
+
+The same PC, `set_algorithm v4_hybrid`, the viewer's Smart trees to 0.3% of pot (`WSOLVER_HYBRID_DEBUG=1`):
+
+| tree | total | iterations | reports | setup | copies to the tree |
+|---|---|---|---|---|---|
+| HUNL 3BP | 4.19 s | 3.66 s (130, ~28 ms) | 0.46 s (10) | 0.12 s | 0.11 s |
+| HUNL SRP | 63.8 s | 57.4 s (228, ~0.25 s) | 4.38 s (11) | 1.57 s (with one rebuild) | 1.29 s |
+
+- **A report is CPU-bound, then waits on the GPU's four passes** (EV and best response for each player):
+  SRP at a GPU share of 42%, 0.24 s on the CPU's turn roots, then 0.13 s waiting. One fused EV + best
+  response pass per player would save ~0.12 s a report, ~2% of the solve.
+- **Where the even share is moves between iterations.** Timed one device after the other, 3BP is even at
+  45% at iteration 2 and 53% at iterations 19-20 (pruning on, one of them adding to the sampled
+  average); SRP at 44% and 42%. Iterations 19-20 are the ones timed now; neither choice was measurably
+  faster end to end (3BP 4.38 vs 4.19 s, SRP 62.5 vs 63.8 s), so a one-off share is as good as this goes
+  without the GPU's own completion times.
+- **Thinning the reports before the average's restart** (iteration 33, where no large tree reaches its
+  target) would save 3-5 reports, ~4%, but leaves a large tree with no progress shown for its first
+  10 s. Not done.
+
 ## Showdown terminals per river subtree, measured on arm64 (#186)
 
 #186 wants a river subtree's showdown terminals evaluated in one sweep over the board's strength

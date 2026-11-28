@@ -9,6 +9,9 @@ const wait = async (condition) => {
 const $ = id => document.getElementById(id);
 const tab = view => document.querySelector(`[data-view="${view}"]`).click();
 await wait(() => $('drill-ahead').oninput);
+// a first launch (this test's port and library are new) opens the HUNL 3BP spot on the Tree tab
+await wait(() => $('spot-name').textContent === 'HUNL 3BP');
+check($('f-pot').value === '2000' && $('f-stack').value === '9000', 'the Tree tab should open on the HUNL 3BP spot');
 check([...document.querySelectorAll('.view-tab')].map(b => b.textContent).join(',') === 'Tree,Browse,Drill,Jobs,Settings', 'missing app tabs');
 
 tab('settings');

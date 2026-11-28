@@ -53,7 +53,8 @@ documentation; contains no PioSOLVER code.
 - `dump_tree` / `load_tree` with lazy per-street decompression, truncated saves (`no_turns`,
   `no_rivers`) that re-solve later streets on demand, and `check_tree_health`.
 - A browser **viewer** (`viewer/`): tree navigation, 13x13 strategy matrices, range and EV display,
-  subtree re-solves, a saved-spot library, and a solve-queue job system.
+  subtree re-solves, a saved-spot library, and a solve-queue job system. A Tree tab with no form of
+  its own (a first launch) opens on the library's HUNL 3BP spot (#580).
 - `tools/tree_builder.py` reproduces PioViewer's `add_line` sequence for a tree configuration.
 - PioViewer tree files: `tools/tree_builder.py` reproduces all 145 of the owner's PioViewer configs
   line for line (merging, caps, forced bets, hand-edited lines; #314), and the viewer's Build tab imports

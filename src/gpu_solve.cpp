@@ -9,6 +9,7 @@
 #if !(defined(__APPLE__) && defined(__aarch64__))
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -619,6 +620,7 @@ class Subtrees final : public SubtreeDevice {
     b.flush();
     pending = true;
     device_newer = true;
+    device_zero = false;
   }
   const float* values(int j) override {
     finish();
@@ -704,6 +706,9 @@ class Subtrees final : public SubtreeDevice {
     if (!tree.compressed) {
       for (const auto& st : subtrees) {
         if (!st.floats) continue;
+        if (device_zero && all_zero(tree.regrets.data() + st.tree, st.floats) &&
+            all_zero(tree.strat.data() + st.tree, st.floats))
+          continue;  // a fresh tree: the device's zeros already
         b.write(s->regrets.buf, st.device * sizeof(float), tree.regrets.data() + st.tree, st.floats * sizeof(float), false);
         b.write(s->sums.buf, st.device * sizeof(float), tree.strat.data() + st.tree, st.floats * sizeof(float), false);
       }
@@ -714,6 +719,21 @@ class Subtrees final : public SubtreeDevice {
       float* rg = stage[0][0].data();
       float* sm = stage[0][1].data();
       for (const Chunk& k : chunks) {
+        if (device_zero) {  // a fresh tree's rows are zeros, which the device has already
+          std::atomic<bool> rows{false};
+          for_nodes(k, [&](const GNode& n, size_t) {
+            if (rows.load(std::memory_order_relaxed)) return;
+            const size_t count = tree.stored_size(n);
+            const int16_t* q = tree.regrets_q.data() + tree.qo(n);
+            const uint16_t* sq = tree.strat_q.data() + tree.qo(n);
+            for (size_t i = 0; i < count; ++i)
+              if (q[i] | sq[i]) {
+                rows = true;
+                return;
+              }
+          });
+          if (!rows) continue;
+        }
         for_nodes(k, [&](const GNode& n, size_t at) {
           const size_t count = size_t(n.num_children) * tree.num_hands(n.player);
           const float* r = tree.regrets_ro(n, rg + at);
@@ -784,6 +804,19 @@ class Subtrees final : public SubtreeDevice {
   std::vector<float> host_reach[2], host_values, check[2][2];  // check: [player][EV, best response]
   std::mutex wait_mu;
   bool pending = false, device_newer = false;
+  bool device_zero = true;  // the device's rows are the zeros they were allocated with
+  // a float range of the tree, in parallel
+  static bool all_zero(const float* x, size_t n) {
+    std::atomic<bool> nonzero{false};
+    const int tasks = int(std::min<size_t>(64, std::max<size_t>(1, n >> 16)));
+    std::function<void(int)> fn = [&](int t) {
+      const size_t lo = n * size_t(t) / size_t(tasks), hi = n * size_t(t + 1) / size_t(tasks);
+      for (size_t i = lo; i < hi && !nonzero.load(std::memory_order_relaxed); ++i)
+        if (x[i] != 0.f) nonzero = true;
+    };
+    pool().parallel_for(tasks, fn);
+    return !nonzero;
+  }
 };
 }  // namespace
 }  // namespace gpu

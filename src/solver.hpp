@@ -152,6 +152,7 @@ class Solver {
   bool hybrid_measure = false;
   double hybrid_device_seconds = 0, hybrid_cpu_seconds = 0;
   bool flop_ip_first = false;
+  bool strict_opening = false;  // IP first on a rainbow flop with a forced check: bfloat16 regrets allowed (#591)
   bool uses_flop_ip_first() const { return flop_ip_first && !predictive; }  // float32 or 16-bit (#578)
   FlopOpening flop_opening() const { return opening_; }
   bool sqrt_regret_weights() const { return sqrt_weights_; }
@@ -168,8 +169,9 @@ class Solver {
   }
   void restart_flop_opening() {
     const bool previously_eligible = average_sampling_ != AverageSampling::Dense;
-    const bool allow_fp16 = g_.cfg.river_sizing == RiverSizing::Smart || fp16_sums_;
-    const bool allow_bfloat = g_.cfg.river_sizing == RiverSizing::Smart || bfloat_regrets_;
+    const bool smart = g_.cfg.river_sizing == RiverSizing::Smart && strict_opening;
+    const bool allow_fp16 = smart || fp16_sums_;
+    const bool allow_bfloat = smart || bfloat_regrets_;
     set_average_sampling(AverageSampling::Dense);
     set_flop_opening(opening_ == FlopOpening::Edited ? FlopOpening::SquareRoot : opening_);
     if (std::any_of(g_.nodes.begin(), g_.nodes.end(), [](const GNode& n) { return n.flags != 0; })) return;

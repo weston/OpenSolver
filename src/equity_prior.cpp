@@ -20,6 +20,8 @@ using Transition = std::array<Row, bands>;
 
 struct Strengths {
   std::vector<float> hands[2];
+  std::vector<uint16_t> river_group[2];
+  std::vector<float> group_strength[2];
   float mass[2]{};
 };
 
@@ -34,13 +36,25 @@ Strengths river_strengths(const GameTree& game, const ShowdownBoard& board) {
     for (const auto& entry : board.ent[opp]) result.mass[opp] += game.init_reach[opp][entry.idx];
     auto& values = result.hands[p];
     values.resize(game.num_hands(p));
+    auto& groups = result.river_group[p];
+    auto& strengths = result.group_strength[p];
+    groups.resize(values.size());
+    strengths.push_back(0.f);
     size_t i = 0, j = 0;
     float weaker = 0;
     for (auto [end, opp_end] : board.groups[p]) {
       float through_ties = weaker;
       while (j < opp_end) through_ties += game.init_reach[opp][board.ent[opp][j++].idx];
       const float strength = (weaker + through_ties) * .5f / std::max(.001f, result.mass[opp]);
-      while (i < end) values[board.ent[p][i++].idx] = strength;
+      if (i < end) {
+        const auto group = static_cast<uint16_t>(strengths.size());
+        strengths.push_back(strength);
+        while (i < end) {
+          const auto hand = board.ent[p][i++].idx;
+          groups[hand] = group;
+          values[hand] = strength;
+        }
+      }
       weaker = through_ties;
     }
   }
@@ -187,6 +201,7 @@ class PriorSolver {
   }
 
   void seed() const {
+    const auto partner = paired_river_decisions();
     constexpr size_t chunk_size = 1024;
     pool().parallel_for(static_cast<int>((game.nodes.size() + chunk_size - 1) / chunk_size), [&](int chunk) {
       const size_t start = chunk * chunk_size;
@@ -194,6 +209,8 @@ class PriorSolver {
       for (size_t i = start; i < end; ++i) {
         const auto& node = game.nodes[i];
         if (node.kind != ANodeKind::Decision || node.num_children == 1) continue;
+        const uint32_t other = partner[node.aux];
+        if (other < i) continue;
         const int p = node.player, hands = game.num_hands(p);
         const auto board = game.dec_board[node.aux];
         const auto& strengths =
@@ -204,12 +221,24 @@ class PriorSolver {
           Row prior;
           for (int h = 0; h < bands; ++h) prior[h] = learned[h] * weight;
           float* target = game.regrets.data() + node.storage + static_cast<size_t>(a) * hands;
-          for (int h = 0; h < hands; ++h) {
-            const float x = std::clamp(strengths.hands[p][h] * bands - .5f, 0.f, static_cast<float>(bands - 1));
+          auto interpolate = [&](float strength) {
+            const float x = std::clamp(strength * bands - .5f, 0.f, static_cast<float>(bands - 1));
             const int lo = static_cast<int>(x), hi = std::min(lo + 1, bands - 1);
-            target[h] = prior[lo] + (x - lo) * (prior[hi] - prior[lo]);
+            return prior[lo] + (x - lo) * (prior[hi] - prior[lo]);
+          };
+          if (node.board_len == 5) {
+            std::array<float, NUM_COMBOS + 1> by_group;
+            const auto& distinct = strengths.group_strength[p];
+            for (size_t k = 0; k < distinct.size(); ++k) by_group[k] = interpolate(distinct[k]);
+            const auto& groups = strengths.river_group[p];
+            for (int h = 0; h < hands; ++h) target[h] = by_group[groups[h]];
+          } else {
+            for (int h = 0; h < hands; ++h) target[h] = interpolate(strengths.hands[p][h]);
           }
         }
+        if (other != UINT32_MAX)
+          std::copy_n(game.regrets.data() + node.storage, game.node_size(node),
+                      game.regrets.data() + game.nodes[other].storage);
       }
     });
   }
@@ -219,6 +248,26 @@ class PriorSolver {
   const StrengthModel& model;
   std::vector<ActionRows> rows;
   float positive_discount = 0;
+
+  std::vector<uint32_t> paired_river_decisions() const {
+    std::vector<uint32_t> partner(game.dec_board.size(), UINT32_MAX);
+    std::vector<std::vector<uint32_t>> first_on_board(game.anodes.size());
+    for (uint32_t i = 0; i < game.nodes.size(); ++i) {
+      const auto& node = game.nodes[i];
+      if (node.kind != ANodeKind::Decision || node.board_len != 5 || node.num_children == 1) continue;
+      auto& first = first_on_board[node.anode];
+      if (first.empty()) first.resize(model.rivers.size(), UINT32_MAX);
+      auto& previous = first[model.river_index.at(game.dec_board[node.aux])];
+      if (previous == UINT32_MAX) {
+        previous = i;
+      } else {
+        partner[game.nodes[previous].aux] = i;
+        partner[node.aux] = previous;
+        previous = UINT32_MAX;
+      }
+    }
+    return partner;
+  }
 
   void size_rows(uint32_t i) {
     const auto& node = game.nodes[i];

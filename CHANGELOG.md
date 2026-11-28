@@ -18,6 +18,8 @@ documentation; contains no PioSOLVER code.
   CUDA and OpenCL, drivers loaded at run time. Matches the CPU to rounding; README "GPU solving".
   In the viewer, the Auto device picks the faster device for each tree by its size, from a benchmark
   of both devices on Settings.
+  A fresh GPU solve of a large Medium tree to 0.3% of pot stores regrets in bfloat16 and strategy sums
+  in fp16 between updates (#559, #561; every Medium tree since #586): HUNL 3BP on an M4's GPU 12.5 -> 9.8 s.
 - **CPU and GPU together** (`set_algorithm v4_hybrid`, #582): with a discrete GPU, a flop tree's turn
   subtrees are shared between the GPU and the CPU in every pass, the share set by their speeds and the
   GPU's memory. On an RX 9060 XT with 32 Zen 5 threads, the viewer's Smart trees to 0.3% of pot: HUNL 3BP

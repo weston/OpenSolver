@@ -181,7 +181,7 @@ class Solver {
     if ((g_.cfg.river_sizing == RiverSizing::Smart || previously_eligible) && opening_ == FlopOpening::SquareRoot)
       prepare_sampled_averaging(allow_bfloat, allow_fp16);
     else if (sampled_smart_tree())
-      prepare_sampled_averaging(false, false);
+      prepare_sampled_averaging(allow_bfloat, allow_fp16);
   }
   void prepare_sampled_averaging(bool allow_bfloat = true, bool allow_fp16 = true) {
     constexpr uint64_t min_strategy_floats = (uint64_t{1} << 30) / sizeof(float);
@@ -226,7 +226,8 @@ class Solver {
   bool uses_sampled_averaging() const { return average_sampling_ == AverageSampling::Bounded; }
   // Sampled averaging (#556) on the app's IP-first rainbow flops with the square-root opening, where it
   // began, and on every other Smart tree (smart_rivers or single_river_size) with the ordinary opening:
-  // HUNL 3BP to 0.3% of pot on 32 Zen 5 threads, 16-bit, 7.97 -> 7.12 s (#578).
+  // HUNL 3BP to 0.3% of pot on 32 Zen 5 threads, 16-bit, 7.97 -> 7.12 s (#578). On the GPU, Medium
+  // (smart_rivers) trees also take the bfloat16 regrets and fp16 sums of #559/#561 (#586).
   bool sampled_opening() const { return opening_ == FlopOpening::SquareRoot && uses_flop_ip_first(); }
   bool sampled_smart_tree() const {
     return opening_ == FlopOpening::Ordinary && g_.cfg.river_sizing != RiverSizing::Full;

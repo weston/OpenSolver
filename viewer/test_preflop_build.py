@@ -249,6 +249,42 @@ class PreflopBuildTest(unittest.TestCase):
         s = self.tool_settings(["--stack", "5", "--no-limp", "--depth", "river"])
         self.assertEqual((river["mb"], river["mb_tables"]), self.pf.estimates_mb(SOLVER, s, flops))
         self.assertLess(river["mb"], river["mb_tables"])
+        # the two counts are the tool's own, the first asked for under `small` by name (#522). Every line
+        # that counts a tree or says which tree is recorded where the tool's Solver sends it, for the
+        # length of the requests: lines of the viewer's own beside the tool's function would show too
+        counts, cmd, sent, where = self.pf._estimates, self.pf.Solver.cmd, [], []
+
+        def counted(u):
+            where.append(u.p)
+            return counts(u)
+
+        def recorded(u, line, *more, **named):
+            if line.split()[0] in ("set_outcome_tables", "estimate_tree"):
+                sent.append(line)
+            return cmd(u, line, *more, **named)
+        four = ["set_outcome_tables small", "estimate_tree", "set_outcome_tables fast", "estimate_tree"]
+        s = self.tool_settings(["--stack", "8", "--depth", "turn"])
+        try:
+            self.pf._estimates, self.pf.Solver.cmd = counted, recorded
+            st, again = self.v.req("/api/preflop/estimate", "POST", dict(turn, depth="river"))
+            self.assertEqual((st, again, sent, where), (200, river, [], []), "a remembered estimate sends nothing")
+            st, other = self.v.req("/api/preflop/estimate", "POST", dict(FORM, stack="8", depth="turn"))
+            ended = [p.poll() for p in where]
+            viewers, sent[:] = list(sent), []
+            tools = self.pf.estimates_mb(SOLVER, s, flops)
+        finally:
+            self.pf._estimates, self.pf.Solver.cmd = counts, cmd
+        self.assertEqual(st, 200, other)
+        self.assertEqual(viewers, four, "one call of the tool's function, and no count beside it")
+        self.assertEqual(sent, four, "the tool's own estimate: the same four lines")
+        self.assertEqual((other["mb"], other["mb_tables"]), tools)
+        self.assertNotEqual(tools, (two["mb"], two["mb_tables"]), "another tree than the ones above, by its figures too")
+        # in a process of the estimate's own that had ended when the answer came: the settings above are
+        # not the viewer's solver's, where a build runs under the solver's own choice
+        self.assertEqual(len(where), 2, "the viewer's estimate and the tool's")
+        self.assertNotEqual(where[0].pid, self.v.solver.proc.pid)
+        self.assertEqual(len(ended), 1)
+        self.assertIsNotNone(ended[0])
 
     def test_05_ranges_that_cannot_be_dealt(self):
         # every hand of each holds the ace of spades and the ace of hearts

@@ -176,8 +176,10 @@ class Estimates:
     `estimate_tree` builds the whole tree but its strategies to count it, and in the viewer's solver that
     would stand beside the tree being looked at. Two figures (#504): the smallest tree, and the tree with
     outcome tables at every level, which is the one the solver builds when it fits in nine tenths of the
-    memory that is free (`set_outcome_tables auto`, the state a build here runs in). The same process says whether the two ranges can be dealt
-    against each other, so a build is refused before the viewer's solver is touched. Of the form's own
+    memory that is free (`set_outcome_tables auto`, the state a build here runs in). The two counts are
+    the tool's own (`_estimates`: the first under `small` by name, #522), and their settings end with
+    the process. The same process says whether the two ranges can be dealt against each other, so a
+    build is refused before the viewer's solver is touched. Of the form's own
     estimates one runs at a time, a newer request ends the older one; the estimate a build waits for is
     not one of those, nothing ends it."""
 
@@ -216,9 +218,7 @@ class Estimates:
                     self.running = u
             for line in lines:
                 u.need(line)
-            mb = pf._estimate(u)
-            u.need("set_outcome_tables fast")   # a count of its own (seconds at river depth): nothing of the first is used
-            with_tables = pf._estimate(u)
+            mb, with_tables = pf._estimates(u)   # two counts (seconds each at river depth), the tool's own
             order = " ".join(u.cmd("show_hand_order")).split()
             sb, bb = (pf._floats(u.cmd(f"show_range {who} r:0"), vsrv.NUM_COMBOS, "show_range r:0")[0]
                       for who in ("IP", "OOP"))

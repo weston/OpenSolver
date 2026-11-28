@@ -565,6 +565,42 @@ The same PC, `set_algorithm v4_hybrid`, the viewer's Smart trees to 0.3% of pot 
   target) would save 3-5 reports, ~4%, but leaves a large tree with no progress shown for its first
   10 s. Not done.
 
+## HUNL SRP to 0.3% of pot: what is left, and what was ruled out (#598, #599)
+
+The saved SRP spot (Medium Smart tree, 9.1 GB at 16-bit), Ryzen 9 9950X + RX 9060 XT, after #599: 55.4 s
+on CPU and GPU (225 iterations: 49.3 s of iterations, 3.8 s of reports, 1.8 s of setup, 1.4 s of copies),
+86.6 s on the CPU. At a fixed GPU share of 45% it is 53.6 s, so the share's one rebuild costs ~2 s.
+
+**The iterations are fixed by the algorithm.** Re-swept on SRP itself (CPU and GPU at a fixed 44%):
+alpha 1.3 / gamma 4 (the defaults) 226 iterations; gamma 3 228, gamma 5 229; alpha 1.2 328, alpha 1.5 282;
+beta 0.25 after 50 273. `avg_delay` 24 / 40 on 3BP: 121 / 128 against 124. The Strong tree (single river
+size, 5.6 GB) takes 175 iterations and 25.6 s on CPU and GPU itself, so it is no cheap warm start.
+
+**Bytes per value, ruled out:**
+- *No strategy sums on the river* (its average falls back to the current strategy): 3BP 124 -> 858
+  iterations. The river's average is needed.
+- *Fewer bits of regret* (emulated in the 16-bit format, 3BP): 8-bit linear, nearest 303 iterations, with
+  stochastic rounding 194; ~10 bits stochastic 127 (no loss, but a 12-bit format would save ~15% of the
+  bytes for packed rows in every loop); FP8-like (2-4 mantissa bits) 485-1240.
+- *Sampled sums for longer* (stride 4 to elapsed 128): 3BP 144 iterations against 124. Stride 4
+  throughout: SRP 250. Pairs to the end only for the 0.3% default (#599); to 0.1% they cost 263
+  against 208.
+
+**The GPU on SRP, ruled out or not worth it:**
+- *A work-group per river subtree*, walked depth first so its reach and value rows stay in the cache
+  (`river_tree`, a prototype): 10.2 s of kernel time at width 256, 8.8 s at 64, 8.6 s at 128, against
+  ~6.0 s for the level path's river kernels. One work-group's walk is a chain of scans, each waiting on
+  the last; a level runs thousands side by side.
+- *The GPU's compact state in the hybrid's share* (bfloat16 regrets, fp16 sums from iteration 9, rows
+  rewritten in place through the host): the share's kernels -16%, but the solve 52.9 s against 53.6 s at
+  the same 45% share. A finer rebalance (2 points) rebuilt the device at iteration 20 and the copy into
+  the 16-bit tree cost precision: 232 iterations, 58.7 s.
+- **Where the GPU's time goes on SRP**: Medium rivers have node shapes the fused kernels do not cover
+  (OOP DDD, IP DDDS, OOP DDSF, IP DDS..., by child kind), so most river nodes take `update_values` level
+  by level and every showdown its own `terminal` work-group. Per pass ~17 GB move against ~4.5 GB of
+  state: the rest is value and reach rows and board tables. Folding a node's showdown and fold children
+  into its own work-group would save at most the `terminal` kernel's ~14%.
+
 ## Showdown terminals per river subtree, measured on arm64 (#186)
 
 #186 wants a river subtree's showdown terminals evaluated in one sweep over the board's strength

@@ -2442,7 +2442,8 @@ void Solver::iterate(int t, int first) {
       using clock = std::chrono::steady_clock;
       const auto t0 = clock::now();
       subtrees->launch(*this, t, k, p);
-      if (hybrid_measure) {  // the device's pass alone, then the CPU's: how to share the turns out
+      const bool alone = hybrid_measure && !subtrees->times_passes();
+      if (alone) {  // the device's pass alone, then the CPU's: how to share the turns out
         subtrees->finish();
         hybrid_device_seconds += std::chrono::duration<double>(clock::now() - t0).count();
       }
@@ -2453,6 +2454,10 @@ void Solver::iterate(int t, int first) {
       hybrid_turns(p);
       if (hybrid_measure) hybrid_cpu_seconds += std::chrono::duration<double>(clock::now() - t1).count();
       subtrees->finish();
+      if (subtrees->times_passes()) {
+        const double seconds = subtrees->pass_seconds();  // taken every pass: only the measured ones count
+        if (hybrid_measure) hybrid_device_seconds += seconds;
+      }
     }
     walk_t<Walk::CFR>(0, p, own, g_.init_reach[1 - p].data(), out);
     round_regrets();

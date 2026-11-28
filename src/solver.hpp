@@ -139,6 +139,11 @@ class SubtreeDevice {
   virtual void finish() = 0;                  // waits for the pass
   virtual void publish(GameTree& g) = 0;      // the device's rows into the tree, where it is behind
   virtual void upload(const GameTree& g) = 0;  // the tree's rows to the device
+  // A device that times its own passes (#589: Metal, from its command buffers) has the share measured with both
+  // sides at work, over a few iterations; pass_seconds is its time for the passes since the last call. Otherwise
+  // iteration 2 runs the device's passes alone, then the CPU's turns.
+  virtual bool times_passes() const { return false; }
+  virtual double pass_seconds() { return 0; }
 };
 
 class Solver {

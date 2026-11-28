@@ -171,7 +171,7 @@ uint64_t available_memory_bytes() {
 
 // ------------------------------------------------------------------------------------------------
 
-Upi::Upi() : algorithm_(gpu_preferred() ? kGpuAlgorithm : "auto") {
+Upi::Upi() : algorithm_(gpu_preferred() ? kGpuAlgorithm : "auto"), algorithm_default_(gpu_preferred()) {
   init_cards();
   cfg_.iso_flop = true;
   cfg_.iso_turn = false;
@@ -412,9 +412,10 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   if (!sub) tree_->has_saved_stats = false;
   const bool accuracy_solve = !sub && !stable_flop && steps == 0 && seconds == 0;
   const double target = accuracy_fraction_ ? accuracy_ * tree_->cfg.start_pot() : accuracy_;
-  if (stable_flop || algorithm_ == "original_pio" || algorithm_ == "pio_cfr")
+  const std::string algorithm = solve_algorithm(sub != nullptr);
+  if (stable_flop || algorithm == "original_pio" || algorithm == "pio_cfr")
     solver_->set_average_sampling(AverageSampling::Dense);
-  solver_->select_sampled_averaging(accuracy_solve ? target : 0., gpu_algorithm(algorithm_));
+  solver_->select_sampled_averaging(accuracy_solve ? target : 0., gpu_algorithm(algorithm));
   if (!sub && (accuracy_solve || target > 0.) && !solver_->is_bfloat_target(target))
     solver_->set_bfloat_regrets(false);
   if (solver_->fp16_sums() && (tree_->iterations >= 1024 ||
@@ -424,10 +425,21 @@ void Upi::start_solver(double seconds, long long steps, std::shared_ptr<SubtreeJ
   solving_ = true;
   // copied here, on the command thread: the new thread reading end_string_ raced set_end_string (#364)
   std::string endl_str = end_string_.empty() ? "END" : end_string_;
-  const bool gpu = gpu_algorithm(algorithm_);
-  solver_thread_ = std::thread([this, seconds, steps, gpu, stable_flop, sub = std::move(sub), endl_str = std::move(endl_str)] {
-    solver_thread_main(seconds, steps, std::move(sub), endl_str, gpu, stable_flop);
+  const bool gpu = gpu_algorithm(algorithm), hybrid = hybrid_algorithm(algorithm);
+  solve_gpu_ = gpu;
+  solver_thread_ = std::thread([this, seconds, steps, gpu, hybrid, stable_flop, sub = std::move(sub),
+                                endl_str = std::move(endl_str)] {
+    solver_thread_main(seconds, steps, std::move(sub), endl_str, gpu, hybrid, stable_flop);
   });
+}
+
+// The algorithm a solve of the tree runs. Apple Silicon's default (#589) solves a whole flop tree on the CPU and
+// the GPU together (M1 Ultra, Smart trees to 0.3% of pot: 3BP 4.37 -> 3.41 s, SRP 50.7 -> 36.9 s, and less than
+// half the memory) and every other tree on the GPU alone: the hybrid would send it to the CPU, slower there.
+// What either cannot take goes to the CPU for the same reasons.
+std::string Upi::solve_algorithm(bool subtree) const {
+  const bool flop = tree_ && !subtree && !tree_->cfg.preflop && !tree_->nodes.empty() && tree_->nodes[0].board_len == 3;
+  return algorithm_default_ && flop ? "v4_hybrid" : algorithm_;
 }
 
 void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps) {
@@ -445,7 +457,7 @@ void Upi::start_subtree_solve(const NodeRef& r, double seconds, long long steps)
 }
 
 void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<SubtreeJob> sub,
-                             const std::string& endl_str, bool gpu, bool stable_flop) {
+                             const std::string& endl_str, bool gpu, bool hybrid_solve, bool stable_flop) {
   out_raw(stable_flop ? "SOLVER: started (flop stability)\n" : "SOLVER: started\n");
   FlopStability stability;
   double best_e = std::numeric_limits<double>::infinity();  // 16-bit stall detection (#182)
@@ -488,7 +500,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   std::unique_ptr<SubtreeDevice> hybrid;
   uint64_t hybrid_generation = 0;
   const char* const fixed_share = std::getenv("WSOLVER_HYBRID");
-  const bool hybrid_wanted = !gpu && (algorithm_ == "v4_hybrid" || fixed_share);
+  const bool hybrid_wanted = !gpu && (hybrid_solve || fixed_share);
   double share = fixed_share ? std::clamp(std::atof(fixed_share), 0.0, 1.0) : hybrid_share_;
   double hybrid_setup_seconds = 0;
   long long hybrid_first_tick = 0;
@@ -633,11 +645,17 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           }
         }
         // Two iterations timed one device after the other: 19 and 20, where the CPU prunes (from 17) and one
-        // of them adds to the sampled average; or the second and third of a solve that resumes later.
+        // of them adds to the sampled average; or the second and third of a solve that resumes later. A device
+        // that times its own passes (#589) is measured with both at work, over four iterations from 19 (from the
+        // fourth of a resumed solve, once the GPU's clocks are up): timed alone, Metal's passes took twice their
+        // time in the solve, and gave 0.58 where 0.7-0.75 was fastest (M1 Ultra, 3BP).
         if (done == 0) hybrid_first_tick = tick;
         const bool late = hybrid_first_tick > 18;
-        const bool measure = hybrid && !fixed_share && (late ? done == 1 || done == 2 : tick == 19 || tick == 20);
-        const bool decide = measure && (late ? done == 2 : tick == 20);
+        const bool concurrent = hybrid && hybrid->times_passes();
+        const long long window = concurrent ? 4 : 2, from = late ? (concurrent ? 3 : 1) : 19;
+        const long long at = late ? done : tick;
+        const bool measure = hybrid && !fixed_share && at >= from && at < from + window;
+        const bool decide = measure && at == from + window - 1;
         if (measure) {
           if (!solver_->hybrid_measure) solver_->hybrid_device_seconds = solver_->hybrid_cpu_seconds = 0;
           solver_->hybrid_measure = true;
@@ -648,8 +666,8 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
         if (decide) {
           solver_->hybrid_measure = false;
           // per pass: the device's time for its share g * share, the CPU's c * (1 - share); even at g * s = c * (1 - s)
-          const double g = solver_->hybrid_device_seconds / std::max(share, 1e-3);
-          const double c = solver_->hybrid_cpu_seconds / std::max(1 - share, 1e-3);
+          const double g = solver_->hybrid_device_seconds / window / std::max(share, 1e-3);
+          const double c = solver_->hybrid_cpu_seconds / window / std::max(1 - share, 1e-3);
           const double best = g + c > 0 ? std::clamp(c / (g + c), 0.05, 0.95) : share;
           const double now_s = std::max(g * share, c * (1 - share)), even = g * c / std::max(g + c, 1e-12);
           if (std::getenv("WSOLVER_HYBRID_DEBUG"))
@@ -1636,9 +1654,7 @@ void Upi::register_commands() {
     // v4_gpu is the GPU on any platform; v4_metal, its first name, stays for Apple Silicon clients
     if (gpu_available()) {
       algorithms += "\nv4_gpu,DCFR," + gpu_name() + ", unpruned postflop traversal";
-#if !(defined(__APPLE__) && defined(__aarch64__))
       algorithms += "\nv4_hybrid,DCFR," + gpu_name() + " and the CPU, each solving some of the turn subtrees";
-#endif
 #if defined(__APPLE__) && defined(__aarch64__)
       algorithms += "\nv4_metal,DCFR,Apple GPU (Metal), unpruned postflop traversal";
 #endif
@@ -1652,9 +1668,10 @@ void Upi::register_commands() {
       if (!gpu_available()) throw CmdError{"GPU unavailable: " + gpu_unavailable_reason()};
     } else if (std::find(std::begin(valid), std::end(valid), a[0]) == std::end(valid))
       throw CmdError{"incorrect or missing argument"};
-    if (solving_ && gpu_algorithm(a[0]) != gpu_algorithm(algorithm_))
+    if (solving_ && gpu_algorithm(a[0]) != solve_gpu_)
       throw CmdError{"stop the solver first"};
     algorithm_ = a[0];
+    algorithm_default_ = false;
     return std::string("set_algorithm ok!");
   };
   H["ignore_mem_check"] = [this](const Args& a) {

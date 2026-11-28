@@ -1,4 +1,5 @@
 #include "metal.hpp"
+#include "gpu.hpp"
 #include "bfloat_regrets.hpp"
 #include "fp16_sums.hpp"
 #include "state_transfer.hpp"
@@ -57,7 +58,8 @@ struct Metal {
     throw std::runtime_error(error ? error.localizedDescription.UTF8String : "Metal command failed");
   }
   id<MTLComputePipelineState> pipeline(NSString* name, bool replay = false, bool early = false,
-                                       AverageMode average_mode = DenseAverage, bool compact = false, bool half_sums = false) {
+                                       AverageMode average_mode = DenseAverage, bool compact = false, bool half_sums = false,
+                                       unsigned pass_mode = 0) {
     auto selected_library = library;
     if (compact || half_sums) {
       auto& cached = compact_library[compact][half_sums];
@@ -71,6 +73,7 @@ struct Metal {
       auto constants = [MTLFunctionConstantValues new];
       [constants setConstantValue:&early type:MTLDataTypeBool atIndex:0];
       [constants setConstantValue:&average_mode type:MTLDataTypeUInt atIndex:1];
+      [constants setConstantValue:&pass_mode type:MTLDataTypeUInt atIndex:2];
       descriptor.computeFunction = [selected_library newFunctionWithName:name constantValues:constants error:&error];
       if (!descriptor.computeFunction) fail(error);
     } else
@@ -307,7 +310,7 @@ class PostflopSolve final : public MetalSolve {
   } replays;
   bool write_sums = true;
   bool early_replay = false;
-  NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* specialized_pipelines[4][2][3]{};
+  NSMutableDictionary<NSString*,id<MTLComputePipelineState>>* specialized_pipelines[4][2][3][3]{};  // + pass mode
   id<MTLBuffer> params[2];
   template <class V>
   id<MTLBuffer> copy_buffer(const V& x) {
@@ -338,9 +341,11 @@ class PostflopSolve final : public MetalSolve {
     stage_sums = peak + 2 * state_bytes > limit;
     stage_regrets = peak + state_bytes > limit;
   }
-  explicit PostflopSolve(GameTree& g, uint64_t available) {
+  // roots: the whole tree, or a hybrid solve's turn subtrees (MetalSubtrees, #589), whose rows are the tree's
+  // own: bound in place by their owner, so no state is allocated or counted here.
+  explicit PostflopSolve(GameTree& g, uint64_t available, const vector<std::pair<unsigned, unsigned>>* roots = nullptr) {
     stride = (std::max(g.num_hands(0), g.num_hands(1)) + 31) & ~size_t(31);
-    state_bytes = g.storage_floats * sizeof(float);
+    state_bytes = roots ? 0 : g.storage_floats * sizeof(float);
     const size_t pairs = size_t(g.num_hands(0)) * g.num_hands(1);
     if (!g.num_hands(0) || !g.num_hands(1) || g.nodes.size() * stride > UINT32_MAX || g.storage_floats > UINT32_MAX ||
         pairs * g.allins.size() > UINT32_MAX)
@@ -355,7 +360,7 @@ class PostflopSolve final : public MetalSolve {
       table_words += (pairs * width + 1) / 2;
     }
     const size_t equity_bytes = 2 * table_words * sizeof(int16_t) + tables.size() * sizeof(AllinTable);
-    pack_nodes(g, available, equity_bytes);
+    pack_nodes(g, available, equity_bytes, roots);
     pack_hands(g);
     if (!levels.empty()) {
       propagate_reach = m.pipeline(@"propagate_reach", true);
@@ -564,7 +569,10 @@ class PostflopSolve final : public MetalSolve {
 
   static size_t round_channel_bytes(unsigned hands) { return (4 * hands + 53) * sizeof(float); }
 
-  void pack_nodes(const GameTree& g, uint64_t available, uint64_t equity_bytes) {
+  // roots (a hybrid solve, #589, as gpu_pack.hpp's for #582): the turn subtrees at these nodes, each dealt the
+  // card beside it; root j's reaches are rows j of each player's reach buffer and its values row j of the values.
+  void pack_nodes(const GameTree& g, uint64_t available, uint64_t equity_bytes,
+                  const vector<std::pair<unsigned, unsigned>>* roots = nullptr) {
     const size_t N = g.nodes.size();
     vector<TraversalNode> packed_nodes(N);
     vector<RiverRound> betting_rounds, final_bets;
@@ -596,6 +604,21 @@ class PostflopSolve final : public MetalSolve {
     const unsigned reach_stride[] = {unsigned(g.num_hands(0) + 31) & ~31u, unsigned(g.num_hands(1) + 31) & ~31u};
     unsigned reach_floats[] = {reach_stride[0], reach_stride[1]};
     unsigned value_rows = 1;
+    if (roots) {
+      frontier.clear();
+      for (unsigned j = 0; j < roots->size(); ++j) {
+        const auto [root, card] = (*roots)[j];
+        auto& r = packed_nodes[root];
+        r.value_row = j;
+        r.card = card;
+        r.public_cards = card + 1;  // below a flop root's deal, as Deal gives its children
+        for (int p = 0; p < 2; ++p) r.reach_offset[p] = j * reach_stride[p];
+        frontier.push_back(root);
+      }
+      reach_floats[0] = std::max<unsigned>(1, roots->size()) * reach_stride[0];
+      reach_floats[1] = std::max<unsigned>(1, roots->size()) * reach_stride[1];
+      value_rows = std::max<unsigned>(1, roots->size());
+    }
     while (!frontier.empty()) {
       size_t start = list.size();
       vector<unsigned> next;
@@ -762,7 +785,9 @@ class PostflopSolve final : public MetalSolve {
     iso = copy_buffer(deals_by_node);
   }
 
-  Replay record(const GameTree& g, unsigned p, bool refresh_reach, AverageMode mode) {
+  // pass_mode (a hybrid report, #589): the average strategy, read from the sums bound as the regrets; EV (1) or
+  // best response (2), nothing written.
+  Replay record(const GameTree& g, unsigned p, bool refresh_reach, AverageMode mode, unsigned pass_mode = 0) {
     auto descriptor = [MTLIndirectCommandBufferDescriptor new];
     descriptor.commandTypes = MTLIndirectCommandTypeConcurrentDispatch;
     descriptor.inheritPipelineState = NO;
@@ -776,6 +801,7 @@ class PostflopSolve final : public MetalSolve {
     id<MTLBuffer> buffers[15] = {
         nodes, node_ids,      params[p],           r[0], r[1], v, regrets.output, strategy_sums.output, cards, nil, nil,
         nil,   regrets.input, strategy_sums.input, nil};
+    if (pass_mode) buffers[6] = buffers[12] = strategy_sums.input;
     auto dispatch = [&](id<MTLComputePipelineState> pipe, Range span, size_t scratch = 0, unsigned y = 1) {
       if (!span.count) return;
       auto c = [plan.commands indirectComputeCommandAtIndex:plan.count++];
@@ -785,12 +811,13 @@ class PostflopSolve final : public MetalSolve {
       const AverageMode average = writes_strategy ? mode : DenseAverage;
       const bool compact = compact_regrets && pipe != terminals && pipe != allins;
       const bool half_sums = writes_strategy && compact_sums;
-      if (compact || half_sums || policy || average != DenseAverage) {
-        auto& variants = specialized_pipelines[unsigned(compact) + 2 * unsigned(half_sums)][policy][average];
+      const unsigned pass = writes_strategy ? pass_mode : 0;
+      if (compact || half_sums || policy || average != DenseAverage || pass) {
+        auto& variants = specialized_pipelines[unsigned(compact) + 2 * unsigned(half_sums)][policy][average][pass];
         if (!variants) variants = [NSMutableDictionary new];
         selected = variants[pipe.label];
         if (!selected) {
-          selected = m.pipeline(pipe.label, true, policy, average, compact, half_sums);
+          selected = m.pipeline(pipe.label, true, policy, average, compact, half_sums, pass);
           variants[pipe.label] = selected;
         }
       }
@@ -1020,6 +1047,246 @@ class PostflopSolve final : public MetalSolve {
   }
 };
 
+
+// A hybrid solve's device (#589, #582's SubtreeDevice on Apple Silicon): the turn subtrees of a share of the turn
+// cards, solved on the GPU in every pass while the CPU walks the others. Memory is shared, so its state is the
+// tree's own float32 rows, bound without a copy and updated in place: each subtree's rows are its own, and the
+// CPU's walks never touch them. Nothing is uploaded or published, and nothing beyond the GPU's workspace is
+// allocated. (Arrays too small to be page-aligned cannot be bound: a small tree's rows are copied to the GPU,
+// at the same offsets, and its subtrees' ranges copied back.) Reaches and values are the packed plan's root rows,
+// read and written where the GPU has them.
+class MetalSubtrees final : public SubtreeDevice {
+ public:
+  MetalSubtrees(GameTree& tree, uint64_t available, double share) : g(tree) {
+    if (g.compressed) throw std::runtime_error("16-bit storage: the GPU's turn subtrees need float32 rows");
+    for (uint32_t i = 0; i < g.nodes.size(); ++i) {
+      const auto& n = g.nodes[i];
+      if (n.kind != ANodeKind::Chance || n.board_len != 3 || g.chances[n.aux].flop_deal) continue;
+      const auto& ci = g.chances[n.aux];
+      for (int k = 0; k < n.num_children; ++k) {
+        // an even spread of the cards: k is the device's when floor((k + 1) * share) passes an integer
+        if (std::floor((k + 1) * share) == std::floor(k * share)) continue;
+        const uint32_t child = n.first_child + uint32_t(k);
+        if (g.nodes[child].kind != ANodeKind::Decision) continue;
+        index[child] = int(roots.size());
+        roots.push_back({child, ci.cards[k]});
+      }
+    }
+    if (roots.empty()) throw std::runtime_error("no turn subtrees for the GPU");
+    // Each subtree's rows are one range of storage (the tree is filled depth first): what a copy brings back.
+    for (const auto& [node, card] : roots) {
+      size_t lo = SIZE_MAX, hi = 0;
+      vector<uint32_t> stack{node};
+      while (!stack.empty()) {
+        const auto& n = g.nodes[stack.back()];
+        stack.pop_back();
+        if (n.kind == ANodeKind::Decision && !GameTree::shares_row(n)) {
+          lo = std::min<size_t>(lo, n.storage);
+          hi = std::max<size_t>(hi, n.storage + size_t(n.num_children) * g.num_hands(n.player));
+        }
+        if (n.kind == ANodeKind::Decision || n.kind == ANodeKind::Chance)
+          for (uint32_t c = 0; c < n.num_children; ++c) stack.push_back(n.first_child + c);
+      }
+      if (lo < hi) ranges.push_back({lo, hi - lo});
+    }
+    @autoreleasepool {
+      s = std::make_unique<PostflopSolve>(g, available, &roots);
+      // The whole of the tree's rows is bound (each share's subtrees are spread through it), so a smaller share
+      // would not fit where this does not: the CPU then solves alone.
+      const uint64_t rows = (uint64_t(g.regrets.size()) + g.strat.size()) * sizeof(float);
+      if (m.dev.currentAllocatedSize + rows > m.dev.recommendedMaxWorkingSetSize)
+        throw std::runtime_error("the tree is larger than the GPU's working set");
+      bind();
+      if (std::getenv("WSOLVER_HYBRID_DEBUG"))
+        std::fprintf(stderr, "GPU profile: hybrid, %zu turn subtrees, the tree's rows %s\n", roots.size(),
+                     copied ? "copied" : "bound in place");
+      check = m.buffer(4 * roots.size() * s->stride * sizeof(float));
+    }
+  }
+  ~MetalSubtrees() override { finish(); }
+
+  int root(uint32_t node) const override {
+    auto it = index.find(node);
+    return it == index.end() ? -1 : it->second;
+  }
+  // the plan's root rows (PostflopSolve::pack_nodes): written by the host between passes only
+  float* reach(int player, int j) override {
+    return static_cast<float*>(s->r[player].contents) + size_t(j) * ((g.num_hands(player) + 31) & ~31u);
+  }
+
+  void launch(Solver& solver, int t, int phase, int p) override {
+    @autoreleasepool {
+      const bool early = solver.sqrt_regret_weights();
+      if (early != s->early_replay) {
+        s->early_replay = early;
+        s->replays = {};
+        refresh_reach = true;
+      }
+      const auto average = solver.strategy_average_step(t);
+      const AverageMode mode = average.weight == 1.f ? DenseAverage : average.weight == 0.f ? SkipAverage : WeightedAverage;
+      auto disc = [](double z) { return float(z / (1 + z)); };
+      IterationParams args = {unsigned(g.num_hands(0)),
+                              unsigned(g.num_hands(1)),
+                              unsigned(s->stride),
+                              unsigned(p),
+                              disc(std::pow(t, solver.params.alpha)),
+                              disc(std::pow(t, solver.params.beta_at(t))),
+                              average.reset ? 0.f : average.discount,
+                              unsigned(solver.avg_reset || t > solver.avg_delay),
+                              unsigned(phase),
+                              average.weight};
+      memcpy(s->params[p].contents, &args, sizeof(args));
+      // p's own reach below the roots is the opponent's last pass's, when that came last: p's strategy has not
+      // changed since (#599, as the whole-tree solve). Both after setup, an upload, a report or a new policy.
+      const bool both = refresh_reach || p == last_player;
+      refresh_reach = false;
+      last_player = p;
+      auto& plan = s->replays.plans[mode][0][0][p][both];
+      if (!plan.commands) plan = s->record(g, unsigned(p), both, mode);
+      auto cmd = m.command();
+      encode(cmd, unsigned(p), plan);
+      [cmd commit];
+      std::lock_guard<std::mutex> lock(wait_mu);
+      pending = cmd;
+      pending_pass = true;
+      device_newer = true;
+    }
+  }
+  const float* values(int j) override {
+    finish();
+    return static_cast<const float*>(s->v.contents) + size_t(j) * s->stride;
+  }
+  void launch_check() override {
+    @autoreleasepool {
+      const bool early = s->early_replay;
+      s->early_replay = false;  // the average strategy is the sums' plain proportions
+      auto cmd = m.command();
+      const size_t rows = roots.size() * s->stride * sizeof(float);
+      for (unsigned p = 0; p < 2; ++p) {
+        IterationParams q{};
+        q.hands0 = unsigned(g.num_hands(0));
+        q.hands1 = unsigned(g.num_hands(1));
+        q.stride = unsigned(s->stride);
+        q.p = p;
+        q.positive_discount = q.negative_discount = q.average_discount = q.sample_weight = 1.f;
+        memcpy(s->params[p].contents, &q, sizeof(q));
+        for (unsigned mode = 1; mode <= 2; ++mode) {
+          auto& plan = checks[p][mode - 1];
+          if (!plan.commands) plan = s->record(g, p, true, SkipAverage, mode);
+          encode(cmd, p, plan);
+          auto blit = [cmd blitCommandEncoder];
+          [blit copyFromBuffer:s->v sourceOffset:0 toBuffer:check destinationOffset:(2 * p + mode - 1) * rows size:rows];
+          [blit endEncoding];
+        }
+      }
+      s->early_replay = early;
+      refresh_reach = true;  // the reaches below the roots are the average strategy's now
+      [cmd commit];
+      std::lock_guard<std::mutex> lock(wait_mu);
+      pending = cmd;
+      pending_pass = false;
+    }
+  }
+  const float* check_values(int p, bool best_response, int j) override {
+    finish();
+    return static_cast<const float*>(check.contents) + (size_t(2 * p + best_response) * roots.size() + j) * s->stride;
+  }
+  void finish() override {
+    std::lock_guard<std::mutex> lock(wait_mu);
+    if (!pending) return;
+    id<MTLCommandBuffer> cmd = pending;
+    pending = nil;
+    m.wait(cmd);
+    const double seconds = cmd.GPUEndTime - cmd.GPUStartTime;  // the first command buffer can report 0 as its start
+    if (pending_pass && cmd.GPUStartTime > 0 && seconds > 0 && seconds < 60) passes += seconds;
+  }
+  bool times_passes() const override { return true; }
+  double pass_seconds() override {
+    finish();
+    std::lock_guard<std::mutex> lock(wait_mu);
+    const double seconds = passes;
+    passes = 0;
+    return seconds;
+  }
+  // Bound rows are the tree's: nothing to copy either way, unless a command between iterations gave the tree
+  // new arrays, which are bound again. Copied rows go back as the GPU's subtrees' ranges, and up whole.
+  void publish(GameTree&) override {
+    finish();
+    if (!copied || !device_newer) return;
+    for (auto [start, count] : ranges) {
+      memcpy(g.regrets.data() + start, static_cast<const float*>(s->regrets.input.contents) + start, count * sizeof(float));
+      memcpy(g.strat.data() + start, static_cast<const float*>(s->strategy_sums.input.contents) + start, count * sizeof(float));
+    }
+    device_newer = false;
+  }
+  void upload(const GameTree&) override {
+    finish();
+    refresh_reach = true;
+    if (g.regrets.data() != bound[0] || g.strat.data() != bound[1] || g.regrets.size() != bound_floats) {
+      if (g.compressed) throw std::runtime_error("16-bit storage: the GPU's turn subtrees need float32 rows");
+      @autoreleasepool {
+        bind();
+      }
+    } else if (copied) {
+      copy_up();
+    }
+  }
+
+ private:
+  void bind() {
+    auto regrets = MetalRows::shared(m, g.regrets), sums = MetalRows::shared(m, g.strat);
+    copied = !regrets || !sums;
+    if (copied) {
+      regrets = m.buffer(g.regrets.size() * sizeof(float));
+      sums = m.buffer(g.strat.size() * sizeof(float));
+    }
+    s->regrets.input = s->regrets.output = regrets;
+    s->strategy_sums.input = s->strategy_sums.output = sums;
+    if (copied) copy_up();
+    s->replays = {};
+    refresh_reach = true;
+    for (auto& p : checks)
+      for (auto& plan : p) plan = {};
+    bound[0] = g.regrets.data();
+    bound[1] = g.strat.data();
+    bound_floats = g.regrets.size();
+  }
+  void copy_up() {
+    if (!g.regrets.empty()) memcpy(s->regrets.input.contents, g.regrets.data(), g.regrets.size() * sizeof(float));
+    if (!g.strat.empty()) memcpy(s->strategy_sums.input.contents, g.strat.data(), g.strat.size() * sizeof(float));
+    device_newer = false;
+  }
+  void encode(id<MTLCommandBuffer> cmd, unsigned p, const PostflopSolve::Replay& plan) {
+    auto enc = m.encoder(cmd);
+    id<MTLResource> read[] = {s->nodes, s->node_ids, s->params[p], s->cards, s->boards[p], s->indices[p], s->heroes[p],
+                              s->rounds, s->bet_check_nodes, s->two_bet_nodes, s->lead_check_nodes, s->allin_batches,
+                              s->equity_tables, s->equity[p], s->iso, s->perms[p]};
+    id<MTLResource> write[] = {s->r[0], s->r[1], s->v, s->regrets.input, s->strategy_sums.input};
+    [enc useResources:read count:sizeof(read) / sizeof(read[0]) usage:MTLResourceUsageRead];
+    [enc useResources:write count:sizeof(write) / sizeof(write[0]) usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+    [enc executeCommandsInBuffer:plan.commands withRange:NSMakeRange(0, plan.count)];
+    [enc endEncoding];
+  }
+
+  Metal& m = metal();
+  GameTree& g;
+  std::unique_ptr<PostflopSolve> s;
+  vector<std::pair<unsigned, unsigned>> roots;  // node, the turn card dealt to it
+  std::unordered_map<uint32_t, int> index;
+  PostflopSolve::Replay checks[2][2];  // [player][EV, best response]
+  id<MTLBuffer> check;                 // their root rows: [player][EV, best response][root]
+  const float* bound[2] = {nullptr, nullptr};
+  size_t bound_floats = 0;
+  vector<std::pair<size_t, size_t>> ranges;  // the GPU's subtrees' rows in storage: start, floats
+  bool copied = false;                       // the rows are a copy (the tree's arrays could not be bound)
+  bool device_newer = false;                 // a copy has iterations the tree lacks
+  bool refresh_reach = true;                 // the next pass propagates both players' reaches
+  int last_player = -1;                      // the player of the last solving pass
+  std::mutex wait_mu;
+  id<MTLCommandBuffer> pending = nil;
+  bool pending_pass = false;  // pending is a solving pass (not a report)
+  double passes = 0;          // the GPU's time for the solving passes since pass_seconds
+};
 }  // namespace
 
 bool metal_available() {
@@ -1032,6 +1299,9 @@ std::unique_ptr<MetalSolve> make_metal_solve(GameTree& tree, uint64_t available)
   @autoreleasepool {
     return std::make_unique<PostflopSolve>(tree, available);
   }
+}
+std::unique_ptr<SubtreeDevice> make_gpu_subtrees(GameTree& tree, uint64_t available, double share) {
+  return std::make_unique<MetalSubtrees>(tree, available, share);
 }
 void metal_flop_table(const GameTree& g, AllinRunouts& ar, const std::vector<std::array<uint32_t, 4>>& runout_boards) {
   @autoreleasepool {

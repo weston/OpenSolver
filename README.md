@@ -990,7 +990,7 @@ GPU, with one of three backends:
 
 | GPU | Backend | Needs |
 |---|---|---|
-| Apple Silicon | Metal | macOS; the default device there |
+| Apple Silicon | Metal | macOS; the default device there (flop trees on the CPU and GPU together) |
 | NVIDIA (Maxwell or later) | CUDA | the NVIDIA driver, and NVRTC, the CUDA runtime compiler: `nvrtc64_*.dll` / `libnvrtc.so` from the [CUDA toolkit](https://developer.nvidia.com/cuda-downloads) (found through `CUDA_PATH`) or next to the solver. Without NVRTC the NVIDIA driver's own OpenCL is used |
 | AMD Radeon, Intel, others | OpenCL 1.2 | the GPU driver (AMD Adrenalin ships OpenCL); 32 KB of work-group memory |
 
@@ -1015,13 +1015,13 @@ the algorithm's first name, is still accepted.
   (seconds to 0.2% of pot, CPU vs GPU, `bench/run.py --threads 32`, 2026-11-27: flop_3bet 0.12 vs **0.09**, flop_srp_2 0.20 vs 0.41, flop_srp_4 0.34 vs 0.67, deep 0.61 vs 0.79, threebet_mono 3.31 vs 4.12, 25bb fixture 41.6 vs 48.4 with float32 state on the GPU; a new process also compiles the kernels once, about 0.3 s), so a discrete GPU is not the default device: try both on your own trees, the
   viewer's Compute device setting switches between them. The CUDA backend has not been measured
   (it has not yet run on an NVIDIA GPU).
-- **CPU and GPU together** (`set_algorithm v4_hybrid`, a discrete GPU; the viewer's Compute device
+- **CPU and GPU together** (`set_algorithm v4_hybrid`; the viewer's Compute device
   **CPU and GPU together**). The turn subtrees of a flop tree do not depend on each other within a
   pass, so the GPU solves those of some of the turn cards while the CPU walks the others, and the two
   meet at the flop. A report measures each device's subtrees where they are, so the GPU's rows go to
   the tree only between solves and for commands run during one. The GPU's share of the turn cards
   starts at half (or where the last solve in the same process settled), as much of it as fits 80% of
-  the GPU's memory, and is set once from iteration 2, timed one device after the other. The tree keeps
+  the GPU's memory, and is set once from iterations 19 and 20, timed one device after the other. The tree keeps
   the CPU's storage (16-bit where `small_strats auto` picks it); the GPU holds its share in float32, so
   a tree larger than the GPU solves with a smaller share. A turn or river tree, a subtree solve, locks,
   ICM and predictive CFR solve on the CPU (`SOLVER: device cpu (<why>)`).
@@ -1033,8 +1033,24 @@ the algorithm's first name, is still accepted.
   | HUNL 3BP (1.3 GB) | 7.1 s | 7.5 s | **4.4 s** |
   | HUNL SRP (9.1 GB) | 95 s | does not fit | **62 s** (GPU 44%) |
 
+  **On Apple Silicon** (#589) memory is shared, so the GPU solves its share in the tree's own float32 rows,
+  in place: nothing is copied, and the solve takes about the CPU solve's memory, where the GPU alone keeps
+  a second copy of the whole state. A 16-bit tree (`small_strats on`, or float32 does not fit) solves on
+  the CPU. The share starts at three quarters and is set once from iterations 19-22, with both devices at
+  work. **It is the default there for flop trees:** a solver given no `set_algorithm` solves a whole flop
+  tree on the CPU and GPU together and any other tree on the GPU alone; `set_algorithm v4_metal` (or
+  `v4_gpu`) keeps every tree on the GPU, and `show_settings` reports `v4_metal` either way. On an M1 Ultra (20 threads, 64-core GPU), the viewer's Smart trees to 0.3% of pot (2026-11-27;
+  memory is the peak footprint):
+
+  | tree | CPU | GPU | CPU and GPU |
+  |---|---|---|---|
+  | HUNL 4BP | 1.15 s, 0.48 GB | 0.63 s, 1.06 GB | **0.60 s, 0.45 GB** |
+  | HUNL 3BP | 9.4 s, 2.7 GB | 4.4 s, 5.8 GB | **3.4 s, 2.2 GB** |
+  | HUNL SRP | 123 s, 19 GB | 51 s, 42 GB | **37 s, 15 GB** (GPU 75%) |
+
 - **Auto device (viewer).** With a discrete GPU the viewer's Compute device starts on **Auto: the
-  faster for each tree**. A flop tree goes to the CPU and GPU together when the solver offers it. For
+  faster for each tree**. A flop tree goes to the CPU and GPU together when the solver offers it (any
+  GPU since #589). For
   any other tree, Auto reads the solver's estimate of its size when you build it: a tree
   larger than the GPU takes (`show_gpu`) goes to the CPU, and any other to whichever device measured
   faster on trees that size on this machine. It picks again when you switch to Auto with a tree built.

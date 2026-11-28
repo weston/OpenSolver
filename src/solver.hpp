@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include "average_sampling.hpp"
@@ -119,12 +120,37 @@ struct RootStats {
 enum class FlopOpening : uint8_t { Ordinary, SquareRoot, Edited };
 enum class AverageSampling : uint8_t { Dense, AwaitingFirstGo, Bounded };
 
+class Solver;
+// A hybrid solve (#582): a device (gpu_solve.cpp) solves some of a flop tree's turn subtrees in each pass
+// while the CPU walks the rest. Each pass the CPU writes both players' reaches at the device's roots
+// (Solver::device_reach), launches it, and takes its root values at the flop's turn deals.
+class SubtreeDevice {
+ public:
+  virtual ~SubtreeDevice() = default;
+  virtual int root(uint32_t node) const = 0;  // the node's index among the device's roots, or -1
+  virtual float* reach(int player, int root) = 0;  // where the host writes that reach for the next pass
+  virtual void launch(Solver& s, int t, int phase, int p) = 0;  // p's pass, from the reaches written
+  // A report (Solver::root_stats): each player's EV and best response against the average strategy, from
+  // the average-strategy reaches written; values waits for them.
+  virtual void launch_check() = 0;
+  virtual const float* check_values(int p, bool best_response, int root) = 0;
+  virtual const float* values(int root) = 0;  // p's values there (waits for the pass)
+  virtual void finish() = 0;                  // waits for the pass
+  virtual void publish(GameTree& g) = 0;      // the device's rows into the tree, where it is behind
+  virtual void upload(const GameTree& g) = 0;  // the tree's rows to the device
+};
+
 class Solver {
  public:
   explicit Solver(GameTree& g) : g_(g) {}
 
   DcfrParams params;
   int first_player = 0;  // set_first_iteration_player
+  SubtreeDevice* subtrees = nullptr;  // a hybrid solve's device (#582), or none
+  bool hybrid_reports = false;        // root_stats from the device's rows, not the tree's (the solve loop)
+  // A hybrid iteration that times the device's passes and the CPU's turns one after the other (#582)
+  bool hybrid_measure = false;
+  double hybrid_device_seconds = 0, hybrid_cpu_seconds = 0;
   bool flop_ip_first = false;
   bool uses_flop_ip_first() const { return flop_ip_first && !predictive; }  // float32 or 16-bit (#578)
   FlopOpening flop_opening() const { return opening_; }
@@ -387,6 +413,22 @@ class Solver {
   template <typename F>
   void run_actions(const GNode& n, int A, F& act);
   void strategy_only(uint32_t ni, int p, const float* rp);
+  // A hybrid pass (#582): both players' reaches at every turn root of the flop's turn deals, from the
+  // flop's current strategies (into the device's rows or the CPU's), then the CPU's turn subtrees,
+  // walked while the device solves its own.
+  void device_reach(uint32_t ni, const float* r0, const float* r1, bool average = false);
+  bool hybrid_check_ = false;  // walk_evbr takes the turn roots' values from a hybrid report
+  std::vector<float> cpu_ev_[2], cpu_br_[2];
+  void hybrid_turns(int p);
+  struct HybridRoot {
+    uint32_t node;
+    uint8_t card;
+  };
+  std::vector<HybridRoot> cpu_roots_;  // the turn roots the CPU walks in a hybrid solve
+  std::unordered_map<uint32_t, int> cpu_root_index_;
+  std::vector<float> cpu_root_reach_[2], cpu_root_values_;
+  size_t cpu_root_stride_ = 0;
+  const SubtreeDevice* cpu_roots_for_ = nullptr;  // the device cpu_roots_ were listed against
   void flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, const float* rp, const float* ro, float* out);
   // Evaluate and BestResponse in one traversal (root_stats): ev = on-policy values, br = best
   // response values, both for player p against the opponent's average strategy.

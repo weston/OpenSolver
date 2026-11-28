@@ -16,6 +16,36 @@ static NSString *baseURL, *scriptPath, *snapshotPath;
   [self buildMenu];
   [self buildWindow];
   [NSApp activateIgnoringOtherApps:YES];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 90 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    fprintf(stderr, "FAIL: native app UI timed out\n");
+    exit(1);
+  });
+  // smoke.py serves an update (OPENSOLVER_UPDATE_URL): it is offered, downloaded and checked first
+  if (NSProcessInfo.processInfo.environment[@"OPENSOLVER_UPDATE_URL"].length) [self checkForUpdateSince:1];
+  else [self startUI];
+}
+
+/** Install Update, as if clicked. */
+- (void)offerUpdate:(NSDictionary<NSString *, NSString *> *)offer built:(long long)built {
+  (void)built;
+  printf("  ok: a newer published installer is offered (%s)\n", offer[@"file"].UTF8String);
+  [self downloadUpdate:offer];
+}
+
+- (void)updateFailed:(NSString *)why {
+  [self failed:[@"update: " stringByAppendingString:why]];
+}
+
+/** Not opened: the download is what is checked, then the interface. */
+- (void)openInstaller:(NSString *)path {
+  NSString *expected = NSProcessInfo.processInfo.environment[@"OPENSOLVER_UPDATE_SHA256"];
+  if (![sha256OfFile(path) isEqualToString:expected]) [self failed:@"the downloaded update is not the published one"];
+  [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+  printf("  ok: the update is downloaded and its SHA-256 checked\n");
+  [self startUI];
+}
+
+- (void)startUI {
   WKWebView *web = [self valueForKey:@"web"];
   WKUserScript *errors = [[WKUserScript alloc] initWithSource:
       @"window.testErrors = []; addEventListener('error', e => testErrors.push(e.message));"
@@ -23,10 +53,6 @@ static NSString *baseURL, *scriptPath, *snapshotPath;
       injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
   [web.configuration.userContentController addUserScript:errors];
   [self ready:baseURL];
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 90 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-    fprintf(stderr, "FAIL: native app UI timed out\n");
-    exit(1);
-  });
 }
 
 - (void)failed:(NSString *)what {
@@ -117,8 +143,42 @@ static NSString *baseURL, *scriptPath, *snapshotPath;
 }
 @end
 
+/** The update check's decisions (launcher.m, "updates"): which manifests are offered, and the checksum. */
+static void testUpdates(void) {
+  NSString *hash = @"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";   // SHA-256 of "test"
+  NSString *text = [NSString stringWithFormat:@"# a comment\nversion 0.1.0\nbuilt 1700000100\n"
+                                               "revision abc\nfile OpenSolver-0.1.0-macos-arm64.pkg\nsha256 %@\n", hash];
+  NSDictionary *m = parseManifest(text);
+  BOOL ok = [m[@"file"] isEqualToString:@"OpenSolver-0.1.0-macos-arm64.pkg"] && [m[@"built"] isEqualToString:@"1700000100"];
+  ok &= updateOffer(m, 1700000000) != nil;   // newer: offered
+  ok &= updateOffer(m, 1700000100) == nil;   // the same build
+  ok &= updateOffer(m, 1800000000) == nil;   // older than this copy
+  ok &= updateOffer(m, 0) == nil;            // a copy that does not say when it is from
+  NSMutableDictionary *bad = [m mutableCopy];
+  bad[@"file"] = @"../../evil.pkg";
+  ok &= updateOffer(bad, 1700000000) == nil;
+  bad[@"file"] = @"OpenSolver.dmg";
+  ok &= updateOffer(bad, 1700000000) == nil;
+  bad = [m mutableCopy];
+  bad[@"sha256"] = @"1234";
+  ok &= updateOffer(bad, 1700000000) == nil;
+  bad = [m mutableCopy];
+  bad[@"built"] = @"soon";
+  ok &= updateOffer(bad, 1700000000) == nil;
+  NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"opensolver-update-test"];
+  [@"test" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  ok &= [sha256OfFile(path) isEqualToString:hash];
+  [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+  if (!ok) {
+    fprintf(stderr, "FAIL: update manifest checks\n");
+    exit(1);
+  }
+  printf("  ok: the update check offers only a newer, well-formed installer, and checks its SHA-256\n");
+}
+
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
+    testUpdates();
     if (argc != 4) return 2;
     baseURL = @(argv[1]);
     scriptPath = @(argv[2]);

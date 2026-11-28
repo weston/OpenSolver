@@ -197,6 +197,14 @@ SIMD-group or 2.0 features, so it also compiles as CUDA C++ under NVRTC.
   are then most of it, latency-bound rather than bandwidth-bound (work-group width 64/128/256 and
   correctly rounded division were measured and changed nothing). The river prefix sums scan a
   whole board table with the whole work-group, where Metal gives each card span to one SIMD lane.
+- **Hybrid solve (#582, `v4_hybrid`).** `Solver::subtrees` is a `SubtreeDevice` (gpu_solve.cpp
+  `Subtrees`): each pass the CPU writes both players' reaches at the GPU's turn roots
+  (`device_reach`), launches it, walks its own turn roots (`hybrid_turns`) and then the flop, taking
+  the turn values from both (walk_t's turn deal). Reports (`root_stats` with `hybrid_reports`) do the
+  same with average strategies and the kernels' `mode` 1 / 2 (EV, best response; the sums passed as the
+  regrets, nothing written). The GPU's rows are its subtrees' storage ranges packed (`DeviceLayout`);
+  a 16-bit tree converts them per node, a chunk at a time. `WSOLVER_HYBRID=<share>` fixes the share
+  (and turns it on under CPU algorithms); `WSOLVER_HYBRID_DEBUG=1` prints the iteration-2 timing.
 - **Discrete GPU memory.** The tree must fit the card: `small_strats auto` keeps float32 under
   `v4_gpu` only when it should (a 16-bit tree solves on the CPU). Discrete GPUs are not the default
   device (`gpu_preferred`), Metal is.

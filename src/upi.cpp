@@ -480,6 +480,48 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
     out_raw("SOLVER: device cpu (GPU ran out of memory)\n");
   };
   uint64_t metal_payoff_version = 0, metal_generation = 0;
+  // A hybrid solve (#582, v4_hybrid): the GPU solves some of a flop tree's turn subtrees in every pass
+  // while the CPU walks the others. The share of the turn cards starts where the last solve settled
+  // (half at first), as much as fits the GPU, and is set once from iteration 2, timed one device after
+  // the other. WSOLVER_HYBRID=<share> (a developer switch) fixes it, and turns the hybrid on under the
+  // CPU algorithms too.
+  std::unique_ptr<SubtreeDevice> hybrid;
+  uint64_t hybrid_generation = 0;
+  const char* const fixed_share = std::getenv("WSOLVER_HYBRID");
+  const bool hybrid_wanted = !gpu && (algorithm_ == "v4_hybrid" || fixed_share);
+  double share = fixed_share ? std::clamp(std::atof(fixed_share), 0.0, 1.0) : hybrid_share_;
+  double hybrid_setup_seconds = 0;
+  auto release_hybrid = [&] {
+    if (!hybrid) return;
+    hybrid->publish(*tree_);
+    solver_->subtrees = nullptr;
+    pause_requests_.sync_regrets = {};
+    hybrid.reset();
+  };
+  // The device for `want` of the turn cards, or less where that does not fit; why not, if it is none.
+  auto make_hybrid = [&](double want) -> std::string {
+    std::string why = "no turn subtrees for the GPU";
+    const auto t0 = std::chrono::steady_clock::now();
+    for (double s = want; s > 0.05; s -= 0.1) {
+      try {
+        hybrid = make_gpu_subtrees(*tree_, available_memory_bytes() * 9 / 10, s);
+      } catch (const std::bad_alloc&) {
+        why = "GPU out of memory";
+        continue;
+      } catch (const std::exception& e) {
+        why = e.what();
+        if (why.find("memory") != std::string::npos) continue;
+        break;
+      }
+      share = s;
+      solver_->subtrees = hybrid.get();
+      pause_requests_.sync_regrets = [&] { hybrid->publish(*tree_); };
+      hybrid_generation = pause_requests_.generation;
+      hybrid_setup_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      return {};
+    }
+    return why;
+  };
   bool pool_set = !tune_threads;  // set under tree_mu_ below: a command may be using the pool now
   try {
   for (;;) {
@@ -536,6 +578,29 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           }
         }
       }
+      if (done == 0 && hybrid_wanted) {
+        const char* fallback = nullptr;
+        if (sub || tree_->cfg.preflop) fallback = "subtree and preflop iterations use CPU";
+        else if (tree_->nodes.empty() || tree_->nodes[0].board_len != 3) fallback = "only flop trees solve on both";
+        else if (solver_->predictive || !tree_->preds.empty() || tree_->payoff().icm.enabled)
+          fallback = "storage or payoff model requires CPU";
+        else if (std::any_of(tree_->nodes.begin(), tree_->nodes.end(), [](const GNode& n) { return n.flags != 0; }))
+          fallback = "node edits require CPU";
+        else if (std::any_of(tree_->allins.begin(), tree_->allins.end(),
+                             [](const AllinRunouts& ar) { return ar.e2.empty() && ar.e2b.empty(); }))
+          fallback = "all-in outcome tables unavailable";
+        std::string why = fallback ? fallback : make_hybrid(share);
+        if (why.empty()) {
+          char buf[96];
+          std::snprintf(buf, sizeof buf, "SOLVER: device hybrid (GPU %.0f%%)\n", 100 * share);
+          out_raw(buf);
+        } else {
+          out_raw("SOLVER: device cpu (" + why + ")\n");
+        }
+      } else if (hybrid && hybrid_generation != pause_requests_.generation) {
+        hybrid->upload(*tree_);  // a command between iterations may have changed the tree
+        hybrid_generation = pause_requests_.generation;
+      }
       cached_root_stats_.reset();
       if (sub) {
         solver_->iterate_subtree(sub->root, static_cast<int>(done + 1), sub->r0.data(), sub->r1.data());
@@ -556,7 +621,36 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
             release_metal_memory();
           }
         }
+        const bool measure = hybrid && done == 1 && !fixed_share;
+        if (measure) {
+          solver_->hybrid_measure = true;
+          solver_->hybrid_device_seconds = solver_->hybrid_cpu_seconds = 0;
+        }
         if (!metal) solver_->iterate(tick, solver_->whole_tree_first_player());
+        if (measure) {
+          solver_->hybrid_measure = false;
+          // per pass: the device's time for its share g * share, the CPU's c * (1 - share); even at g * s = c * (1 - s)
+          const double g = solver_->hybrid_device_seconds / std::max(share, 1e-3);
+          const double c = solver_->hybrid_cpu_seconds / std::max(1 - share, 1e-3);
+          const double best = g + c > 0 ? std::clamp(c / (g + c), 0.05, 0.95) : share;
+          const double now_s = std::max(g * share, c * (1 - share)), even = g * c / std::max(g + c, 1e-12);
+          if (std::getenv("WSOLVER_HYBRID_DEBUG"))
+            std::fprintf(stderr, "GPU profile: hybrid share %.2f: device %.3f s, CPU %.3f s, even at %.2f\n", share,
+                         solver_->hybrid_device_seconds, solver_->hybrid_cpu_seconds, best);
+          // worth rebuilding the device for over the next 100 iterations (a large tree takes 150-250)
+          if (std::abs(best - share) > 0.05 && 100 * (now_s - even) > 1.5 * hybrid_setup_seconds) {
+            const double before = share;
+            release_hybrid();
+            const std::string why = make_hybrid(best);
+            char buf[160];
+            if (why.empty())
+              std::snprintf(buf, sizeof buf, "SOLVER: device hybrid (GPU %.0f%%, from %.0f%%)\n", 100 * share, 100 * before);
+            else
+              std::snprintf(buf, sizeof buf, "SOLVER: device cpu (%s)\n", why.c_str());
+            out_raw(buf);
+          }
+          hybrid_share_ = hybrid ? share : hybrid_share_;
+        }
         if (tree_->train_missing_rivers) {
           tree_->missing_street = 0;
           tree_->incomplete = false;
@@ -594,6 +688,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
       if (!info_auto_ && sub_freq == 0 && el - last_report_t >= 0.5) report = true;
       if (report) last_report_t = el;
       if (stable_flop && metal) metal->publish_for_cpu(*tree_);
+      if (stable_flop && hybrid) hybrid->publish(*tree_);
       const auto stage = stable_flop ? stability.observe(tick - discount_restart_, *tree_, *solver_)
                                      : FlopStability::Stage::Sampling;
       const bool stable = stage == FlopStability::Stage::Stable;
@@ -620,7 +715,10 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           }
           if (!metal || final_report) {
             if (metal) metal->publish_for_cpu(*tree_);
+            // a hybrid solve measures its own rows on the device (#582); the tree gets them at the end
+            solver_->hybrid_reports = hybrid != nullptr;
             st = solver_->root_stats();
+            solver_->hybrid_reports = false;
           }
           cached_root_stats_ = st;
           std::string stats = stats_block(st, solve_seconds_);
@@ -679,6 +777,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
   {
     std::lock_guard<std::mutex> lk(tree_mu_);
     release_metal();
+    release_hybrid();
   }
   // Not solving any more *before* "stopped" is printed: a go sent on seeing it must start a new solve,
   // not find this thread still flagged as solving and be dropped (#364).
@@ -1505,6 +1604,9 @@ void Upi::register_commands() {
     // v4_gpu is the GPU on any platform; v4_metal, its first name, stays for Apple Silicon clients
     if (gpu_available()) {
       algorithms += "\nv4_gpu,DCFR," + gpu_name() + ", unpruned postflop traversal";
+#if !(defined(__APPLE__) && defined(__aarch64__))
+      algorithms += "\nv4_hybrid,DCFR," + gpu_name() + " and the CPU, each solving some of the turn subtrees";
+#endif
 #if defined(__APPLE__) && defined(__aarch64__)
       algorithms += "\nv4_metal,DCFR,Apple GPU (Metal), unpruned postflop traversal";
 #endif
@@ -1514,7 +1616,7 @@ void Upi::register_commands() {
   H["set_algorithm"] = [this](const Args& a) {
     if (a.empty()) throw CmdError{"incorrect or missing argument"};
     static const char* valid[] = {"auto", "v4_small", "v4_large", "pio_cfr", "original_pio"};
-    if (gpu_algorithm(a[0])) {
+    if (gpu_algorithm(a[0]) || hybrid_algorithm(a[0])) {
       if (!gpu_available()) throw CmdError{"GPU unavailable: " + gpu_unavailable_reason()};
     } else if (std::find(std::begin(valid), std::end(valid), a[0]) == std::end(valid))
       throw CmdError{"incorrect or missing argument"};

@@ -20,6 +20,11 @@ documentation; contains no PioSOLVER code.
   of both devices on Settings.
   A fresh GPU solve of a large Medium tree to 0.3% of pot stores regrets in bfloat16 and strategy sums
   in fp16 between updates (#559, #561; every Medium tree since #586): HUNL 3BP on an M4's GPU 12.5 -> 9.8 s.
+- **CPU and GPU together** (`set_algorithm v4_hybrid`, #582): with a discrete GPU, a flop tree's turn
+  subtrees are shared between the GPU and the CPU in every pass, the share set by their speeds and the
+  GPU's memory. On an RX 9060 XT with 32 Zen 5 threads, the viewer's Smart trees to 0.3% of pot: HUNL 3BP
+  7.1 -> 4.4 s, HUNL SRP 95 -> 62 s (it does not fit the GPU alone). The viewer's Auto device uses it
+  for flop trees.
 - Vector-form **Discounted CFR** with exact card removal and no abstraction. Defaults α=1.3, γ=4,
   β=0 then 0.5 after iteration 50; `set_dcfr` overrides the exponents.
 - **Regret-based pruning** on by default (`set_pruning`). Skips traverser actions whose current
@@ -118,6 +123,10 @@ documentation; contains no PioSOLVER code.
   a Python to run it, a Start menu entry and an uninstaller. OpenSolver.exe starts the viewer and opens it
   in the browser; quitting, or the launcher ending in any way, stops the viewer and its solvers. Not
   code-signed (#565).
+- **Update prompt** in the macOS app and on Windows: at startup each reads `installers/<os>/latest.txt`
+  from `main` on GitHub and, when a later build is published, offers to install it (downloaded,
+  checked against its SHA-256, started, and the app quits). `make publish-macos-pkg` /
+  `make publish-windows-installer` put a fresh build and its manifest in `installers/` (#581).
 - Cross-compiles to Windows via MinGW (`make windows`).
 
 ### Fixed late in development

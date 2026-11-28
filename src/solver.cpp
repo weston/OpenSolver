@@ -4,6 +4,7 @@
 #include "compact_rows.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -1811,6 +1812,18 @@ void Solver::walk_t(uint32_t ni, int p, const float* rp, const float* ro, float*
         ArenaScope tsc;
         int card = ci.cards[k];
         float* rk = res + static_cast<size_t>(k) * Hp;
+        if (M == Walk::CFR && subtrees && n.board_len == 3) {  // a hybrid pass's turn roots: walked already
+          const uint32_t child = n.first_child + static_cast<uint32_t>(k);
+          const float* v = nullptr;
+          if (const int j = subtrees->root(child); j >= 0) v = subtrees->values(j);
+          else if (auto it = cpu_root_index_.find(child); it != cpu_root_index_.end())
+            v = cpu_root_values_.data() + static_cast<size_t>(it->second) * cpu_root_stride_;
+          if (v) {
+            std::memcpy(rk, v, sizeof(float) * Hp);
+            for (uint16_t h : g_.hands_with_card[p][card]) rk[h] = 0.0f;
+            return;
+          }
+        }
         float* ro2 = tsc.a.alloc(Ho);
         std::memcpy(ro2, ro, sizeof(float) * Ho);
         for (uint16_t h : g_.hands_with_card[o][card]) ro2[h] = 0.0f;
@@ -2085,6 +2098,73 @@ void Solver::run_actions(const GNode& n, int A, F& act) {
   }
 }
 
+// Both players' reaches into the device's turn subtrees (#582), as walk_t<CFR> carries them down: a
+// decision multiplies its actor's reach by the current strategy, a deal removes the card. Only the flop
+// street is walked; the CPU's own turn subtrees are left to walk_t.
+void Solver::device_reach(uint32_t ni, const float* r0, const float* r1, bool average) {
+  const GNode& n = g_.nodes[ni];
+  if (n.kind == ANodeKind::Chance) {
+    const ChanceInfo& ci = g_.chances[n.aux];
+    if (ci.flop_deal) return;
+    for (int k = 0; k < n.num_children; ++k) {
+      const uint32_t child = n.first_child + static_cast<uint32_t>(k);
+      const int j = subtrees->root(child);
+      auto it = j < 0 ? cpu_root_index_.find(child) : cpu_root_index_.end();
+      if (j < 0 && it == cpu_root_index_.end()) continue;
+      const float* r[2] = {r0, r1};
+      for (int q = 0; q < 2; ++q) {
+        float* dst = j >= 0 ? subtrees->reach(q, j) : cpu_root_reach_[q].data() + static_cast<size_t>(it->second) * cpu_root_stride_;
+        std::memcpy(dst, r[q], sizeof(float) * g_.num_hands(q));
+        for (uint16_t h : g_.hands_with_card[q][ci.cards[k]]) dst[h] = 0.0f;
+      }
+    }
+    return;
+  }
+  if (n.kind != ANodeKind::Decision || n.board_len > 3) return;
+  const int A = n.num_children, actor = n.player, Ha = g_.num_hands(actor);
+  if (A == 1) {
+    device_reach(n.first_child, r0, r1, average);
+    return;
+  }
+  ArenaScope sc;
+  float* sigma = sc.a.alloc(static_cast<size_t>(A) * Ha);
+  if (average) average_strategy(ni, sigma);
+  else current_strategy(ni, sigma);
+  float* ra = sc.a.alloc(Ha);
+  const float* own = actor == 0 ? r0 : r1;
+  for (int a = 0; a < A; ++a) {
+    const float* sa = sigma + static_cast<size_t>(a) * Ha;
+    for (int h = 0; h < Ha; ++h) ra[h] = own[h] * sa[h];
+    device_reach(n.first_child + static_cast<uint32_t>(a), actor == 0 ? ra : r0, actor == 0 ? r1 : ra, average);
+  }
+}
+
+// The CPU's turn subtrees of a hybrid pass (#582), each as walk_t<CFR>'s turn deal walks a child, into
+// cpu_root_values_. Listed on first use: every turn-deal child that is a decision and not the device's.
+void Solver::hybrid_turns(int p) {
+  const int o = 1 - p, Hp = g_.num_hands(p), Ho = g_.num_hands(o);
+  const int n_roots = static_cast<int>(cpu_roots_.size());
+  auto task = [&](int i) {
+    const HybridRoot& r = cpu_roots_[i];
+    const float* rp = cpu_root_reach_[p].data() + static_cast<size_t>(i) * cpu_root_stride_;
+    const float* ro = cpu_root_reach_[o].data() + static_cast<size_t>(i) * cpu_root_stride_;
+    float* rk = cpu_root_values_.data() + static_cast<size_t>(i) * cpu_root_stride_;
+    if (all_zero(ro, Ho)) {
+      std::memset(rk, 0, sizeof(float) * Hp);
+      strategy_only(r.node, p, rp);
+    } else {
+      walk_t<Walk::CFR>(r.node, p, rp, ro, rk);
+    }
+    for (uint16_t h : g_.hands_with_card[p][r.card]) rk[h] = 0.0f;
+  };
+  if (parallel && n_roots > 1) {
+    std::function<void(int)> fn = task;
+    pool().parallel_for(n_roots, fn);
+  } else {
+    for (int i = 0; i < n_roots; ++i) task(i);
+  }
+}
+
 // Subtree the opponent never reaches this iteration: counterfactual values (and so instantaneous
 // regrets) are exactly zero, but the traverser's regrets must still be discounted and its average
 // strategy accumulated, otherwise the average is biased toward iterations where the opponent enters.
@@ -2099,6 +2179,9 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
     auto task = [&](int k) {
       ArenaScope tsc;
       float* rp2 = tsc.a.alloc(Hp);
+      if (subtrees && n.board_len == 3 && (subtrees->root(n.first_child + static_cast<uint32_t>(k)) >= 0 ||
+                                           cpu_root_index_.count(n.first_child + static_cast<uint32_t>(k))))
+        return;  // a hybrid pass walked it already (#582)
       std::memcpy(rp2, rp, sizeof(float) * Hp);
       if (ci.flop_deal) {
         for (uint8_t c : ci.flops[k])
@@ -2284,6 +2367,24 @@ void Solver::iterate(int t, int first) {
   // pruning activates only after two full periods (see Solver::pruning): pruning from t=1
   // destroys convergence (flop_3bet to 0.2% pot: 50 -> 230 iterations at period 32).
   prune_this_iter_ = pruning && prune_period > 1 && t > 2 * prune_period && t % prune_period != 0;  // #380
+  if (subtrees && cpu_roots_for_ != subtrees) {
+    cpu_roots_.clear();
+    cpu_root_index_.clear();
+    for (uint32_t i = 0; i < g_.nodes.size(); ++i) {
+      const GNode& n = g_.nodes[i];
+      if (n.kind != ANodeKind::Chance || n.board_len != 3 || g_.chances[n.aux].flop_deal) continue;
+      for (int c = 0; c < n.num_children; ++c) {
+        const uint32_t child = n.first_child + static_cast<uint32_t>(c);
+        if (g_.nodes[child].kind != ANodeKind::Decision || subtrees->root(child) >= 0) continue;
+        cpu_root_index_[child] = static_cast<int>(cpu_roots_.size());
+        cpu_roots_.push_back({child, g_.chances[n.aux].cards[c]});
+      }
+    }
+    cpu_root_stride_ = static_cast<size_t>(std::max(g_.num_hands(0), g_.num_hands(1)));
+    for (auto& r : cpu_root_reach_) r.assign(cpu_roots_.size() * cpu_root_stride_, 0.0f);
+    cpu_root_values_.assign(cpu_roots_.size() * cpu_root_stride_, 0.0f);
+    cpu_roots_for_ = subtrees;
+  }
   for (int k = 0; k < 2; ++k) {
     int p = k == 0 ? first : 1 - first;
     ArenaScope sc;
@@ -2293,6 +2394,25 @@ void Solver::iterate(int t, int first) {
       float* scaled = sc.a.alloc(g_.num_hands(p));
       for (int h = 0; h < g_.num_hands(p); ++h) scaled[h] = own[h] * average.weight;
       own = scaled;
+    }
+    if (subtrees) {
+      // Unscaled reaches: the device weights its own strategy sums (IterationParams::sample_weight). The
+      // CPU's turn roots take the traverser's reach scaled as walk_t's would be.
+      device_reach(0, g_.init_reach[0].data(), g_.init_reach[1].data());
+      using clock = std::chrono::steady_clock;
+      const auto t0 = clock::now();
+      subtrees->launch(*this, t, k, p);
+      if (hybrid_measure) {  // the device's pass alone, then the CPU's: how to share the turns out
+        subtrees->finish();
+        hybrid_device_seconds += std::chrono::duration<double>(clock::now() - t0).count();
+      }
+      const auto t1 = clock::now();
+      if (own != g_.init_reach[p].data())
+        for (size_t i = 0; i < cpu_roots_.size(); ++i)
+          for (int h = 0; h < g_.num_hands(p); ++h) cpu_root_reach_[p][i * cpu_root_stride_ + h] *= average.weight;
+      hybrid_turns(p);
+      if (hybrid_measure) hybrid_cpu_seconds += std::chrono::duration<double>(clock::now() - t1).count();
+      subtrees->finish();
     }
     walk_t<Walk::CFR>(0, p, own, g_.init_reach[1 - p].data(), out);
     round_regrets();
@@ -2688,6 +2808,23 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
         ArenaScope tsc;
         int card = ci.cards[k];
         float* rk = res + static_cast<size_t>(k) * 2 * Hp;
+        if (hybrid_check_ && n.board_len == 3) {  // a hybrid report's turn roots: measured already (#582)
+          const uint32_t child = n.first_child + static_cast<uint32_t>(k);
+          const float *ev = nullptr, *br = nullptr;
+          if (const int j = subtrees->root(child); j >= 0) {
+            ev = subtrees->check_values(p, false, j);
+            br = subtrees->check_values(p, true, j);
+          } else if (auto it = cpu_root_index_.find(child); it != cpu_root_index_.end()) {
+            ev = cpu_ev_[p].data() + static_cast<size_t>(it->second) * cpu_root_stride_;
+            br = cpu_br_[p].data() + static_cast<size_t>(it->second) * cpu_root_stride_;
+          }
+          if (ev) {
+            std::memcpy(rk, ev, sizeof(float) * Hp);
+            std::memcpy(rk + Hp, br, sizeof(float) * Hp);
+            for (uint16_t h : g_.hands_with_card[p][card]) rk[h] = rk[Hp + h] = 0.0f;
+            return;
+          }
+        }
         float* ro2 = tsc.a.alloc(Ho);
         std::memcpy(ro2, ro, sizeof(float) * Ho);
         for (uint16_t h : g_.hands_with_card[o][card]) ro2[h] = 0.0f;
@@ -2904,6 +3041,36 @@ RootStats Solver::root_stats() {
   RootStats st;
   double M = root_matchups();
   if (M <= 0) return st;
+  // A hybrid solve's report (#582): the device measures its turn subtrees from its own rows while the CPU
+  // measures the others; the flop walk below then takes both.
+  if (subtrees && hybrid_reports && !write_best_response && cpu_roots_for_ == subtrees) {
+    device_reach(0, g_.init_reach[0].data(), g_.init_reach[1].data(), true);
+    subtrees->launch_check();
+    for (int p = 0; p < 2; ++p) {
+      const int o = 1 - p, Ho = g_.num_hands(o);
+      cpu_ev_[p].assign(cpu_roots_.size() * cpu_root_stride_, 0.0f);
+      cpu_br_[p].assign(cpu_roots_.size() * cpu_root_stride_, 0.0f);
+      std::function<void(int)> fn = [&](int i) {
+        const HybridRoot& r = cpu_roots_[i];
+        const float* rp = cpu_root_reach_[p].data() + static_cast<size_t>(i) * cpu_root_stride_;
+        const float* ro = cpu_root_reach_[o].data() + static_cast<size_t>(i) * cpu_root_stride_;
+        float* ev = cpu_ev_[p].data() + static_cast<size_t>(i) * cpu_root_stride_;
+        float* br = cpu_br_[p].data() + static_cast<size_t>(i) * cpu_root_stride_;
+        if (all_zero(ro, Ho)) return;
+        walk_evbr(r.node, p, rp, ro, ev, br);
+        for (uint16_t h : g_.hands_with_card[p][r.card]) ev[h] = br[h] = 0.0f;
+      };
+      if (parallel && cpu_roots_.size() > 1) pool().parallel_for(static_cast<int>(cpu_roots_.size()), fn);
+      else
+        for (int i = 0; i < static_cast<int>(cpu_roots_.size()); ++i) fn(i);
+    }
+    subtrees->finish();
+    hybrid_check_ = true;
+  }
+  struct CheckOff {
+    bool& flag;
+    ~CheckOff() { flag = false; }
+  } check_off{hybrid_check_};
   for (int p = 0; p < 2; ++p) {
     ArenaScope sc;
     int Hp = g_.num_hands(p);

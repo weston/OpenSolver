@@ -22,6 +22,8 @@ export function updateDevice(st) {
   const field = document.getElementById("solve-device");
   const gpu = field.querySelector('option[value="gpu"]');
   if (gpu) gpu.textContent = st.gpu_name ? `GPU (${st.gpu_name})` : "GPU";
+  const hybrid = field.querySelector('option[value="hybrid"]');
+  if (hybrid) hybrid.hidden = !st.devices?.includes("hybrid");   // a discrete GPU (#582)
   if (!savingDevice) field.value = st.device;
   field.disabled = savingDevice || st.solving || st.dead || benchRunning;
   const changed = currentDevice !== st.device;
@@ -38,7 +40,12 @@ const megabytes = (mb) => (mb == null ? "—" : mb >= 1000 ? (mb / 1000).toFixed
 function autoChoice(st) {
   const line = $("auto-choice"), c = st.auto_choice;
   let text = "";
-  if (st.device === "auto" && benchShown) {
+  if (st.device === "auto" && c?.device === "hybrid" && st.tree) {
+    // a flop tree takes both devices without a benchmark: the solve shares the turns out by their speeds (#582)
+    const size = c.megabytes != null ? ` (${megabytes(c.megabytes)})` : "";
+    text = `For this tree${size} Auto chose the CPU and GPU together: ${c.why}.`;
+    if (st.active_device === "cpu") text += " This solve runs on the CPU only.";
+  } else if (st.device === "auto" && benchShown) {
     if (!benchShown.profiled) {
       text = benchRunning && benchShown.automatic
         ? "Auto is measuring this PC's CPU and GPU in the background. Until it has, it uses the CPU."
@@ -60,7 +67,7 @@ function autoChoice(st) {
 // ---- the device benchmark (#569): which device solves faster on this machine ----
 let benchRunning = false, benchTimer = null, currentDevice = "cpu", mainSolving = false, benchShown = null;
 const $ = (id) => document.getElementById(id);
-const deviceName = (d) => (d === "gpu" ? "GPU" : "CPU");
+const deviceName = (d) => (d === "gpu" ? "GPU" : d === "hybrid" ? "CPU and GPU together" : "CPU");
 const seconds = (s) => (s == null ? "—" : s >= 90 ? "90 s or more" : s >= 10 ? s.toFixed(1) + " s" : s.toFixed(2) + " s");
 
 function benchButtons() {

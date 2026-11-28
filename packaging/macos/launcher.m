@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <CommonCrypto/CommonDigest.h>
 #import <WebKit/WebKit.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -45,6 +46,70 @@ static NSDictionary *getJSON(NSString *url) {
   return out;
 }
 
+// ----- updates ----------------------------------------------------------------------------------
+// At launch the app reads installers/macos/latest.txt from the project's main branch on GitHub, a
+// few "key value" lines that packaging/macos/build.sh writes next to the installer:
+//   version 0.1.0
+//   built 1764280000        the commit time of the source it was built from (Unix seconds)
+//   revision <git commit>
+//   file OpenSolver-0.1.0-macos-arm64.pkg
+//   sha256 <the installer's SHA-256>
+// When "built" is later than this app's own (OpenSolverBuildTime in Info.plist), it asks whether to
+// install it: the installer is downloaded next to it, checked against its SHA-256, opened, and the
+// app quits so that it can be replaced. Without a network, or with no newer build, nothing is said.
+// OPENSOLVER_UPDATE_URL replaces the folder the two are read from (tests); OPENSOLVER_NO_UPDATE_CHECK
+// turns the check off.
+static NSString *const kUpdateFolder = @"https://raw.githubusercontent.com/weston/OpenSolver/main/installers/macos/";
+
+/** The "key value" lines of an update manifest. */
+static NSDictionary<NSString *, NSString *> *parseManifest(NSString *text) {
+  NSMutableDictionary<NSString *, NSString *> *out = [NSMutableDictionary dictionary];
+  for (NSString *raw in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+    NSString *line = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    NSRange gap = [line rangeOfCharacterFromSet:NSCharacterSet.whitespaceCharacterSet];
+    if (!line.length || [line hasPrefix:@"#"] || gap.location == NSNotFound) continue;
+    out[[line substringToIndex:gap.location]] =
+        [[line substringFromIndex:gap.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+  }
+  return out;
+}
+
+static BOOL matches(NSString *s, NSString *pattern) {
+  return s && [s rangeOfString:pattern options:NSRegularExpressionSearch].location != NSNotFound;
+}
+
+/** The manifest when it names an installer built later than `built` (well formed: a plain .pkg name and
+ *  a 64-digit SHA-256), else nil. */
+static NSDictionary<NSString *, NSString *> *updateOffer(NSDictionary<NSString *, NSString *> *m, long long built) {
+  if (built <= 0 || !matches(m[@"built"], @"^[0-9]{1,12}$") || m[@"built"].longLongValue <= built) return nil;
+  if (!matches(m[@"file"], @"^[A-Za-z0-9][A-Za-z0-9._+-]*\\.pkg$")) return nil;
+  if (!matches(m[@"sha256"].lowercaseString, @"^[0-9a-f]{64}$")) return nil;
+  return m;
+}
+
+/** The SHA-256 of a file, in lowercase hex; nil if it cannot be read. */
+static NSString *sha256OfFile(NSString *path) {
+  NSData *data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
+  if (!data) return nil;
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+  NSMutableString *hex = [NSMutableString stringWithCapacity:2 * CC_SHA256_DIGEST_LENGTH];
+  for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+  return hex;
+}
+
+static NSString *updateFolder(void) {
+  NSString *env = NSProcessInfo.processInfo.environment[@"OPENSOLVER_UPDATE_URL"];
+  if (!env.length) return kUpdateFolder;
+  return [env hasSuffix:@"/"] ? env : [env stringByAppendingString:@"/"];
+}
+
+static NSString *builtDate(long long seconds) {
+  return [NSDateFormatter localizedStringFromDate:[NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)seconds]
+                                        dateStyle:NSDateFormatterMediumStyle
+                                        timeStyle:NSDateFormatterShortStyle];
+}
+
 @interface App : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate>
 @end
 
@@ -61,6 +126,7 @@ static NSDictionary *getJSON(NSString *url) {
   NSTextField *_status;
   NSProgressIndicator *_spinner;
   id _activity;
+  NSURLSessionDownloadTask *_download;   // the update being downloaded, if one is
 }
 
 // ----- the window and the menu ------------------------------------------------------------------
@@ -368,6 +434,130 @@ static NSDictionary *getJSON(NSString *url) {
   if (_pid) killpg(pid, SIGKILL);   // still there (so the pid is still its own): no more asking
 }
 
+// ----- updates (see kUpdateFolder) ---------------------------------------------------------------
+
+- (void)checkForUpdate {
+  if (NSProcessInfo.processInfo.environment[@"OPENSOLVER_NO_UPDATE_CHECK"].length) return;
+  [self checkForUpdateSince:[[NSBundle mainBundle].infoDictionary[@"OpenSolverBuildTime"] longLongValue]];
+}
+
+- (void)checkForUpdateSince:(long long)built {
+  if (built <= 0) return;   // a build that does not say when its source is from cannot tell what is newer
+  NSURL *url = [NSURL URLWithString:[updateFolder() stringByAppendingString:@"latest.txt"]];
+  if (!url) return;
+  NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+  req.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+  req.timeoutInterval = 20;
+  [[[NSURLSession sharedSession] dataTaskWithRequest:req
+                                   completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+    NSInteger status = [resp isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)resp).statusCode : 200;
+    if (err || !data || status != 200) return;   // offline, or nothing published: say nothing
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    NSDictionary *offer = text ? updateOffer(parseManifest(text), built) : nil;
+    if (offer) dispatch_async(dispatch_get_main_queue(), ^{ [self offerUpdate:offer built:built]; });
+  }] resume];
+}
+
+- (void)offerUpdate:(NSDictionary<NSString *, NSString *> *)offer built:(long long)built {
+  if (_quitting || _failed || _asking || _win.attachedSheet) return;
+  NSAlert *a = [NSAlert new];
+  a.messageText = @"A new version of OpenSolver is available.";
+  a.informativeText = [NSString stringWithFormat:
+      @"This copy is from %@; the new one is from %@.\n\nInstalling it downloads the installer, opens it, "
+       "and quits OpenSolver so that it can be replaced.", builtDate(built), builtDate(offer[@"built"].longLongValue)];
+  [a addButtonWithTitle:@"Install Update"];
+  [a addButtonWithTitle:@"Not Now"];
+  [a beginSheetModalForWindow:_win completionHandler:^(NSModalResponse answer) {
+    if (answer == NSAlertFirstButtonReturn) [self downloadUpdate:offer];
+  }];
+}
+
+- (void)updateFailed:(NSString *)why {
+  NSAlert *a = [NSAlert new];
+  a.alertStyle = NSAlertStyleWarning;
+  a.messageText = @"The update could not be installed.";
+  a.informativeText = [why stringByAppendingString:@"\n\nOpenSolver will offer it again the next time it opens."];
+  [a addButtonWithTitle:@"OK"];
+  [a beginSheetModalForWindow:_win completionHandler:nil];
+}
+
+/** The downloaded, checked installer: the app quits (asking first while a solve or the job queue
+ *  runs) and opens it, so that nothing of the app is running when it is replaced. */
+- (void)openInstaller:(NSString *)path {
+  if (![self mayQuit]) return;   // left in the temporary folder; offered again at the next launch
+  if (![[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]]) {
+    [self updateFailed:@"The installer could not be opened."];
+    return;
+  }
+  _quitting = YES;
+  [self stopViewer];
+  [NSApp terminate:nil];
+}
+
+- (void)downloadUpdate:(NSDictionary<NSString *, NSString *> *)offer {
+  NSString *name = offer[@"file"], *expected = offer[@"sha256"].lowercaseString;
+  NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"OpenSolver-update"];
+  NSString *dest = [dir stringByAppendingPathComponent:name];
+  NSAlert *sheet = [NSAlert new];
+  sheet.messageText = @"Downloading the update…";
+  sheet.informativeText = name;
+  NSProgressIndicator *bar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0, 0, 300, 20)];
+  bar.indeterminate = NO;
+  bar.minValue = 0;
+  bar.maxValue = 1;
+  sheet.accessoryView = bar;
+  [sheet addButtonWithTitle:@"Cancel"];
+  __block BOOL cancelled = NO;
+  // ?sha256=: a URL of its own for each build, so that a cached copy of an earlier one with the same
+  // name is never what arrives (raw.githubusercontent.com caches for minutes)
+  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@%@?sha256=%@", updateFolder(), name, expected]];
+  NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url
+      completionHandler:^(NSURL *location, NSURLResponse *resp, NSError *err) {
+    // the downloaded file is removed when this returns: it is moved first, here
+    NSInteger status = [resp isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)resp).statusCode : 200;
+    NSString *why = nil;
+    if (err) why = err.code == NSURLErrorCancelled ? @"" : err.localizedDescription;
+    else if (status != 200) why = [NSString stringWithFormat:@"The download failed (HTTP %ld).", (long)status];
+    else {
+      NSFileManager *fm = [NSFileManager defaultManager];
+      [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+      [fm removeItemAtPath:dest error:nil];
+      NSError *moveError = nil;
+      if (![fm moveItemAtURL:location toURL:[NSURL fileURLWithPath:dest] error:&moveError])
+        why = moveError.localizedDescription;
+      else if (![sha256OfFile(dest) isEqualToString:expected]) {
+        [fm removeItemAtPath:dest error:nil];
+        why = @"The downloaded installer is not the one that was published (its SHA-256 differs).";
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      self->_download = nil;
+      if (sheet.window.sheetParent) [self->_win endSheet:sheet.window returnCode:NSModalResponseStop];
+      if (cancelled) return;   // Cancel came after the download had finished
+      if (why) {
+        if (why.length) [self updateFailed:why];
+        return;
+      }
+      [self openInstaller:dest];
+    });
+  }];
+  _download = task;
+  [sheet beginSheetModalForWindow:_win completionHandler:^(NSModalResponse answer) {
+    if (answer != NSAlertFirstButtonReturn) return;   // a finished download ends it with Stop
+    cancelled = YES;
+    [task cancel];
+  }];
+  NSTimer *timer = [NSTimer timerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *t) {
+    if (self->_download != task) {
+      [t invalidate];
+      return;
+    }
+    bar.doubleValue = task.progress.fractionCompleted;
+  }];
+  [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+  [task resume];
+}
+
 // ----- the application --------------------------------------------------------------------------
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
@@ -380,6 +570,7 @@ static NSDictionary *getJSON(NSString *url) {
   _activity = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
                                                              reason:@"the viewer and its solvers run inside this app"];
   [self startViewer];
+  [self checkForUpdate];
 }
 
 /** Opened again (a click in the Dock, a second launch): back to the page if the window was put away. */
@@ -399,7 +590,15 @@ static NSDictionary *getJSON(NSString *url) {
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
   (void)app;
   if (_quitting || !_pid) return NSTerminateNow;
-  if (_url) {
+  if (![self mayQuit]) return NSTerminateCancel;
+  _quitting = YES;
+  [self stopViewer];
+  return NSTerminateNow;
+}
+
+/** NO when a solve or the job queue runs and the user says not to stop it. */
+- (BOOL)mayQuit {
+  if (_url && _pid) {
     BOOL solving = [getJSON([_url stringByAppendingString:@"/api/status"])[@"solving"] boolValue];
     BOOL jobs = [getJSON([_url stringByAppendingString:@"/api/jobs/state"])[@"running"] boolValue];
     if (solving || jobs) {
@@ -414,13 +613,11 @@ static NSDictionary *getJSON(NSString *url) {
       _asking = NO;
       if (answer != NSAlertFirstButtonReturn) {
         if (!_pid) dispatch_async(dispatch_get_main_queue(), ^{ [self viewerEnded]; });   // it ended meanwhile
-        return NSTerminateCancel;
+        return NO;
       }
     }
   }
-  _quitting = YES;
-  [self stopViewer];
-  return NSTerminateNow;
+  return YES;
 }
 
 @end

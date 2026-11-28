@@ -119,6 +119,23 @@ struct BoardTables {
   }
 };
 
+// A hybrid solve's device rows (#582): the tree's storage ranges [tree, tree + floats) of its turn
+// subtrees, packed one after another from 0; any other offset (the shared row of one-action decisions,
+// which nothing reads) goes to `zero`, a row of zeros after them.
+struct DeviceLayout {
+  struct Range {
+    size_t tree, device, floats;
+  };
+  std::vector<Range> ranges;  // by tree offset
+  size_t floats = 0, zero = 0;
+  size_t map(size_t x) const {
+    auto it = std::upper_bound(ranges.begin(), ranges.end(), x, [](size_t v, const Range& r) { return v < r.tree; });
+    if (it == ranges.begin()) return zero;
+    --it;
+    return x < it->tree + it->floats ? it->device + (x - it->tree) : zero;
+  }
+};
+
 struct PostflopPlan {
   size_t stride = 0;  // floats per hand row: the larger range, rounded up to 32
   std::vector<TraversalNode> nodes;
@@ -153,6 +170,19 @@ struct PostflopPlan {
     if (!g.num_hands(0) || !g.num_hands(1) || g.nodes.size() * stride > UINT32_MAX || g.storage_floats > UINT32_MAX ||
         pairs * g.allins.size() > UINT32_MAX || (g.showdowns.size() + 1) * (3 * stride + 53) > UINT32_MAX)
       throw std::runtime_error("tree exceeds GPU index limits");
+  }
+
+  // Every storage offset the kernels read through the device layout (#582).
+  void remap_storage(const DeviceLayout& layout) {
+    for (auto& n : nodes) n.storage = unsigned(layout.map(n.storage));
+    auto rows = [&](unsigned* storage, int count) {
+      for (int k = 0; k < count; ++k) storage[k] = unsigned(layout.map(storage[k]));
+    };
+    for (auto& r : rounds) rows(r.storage, 4);
+    for (auto& r : bet_checks) rows(r.storage, 4);
+    for (auto& r : two_bets) rows(r.storage, 4);
+    for (auto& r : lead_checks)
+      for (auto& b : r.branches) rows(b.storage, 4);
   }
 
   // The device memory beyond the regrets and strategy sums.
@@ -344,7 +374,11 @@ struct PostflopPlan {
 
   // local_limit: the dynamic work-group memory the fused river kernels may take. A fused pass is used
   // where its channels fit (all at once or the narrow variant); anything else takes the generic passes.
-  void pack_nodes(const GameTree& g, size_t local_limit) {
+  // roots: the whole tree from node 0, or (a hybrid solve, #582) the turn subtrees at these nodes, each
+  // dealt the card beside it: root j's reaches are rows j of each player's reach buffer and its values
+  // row j of the values, which the host writes and reads every pass.
+  void pack_nodes(const GameTree& g, size_t local_limit,
+                  const std::vector<std::pair<unsigned, unsigned>>* roots = nullptr) {
     stride = (std::max(g.num_hands(0), g.num_hands(1)) + 31) & ~size_t(31);
     const size_t N = g.nodes.size();
     nodes.assign(N, TraversalNode{});
@@ -375,6 +409,21 @@ struct PostflopPlan {
     reach_floats[0] = reach_stride[0];
     reach_floats[1] = reach_stride[1];
     value_rows = 1;
+    if (roots) {
+      frontier.clear();
+      for (unsigned j = 0; j < roots->size(); ++j) {
+        const auto [root, card] = (*roots)[j];
+        auto& r = nodes[root];
+        r.value_row = j;
+        r.card = card;
+        r.public_cards = card + 1;  // below a flop root's deal, as Deal gives its children
+        for (int p = 0; p < 2; ++p) r.reach_offset[p] = j * reach_stride[p];
+        frontier.push_back(root);
+      }
+      reach_floats[0] = std::max<unsigned>(1, roots->size()) * reach_stride[0];
+      reach_floats[1] = std::max<unsigned>(1, roots->size()) * reach_stride[1];
+      value_rows = std::max<unsigned>(1, roots->size());
+    }
     while (!frontier.empty()) {
       const size_t start = list.size();
       std::vector<unsigned> next;

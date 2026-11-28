@@ -268,6 +268,7 @@ class Upi {
   // every info_freq_ iterations. See AutoReportSchedule.
   bool info_auto_ = false;
   long long next_report_ = 0;
+  double hybrid_share_ = 0.5;  // the GPU's share of the turn cards a hybrid solve settled on last (#582)
   AutoReportSchedule auto_sched_;
   int threads_ = 0;
   double step_ = 1.0;

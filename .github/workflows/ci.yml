@@ -194,11 +194,18 @@ jobs:
             mingw-w64-ucrt-x86_64-zlib
             mingw-w64-ucrt-x86_64-python
             mingw-w64-ucrt-x86_64-nsis
+            git
 
+      # git: the build stamps the source commit's time, which the app's update check compares
       - name: Build and check the installer
-        run: make -j"$(nproc)" windows-installer
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          make -j"$(nproc)" windows-installer
+          grep -q '^built [1-9]' dist/windows-latest.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: dist/OpenSolver-*-windows-x64-setup.exe*
+          path: |
+            dist/OpenSolver-*-windows-x64-setup.exe*
+            dist/windows-latest.txt

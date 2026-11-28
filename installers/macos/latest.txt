@@ -1,0 +1,5 @@
+version 0.1.0
+built 1795831774
+revision 25d20397b5eb6200250faebc06596da9068fe73a
+file OpenSolver-0.1.0-macos-arm64.pkg
+sha256 37c6ce32c07be41bf85b46a9c75fa2cf6b68db74386d5f3b9232f58a45deca11

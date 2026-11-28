@@ -14,6 +14,12 @@
 // %USERPROFILE%\.wsolver: nothing of the user's is written next to the program.
 //
 // Opening OpenSolver again while it runs brings this window back and the page up again.
+//
+// At startup it reads installers/windows/latest.txt from the project's main branch on GitHub (see
+// "updates" below) and, when that names an installer built from later source than this copy, asks
+// whether to install it: it is downloaded, checked against its SHA-256, and started once this window
+// has closed (the installer will not replace a running OpenSolver). OPENSOLVER_UPDATE_URL replaces the
+// folder those are read from (tests); OPENSOLVER_NO_UPDATE_CHECK turns the check off.
 // For packaging/windows/smoke.py: --no-browser, --new-instance (skip the one-instance check),
 // --log-dir DIR, and --port N, --library DIR, --jobs DIR, which are passed on to the viewer.
 #ifndef UNICODE
@@ -26,10 +32,19 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <bcrypt.h>
+#include <winhttp.h>
 
 #include <atomic>
+#include <cstdint>
+#include <map>
+#include <regex>
 #include <string>
 #include <vector>
+
+#ifndef OPENSOLVER_BUILT
+#define OPENSOLVER_BUILT 0   // packaging/windows/build.sh: the commit time of the source (Unix seconds)
+#endif
 
 namespace {
 
@@ -39,7 +54,8 @@ const wchar_t kRegKey[] = L"Software\\OpenSolver";
 const int kPort = 8765;                     // viewer/server.py's default
 const char kReady[] = "UI on http://";      // in the line the viewer prints when it is up
 
-enum : UINT { WM_APP_READY = WM_APP + 1, WM_APP_ENDED, WM_APP_SHOW };
+enum : UINT { WM_APP_READY = WM_APP + 1, WM_APP_ENDED, WM_APP_SHOW, WM_APP_UPDATE, WM_APP_PROGRESS, WM_APP_DOWNLOADED };
+const wchar_t kUpdateFolder[] = L"https://raw.githubusercontent.com/weston/OpenSolver/main/installers/windows/";
 enum { ID_OPEN = 100, ID_LOG, ID_QUIT };
 
 struct Options {
@@ -55,6 +71,9 @@ std::wstring logPath, appDir;
 HANDLE job, viewer;               // the job object; the viewer's process (null once it has ended)
 std::atomic<bool> quitting{false};
 bool failedOnce, asking;
+std::wstring installer;           // a downloaded update, started once the window has gone
+void *readyUpdate;                // a finished download waiting for a question on screen to be answered
+const UINT_PTR kUpdateTimer = 1;
 
 std::wstring here() {
   std::wstring p(MAX_PATH, L'\0');
@@ -355,6 +374,217 @@ bool quit(bool ask) {
   return true;
 }
 
+// ----- updates ----------------------------------------------------------------------------------
+// installers/windows/latest.txt, written by packaging/windows/build.sh next to the installer, is a few
+// "key value" lines: version, built (the commit time of its source, Unix seconds), revision, file (the
+// installer's name) and sha256.
+
+using Manifest = std::map<std::string, std::string>;
+
+Manifest parseManifest(const std::string &text) {
+  Manifest m;
+  size_t at = 0;
+  while (at < text.size()) {
+    size_t end = text.find('\n', at);
+    if (end == std::string::npos) end = text.size();
+    std::string line = text.substr(at, end - at);
+    at = end + 1;
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+    size_t lead = line.find_first_not_of(" \t");
+    if (lead == std::string::npos || line[lead] == '#') continue;
+    line = line.substr(lead);
+    size_t gap = line.find_first_of(" \t");
+    if (gap == std::string::npos) continue;
+    size_t value = line.find_first_not_of(" \t", gap);
+    m[line.substr(0, gap)] = value == std::string::npos ? std::string() : line.substr(value);
+  }
+  return m;
+}
+
+/** True when the manifest names a well-formed installer built later than `built`. */
+bool updateOffered(const Manifest &m, long long built) {
+  auto field = [&](const char *k) {
+    auto it = m.find(k);
+    return it == m.end() ? std::string() : it->second;
+  };
+  std::string when = field("built"), file = field("file"), sha = field("sha256");
+  if (built <= 0 || !std::regex_match(when, std::regex("[0-9]{1,12}")) || std::stoll(when) <= built) return false;
+  return std::regex_match(file, std::regex("[A-Za-z0-9][A-Za-z0-9._+-]*\\.exe")) &&
+         std::regex_match(sha, std::regex("[0-9a-fA-F]{64}"));
+}
+
+std::wstring updateFolder() {
+  wchar_t buf[2048];
+  DWORD n = GetEnvironmentVariableW(L"OPENSOLVER_UPDATE_URL", buf, 2048);
+  std::wstring f = n > 0 && n < 2048 ? std::wstring(buf, n) : std::wstring(kUpdateFolder);
+  if (f.back() != L'/') f += L'/';
+  return f;
+}
+
+/** GET a URL, handing the body to `sink` as it arrives; `size` gets its length when the server says it.
+ *  False unless the answer is 200 and all of it was read (and `sink` took it). */
+template <class Sink>
+bool httpGet(const std::wstring &url, Sink sink, uint64_t *size = nullptr) {
+  URL_COMPONENTS c{};
+  c.dwStructSize = sizeof c;
+  wchar_t host[256], path[2048];
+  c.lpszHostName = host;
+  c.dwHostNameLength = 256;
+  c.lpszUrlPath = path;
+  c.dwUrlPathLength = 2048;
+  if (!WinHttpCrackUrl(url.c_str(), 0, 0, &c)) return false;
+  bool ok = false;
+  HINTERNET session = WinHttpOpen(L"OpenSolver", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+                                  WINHTTP_NO_PROXY_BYPASS, 0);
+  HINTERNET conn = session ? WinHttpConnect(session, std::wstring(host, c.dwHostNameLength).c_str(), c.nPort, 0) : nullptr;
+  HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", std::wstring(path, c.dwUrlPathLength).c_str(), nullptr,
+                                            WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                            c.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+                       : nullptr;
+  if (req) {
+    WinHttpSetTimeouts(req, 10000, 10000, 20000, 60000);
+    DWORD status = 0, len = sizeof status;
+    if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+        WinHttpReceiveResponse(req, nullptr) &&
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                            &status, &len, WINHTTP_NO_HEADER_INDEX) &&
+        status == 200) {
+      if (size) {
+        wchar_t cl[32];
+        DWORD clen = sizeof cl;
+        *size = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, cl, &clen,
+                                    WINHTTP_NO_HEADER_INDEX) ? _wcstoui64(cl, nullptr, 10) : 0;
+      }
+      std::vector<char> buf(1 << 16);
+      ok = true;
+      for (;;) {
+        DWORD got = 0;
+        if (!WinHttpReadData(req, buf.data(), (DWORD)buf.size(), &got)) {
+          ok = false;
+          break;
+        }
+        if (got == 0) break;
+        if (!sink(buf.data(), got)) {
+          ok = false;
+          break;
+        }
+      }
+    }
+  }
+  if (req) WinHttpCloseHandle(req);
+  if (conn) WinHttpCloseHandle(conn);
+  if (session) WinHttpCloseHandle(session);
+  return ok;
+}
+
+/** The SHA-256 of a file, in lowercase hex; empty if it cannot be read. */
+std::string sha256OfFile(const std::wstring &path) {
+  HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+  if (f == INVALID_HANDLE_VALUE) return {};
+  BCRYPT_ALG_HANDLE alg = nullptr;
+  BCRYPT_HASH_HANDLE hash = nullptr;
+  std::string out;
+  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0 &&
+      BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == 0) {
+    std::vector<unsigned char> buf(1 << 16);
+    DWORD n = 0;
+    bool ok = true;
+    while (ok && ReadFile(f, buf.data(), (DWORD)buf.size(), &n, nullptr) && n > 0)
+      ok = BCryptHashData(hash, buf.data(), n, 0) == 0;
+    unsigned char digest[32];
+    if (ok && BCryptFinishHash(hash, digest, sizeof digest, 0) == 0) {
+      static const char hex[] = "0123456789abcdef";
+      for (unsigned char b : digest) {
+        out += hex[b >> 4];
+        out += hex[b & 15];
+      }
+    }
+  }
+  if (hash) BCryptDestroyHash(hash);
+  if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+  CloseHandle(f);
+  return out;
+}
+
+std::wstring builtDate(long long seconds) {
+  ULARGE_INTEGER t;
+  t.QuadPart = (ULONGLONG)(seconds + 11644473600LL) * 10000000ULL;   // Unix seconds -> FILETIME
+  FILETIME ft{t.LowPart, t.HighPart};
+  SYSTEMTIME utc, local;
+  if (!FileTimeToSystemTime(&ft, &utc) || !SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local)) return L"?";
+  wchar_t d[64] = L"", tm[64] = L"";
+  GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &local, nullptr, d, 64, nullptr);
+  GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, &local, nullptr, tm, 64);
+  return std::wstring(d) + L" " + tm;
+}
+
+DWORD WINAPI checkForUpdate(void *) {
+  // what an earlier update left: its installer has run by now (one still running is not deleted)
+  std::wstring dir = knownFolder(FOLDERID_LocalAppData) + L"\\OpenSolver\\Updates";
+  WIN32_FIND_DATAW fd;
+  HANDLE found = FindFirstFileW((dir + L"\\*.exe").c_str(), &fd);
+  if (found != INVALID_HANDLE_VALUE) {
+    do DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+    while (FindNextFileW(found, &fd));
+    FindClose(found);
+  }
+  std::string text;
+  bool got = httpGet(updateFolder() + L"latest.txt", [&](const char *p, DWORD n) {
+    text.append(p, n);
+    return text.size() < 65536;
+  });
+  if (!got) return 0;   // offline, or nothing published: say nothing
+  Manifest m = parseManifest(text);
+  if (updateOffered(m, OPENSOLVER_BUILT)) PostMessageW(win, WM_APP_UPDATE, 0, (LPARAM) new Manifest(m));
+  return 0;
+}
+
+struct Download {
+  Manifest offer;
+  std::wstring path, error;   // error empty: downloaded and checked
+};
+
+DWORD WINAPI downloadUpdate(void *arg) {
+  auto *d = (Download *)arg;
+  std::wstring dir = knownFolder(FOLDERID_LocalAppData) + L"\\OpenSolver\\Updates";
+  SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
+  d->path = dir + L"\\" + widen(d->offer["file"]);
+  HANDLE f = CreateFileW(d->path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    d->error = L"The installer could not be saved in " + dir + L".";
+  } else {
+    uint64_t size = 0, done = 0;
+    int shown = -1;
+    // ?sha256=: a URL of its own for each build, so that a cached copy of an earlier one with the same
+    // name is never what arrives (raw.githubusercontent.com caches for minutes)
+    std::wstring from = updateFolder() + widen(d->offer["file"]) + L"?sha256=" + widen(d->offer["sha256"]);
+    bool got = httpGet(from, [&](const char *p, DWORD n) {
+      DWORD w = 0;
+      if (!WriteFile(f, p, n, &w, nullptr) || w != n) return false;
+      done += n;
+      int pct = size ? (int)(100 * done / size) : -1;
+      if (pct != shown) PostMessageW(win, WM_APP_PROGRESS, (WPARAM)(shown = pct), 0);
+      return true;
+    }, &size);
+    CloseHandle(f);
+    std::string want = d->offer["sha256"];
+    for (char &ch : want) ch = (char)tolower((unsigned char)ch);
+    if (!got) d->error = L"The download failed. Check the internet connection.";
+    else if (sha256OfFile(d->path) != want)
+      d->error = L"The downloaded installer is not the one that was published (its SHA-256 differs).";
+    if (!d->error.empty()) DeleteFileW(d->path.c_str());
+  }
+  PostMessageW(win, WM_APP_DOWNLOADED, 0, (LPARAM)d);
+  return 0;
+}
+
+void restoreStatus() {
+  if (url.empty()) setStatus(L"Starting OpenSolver…", L"");
+  else
+    setStatus(L"OpenSolver is running at " + url,
+              L"It opens in your browser. Closing this window stops OpenSolver and any solve it is running.");
+}
+
 // ----- the window -------------------------------------------------------------------------------
 
 int dpi() { return win ? (int)GetDpiForWindow(win) : 96; }
@@ -433,8 +663,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
           DWORD port = (DWORD)_wtoi(url.c_str() + url.find_last_of(L':') + 1);
           RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"ViewerPort", REG_DWORD, &port, sizeof port);
         }
-        setStatus(L"OpenSolver is running at " + url,
-                  L"It opens in your browser. Closing this window stops OpenSolver and any solve it is running.");
+        restoreStatus();
         EnableWindow(openButton, TRUE);
         if (opt.browser) openBrowser();
       }
@@ -450,6 +679,61 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       if (quitting || asking) return 0;   // asking: said when that question is answered, not on top of it
       Sleep(250);                        // a moment for its last words to reach the log, which is quoted
       failed(url.empty() ? L"The viewer did not start." : L"The viewer stopped unexpectedly.");
+      return 0;
+    case WM_APP_UPDATE: {
+      auto *offer = (Manifest *)lp;
+      if (!quitting && !failedOnce && !asking) {
+        std::wstring text = L"A new version of OpenSolver is available.\n\nThis copy is from " + builtDate(OPENSOLVER_BUILT) +
+                            L"; the new one is from " + builtDate(std::stoll((*offer)["built"])) +
+                            L".\n\nInstall it now? OpenSolver downloads the installer, closes, and starts it.";
+        asking = true;
+        int answer = MessageBoxW(h, text.c_str(), L"OpenSolver update", MB_YESNO | MB_ICONINFORMATION);
+        asking = false;
+        if (!viewer && !quitting) PostMessageW(h, WM_APP_ENDED, 0, 0);   // it ended while asking
+        if (answer == IDYES && !quitting) {
+          setStatus(L"Downloading the update…", widen((*offer)["file"]));
+          CloseHandle(CreateThread(nullptr, 0, downloadUpdate, new Download{*offer, L"", L""}, 0, nullptr));
+        }
+      }
+      delete offer;
+      return 0;
+    }
+    case WM_APP_PROGRESS:
+      if (!quitting && (int)wp >= 0)
+        SetWindowTextW(statusLabel, (L"Downloading the update… " + std::to_wstring((int)wp) + L"%").c_str());
+      return 0;
+    case WM_APP_DOWNLOADED:
+      if (asking) {   // a question is on screen (this runs inside its message loop): after it is answered
+        readyUpdate = (void *)lp;
+        SetTimer(h, kUpdateTimer, 250, nullptr);
+        return 0;
+      }
+      {
+        auto *d = (Download *)lp;
+        if (!quitting && !failedOnce) {
+          restoreStatus();
+          if (!d->error.empty()) {
+            std::wstring text = L"The update could not be installed.\n\n" + d->error +
+                                L"\n\nOpenSolver will offer it again the next time it opens.";
+            asking = true;
+            MessageBoxW(h, text.c_str(), L"OpenSolver update", MB_OK | MB_ICONWARNING);
+            asking = false;
+            if (!viewer && !quitting) PostMessageW(h, WM_APP_ENDED, 0, 0);   // it ended while asking
+          } else {
+            installer = d->path;   // started once this window has gone: see wWinMain
+            if (!quit(true)) installer.clear();
+          }
+        }
+        delete d;
+      }
+      return 0;
+    case WM_TIMER:
+      if (wp == kUpdateTimer && !asking) {
+        KillTimer(h, kUpdateTimer);
+        void *d = readyUpdate;
+        readyUpdate = nullptr;
+        if (d) PostMessageW(h, WM_APP_DOWNLOADED, 0, (LPARAM)d);
+      }
       return 0;
     case WM_APP_SHOW:   // opened again
       if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
@@ -515,6 +799,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   // A Ctrl+C is how the viewer is stopped: it must not be ignored by inheritance (a process
   // started in a new process group ignores it, and passes that on).
   SetConsoleCtrlHandler(nullptr, FALSE);
+  CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);   // as ShellExecute wants
   INITCOMMONCONTROLSEX icc{sizeof icc, ICC_STANDARD_CLASSES};
   InitCommonControlsEx(&icc);
   WSADATA wsa;
@@ -556,6 +841,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   UpdateWindow(h);
 
   if (!startViewer()) failed(L"The viewer inside OpenSolver could not be started.");
+  // (an empty OPENSOLVER_NO_UPDATE_CHECK counts as unset, as on the Mac: 1 is the size of "")
+  if (GetEnvironmentVariableW(L"OPENSOLVER_NO_UPDATE_CHECK", nullptr, 0) <= 1 && OPENSOLVER_BUILT > 0)
+    CloseHandle(CreateThread(nullptr, 0, checkForUpdate, nullptr, 0, nullptr));
 
   MSG m;
   while (GetMessageW(&m, nullptr, 0, 0) > 0) {
@@ -565,5 +853,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
   }
   if (!quitting) stopViewer();
+  if (!installer.empty()) ShellExecuteW(nullptr, L"open", installer.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
   return 0;
 }

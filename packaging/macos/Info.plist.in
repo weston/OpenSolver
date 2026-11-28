@@ -12,6 +12,7 @@
   <key>CFBundleShortVersionString</key><string>@VERSION@</string>
   <key>CFBundleVersion</key><string>@VERSION@</string>
   <key>OpenSolverSourceRevision</key><string>@REVISION@</string>
+  <key>OpenSolverBuildTime</key><string>@BUILT@</string>
   <key>LSMinimumSystemVersion</key><string>@MACOS_MIN@</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>NSHighResolutionCapable</key><true/>

@@ -116,6 +116,10 @@ documentation; contains no PioSOLVER code.
   a Python to run it, a Start menu entry and an uninstaller. OpenSolver.exe starts the viewer and opens it
   in the browser; quitting, or the launcher ending in any way, stops the viewer and its solvers. Not
   code-signed (#565).
+- **Update prompt** in the macOS app and on Windows: at startup each reads `installers/<os>/latest.txt`
+  from `main` on GitHub and, when a later build is published, offers to install it (downloaded,
+  checked against its SHA-256, started, and the app quits). `make publish-macos-pkg` /
+  `make publish-windows-installer` put a fresh build and its manifest in `installers/` (#581).
 - Cross-compiles to Windows via MinGW (`make windows`).
 
 ### Fixed late in development

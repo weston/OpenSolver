@@ -103,10 +103,14 @@ sed -e "s/@VERSION@/$VERSION/g" -e "s/@VERSION4@/$VERSION4/g" -e "s/@VERSIONCOMM
 # The launcher says so when the CPU is too old for the solver (it would crash, not explain).
 ISA=
 case "$WIN_ARCH" in *x86-64-v3*) ISA='-DOPENSOLVER_ISA="x86-64-v3"' ;; esac
+# When the source is from (its commit's time): what the launcher's update check compares
+REVISION=$(git rev-parse HEAD 2>/dev/null || true)
+BUILT=$(git log -1 --format=%ct HEAD 2>/dev/null || echo 0)
+[ "$BUILT" != 0 ] || echo "WARNING: no git here, so this build has no build time: it will never offer an update, nor be offered as one"
 # shellcheck disable=SC2086
-"$CXX" -std=c++20 -O2 -Wall -Wextra -municode -mwindows -static -D_WIN32_WINNT=0x0A00 $ISA \
+"$CXX" -std=c++20 -O2 -Wall -Wextra -municode -mwindows -static -D_WIN32_WINNT=0x0A00 $ISA -DOPENSOLVER_BUILT="$BUILT" \
   "$HERE/launcher.cpp" "$OUT/res/launcher.res" -o "$APP/OpenSolver.exe" \
-  -lws2_32 -lshell32 -lole32 -luuid -lcomctl32 -ladvapi32 -luser32
+  -lws2_32 -lshell32 -lole32 -luuid -lcomctl32 -ladvapi32 -luser32 -lwinhttp -lbcrypt
 strip "$APP/OpenSolver.exe"
 
 install -m 755 "$SOLVER" "$APP/solver.exe"
@@ -144,5 +148,14 @@ makensis -V2 -DVERSION="$VERSION" -DVERSION4="$VERSION4" -DSTAGE="$(cygpath -w "
   "$(cygpath -w "$HERE/installer.nsi")"
 name=$(basename "$SETUP")
 (cd dist && printf '%s  %s\n' "$(sha256sum < "$name" | cut -d' ' -f1)" "$name" > "$name.sha256")
+# The update manifest the installed apps read (launcher.cpp, "updates"): `make publish-windows-installer`
+# puts it in installers/windows/latest.txt with the installer.
+{
+  echo "version $VERSION"
+  echo "built $BUILT"
+  echo "revision $REVISION"
+  echo "file $name"
+  echo "sha256 $(cut -d' ' -f1 < "dist/$name.sha256")"
+} > dist/windows-latest.txt
 echo "$SETUP"
 cat "$SETUP.sha256"

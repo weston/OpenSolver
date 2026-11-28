@@ -222,7 +222,7 @@ def test_macos_app():
         plist = os.path.join(td, "Info.plist")
         text = open(os.path.join(pk, "Info.plist.in")).read()
         for k, v in (("VERSION", version()), ("MACOS_MIN", "13.3"), ("BUNDLE_ID", "com.wsolver.WSolver"),
-                     ("REVISION", "test")):
+                     ("REVISION", "test"), ("BUILT", "1700000000")):
             text = text.replace(f"@{k}@", v)
         check("@" not in text, "Info.plist.in has no placeholder build.sh does not fill")
         open(plist, "w").write(text)

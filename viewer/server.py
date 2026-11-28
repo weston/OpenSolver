@@ -214,6 +214,9 @@ class Solver:
                 if generation == self.generation:  # a stale pump must not mark a fresh solver dead
                     self.dead = True
                     self.solving = False
+                    # wake whoever waits for a SOLVER event or for `dead` (the device benchmark's _solve,
+                    # killed by a cancel, waited out its 600 s timeout otherwise)
+                    self.progress_cv.notify_all()
 
     def send_raw(self, line):
         self.proc.stdin.write(line + "\n")

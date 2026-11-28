@@ -845,26 +845,19 @@ void Upi::stop_solver(const char* reason) {
 // ------------------------------------------------------------------------------------------------
 
 // The app's Smart flops that update IP first, with the square-root opening (#554): a flop where OOP may
-// check and IP can then bet short of all-in. strict: the flops it began on, unpaired rainbow with a forced
-// check, where bfloat16 regrets and fp16 sums are allowed too (#559). Every flop, and OOP bets beside the
-// check, take the order since #591: Ryzen 9 9950X, 32 threads, to 0.3% of pot, HUNL SRP on AsQs5s 29.0 ->
+// check and IP can then bet short of all-in. It began on unpaired rainbow flops with a forced check; every
+// flop, and OOP bets beside the check, take the order since #591: Ryzen 9 9950X, 32 threads, to 0.3% of pot, HUNL SRP on AsQs5s 29.0 ->
 // 24.6 s, Ks7s2d 59.2 -> 53.5 s, KdKh5c 81.0 -> 69.2 s, Ts6s6d 62.7 -> 60.0 s, 7s7d2c 71.0 -> 72.8 s (the
 // one loss); HUNL 3BP on AhKd3c 7.04 -> 6.68 s, Kh9h4c 5.18 -> 4.89 s, Qs8s3s 3.10 -> 2.85 s, Td7c5h
 // 7.95 -> 6.74 s.
-static bool flop_ip_opens_betting(const GameTree& tree, bool strict = false) {
-  const auto& board = tree.cfg.board;
-  if (tree.cfg.river_sizing != RiverSizing::Smart || board.size() != 3) return false;
-  for (int i = 0; i < 3 && strict; ++i) {
-    for (int j = i + 1; j < 3; ++j) {
-      if (card_rank(board[i]) == card_rank(board[j]) || card_suit(board[i]) == card_suit(board[j])) return false;
-    }
-  }
+static bool flop_ip_opens_betting(const GameTree& tree) {
+  if (tree.cfg.river_sizing != RiverSizing::Smart || tree.cfg.board.size() != 3) return false;
   const auto& oop = *tree.aroot;
   if (oop.kind != ANodeKind::Decision || oop.player != 0) return false;
   size_t check = oop.actions.size();
   for (size_t k = 0; k < oop.actions.size(); ++k)
     if (oop.actions[k].kind == ActKind::Check) check = k;
-  if (check == oop.actions.size() || (strict && oop.actions.size() != 1)) return false;
+  if (check == oop.actions.size()) return false;
   const auto& ip = *oop.children[check];
   if (ip.kind != ANodeKind::Decision || ip.player != 1 || ip.actions.back().kind != ActKind::Check) return false;
   return std::any_of(ip.actions.begin(), ip.actions.end(), [&](const Action& action) {
@@ -894,9 +887,11 @@ std::string Upi::cmd_build_tree(const Args& a) {
   solver_->flop_ip_first = auto_flop_order && !first_player_ && flop_ip_opens_betting(*tree_);
   if (sqrt_opening && solver_->uses_flop_ip_first()) {
     solver_->set_flop_opening(FlopOpening::SquareRoot);
-    const bool strict = flop_ip_opens_betting(*tree_, true);
-    solver_->strict_opening = strict;
-    solver_->prepare_sampled_averaging(strict, strict);
+    // with bfloat16 regrets and fp16 sums on the GPU (0.3% targets) on every such flop, as with the ordinary
+    // opening (#586); Solver::set_bfloat_regrets keeps suit-symmetric flops (paired, two-tone, monotone) out.
+    // M4 Metal, to 0.3%: HUNL 3BP AhKd3c 11.92 -> 9.71 s, Qs8h4d 13.13 -> 10.31 s, 9c7d2h 11.71 -> 9.63 s (#596)
+    solver_->half_precision_opening = true;
+    solver_->prepare_sampled_averaging();
   } else if (solver_->sampled_smart_tree()) {
     // With bfloat16 regrets and fp16 sums on the GPU too, on Medium trees (#586): HUNL 3BP to 0.3% on
     // Metal (M4) 12.5 -> 10.6 s at the same iterations, flop strategies 0.2 points from float32's

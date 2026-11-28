@@ -15,6 +15,9 @@ If your Mac says it can’t verify the installer or app, and you trust where it 
 **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
 [Apple’s instructions](https://support.apple.com/en-us/102445)
 
+When a newer version is published, OpenSolver asks when it opens. Click **Install Update**: it
+downloads the installer, opens it and quits, and you follow the installer's steps as in step 2.
+
 ## Install OpenSolver on Windows
 
 Install and run OpenSolver on **64-bit Windows 10 or 11** with a processor from about 2013 or later
@@ -27,6 +30,9 @@ Install and run OpenSolver on **64-bit Windows 10 or 11** with a processor from 
 If Windows says **Windows protected your PC**, and you trust where the installer came from, click
 **More info**, then **Run anyway**. If your browser calls the download uncommon, choose to keep it
 (in Edge: **...** next to the download, then **Keep**).
+
+When a newer version is published, OpenSolver asks when it opens. Click **Yes**: it downloads the
+installer, closes, and starts it, and you follow the installer's steps as in step 2.
 
 To uninstall, open **Settings → Apps → Installed apps**, find **OpenSolver**, and choose **Uninstall**.
 
@@ -142,6 +148,14 @@ share the library and the job queue. What the viewer prints goes to
   nothing is left running afterwards (`packaging/macos/smoke.py`); a package is written only when
   that passes. `make test` checks, without building anything, that every module the viewer imports
   and every file its page loads is on the list of what goes in.
+- **Updates.** When it opens, the app reads [`installers/macos/latest.txt`](installers/macos/) from
+  `main` on GitHub: a few lines that `build.sh` writes next to the package (`dist/macos-latest.txt`)
+  with the package's name, its SHA-256 and when its source is from (the commit's time, also in the
+  app's `Info.plist` as `OpenSolverBuildTime`). When that is later than the app's own, it offers to
+  install it: the package is downloaded, checked against the SHA-256, opened, and the app quits.
+  Offline, nothing is said. To publish a build, `make macos-pkg && make publish-macos-pkg` and commit
+  the three files in `installers/macos`. `OPENSOLVER_NO_UPDATE_CHECK=1` turns the check off;
+  `OPENSOLVER_UPDATE_URL` points it at another folder (the smoke test serves one).
 - **Uninstalling:** quit OpenSolver, then
   `sudo rm -rf /Applications/OpenSolver.app && sudo pkgutil --forget com.wsolver.WSolver.pkg`.
   `~/.wsolver` and `~/Library/Logs/OpenSolver` are yours to keep or delete.
@@ -204,6 +218,15 @@ viewer prints goes to `%LOCALAPPDATA%\OpenSolver\Logs\viewer.log` (**Show Log**)
   written only when that passes. `make test` checks, without building anything, that the app gets
   the same files as the macOS one and that the uninstaller removes each of its folders.
   `make windows-app` stages and runs the app without writing the installer.
+- **Updates.** As on the Mac: at startup the launcher reads [`installers/windows/latest.txt`](installers/windows/)
+  from `main` on GitHub (written by `build.sh` as `dist/windows-latest.txt`) and, when it names an
+  installer whose source is later than the app's own (`-DOPENSOLVER_BUILT`, the commit's time), asks
+  whether to install it. Yes downloads it to `%LOCALAPPDATA%\OpenSolver\Updates`, checks its
+  SHA-256, closes OpenSolver (asking first while a solve or the job queue runs) and starts the
+  installer once the window has gone, since the installer will not replace a running OpenSolver. To
+  publish a build, `make windows-installer && make publish-windows-installer` and commit the three
+  files in `installers/windows`. `OPENSOLVER_NO_UPDATE_CHECK=1` turns the check off (the smoke test
+  sets it); `OPENSOLVER_UPDATE_URL` points it at another folder.
 - **Uninstalling:** Settings > Apps > Installed apps > OpenSolver > **Uninstall** (quit OpenSolver
   first), or silently `"%LOCALAPPDATA%\Programs\OpenSolver\Uninstall OpenSolver.exe" /S`. It
   removes the program, the shortcuts it made and its log. `%USERPROFILE%\.wsolver`, and the solver's

@@ -201,4 +201,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: dist/OpenSolver-*-windows-x64-setup.exe*
+          path: |
+            dist/OpenSolver-*-windows-x64-setup.exe*
+            dist/windows-latest.txt

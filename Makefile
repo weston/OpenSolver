@@ -336,11 +336,18 @@ macos-pkg: build/macos/solver
 	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
 	VERSION=$(VERSION) MACOS_MIN=$(MACOS_MIN) SOLVER=build/macos/solver packaging/macos/build.sh
 
+# The package just built, with its update manifest, as the ready-to-install copy that installed apps
+# update to (installers/macos, read by the launcher at startup): commit the three files.
+publish-macos-pkg:
+	@test -f dist/macos-latest.txt || { echo "make macos-pkg first"; exit 1; }
+	cp dist/OpenSolver-$(VERSION)-macos-arm64.pkg dist/OpenSolver-$(VERSION)-macos-arm64.pkg.sha256 installers/macos/
+	cp dist/macos-latest.txt installers/macos/latest.txt
+
 test-macos-app: macos-app
 	clang -fobjc-arc -O2 -Wall -Wextra -Werror -framework Cocoa -framework WebKit tests/test_macos_app.m -o build/macos/test_app
 	build/macos/stage/OpenSolver.app/Contents/Resources/python/bin/python3 -B -E -s packaging/macos/smoke.py build/macos/stage/OpenSolver.app $(VERSION) build/macos/test_app
 else
-macos-app macos-pkg test-macos-app:
+macos-app macos-pkg publish-macos-pkg test-macos-app:
 	@echo "the macOS package is built on an Apple Silicon Mac"; exit 1
 endif
 
@@ -363,12 +370,19 @@ windows-app: $(WIN_INSTALLER_SOLVER)
 windows-installer: $(WIN_INSTALLER_SOLVER)
 	@test -n "$(VERSION)" || { echo "could not read SOLVER_VERSION from src/version.hpp"; exit 1; }
 	VERSION=$(VERSION) WIN_ARCH="$(WIN_ARCH)" SOLVER=$(WIN_INSTALLER_SOLVER) packaging/windows/build.sh
+
+# The installer just built, with its update manifest, as the ready-to-install copy that installed apps
+# update to (installers/windows, read by the launcher at startup): commit the three files.
+publish-windows-installer:
+	@test -f dist/windows-latest.txt || { echo "make windows-installer first"; exit 1; }
+	cp dist/OpenSolver-$(VERSION)-windows-x64-setup.exe dist/OpenSolver-$(VERSION)-windows-x64-setup.exe.sha256 installers/windows/
+	cp dist/windows-latest.txt installers/windows/latest.txt
 else
-windows-app windows-installer:
+windows-app windows-installer publish-windows-installer:
 	@echo "the Windows installer is built on Windows, in an MSYS2 UCRT64 shell"; exit 1
 endif
 
 clean:
 	rm -rf build solver solver-release dist
 
-.PHONY: all test test-big flop-subsets windows windows-app windows-installer bench release install uninstall dist macos-app macos-pkg test-macos-app clean
+.PHONY: all test test-big flop-subsets windows windows-app windows-installer publish-windows-installer bench release install uninstall dist macos-app macos-pkg publish-macos-pkg test-macos-app clean

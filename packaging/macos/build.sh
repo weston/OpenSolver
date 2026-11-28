@@ -84,8 +84,10 @@ clang -fobjc-arc -O2 -Wall -Wextra -arch arm64 -mmacosx-version-min="$MACOS_MIN"
   -framework Cocoa -framework WebKit "$HERE/launcher.m" -o "$APP/Contents/MacOS/OpenSolver"
 
 REVISION=$(git rev-parse HEAD 2>/dev/null || true)
+# When the source is from (its commit's time): what the app's update check compares (launcher.m)
+BUILT=$(git log -1 --format=%ct HEAD 2>/dev/null || echo 0)
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@MACOS_MIN@/$MACOS_MIN/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" \
-  -e "s/@REVISION@/$REVISION/g" \
+  -e "s/@REVISION@/$REVISION/g" -e "s/@BUILT@/$BUILT/g" \
   "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
@@ -162,5 +164,14 @@ cp "$HERE/conclusion.html" "$OUT/resources/"
 rm -f "$PKG"
 productbuild --distribution "$OUT/distribution.xml" --package-path "$OUT/pkg" --resources "$OUT/resources" "$PKG" >/dev/null
 (cd dist && shasum -a 256 "$(basename "$PKG")" > "$(basename "$PKG").sha256")
+# The update manifest the installed apps read (launcher.m, "updates"): `make publish-macos-pkg`
+# puts it in installers/macos/latest.txt with the package.
+{
+  echo "version $VERSION"
+  echo "built $BUILT"
+  echo "revision $REVISION"
+  echo "file $(basename "$PKG")"
+  echo "sha256 $(cut -d' ' -f1 < "$PKG.sha256")"
+} > dist/macos-latest.txt
 echo "$PKG"
 cat "$PKG.sha256"

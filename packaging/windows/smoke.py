@@ -127,7 +127,8 @@ def start(app, tmp, run):
     logs = os.path.join(tmp, f"logs{run}")
     launcher = subprocess.Popen([os.path.join(app, "OpenSolver.exe"), "--no-browser", "--new-instance",
                                  "--log-dir", logs, "--port", "0",
-                                 "--library", os.path.join(tmp, "library"), "--jobs", os.path.join(tmp, "jobs")])
+                                 "--library", os.path.join(tmp, "library"), "--jobs", os.path.join(tmp, "jobs")],
+                                env=dict(os.environ, OPENSOLVER_NO_UPDATE_CHECK="1"))   # no update question to answer
     log = os.path.join(logs, "viewer.log")
     deadline = time.time() + 60
     while time.time() < deadline and launcher.poll() is None:

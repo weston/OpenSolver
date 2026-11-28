@@ -10,6 +10,9 @@ the version the package is named after, and solves a small tree. The viewer is s
 launcher starts it, on a port of its own and with a library and a queue in a temporary folder, so
 nothing of the user's is touched.
 """
+import functools
+import hashlib
+import http.server
 import json
 import os
 import shutil
@@ -17,6 +20,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -108,8 +112,27 @@ def main():
         if len(sys.argv) > 3:
             test = os.path.abspath(sys.argv[3])
             script = os.path.join(os.path.dirname(__file__), "..", "..", "tests", "test_macos_ui.js")
-            native = subprocess.run([test, base, script, test + ".png"], timeout=100)
-            check(native.returncode == 0, "the native window runs the drilling interface")
+            # an update to offer it (launcher.m, "updates"): a manifest and an "installer" served here
+            published = os.path.join(tmp, "published")
+            os.makedirs(published)
+            blob = os.urandom(300_000)
+            with open(os.path.join(published, "OpenSolver-9.9.9-macos-arm64.pkg"), "wb") as f:
+                f.write(blob)
+            digest = hashlib.sha256(blob).hexdigest()
+            with open(os.path.join(published, "latest.txt"), "w") as f:
+                f.write(f"version 9.9.9\nbuilt {int(time.time())}\nrevision test\n"
+                        f"file OpenSolver-9.9.9-macos-arm64.pkg\nsha256 {digest}\n")
+            handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=published)
+            handler.log_message = lambda *a: None
+            updates = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=updates.serve_forever, daemon=True).start()
+            env = dict(os.environ, OPENSOLVER_UPDATE_URL=f"http://127.0.0.1:{updates.server_port}/",
+                       OPENSOLVER_UPDATE_SHA256=digest)
+            try:
+                native = subprocess.run([test, base, script, test + ".png"], timeout=100, env=env)
+            finally:
+                updates.shutdown()
+            check(native.returncode == 0, "the native window offers and downloads an update, and runs the drilling interface")
 
         kids = children(srv.pid)
         check(len(kids) >= 1, f"the viewer runs its solvers as children ({len(kids)})")

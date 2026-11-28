@@ -507,6 +507,43 @@ signal; the seconds are interleaved runs on a quiet machine.
   at 13.2-13.4 s. Twice-as-slow runs seen earlier that day were outside load, so check `uptime`
   before timing anything.
 
+## The app's default trees on the Zen 5 PC (2026-11-27)
+
+Ryzen 9 9950X (32 threads, dual-channel DDR5), RX 9060 XT (16 GB), Windows native static builds. The
+viewer's Smart tree (`build_tree smart_rivers auto_flop_order sqrt_flop_opening`), `set_info_freq
+auto`, to 0.3% of pot, after #579:
+
+| tree | storage | iterations | time | per iteration |
+|---|---|---|---|---|
+| HUNL 3BP | 16-bit, 1.3 GB | 129 | 7.1 s | ~55 ms |
+| HUNL SRP | 16-bit, 9.3 GB | 226 | 96.7 s | ~0.43 s |
+
+- **The CPU is at the DRAM wall.** About 10 bytes move per stored value per iteration (the owner's pass
+  reads and writes R and S, the other reads R), so 3BP is ~3.3 GB an iteration, ~53 GB/s against ~60
+  practical. Everything that changes bytes per value shows up; nothing that changes instructions does:
+  the installer's `-march=x86-64-v3` build and `-march=native` (AVX-512) take the same time on 3BP and
+  SRP, and 16 threads the same as 32. float32 is 2x slower on SRP (34.4 vs 18.2 s for 40 iterations).
+  The floor for 3BP to 0.3% at this bandwidth is ~400 GB of traffic, ~6.7 s; any faster needs fewer
+  iterations or fewer bytes per value, not faster loops.
+- **Building is not the time:** `build_tree` on 3BP takes 0.03 s of the 8.0 s.
+- **Checked and ruled out on 3BP (sampled averaging on, #579):**
+  - re-sweeping DCFR under the sampled average: 1.3 / 0 / 4 / (0.5 after 50) 129 iterations; gamma 3
+    133, gamma 5 128, gamma 6 128, alpha 1.2 129, alpha 1.5 150, beta_late 1 171, beta 0.5 151. Still
+    the default.
+  - sampling river cards in the warm-up (each turn->river deal visits a hashed 1 in k cards and scales
+    their values by k, for t <= T): k 2 / 4 / 8 to T 32: 6.85 / 7.54 / 8.48 s against 7.01 s; k 2 to
+    16, 4 to 16, 4 to 8, 2 to 24: 6.90 / 6.86 / 6.97 / 6.99 s. Within 2%, so not worth a code path.
+- **The OpenCL kernels on the RX 9060 XT** (3BP, 60 iterations, `WSOLVER_GPU_PROFILE=1`, float32 state):
+  `river_two_bets` 36% of kernel time, `river_betting_round` 26%, `update_values` 12%. Ablating
+  `river_two_bets` (ms of 1,098): no prefix scans 1,039; no per-hand loop 598; neither 264; no regret
+  and sum update 696; no fold count 1,087. Bytes moved per dispatch over its time is ~177 GB/s, about
+  55% of the card's peak; the compact bfloat16 + fp16 state halves the bytes and is only 14% faster
+  (latency-bound at ~100 GB/s). None of these changed it: scanning the N channels of a prefix at once
+  (bit-identical; a quarter of the barriers), `restrict` on every kernel pointer, the narrow kernels
+  (slower), 8 KB more work-group memory (+5%, so occupancy by local memory is not the limit).
+  `-save-temps` in the build options writes the ISA: 52-64 VGPRs, wave32, 88 bytes of scratch (the
+  arguments), no spills.
+
 ## Showdown terminals per river subtree, measured on arm64 (#186)
 
 #186 wants a river subtree's showdown terminals evaluated in one sweep over the board's strength

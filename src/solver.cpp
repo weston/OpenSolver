@@ -79,6 +79,33 @@ inline void regret_row_max(float* __restrict r, float* __restrict s, float* __re
   ms_out = ms;
 }
 
+// regret_row_max reading 16-bit full rows (#239's compact ones go through the decode) instead of rows
+// GameTree::decode_rows wrote into scratch: the same q * scale for each value, so the same floats, without
+// a pass that writes the decoded row and another that reads it back. r and s receive the new values.
+template <bool PR, bool ACC>
+inline void regret_row_max_q(float* __restrict r, const int16_t* __restrict qr, float rs, float* __restrict s,
+                             const uint16_t* __restrict qs, float ss, float* __restrict pr, const float* __restrict c,
+                             const float* __restrict out, const float* __restrict rp, const float* __restrict sa,
+                             int Hp, float pm, float nm, float sm, uint32_t& mr_out, uint32_t& ms_out) {
+  uint32_t mr = mr_out, ms = ms_out;
+  for (int h = 0; h < Hp; ++h) {
+    float x = static_cast<float>(qr[h]) * rs;
+    x *= x > 0.0f ? pm : nm;
+    const float inst = c[h] - out[h];
+    x = x + inst;
+    r[h] = x;
+    if constexpr (PR) pr[h] = inst;
+    mr = std::max(mr, abs_bits(x));
+    if constexpr (ACC) {
+      float y = static_cast<float>(qs[h]) * ss * sm + rp[h] * sa[h];
+      s[h] = y;
+      ms = std::max(ms, nonneg_bits(y));
+    }
+  }
+  mr_out = mr;
+  ms_out = ms;
+}
+
 }  // namespace
 
 // Regret-based pruning skips an action that no hand which can occur at the node plays. A hand sharing a
@@ -1097,6 +1124,49 @@ bool Solver::call_with_opp_fold(const GNode& sd, const GNode& fold, int p, const
 static float expand_regret(float value) { return value; }
 static float expand_regret(uint16_t value) { return std::bit_cast<float>(bfloat_regret_bits(value)); }
 
+#if PIO_SHOWDOWN_NEON
+// Regret matching for a decision with A actions, 8 hands a step with every action's two vectors in
+// registers (the run-time-A loop in Solver::current_strategy keeps its rows on the stack and pays a loop
+// per action). The same operations in the same order as that loop: max(r, +0) (FMAX orders -0 below +0, so
+// this is its r + 0 then max), the sum over actions in order, 1/sum, add + v * inv. Returns the hands done.
+template <int A, bool Q16>
+static int match_neon(const float* R, const int16_t* Q, float qs, size_t stride, int H, float* out) {
+  const float32x4_t z = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), uni = vdupq_n_f32(1.0f / static_cast<float>(A));
+  int h = 0;
+  for (; h + 8 <= H; h += 8) {
+    float32x4_t v0[A], v1[A];
+    for (int a = 0; a < A; ++a) {
+      const size_t off = static_cast<size_t>(a) * stride + static_cast<size_t>(h);
+      float32x4_t x0, x1;
+      if constexpr (Q16) {
+        const int16x8_t q = vld1q_s16(Q + off);
+        x0 = vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(q))), qs);
+        x1 = vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(q)), qs);
+      } else {
+        x0 = vld1q_f32(R + off);
+        x1 = vld1q_f32(R + off + 4);
+      }
+      v0[a] = vmaxq_f32(x0, z);
+      v1[a] = vmaxq_f32(x1, z);
+    }
+    float32x4_t s0 = v0[0], s1 = v1[0];  // 0 + v0[0] is v0[0]: it is >= +0
+    for (int a = 1; a < A; ++a) {
+      s0 = vaddq_f32(s0, v0[a]);
+      s1 = vaddq_f32(s1, v1[a]);
+    }
+    const uint32x4_t p0 = vcgtq_f32(s0, z), p1 = vcgtq_f32(s1, z);
+    const float32x4_t i0 = vbslq_f32(p0, vdivq_f32(one, s0), z), i1 = vbslq_f32(p1, vdivq_f32(one, s1), z);
+    const float32x4_t d0 = vbslq_f32(p0, z, uni), d1 = vbslq_f32(p1, z, uni);
+    for (int a = 0; a < A; ++a) {
+      float* o = out + static_cast<size_t>(a) * static_cast<size_t>(H) + h;
+      vst1q_f32(o, vfmaq_f32(d0, v0[a], i0));
+      vst1q_f32(o + 4, vfmaq_f32(d1, v1[a], i1));
+    }
+  }
+  return h;
+}
+#endif
+
 void Solver::current_strategy(uint32_t ni, float* out) const {
   const GNode& n = g_.nodes[ni];
   const int A = n.num_children;
@@ -1243,6 +1313,8 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     // registers, instead of three passes through arena rows. The generic loops' operations in the same
     // order (r + 0, max with 0, sum over actions in order, 1/sum, fma(v, inv, add)): identical floats.
     // M4, 10 threads: -2 to -5% on every bench tree (threebet_mono 6.12 -> 5.95 s).
+    // A = 2..6 go to match_neon (8 hands a step, the rows in registers): M4, 10 threads, threebet_mono
+    // 60 steps 1.671 -> 1.577 s float32, 1.828 -> 1.709 s 16-bit.
     g_.ensure_loaded(n);
     // 16-bit full rows decode in registers; compact ones (#239) are expanded into scratch by regrets_ro
     // first (dropped hands read 0, as stored zeros would), then matched like float32 rows.
@@ -1255,6 +1327,19 @@ void Solver::current_strategy(uint32_t ni, float* out) const {
     const float32x4_t z = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f), uni = vdupq_n_f32(1.0f / static_cast<float>(A));
     float32x4_t v[16];
     int h = 0;
+    switch ((q16 ? 16 : 0) + A) {
+      case 2: h = match_neon<2, false>(R, Q, qs, H, H, out); break;
+      case 3: h = match_neon<3, false>(R, Q, qs, H, H, out); break;
+      case 4: h = match_neon<4, false>(R, Q, qs, H, H, out); break;
+      case 5: h = match_neon<5, false>(R, Q, qs, H, H, out); break;
+      case 6: h = match_neon<6, false>(R, Q, qs, H, H, out); break;
+      case 18: h = match_neon<2, true>(R, Q, qs, H, H, out); break;
+      case 19: h = match_neon<3, true>(R, Q, qs, H, H, out); break;
+      case 20: h = match_neon<4, true>(R, Q, qs, H, H, out); break;
+      case 21: h = match_neon<5, true>(R, Q, qs, H, H, out); break;
+      case 22: h = match_neon<6, true>(R, Q, qs, H, H, out); break;
+      default: break;
+    }
     for (; h + 4 <= H; h += 4) {
       float32x4_t sum = z;
       for (int a = 0; a < A; ++a) {
@@ -1465,14 +1550,27 @@ void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* r
   const int A = n.num_children;
   const int Hp = g_.num_hands(p);
   ArenaScope sc;
-  float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+  const uint8_t* lockmask = nullptr;
+  if (n.flags & GF_COMBO_LOCKED) {
+    auto it = g_.combo_lock.find(ni);
+    if (it != g_.combo_lock.end()) lockmask = it->second.data();
+  }
+  // 16-bit full rows with no lock or incentive: the update loop reads them itself (regret_row_max_q)
+  const bool from_q = g_.compressed && !g_.keep_of(n) && !lockmask && !(n.flags & GF_INCENTIVES);
+  if (from_q) g_.ensure_loaded(n);
+  float* R = from_q ? sc.a.alloc(static_cast<size_t>(A) * Hp)
+                    : g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
   // Strategy-sum accumulation (accumulate_). With avg_reset (default) it runs from t = 1 and
   // Solver::iterate zeroes the sums at t = avg_delay + 1 (#135); without it, it is skipped until
   // t > avg_delay and S stays untouched (zero) until then. A 16-bit row is decoded only when this
   // iteration adds to it (sampled averaging skips most early iterations): otherwise S is scratch no
   // loop reads.
-  float* S = accumulate_ || !g_.compressed ? g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr)
-                                           : sc.a.alloc(static_cast<size_t>(A) * Hp);
+  float* S = (accumulate_ || !g_.compressed) && !from_q
+                  ? g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr)
+                  : sc.a.alloc(static_cast<size_t>(A) * Hp);
+  const int16_t* QR = from_q ? g_.regrets_q.data() + g_.qo(n) : nullptr;
+  const uint16_t* QS = from_q ? g_.strat_q.data() + g_.qo(n) : nullptr;
+  const float qrs = from_q ? g_.rscale[n.aux] : 0.0f, qss = from_q ? g_.sscale[n.aux] : 0.0f;
   // Predictive CFR stores each round's instantaneous regret for the next round's
   // matching input; keep the array fresh whenever it is allocated.
   float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
@@ -1487,11 +1585,6 @@ void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* r
       compat_mass(p, ro, mass);
     }
   }
-  const uint8_t* lockmask = nullptr;
-  if (n.flags & GF_COMBO_LOCKED) {
-    auto it = g_.combo_lock.find(ni);
-    if (it != g_.combo_lock.end()) lockmask = it->second.data();
-  }
   uint32_t mr = 0, ms = 0;  // max |regret| and max strategy sum as float bits (abs_bits, game.hpp)
   const bool fast = !lockmask && !inc;
   const bool accum = accumulate_;
@@ -1502,6 +1595,15 @@ void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* r
     const float* c = cfv + static_cast<size_t>(a) * Hp;
     const float* sa = sigma + static_cast<size_t>(a) * Hp;
     const float ia = inc ? inc[a] : 0.0f;
+    if (pruned && pruned[a] && from_q) {
+      // the row keeps its values: decode it as GameTree::decode_rows would, for the commit
+      const int16_t* qa = QR + static_cast<size_t>(a) * Hp;
+      for (int h = 0; h < Hp; ++h) r[h] = static_cast<float>(qa[h]) * qrs;
+      if (accum) {
+        const uint16_t* sq = QS + static_cast<size_t>(a) * Hp;
+        for (int h = 0; h < Hp; ++h) s[h] = static_cast<float>(sq[h]) * qss;
+      }
+    }
     if (pruned && pruned[a]) {
       // RBP pruned: the regret row is NOT touched (not even discounted). Discounting a frozen
       // row makes it forget its magnitude exponentially (at beta=0 it halves every iteration)
@@ -1528,6 +1630,16 @@ void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* r
       } else {
         if (accum) regret_row<false, true>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
         else regret_row<false, false>(r, s, pr, c, out, rp, sa, Hp, pm, nm, sm);
+      }
+    } else if (from_q) {
+      const int16_t* qa = QR + static_cast<size_t>(a) * Hp;
+      const uint16_t* sq = QS + static_cast<size_t>(a) * Hp;
+      if (pr) {
+        if (accum) regret_row_max_q<true, true>(r, qa, qrs, s, sq, qss, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+        else regret_row_max_q<true, false>(r, qa, qrs, s, sq, qss, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+      } else {
+        if (accum) regret_row_max_q<false, true>(r, qa, qrs, s, sq, qss, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
+        else regret_row_max_q<false, false>(r, qa, qrs, s, sq, qss, pr, c, out, rp, sa, Hp, pm, nm, sm, mr, ms);
       }
     } else if (fast) {
       if (pr) {
@@ -1736,6 +1848,25 @@ void Solver::river_down(uint32_t ni, int p, const float* rp, const float* ro, fl
   }
 }
 
+namespace {
+bool all_zero_flags(const uint8_t* f, int A) {
+  for (int a = 0; a < A; ++a)
+    if (f[a]) return false;
+  return true;
+}
+// A traverser node's value, sum over a of sigma_a * cfv_a, in one pass: per hand the statements of
+// river_cfr's row-by-row loop (0 + s0 * c0, then += s_a * c_a in action order), so the same floats.
+template <int A>
+void back_up_own(const float* __restrict sg, const float* __restrict cv, int Hp, float* __restrict out) {
+  const size_t H = static_cast<size_t>(Hp);
+  for (size_t h = 0; h < H; ++h) {
+    float x = 0.0f + sg[h] * cv[h];
+    for (int a = 1; a < A; ++a) x += sg[a * H + h] * cv[a * H + h];
+    out[h] = x;
+  }
+}
+}  // namespace
+
 void Solver::river_cfr(uint32_t root, int p, const float* rp, const float* ro, float* out) {
   RiverWork& w = tl_rw;
   w.busy = true;
@@ -1755,7 +1886,17 @@ void Solver::river_cfr(uint32_t root, int p, const float* rp, const float* ro, f
     // The first summed row is written as 0 + x rather than added to a zeroed row: the same floats
     // (0 + x also turns -0 into +0), one pass fewer.
     bool first = true;
-    if (r.own) {
+    if (r.own && A >= 2 && A <= 4 && !(r.flag && !all_zero_flags(r.flag, A))) {
+      // every row: the loop below's sums in one pass over the hands (the same statements per value)
+      const float* sg = r.sigma;
+      const float* cv = r.rows;
+      switch (A) {
+        case 2: back_up_own<2>(sg, cv, Hp, r.out); break;
+        case 3: back_up_own<3>(sg, cv, Hp, r.out); break;
+        default: back_up_own<4>(sg, cv, Hp, r.out); break;
+      }
+      if (!(n.flags & GF_LOCKED)) traverser_update(n, r.ni, p, r.rp, r.ro, r.sigma, r.rows, r.flag, r.out);
+    } else if (r.own) {
       for (int a = 0; a < A; ++a) {
         if (r.flag && r.flag[a]) continue;
         const float* sa = r.sigma + static_cast<size_t>(a) * Hp;

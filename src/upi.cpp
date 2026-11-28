@@ -621,17 +621,22 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
             release_metal_memory();
           }
         }
-        const bool measure = hybrid && done == 1 && !fixed_share;
+        // Iteration 2, one device after the other; or a device that times its own passes (#589) over iterations
+        // 5-8 with both at work, once the GPU's clocks are up: measured alone, early, Metal's passes took twice
+        // their time in the solve, and the share it gave was 0.58 where 0.7-0.75 was fastest (M1 Ultra, 3BP).
+        const bool concurrent = hybrid && hybrid->times_passes();
+        const long long first = concurrent ? 4 : 1, window = concurrent ? 4 : 1;
+        const bool measure = hybrid && done >= first && done < first + window && !fixed_share;
         if (measure) {
           solver_->hybrid_measure = true;
-          solver_->hybrid_device_seconds = solver_->hybrid_cpu_seconds = 0;
+          if (done == first) solver_->hybrid_device_seconds = solver_->hybrid_cpu_seconds = 0;
         }
         if (!metal) solver_->iterate(tick, solver_->whole_tree_first_player());
-        if (measure) {
-          solver_->hybrid_measure = false;
+        if (measure) solver_->hybrid_measure = false;
+        if (measure && done == first + window - 1) {
           // per pass: the device's time for its share g * share, the CPU's c * (1 - share); even at g * s = c * (1 - s)
-          const double g = solver_->hybrid_device_seconds / std::max(share, 1e-3);
-          const double c = solver_->hybrid_cpu_seconds / std::max(1 - share, 1e-3);
+          const double g = solver_->hybrid_device_seconds / window / std::max(share, 1e-3);
+          const double c = solver_->hybrid_cpu_seconds / window / std::max(1 - share, 1e-3);
           const double best = g + c > 0 ? std::clamp(c / (g + c), 0.05, 0.95) : share;
           const double now_s = std::max(g * share, c * (1 - share)), even = g * c / std::max(g + c, 1e-12);
           if (std::getenv("WSOLVER_HYBRID_DEBUG"))
@@ -1602,9 +1607,7 @@ void Upi::register_commands() {
     // v4_gpu is the GPU on any platform; v4_metal, its first name, stays for Apple Silicon clients
     if (gpu_available()) {
       algorithms += "\nv4_gpu,DCFR," + gpu_name() + ", unpruned postflop traversal";
-#if !(defined(__APPLE__) && defined(__aarch64__))
       algorithms += "\nv4_hybrid,DCFR," + gpu_name() + " and the CPU, each solving some of the turn subtrees";
-#endif
 #if defined(__APPLE__) && defined(__aarch64__)
       algorithms += "\nv4_metal,DCFR,Apple GPU (Metal), unpruned postflop traversal";
 #endif

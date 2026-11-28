@@ -2990,7 +2990,7 @@ def check_hybrid(exe):
     finally:
         probe.close()
     if not available:
-        print("[hybrid] skipped: no discrete GPU")
+        print("[hybrid] skipped: no GPU")
         return
     print("[hybrid]")
 
@@ -3037,9 +3037,27 @@ def check_hybrid(exe):
     check(not any("hybrid" in d for d in cpu["devices"]) and abs(one["measured"] - cpu["measured"]) <= 0.1 * cpu["measured"],
           f"it converges like the CPU ({one['measured']:.4f} vs {cpu['measured']:.4f} after 20 iterations)")
     sixteen = solve(["go 20 steps"], storage="on")
-    check(any(d.startswith("SOLVER: device hybrid") for d in sixteen["devices"]) and
-          abs(sixteen["reports"][-1] - sixteen["measured"]) <= 1e-3 * max(1.0, sixteen["measured"]),
-          f"on 16-bit rows too ({sixteen['reports'][-1]} vs {sixteen['measured']})")
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        # Metal's device updates the tree's own float32 rows in place (#589); small_strats auto keeps float32
+        # wherever it fits there, so a 16-bit tree solves on the CPU, and says why.
+        check(sixteen["devices"][:1] == ["SOLVER: device cpu (16-bit storage: the GPU's turn subtrees need float32 rows)"],
+              f"16-bit rows solve on the CPU on Apple Silicon ({sixteen['devices']})")
+    else:
+        check(any(d.startswith("SOLVER: device hybrid") for d in sixteen["devices"]) and
+              abs(sixteen["reports"][-1] - sixteen["measured"]) <= 1e-3 * max(1.0, sixteen["measured"]),
+              f"on 16-bit rows too ({sixteen['reports'][-1]} vs {sixteen['measured']})")
+    # A flop-only tree has too few rows for page-aligned arrays: Metal can't bind them in place and copies them
+    # (#589), so this is its copy's way to the tree and back.
+    flop_only = ("300 300", "0 300 300", "0 0 0 0 0 0")
+    small = solve(["go 20 steps"], lines=flop_only)
+    small_two = solve(["go 10 steps", "go 10 steps"], lines=flop_only)
+    small_cpu = solve(["go 20 steps"], algorithm="auto", share=None, lines=flop_only)
+    check(any(d.startswith("SOLVER: device hybrid") for d in small["devices"]) and
+          small_two["strategy"] == small["strategy"] and
+          abs(small["reports"][-1] - small["measured"]) <= 1e-4 * max(1.0, small["measured"]) and
+          abs(small["measured"] - small_cpu["measured"]) <= 0.1 * small_cpu["measured"],
+          f"a tree of few rows: 10 + 10 steps are 20, the report is the tree's, and it converges like the CPU "
+          f"({small['reports'][-1]} / {small['measured']} vs {small_cpu['measured']})")
     auto = solve(["go 6 steps"], share=None)
     check(any(d.startswith("SOLVER: device hybrid (GPU ") for d in auto["devices"]),
           f"without a fixed share it picks one ({auto['devices']})")

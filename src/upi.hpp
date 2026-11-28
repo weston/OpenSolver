@@ -268,7 +268,14 @@ class Upi {
   // every info_freq_ iterations. See AutoReportSchedule.
   bool info_auto_ = false;
   long long next_report_ = 0;
-  double hybrid_share_ = 0.5;  // the GPU's share of the turn cards a hybrid solve settled on last (#582)
+  // The GPU's share of the turn cards a hybrid solve settled on last (#582), at first half. On Apple Silicon
+  // (#589) three quarters: its GPU slows its clocks when it waits on the CPU each pass, so it measures true only
+  // where it is the slower side, and the share is measured from above.
+#if defined(__APPLE__) && defined(__aarch64__)
+  double hybrid_share_ = 0.75;
+#else
+  double hybrid_share_ = 0.5;
+#endif
   AutoReportSchedule auto_sched_;
   int threads_ = 0;
   double step_ = 1.0;

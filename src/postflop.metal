@@ -28,6 +28,9 @@ constant float sum_scale = 1.f;
       uint width [[threads_per_threadgroup]]
 constant bool sqrt_regret_weights [[function_constant(0)]];
 constant uint average_mode [[function_constant(1)]];
+// 0: a CFR pass. A hybrid solve's report (#589, as postflop.cl's q.mode, #582): the average strategy (the
+// sums bound as the regrets), nothing written; 1 the traverser plays it too (EV), 2 a best response to it.
+constant uint pass_mode [[function_constant(2)]];
 float average_reach(float reach, constant IterationParams& q) {
   return average_mode == WeightedAverage ? reach * q.sample_weight : reach;
 }
@@ -85,9 +88,9 @@ kernel void update_values(TRAVERSAL_BUFFERS, device const uint2* iso [[buffer(9)
       for (uint a = 0; a < n.count; ++a) {
         float val = values[(a == 0 ? n.value_row : n.child_value + a - 1) * q.stride + h];
         float w = updating ? (sum > 0 ? regret_weight(load_regret(old_regrets[n.storage + a * H + h])) / sum : 1.f / n.count) : 1.f;
-        node_value = fma(w, val, node_value);
+        node_value = updating && pass_mode == 2 ? (a ? max(node_value, val) : val) : fma(w, val, node_value);
       }
-    if (updating)
+    if (updating && !pass_mode)
       for (uint a = 0; a < n.count; ++a) {
         uint j = n.storage + a * H + h;
         float r = load_regret(old_regrets[j]);
@@ -242,7 +245,11 @@ kernel void river_call_fold(TRAVERSAL_BUFFERS, device const BoardPrefixes* board
       float rc = load_regret(old_regrets[j]), rf = load_regret(old_regrets[j + H]);
       float total = regret_weight(rc) + regret_weight(rf);
       float sc = total > 0 ? regret_weight(rc) / total : .5f, sf = total > 0 ? regret_weight(rf) / total : .5f;
-      v = fma(sf, fv, sc * cv);
+      v = pass_mode == 2 ? max(cv, fv) : fma(sf, fv, sc * cv);
+      if (pass_mode) {
+        values[n.value_row * q.stride + h] = v;
+        continue;
+      }
       regrets[j] = store_regret(rc * (rc > 0 ? q.positive_discount : q.negative_discount) + (cv - v));
       regrets[j + H] = store_regret(rf * (rf > 0 ? q.positive_discount : q.negative_discount) + (fv - v));
       float reach = blocked(c, n.public_cards) ? 0.f : (q.p ? ip_reach : oop_reach)[n.reach_offset[q.p] + h];
@@ -318,6 +325,11 @@ float update_actions(device RegretWord* regrets, device SumWord* sums, device co
                      constant IterationParams& q, uint j, uint H, float reach, Vec policy, Vec cfv) {
   float value = policy.x * cfv.x;
   for (uint a = 1; a < N; ++a) value = fma(policy[a], cfv[a], value);
+  if (pass_mode == 2) {
+    value = cfv[0];
+    for (uint a = 1; a < N; ++a) value = max(value, cfv[a]);
+  }
+  if (pass_mode) return value;
   for (uint a = 0; a < N; ++a) {
     uint k = j + a * H;
     float r = load_regret(old_r[k]);

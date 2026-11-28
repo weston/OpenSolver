@@ -616,7 +616,7 @@ their sampling noise is not averaged away.
   each over the board's ~3,000-entry table and the opponent's 963 reaches, ~250,000 a pass), not the value
   rows around them.
 
-## CPU on the M4 after #599: smaller wins (#605)
+## CPU on the M4 after #599: smaller wins (#617)
 
 Apple M4 (4P + 6E), 10 threads, `v4_large`. 10 s `sample` profiles, worker threads only (they are ~100%
 busy; the idle samples are the main thread and an idle workqueue thread):

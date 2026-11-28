@@ -39,7 +39,7 @@ documentation; contains no PioSOLVER code.
   110.7 -> 96.7 s, HUNL 3BP 8.0 -> 7.1 s. Since #591 the IP-first order and square-root opening take
   every Smart flop where OOP may check, of any suits, paired or not, also where OOP may bet: HUNL 3BP on
   AhKd3c 7.0 -> 6.7 s, Td7c5h 8.0 -> 6.7 s, HUNL SRP on AsQs5s 29.0 -> 24.6 s, KdKh5c 81.0 -> 69.2 s.
-- **Faster CPU iterations on ARM** (#605): regret matching specialised on the action count (8 hands a
+- **Faster CPU iterations on ARM** (#617): regret matching specialised on the action count (8 hands a
   step, every row in registers), the 16-bit regret update reading its stored rows directly, and a
   traverser river node's value summed in one pass. Bit-identical results. M4, 10 threads, to 0.3% of pot:
   HUNL 3BP 16.5 -> 15.4 s, HUNL SRP (16-bit) 224 -> 209 s.

@@ -540,6 +540,17 @@ struct PostflopPlan {
       }
       reach_levels.push_back(by_player);
     }
+    // The river's work by board, so that the work-groups running at once share its tables in the cache:
+    // the same results (each work-group is one node or record), terminals and call/fold pairs -12% and the
+    // river rounds -2.5% on HUNL SRP's (RX 9060 XT, #598)
+    auto board_of = [&](unsigned i) { return nodes[i].aux; };
+    std::stable_sort(terminal_ids.begin(), terminal_ids.end(), [&](unsigned a, unsigned b) { return board_of(a) < board_of(b); });
+    std::stable_sort(paired_ids.begin(), paired_ids.end(),
+                     [&](unsigned a, unsigned b) { return nodes[nodes[a].child].aux < nodes[nodes[b].child].aux; });
+    auto by_board = [](const auto& x, const auto& y) { return x.board < y.board; };
+    std::stable_sort(rounds.begin(), rounds.end(), by_board);
+    std::stable_sort(bet_checks.begin(), bet_checks.end(), by_board);
+    std::stable_sort(two_bets.begin(), two_bets.end(), by_board);
     terminal_range = {list.size(), terminal_ids.size()};
     list.insert(list.end(), terminal_ids.begin(), terminal_ids.end());
     pair_range = {list.size(), paired_ids.size()};

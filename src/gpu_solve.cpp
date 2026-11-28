@@ -615,7 +615,10 @@ class Subtrees final : public SubtreeDevice {
     std::lock_guard<std::mutex> lock(b.mu);
     for (int q = 0; q < 2; ++q)
       b.write(s->r[q].buf, 0, host_reach[q].data(), host_reach[q].size() * sizeof(float), false);
-    s->enqueue_phase(g, unsigned(p), true, s->params_for(g, solver, t, unsigned(phase), unsigned(p)));
+    // p's own reach below the roots is the last pass's (p's strategy has not changed since), as in a whole-tree
+    // solve; both after the device was set up, filled, or used for a report's average-strategy reaches
+    s->enqueue_phase(g, unsigned(p), refresh_reach, s->params_for(g, solver, t, unsigned(phase), unsigned(p)));
+    refresh_reach = false;
     b.read(s->v.buf, 0, host_values.data(), host_values.size() * sizeof(float), false);
     b.flush();
     pending = true;
@@ -641,6 +644,7 @@ class Subtrees final : public SubtreeDevice {
         q.average_mode = SkipAverage;
         q.mode = mode;
         s->enqueue_phase(g, p, true, q, s->sums.buf);
+        refresh_reach = true;
         auto& out = check[p][mode - 1];
         out.resize(host_values.size());
         b.read(s->v.buf, 0, out.data(), out.size() * sizeof(float), false);
@@ -703,6 +707,7 @@ class Subtrees final : public SubtreeDevice {
     finish();
     std::lock_guard<std::mutex> lock(b.mu);
     ProfileScope ps(b, "hybrid: copy to the GPU");
+    refresh_reach = true;
     if (!tree.compressed) {
       for (const auto& st : subtrees) {
         if (!st.floats) continue;
@@ -805,6 +810,7 @@ class Subtrees final : public SubtreeDevice {
   std::mutex wait_mu;
   bool pending = false, device_newer = false;
   bool device_zero = true;  // the device's rows are the zeros they were allocated with
+  bool refresh_reach = true;  // the next pass propagates both players' reaches
   // a float range of the tree, in parallel
   static bool all_zero(const float* x, size_t n) {
     std::atomic<bool> nonzero{false};

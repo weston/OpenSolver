@@ -780,7 +780,12 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           // solves accumulate from their first iteration, see Solver::iterate_subtree).
           const long long reset_t = !sub && solver_->avg_reset && solver_->avg_delay > 0
                                         ? discount_restart_ + solver_->avg_delay + 1 : 0;
-          next_report_ = auto_sched_.next(tick, st.exploitability, accuracy > 0 ? target : 0.0, reset_t);
+          long long next_average = sub ? 0 : tick + 1;
+          if (!sub && solver_->uses_sampled_averaging()) {
+            while (solver_->strategy_average_step(static_cast<int>(next_average - discount_restart_)).weight == 0.f)
+              ++next_average;
+          }
+          next_report_ = auto_sched_.next(tick, st.exploitability, accuracy > 0 ? target : 0.0, reset_t, next_average);
         }
       }
       if (limit) {

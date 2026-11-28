@@ -96,9 +96,10 @@ struct NodeRef {
 struct AutoReportSchedule {
   long long last_t = 0;  // the previous report (0: none since the solve started)
   double last_e = 0;
+  bool checked_near_target = false;
   bool forecast_hit_limit = false;
   // The iteration of the next report, after one at iteration t with exploitability e.
-  long long next(long long t, double e, double target, long long reset_t) {
+  long long next(long long t, double e, double target, long long reset_t, long long next_average = 0) {
     long long gap = std::max<long long>(5, t / 4);
     if (reset_t > 0 && last_t < reset_t && t >= reset_t) {
       last_t = 0;
@@ -123,6 +124,10 @@ struct AutoReportSchedule {
     }
     last_t = t;
     last_e = e;
+    if (!checked_near_target && next_average > t && target > 0 && e > target && e <= 1.02 * target) {
+      checked_near_target = true;
+      return std::min(t + gap, next_average);
+    }
     // Before the average restarts, a report far above the target cannot stop the solve, and the restart
     // lifts exploitability anyway: the next one comes 8 iterations after it (#603: HUNL SRP's 4 reports
     // before iteration 33, ~0.35 s each on CPU and GPU, become 1)

@@ -1,0 +1,5 @@
+version 0.1.0
+built 1795831774
+revision 25d20397b5eb6200250faebc06596da9068fe73a
+file OpenSolver-0.1.0-windows-x64-setup.exe
+sha256 7fe4d2eda9ec27dfa688317a70ea746213c0d4948f4a79b9541322363702f120

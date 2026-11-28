@@ -5,8 +5,8 @@
 
 namespace pio {
 template <class F>
-void parallel_state_blocks(size_t count, F&& work) {
-  constexpr size_t block_size = 1u << 18;
+void parallel_state_blocks(size_t count, F&& work, size_t min_block_size = 0) {
+  const size_t block_size = std::max<size_t>(1u << 18, min_block_size);
   if (count <= block_size || pool().threads() == 1) {
     work(0, count);
     return;
@@ -31,7 +31,7 @@ inline bool fp16_sums_fit(const float* sums, size_t count) {
     bool valid = true;
     for (size_t i = begin; i < end; ++i) valid &= sums[i] >= 0.f && sums[i] <= 1024.f;
     if (!valid) fits.store(false, std::memory_order_relaxed);
-  });
+  }, count / (4 * pool().threads()));
   return fits.load(std::memory_order_relaxed);
 }
 }  // namespace pio

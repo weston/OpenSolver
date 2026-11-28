@@ -863,8 +863,10 @@ std::string Upi::cmd_build_tree(const Args& a) {
     solver_->set_flop_opening(FlopOpening::SquareRoot);
     solver_->prepare_sampled_averaging();
   } else if (solver_->sampled_smart_tree()) {
-    // Sampled averaging only: bfloat16 regrets and fp16 sums stay with the square-root opening (#559)
-    solver_->prepare_sampled_averaging(false, false);
+    // With bfloat16 regrets and fp16 sums on the GPU too, on Medium trees (#586): HUNL 3BP to 0.3% on
+    // Metal (M4) 12.5 -> 10.6 s at the same iterations, flop strategies 0.2 points from float32's
+    const bool medium = tree_->cfg.river_sizing == RiverSizing::Smart;
+    solver_->prepare_sampled_averaging(medium, medium);
   }
   return result;
 }

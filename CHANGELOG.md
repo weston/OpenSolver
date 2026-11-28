@@ -26,6 +26,10 @@ documentation; contains no PioSOLVER code.
 - **Suit isomorphism**, flop trees on by default to match Pio's `set_isomorphism 1 0`.
 - Averaging controls `avg_delay` and `avg_reset`, which reach a given exploitability in fewer
   iterations than accumulating from the first.
+- **Faster large Smart-tree solves on the CPU** (#578): the app's IP-first order and square-root
+  opening now also run on 16-bit storage, and the sampled strategy average runs on every large Smart
+  tree solved to 0.3% of pot, not only IP-first rainbow flops. On a Ryzen 9 9950X (32 threads): HUNL SRP
+  110.7 -> 96.7 s, HUNL 3BP 8.0 -> 7.1 s.
 - Optional **16-bit compressed storage** (`small_strats`), roughly halving memory, with a `lossless`
   dump flag when exact records are wanted. `small_strats compact` (and `auto`, when full 16-bit rows don't
   fit) also leaves out the river rows' board-blocked hands: about 7% less memory, about 14% more time per

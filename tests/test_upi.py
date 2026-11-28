@@ -2497,14 +2497,16 @@ def check_flop_update_order(exe, test_metal=True):
     check(solve(first="OOP") == oop and solve(override="OOP") == oop,
           "an explicit OOP order wins before and after the automatic build")
     for setup in (dict(board="Ah3hQd"), dict(board="AhAcQd"), dict(lines=("0 30 90", "25")),
-                  dict(lines=("0 300",)), dict(predictive=True),
-                  dict(storage="on"), dict(build="build_tree auto_flop_order"),
+                  dict(lines=("0 300",)), dict(predictive=True), dict(build="build_tree auto_flop_order"),
                   dict(build="build_tree single_river_size auto_flop_order")):
         check(solve(**setup) == solve(first="OOP", **setup), "retains the standard order for " + str(setup))
-    check(solve(opening, storage="on") == solve(automatic, storage="on") and
-          solve(opening, predictive=True) == solve(automatic, predictive=True) and
+    check(solve(storage="on") == solve(first="IP", storage="on") != solve(first="OOP", storage="on"),
+          "16-bit rows start IP too (#578)")
+    check(solve(opening, storage="on") != solve(automatic, storage="on"),
+          "16-bit rows take the square-root opening too (#578)")
+    check(solve(opening, predictive=True) == solve(automatic, predictive=True) and
           solve(opening, first="IP") == ip,
-          "compressed rows, predictive CFR and explicit player selection use conventional regret weights")
+          "predictive CFR and explicit player selection use conventional regret weights")
     extra = ("0 30 90", "0 50 110")
     check(solve(lines=extra) == solve(first="IP", lines=extra), "two opening IP bet sizes also start IP")
     partial = "go_partial r:0:c 4 steps"
@@ -2529,10 +2531,14 @@ def check_flop_update_order(exe, test_metal=True):
         resumed = solve(load=marked)
         check(resumed == solve(load=marked, first="IP") and resumed != solve(load=marked, first="OOP"),
               "a lossless fresh-session resume honors the automatic order and an explicit override")
-        for mode in (dict(predictive=True), dict(storage="on")):
-            default = solve(load=marked, **mode)
-            check(default == solve(load=marked, first="OOP", **mode) and default != solve(load=marked, first="IP", **mode),
-                  "a marked save respects the current solve mode and explicit order for " + str(mode))
+        predictive = dict(predictive=True)
+        default = solve(load=marked, **predictive)
+        check(default == solve(load=marked, first="OOP", **predictive) and default != solve(load=marked, first="IP", **predictive),
+              "a marked save respects the current solve mode and explicit order for " + str(predictive))
+        sixteen = dict(storage="on")
+        default = solve(load=marked, **sixteen)
+        check(default == solve(load=marked, first="IP", **sixteen) and default != solve(load=marked, first="OOP", **sixteen),
+              "a marked save resumes IP first on 16-bit rows too, and an explicit order wins (#578)")
         check(solve(load=unmarked) == solve(load=unmarked, first="OOP"),
               "a save without an ordering flag retains the UPI default")
     if metal_available:

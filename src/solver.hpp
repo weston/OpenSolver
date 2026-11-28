@@ -126,7 +126,7 @@ class Solver {
   DcfrParams params;
   int first_player = 0;  // set_first_iteration_player
   bool flop_ip_first = false;
-  bool uses_flop_ip_first() const { return flop_ip_first && !predictive && !g_.compressed; }
+  bool uses_flop_ip_first() const { return flop_ip_first && !predictive; }  // float32 or 16-bit (#578)
   FlopOpening flop_opening() const { return opening_; }
   bool sqrt_regret_weights() const { return sqrt_weights_; }
   void set_flop_opening(FlopOpening opening) {
@@ -146,9 +146,11 @@ class Solver {
     const bool allow_bfloat = g_.cfg.river_sizing == RiverSizing::Smart || bfloat_regrets_;
     set_average_sampling(AverageSampling::Dense);
     set_flop_opening(opening_ == FlopOpening::Edited ? FlopOpening::SquareRoot : opening_);
-    if ((g_.cfg.river_sizing == RiverSizing::Smart || previously_eligible) && opening_ == FlopOpening::SquareRoot &&
-        std::none_of(g_.nodes.begin(), g_.nodes.end(), [](const GNode& n) { return n.flags != 0; }))
+    if (std::any_of(g_.nodes.begin(), g_.nodes.end(), [](const GNode& n) { return n.flags != 0; })) return;
+    if ((g_.cfg.river_sizing == RiverSizing::Smart || previously_eligible) && opening_ == FlopOpening::SquareRoot)
       prepare_sampled_averaging(allow_bfloat, allow_fp16);
+    else if (sampled_smart_tree())
+      prepare_sampled_averaging(false, false);
   }
   void prepare_sampled_averaging(bool allow_bfloat = true, bool allow_fp16 = true) {
     constexpr uint64_t min_strategy_floats = (uint64_t{1} << 30) / sizeof(float);
@@ -191,8 +193,15 @@ class Solver {
   }
   AverageSampling average_sampling() const { return average_sampling_; }
   bool uses_sampled_averaging() const { return average_sampling_ == AverageSampling::Bounded; }
+  // Sampled averaging (#556) on the app's IP-first rainbow flops with the square-root opening, where it
+  // began, and on every other Smart tree (smart_rivers or single_river_size) with the ordinary opening:
+  // HUNL 3BP to 0.3% of pot on 32 Zen 5 threads, 16-bit, 7.97 -> 7.12 s (#578).
+  bool sampled_opening() const { return opening_ == FlopOpening::SquareRoot && uses_flop_ip_first(); }
+  bool sampled_smart_tree() const {
+    return opening_ == FlopOpening::Ordinary && g_.cfg.river_sizing != RiverSizing::Full;
+  }
   void set_average_sampling(AverageSampling mode) {
-    const bool eligible = opening_ == FlopOpening::SquareRoot && uses_flop_ip_first() &&
+    const bool eligible = (sampled_opening() || sampled_smart_tree()) &&
                           params == DcfrParams{} && avg_reset && avg_delay == 32 && !g_.payoff().icm.enabled;
     average_sampling_ = eligible ? mode : AverageSampling::Dense;
     if (average_sampling_ == AverageSampling::Dense) set_bfloat_regrets(false);

@@ -1461,8 +1461,11 @@ void Solver::traverser_update(const GNode& n, uint32_t ni, int p, const float* r
   float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
   // Strategy-sum accumulation (accumulate_). With avg_reset (default) it runs from t = 1 and
   // Solver::iterate zeroes the sums at t = avg_delay + 1 (#135); without it, it is skipped until
-  // t > avg_delay and S stays untouched (zero) until then.
-  float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+  // t > avg_delay and S stays untouched (zero) until then. A 16-bit row is decoded only when this
+  // iteration adds to it (sampled averaging skips most early iterations): otherwise S is scratch no
+  // loop reads.
+  float* S = accumulate_ || !g_.compressed ? g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr)
+                                           : sc.a.alloc(static_cast<size_t>(A) * Hp);
   // Predictive CFR stores each round's instantaneous regret for the next round's
   // matching input; keep the array fresh whenever it is allocated.
   float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;
@@ -2124,7 +2127,9 @@ void Solver::strategy_only(uint32_t ni, int p, const float* rp) {
   current_strategy(ni, sigma);
   if (!(n.flags & GF_LOCKED)) {
     float* R = g_.regrets_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
-    float* S = g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr);
+    float* S = accumulate_ || !g_.compressed  // as in traverser_update: decoded only when added to
+                   ? g_.strat_rw(n, g_.compressed ? sc.a.alloc(static_cast<size_t>(A) * Hp) : nullptr)
+                   : sc.a.alloc(static_cast<size_t>(A) * Hp);
     // An unreached node had zero counterfactual values this round, so its instantaneous
     // regret is zero: the prediction must not reuse a stale one from an earlier round.
     float* P = !g_.preds.empty() ? g_.preds.data() + n.storage : nullptr;

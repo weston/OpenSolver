@@ -92,6 +92,80 @@ static bool bfloat_regret_reports() {
   return !restored.uses_bfloat_regrets(9);
 }
 
+static bool equity_prior_startup() {
+  GameConfig cfg;
+  std::string error;
+  parse_cards("Ah3cQd", cfg.board);
+  if (!parse_range("KK,JJ,87s,AKs", cfg.range[0], error) || !parse_range("QQ,TT,AQs,KQs", cfg.range[1], error))
+    return false;
+  cfg.collapse_checkdowns = true;
+  cfg.river_sizing = RiverSizing::Smart;
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 1950;
+  cfg.lines.add = {{0, 30, 90}, {0, 0, 30}, {0, 0, 0, 35, 110},
+                   {0, 0, 0, 0, 10}, {0, 0, 0, 0, 30}, {0, 0, 0, 0, 65}, {0, 0, 0, 0, 0, 50, 120}};
+  GameTree cpu_game, gpu_game;
+  if (!cpu_game.build(cfg, error) || !gpu_game.build(cfg, error)) return false;
+  Solver cpu(cpu_game), gpu(gpu_game);
+  auto elect = [](Solver& s) {
+    s.avg_delay = 32;
+    s.flop_ip_first = true;
+    s.pruning = false;
+    s.set_flop_opening(FlopOpening::SquareRoot);
+    s.set_average_sampling(AverageSampling::Bounded);
+    s.set_bfloat_regrets(true);
+    s.set_fp16_sums(true);
+    s.late_pairs_ = true;
+    s.prepare_equity_prior();
+  };
+  {
+    GameConfig shallow = cfg;
+    shallow.eff_stack = 400;
+    GameTree game;
+    if (!game.build(shallow, error)) return false;
+    Solver short_stack(game);
+    elect(short_stack);
+    short_stack.apply_equity_prior(true);
+    if (std::any_of(game.regrets.begin(), game.regrets.end(), [](float r) { return r != 0; })) return false;
+  }
+  elect(cpu);
+  cpu_game.regrets.back() = 7.f;
+  cpu.apply_equity_prior(false);
+  cpu.apply_equity_prior(true);
+  if (cpu_game.regrets.back() != 7 ||
+      std::any_of(cpu_game.regrets.begin(), cpu_game.regrets.end() - 1, [](float x) { return x != 0; })) return false;
+  elect(cpu);
+  cpu.cancel_flop_opening();
+  cpu.apply_equity_prior(true);
+  if (cpu_game.regrets.back() != 7) return false;
+  cpu_game.regrets.back() = 0.f;
+  const auto cold = cpu.root_stats();
+  elect(cpu);
+  cpu.apply_equity_prior(true);
+  const auto seeded = cpu.root_stats();
+  if (!(seeded.exploitability < cold.exploitability)) return false;
+  elect(gpu);
+  auto device = metal_available() ? make_metal_solve(gpu_game, UINT64_MAX) : nullptr;
+  gpu.apply_equity_prior(true);
+  if (!same_bytes(cpu_game.regrets, gpu_game.regrets) || !same_bytes(cpu_game.strat, gpu_game.strat)) return false;
+  for (int t = 1; t <= 33; ++t) {
+    cpu.iterate(t, cpu.whole_tree_first_player());
+    ++cpu_game.iterations;
+    cpu.update_flop_opening();
+    if (device) {
+      device->iterate(gpu_game, gpu, t, t == 1);
+      ++gpu_game.iterations;
+      gpu.update_flop_opening();
+      if (t == 1 || t == 8 || t == 9 || t == 33) {
+        device->publish_for_cpu(gpu_game);
+        const auto c = cpu.root_stats(), m = gpu.root_stats();
+        if (std::abs(m.exploitability - c.exploitability) > .003 * cfg.start_pot()) return false;
+      }
+    }
+  }
+  return cpu.root_stats().exploitability < seeded.exploitability;
+}
+
 static bool sampled_averaging_election() {
   GameTree game;
   game.cfg.river_sizing = RiverSizing::Smart;
@@ -1587,6 +1661,10 @@ int main(int argc, char** argv) {
   bool big = argc > 1 && std::string(argv[1]) == "big";
   int fails = 0;
   fails += !bfloat_regret_reports();
+  if (!equity_prior_startup()) {
+    std::puts("[equity prior] FAILED");
+    ++fails;
+  }
   fails += !sampled_averaging_election();
   fails += !low_reach_average_strategy();
   fails += !parallel_equivalence();

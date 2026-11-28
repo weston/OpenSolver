@@ -13,7 +13,7 @@ NATIVE_ARCH := -march=native
 endif
 CXXFLAGS ?= -std=c++20 -O3 $(NATIVE_ARCH) -Wall -Wextra -DNDEBUG
 LDLIBS   := -lz -lpthread
-SRC      := src/cards.cpp src/eval.cpp src/range.cpp src/action_tree.cpp src/game.cpp src/solver.cpp src/flop_stability.cpp \
+SRC      := src/cards.cpp src/eval.cpp src/range.cpp src/action_tree.cpp src/game.cpp src/equity_prior.cpp src/solver.cpp src/flop_stability.cpp \
             src/parallel.cpp src/equity.cpp src/categories.cpp src/pfh2h.cpp src/upi.cpp src/upi_nodes.cpp src/upi_save.cpp src/upi_smart.cpp
 ifeq ($(shell uname -s),Darwin)
 ifneq ($(filter aarch64 arm64,$(TARGET_ARCH)),)

@@ -8,9 +8,11 @@
 
 #if !(defined(__APPLE__) && defined(__aarch64__))
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <unordered_map>
 
 #include "bfloat_regrets.hpp"
 #include "fp16_sums.hpp"
@@ -115,9 +117,12 @@ class Solve final : public MetalSolve {
   std::vector<std::pair<size_t, size_t>> root_rows[2];
   ZVec<float> staging_regrets, staging_sums;
 
-  Solve(Backend& backend, GameTree& g, uint64_t available) : b(backend) {
+  // roots: the whole tree, or a hybrid solve's turn subtrees (gpu_pack.hpp, #582)
+  Solve(Backend& backend, GameTree& g, uint64_t available,
+        const std::vector<std::pair<unsigned, unsigned>>* roots = nullptr, const DeviceLayout* layout = nullptr)
+      : b(backend) {
     PostflopPlan::check_tree(g);
-    state_floats = g.storage_floats;
+    state_floats = layout ? layout->floats : g.storage_floats;
     if (2 * g.nodes.size() * sizeof(TraversalNode) > available) throw std::runtime_error("GPU workspace exceeds available memory");
     std::lock_guard<std::mutex> lock(b.mu);
     size_t river_limit = SIZE_MAX;
@@ -129,7 +134,8 @@ class Solve final : public MetalSolve {
     }
     {
       ProfileScope ps(b, "setup: pack nodes");
-      plan.pack_nodes(g, river_limit);
+      plan.pack_nodes(g, river_limit, roots);
+      if (layout) plan.remap_storage(*layout);
     }
     width = plan.stride >= 256 ? 256 : 128;
     {
@@ -150,7 +156,8 @@ class Solve final : public MetalSolve {
     }
     const uint64_t state_bytes = uint64_t(state_floats) * sizeof(float);
     const uint64_t need = plan.workspace_bytes(g) + 2 * state_bytes;
-    if (need > b.memory / 10 * 9) throw std::runtime_error("GPU memory too small for this tree");
+    // A hybrid device takes less of the GPU: where its share needs more, a smaller share fits (#582).
+    if (need > (roots ? b.memory / 100 * 80 : b.memory / 10 * 9)) throw std::runtime_error("GPU memory too small for this tree");
     if (plan.workspace_bytes(g) / 2 + state_bytes > available) throw std::runtime_error("GPU workspace exceeds available memory");
     {
       ProfileScope ps(b, "setup: upload");
@@ -302,10 +309,11 @@ class Solve final : public MetalSolve {
   }
 
   // One player's update: reach down the tree, terminal values, then values and regrets back up.
-  void enqueue_phase(const GameTree& g, unsigned p, bool refresh_reach, const IterationParams& params) {
+  // strategy: the rows the strategies are read from, the regrets unless given (a hybrid report: the sums)
+  void enqueue_phase(const GameTree& g, unsigned p, bool refresh_reach, const IterationParams& params, Buf strategy = 0) {
     const Variant variant = compact_sums ? kBfloatRegretsHalfSums : compact_regrets ? kBfloatRegrets : kFloatState;
-    std::vector<Arg> args = {arg(nodes.buf), arg(ids.buf),     value(params),      arg(r[0].buf), arg(r[1].buf),
-                             arg(v.buf),     arg(regrets.buf), arg(sums.buf),      arg(cards.buf), value(uint32_t(0))};
+    std::vector<Arg> args = {arg(nodes.buf), arg(ids.buf), value(params), arg(r[0].buf), arg(r[1].buf), arg(v.buf),
+                             arg(strategy ? strategy : regrets.buf), arg(sums.buf), arg(cards.buf), value(uint32_t(0))};
     for (const auto& reach : plan.reach_levels) {
       Range span = reach[1 - p];
       if (refresh_reach) span = {reach[0].start, reach[0].count + reach[1].count};
@@ -355,6 +363,26 @@ class Solve final : public MetalSolve {
     }
   }
 
+  // Iteration t's arguments for player p's pass (the phase-th of the iteration).
+  IterationParams params_for(const GameTree& g, const Solver& s, int t, unsigned phase, unsigned p) const {
+    const auto average = s.strategy_average_step(t);
+    const AverageMode mode = average.weight == 1.f ? DenseAverage : average.weight == 0.f ? SkipAverage : WeightedAverage;
+    auto disc = [](double z) { return float(z / (1 + z)); };
+    return {unsigned(g.num_hands(0)),
+            unsigned(g.num_hands(1)),
+            unsigned(plan.stride),
+            p,
+            disc(std::pow(t, s.params.alpha)),
+            disc(std::pow(t, s.params.beta_at(t))),
+            average.reset ? 0.f : average.discount,
+            unsigned(s.avg_reset || t > s.avg_delay),
+            phase,
+            average.weight,
+            unsigned(s.sqrt_regret_weights()),
+            unsigned(mode),
+            0u};
+  }
+
   // Queue iteration t, both players, on the device's state.
   void submit(GameTree& g, Solver& s, int t, bool refresh_reach) {
     refresh_reach |= first_submission;
@@ -392,7 +420,8 @@ class Solve final : public MetalSolve {
                               phase,
                               average.weight,
                               unsigned(early),
-                              unsigned(mode)};
+                              unsigned(mode),
+                              0u};
       enqueue_phase(g, p, phase == 0 && (refresh_reach || policy_changed), args);
       // the first player's root street is averaged before the second player's walk reads it, as on
       // the CPU and Metal
@@ -490,6 +519,280 @@ std::unique_ptr<MetalSolve> make_gpu_solve(GameTree& tree, uint64_t available) {
   gpu::Backend* b = gpu::backend(&error);
   if (!b) throw std::runtime_error(error);
   return std::make_unique<gpu::Solve>(*b, tree, available);
+}
+
+namespace gpu {
+namespace {
+// A hybrid solve's device (#582): the turn subtrees of a share of the turn cards, solved on the GPU in
+// every pass while the CPU walks the others. Its state is the tree's float32 rows of those subtrees
+// (each one range of storage: the tree is laid out depth first), uploaded at the start and read back
+// when the CPU reads the tree.
+class Subtrees final : public SubtreeDevice {
+ public:
+  Subtrees(Backend& backend, GameTree& tree, uint64_t available, double share) : b(backend), g(tree) {
+    for (uint32_t i = 0; i < g.nodes.size(); ++i) {
+      const auto& n = g.nodes[i];
+      if (n.kind != ANodeKind::Chance || n.board_len != 3 || g.chances[n.aux].flop_deal) continue;
+      const auto& ci = g.chances[n.aux];
+      const int K = n.num_children;
+      for (int k = 0; k < K; ++k) {
+        // an even spread of the cards: k is the device's when floor((k + 1) * share) passes an integer
+        if (std::floor((k + 1) * share) == std::floor(k * share)) continue;
+        const uint32_t child = n.first_child + uint32_t(k);
+        if (g.nodes[child].kind != ANodeKind::Decision) continue;
+        index[child] = int(roots.size());
+        roots.push_back({child, ci.cards[k]});
+      }
+    }
+    if (roots.empty()) throw std::runtime_error("no turn subtrees for the GPU");
+    // Each subtree's rows are one range of storage (the tree is filled depth first); its decisions are
+    // what a 16-bit tree converts.
+    subtrees.resize(roots.size());
+    size_t row = 0;
+    for (size_t j = 0; j < roots.size(); ++j) {
+      auto& st = subtrees[j];
+      size_t lo = SIZE_MAX, hi = 0;
+      std::vector<uint32_t> stack{roots[j].first};
+      while (!stack.empty()) {
+        const uint32_t i = stack.back();
+        const auto& n = g.nodes[i];
+        stack.pop_back();
+        if (n.kind == ANodeKind::Decision && !GameTree::shares_row(n)) {
+          lo = std::min<size_t>(lo, n.storage);
+          hi = std::max<size_t>(hi, n.storage + size_t(n.num_children) * g.num_hands(n.player));
+          st.decisions.push_back(i);
+        }
+        if (n.kind == ANodeKind::Decision) row = std::max<size_t>(row, g.num_hands(n.player));
+        if (n.kind == ANodeKind::Decision || n.kind == ANodeKind::Chance)
+          for (uint32_t c = 0; c < n.num_children; ++c) stack.push_back(n.first_child + c);
+      }
+      st.tree = lo < hi ? lo : 0;
+      st.floats = lo < hi ? hi - lo : 0;
+    }
+    std::vector<size_t> order(roots.size());
+    for (size_t j = 0; j < order.size(); ++j) order[j] = j;
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t c) { return subtrees[a].tree < subtrees[c].tree; });
+    for (size_t j : order) {
+      auto& st = subtrees[j];
+      if (!st.floats) continue;
+      if (!layout.ranges.empty() && layout.ranges.back().tree + layout.ranges.back().floats > st.tree)
+        throw std::runtime_error("turn subtrees overlap in storage");
+      st.device = layout.floats;
+      layout.ranges.push_back({st.tree, st.device, st.floats});
+      layout.floats += st.floats;
+    }
+    layout.zero = layout.floats;
+    layout.floats += std::max<size_t>(row, 1) * 8;  // zeros for any row outside them
+    list_chunks(order);
+    s = std::make_unique<Solve>(b, g, available, &roots, &layout);
+    {
+      std::lock_guard<std::mutex> lock(b.mu);
+      s->compact_regrets = s->compact_sums = false;
+      s->allocate_state();
+      b.zero(s->regrets.buf, s->regrets.bytes);
+      b.zero(s->sums.buf, s->sums.bytes);
+    }
+    for (int p = 0; p < 2; ++p) {
+      reach_stride[p] = (g.num_hands(p) + 31) & ~31u;
+      host_reach[p].assign(size_t(reach_stride[p]) * roots.size(), 0.f);
+    }
+    host_values.assign(s->plan.stride * roots.size(), 0.f);
+    upload(g);
+    if (profile().on)
+      std::fprintf(stderr, "GPU profile: hybrid, %zu turn subtrees, %.1f%% of the rows, %s tree\n", roots.size(),
+                   100.0 * layout.floats / std::max<size_t>(1, g.storage_floats), g.compressed ? "16-bit" : "32-bit");
+  }
+  ~Subtrees() override { finish(); }
+
+  int root(uint32_t node) const override {
+    auto it = index.find(node);
+    return it == index.end() ? -1 : it->second;
+  }
+  float* reach(int player, int j) override { return host_reach[player].data() + size_t(j) * reach_stride[player]; }
+
+  void launch(Solver& solver, int t, int phase, int p) override {
+    std::lock_guard<std::mutex> lock(b.mu);
+    for (int q = 0; q < 2; ++q)
+      b.write(s->r[q].buf, 0, host_reach[q].data(), host_reach[q].size() * sizeof(float), false);
+    s->enqueue_phase(g, unsigned(p), true, s->params_for(g, solver, t, unsigned(phase), unsigned(p)));
+    b.read(s->v.buf, 0, host_values.data(), host_values.size() * sizeof(float), false);
+    b.flush();
+    pending = true;
+    device_newer = true;
+  }
+  const float* values(int j) override {
+    finish();
+    return host_values.data() + size_t(j) * s->plan.stride;
+  }
+  void launch_check() override {
+    std::lock_guard<std::mutex> lock(b.mu);
+    for (int q = 0; q < 2; ++q)
+      b.write(s->r[q].buf, 0, host_reach[q].data(), host_reach[q].size() * sizeof(float), false);
+    for (unsigned p = 0; p < 2; ++p)
+      for (unsigned mode = 1; mode <= 2; ++mode) {
+        IterationParams q{};
+        q.hands0 = unsigned(g.num_hands(0));
+        q.hands1 = unsigned(g.num_hands(1));
+        q.stride = unsigned(s->plan.stride);
+        q.p = p;
+        q.positive_discount = q.negative_discount = q.average_discount = q.sample_weight = 1.f;
+        q.average_mode = SkipAverage;
+        q.mode = mode;
+        s->enqueue_phase(g, p, true, q, s->sums.buf);
+        auto& out = check[p][mode - 1];
+        out.resize(host_values.size());
+        b.read(s->v.buf, 0, out.data(), out.size() * sizeof(float), false);
+      }
+    b.flush();
+    pending = true;
+  }
+  const float* check_values(int p, bool best_response, int j) override {
+    finish();
+    return check[p][best_response].data() + size_t(j) * s->plan.stride;
+  }
+  void finish() override {
+    std::lock_guard<std::mutex> wait(wait_mu);
+    if (!pending) return;
+    std::lock_guard<std::mutex> lock(b.mu);
+    b.finish();
+    pending = false;
+  }
+
+  void publish(GameTree& tree) override {
+    finish();
+    if (!device_newer) return;
+    std::lock_guard<std::mutex> lock(b.mu);
+    ProfileScope ps(b, "hybrid: copy to the tree");
+    if (!tree.compressed) {
+      for (const auto& st : subtrees) {
+        if (!st.floats) continue;
+        b.read(s->regrets.buf, st.device * sizeof(float), tree.regrets.data() + st.tree, st.floats * sizeof(float), false);
+        b.read(s->sums.buf, st.device * sizeof(float), tree.strat.data() + st.tree, st.floats * sizeof(float), false);
+      }
+      b.finish();
+    } else {
+      // 16-bit rows: a chunk of rows at a time, the next one read while this one's nodes are stored as the
+      // CPU's walks store them
+      staging(2);
+      auto read = [&](size_t c) {
+        const Chunk& k = chunks[c];
+        b.read(s->regrets.buf, k.device * sizeof(float), stage[c & 1][0].data(), k.floats * sizeof(float), false);
+        b.read(s->sums.buf, k.device * sizeof(float), stage[c & 1][1].data(), k.floats * sizeof(float), false);
+      };
+      if (!chunks.empty()) read(0);
+      for (size_t c = 0; c < chunks.size(); ++c) {
+        b.finish();
+        if (c + 1 < chunks.size()) {
+          read(c + 1);
+          b.flush();
+        }
+        const float* rg = stage[c & 1][0].data();
+        const float* sm = stage[c & 1][1].data();
+        for_nodes(chunks[c], [&](const GNode& n, size_t at) {
+          tree.regrets_commit(n, rg + at);
+          tree.strat_commit(n, sm + at);
+        });
+      }
+    }
+    device_newer = false;
+  }
+
+  void upload(const GameTree& tree) override {
+    finish();
+    std::lock_guard<std::mutex> lock(b.mu);
+    ProfileScope ps(b, "hybrid: copy to the GPU");
+    if (!tree.compressed) {
+      for (const auto& st : subtrees) {
+        if (!st.floats) continue;
+        b.write(s->regrets.buf, st.device * sizeof(float), tree.regrets.data() + st.tree, st.floats * sizeof(float), false);
+        b.write(s->sums.buf, st.device * sizeof(float), tree.strat.data() + st.tree, st.floats * sizeof(float), false);
+      }
+      b.finish();
+    } else {
+      // 16-bit rows: a chunk at a time, decoded in parallel, then written
+      staging(1);
+      float* rg = stage[0][0].data();
+      float* sm = stage[0][1].data();
+      for (const Chunk& k : chunks) {
+        for_nodes(k, [&](const GNode& n, size_t at) {
+          const size_t count = size_t(n.num_children) * tree.num_hands(n.player);
+          const float* r = tree.regrets_ro(n, rg + at);
+          if (r != rg + at) std::memcpy(rg + at, r, count * sizeof(float));
+          const float* m = tree.strat_ro(n, sm + at);
+          if (m != sm + at) std::memcpy(sm + at, m, count * sizeof(float));
+        });
+        b.write(s->regrets.buf, k.device * sizeof(float), rg, k.floats * sizeof(float), false);
+        b.write(s->sums.buf, k.device * sizeof(float), sm, k.floats * sizeof(float), false);
+        b.finish();  // the staging is reused by the next chunk
+      }
+    }
+    device_newer = false;
+  }
+
+ private:
+  struct Subtree {
+    size_t tree = 0, device = 0, floats = 0;  // its rows: in the tree's storage, on the device
+    std::vector<uint32_t> decisions;           // its decisions with rows of their own
+  };
+  // A 16-bit tree's rows go between the device and the tree a chunk at a time (consecutive subtrees, in
+  // device order): the staging is a fraction of the rows, and each chunk is one copy each way.
+  struct Chunk {
+    size_t device = 0, floats = 0;
+    std::vector<std::pair<uint32_t, size_t>> nodes;  // a decision, and where its rows start in the chunk
+  };
+  static constexpr size_t kChunkFloats = size_t(16) << 20;
+  std::vector<Chunk> chunks;
+  std::vector<float> stage[2][2];  // [slot][regrets, sums]
+  void list_chunks(const std::vector<size_t>& order) {
+    for (size_t j : order) {
+      const Subtree& st = subtrees[j];
+      if (!st.floats) continue;
+      if (chunks.empty() || chunks.back().floats + st.floats > kChunkFloats ||
+          chunks.back().device + chunks.back().floats != st.device)
+        chunks.push_back({st.device, 0, {}});
+      Chunk& k = chunks.back();
+      for (uint32_t i : st.decisions) k.nodes.push_back({i, st.device - k.device + (g.nodes[i].storage - st.tree)});
+      k.floats += st.floats;
+    }
+  }
+  void staging(int slots) {
+    size_t most = 0;
+    for (const Chunk& k : chunks) most = std::max(most, k.floats);
+    for (int slot = 0; slot < slots; ++slot)
+      for (auto& v : stage[slot])
+        if (v.size() < most) v.resize(most);
+  }
+  // f(node, offset in the chunk) for each of a chunk's decisions, in parallel
+  template <class F>
+  void for_nodes(const Chunk& k, F f) {
+    const int tasks = int(std::min<size_t>(k.nodes.size(), size_t(4 * pool().threads())));
+    std::function<void(int)> fn = [&](int t) {
+      const size_t lo = k.nodes.size() * size_t(t) / size_t(tasks), hi = k.nodes.size() * size_t(t + 1) / size_t(tasks);
+      for (size_t i = lo; i < hi; ++i) f(g.nodes[k.nodes[i].first], k.nodes[i].second);
+    };
+    if (tasks > 0) pool().parallel_for(tasks, fn);
+  }
+
+  Backend& b;
+  GameTree& g;
+  std::unique_ptr<Solve> s;
+  std::vector<std::pair<unsigned, unsigned>> roots;  // node, the turn card dealt to it
+  std::vector<Subtree> subtrees;                      // by root
+  std::unordered_map<uint32_t, int> index;
+  DeviceLayout layout;
+  unsigned reach_stride[2] = {0, 0};
+  std::vector<float> host_reach[2], host_values, check[2][2];  // check: [player][EV, best response]
+  std::mutex wait_mu;
+  bool pending = false, device_newer = false;
+};
+}  // namespace
+}  // namespace gpu
+
+std::unique_ptr<SubtreeDevice> make_gpu_subtrees(GameTree& tree, uint64_t available, double share) {
+  std::string error;
+  gpu::Backend* b = gpu::backend(&error);
+  if (!b) throw std::runtime_error(error);
+  return std::make_unique<gpu::Subtrees>(*b, tree, available, share);
 }
 
 // The all-in outcome table of a flop on the GPU (see metal_flop_table): the compact triangle of one

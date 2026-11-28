@@ -45,6 +45,9 @@ struct IterationParams {
 #ifdef WSOLVER_GPU_OPTIONS
   // OpenCL and CUDA (gpu_pack.hpp): what Metal makes function constants
   unsigned sqrt_regret_weights, average_mode;
+  // 0: a CFR pass; a hybrid solve's report (#582), on the average strategy (the sums passed as the
+  // regrets) and writing nothing: 1 the traverser plays it too (EV), 2 a best response to it.
+  unsigned mode;
 #endif
 };
 

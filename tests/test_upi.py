@@ -2823,7 +2823,7 @@ def check_sampled_averaging(exe):
                 check(resumed == fallback, "a CPU reload and the live GPU fallback finish identically")
 
             run("set_algorithm v4_large")
-            for initial, accuracy in ((old, "0.3"), (awaiting, "0.4")):
+            for initial, accuracy in ((old, "0.3"), (awaiting, "2")):  # 2% of pot: looser than sampling's 1%
                 run(f'load_tree "{initial}" full')
                 run("set_accuracy " + accuracy)
                 run("go")

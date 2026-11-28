@@ -97,7 +97,8 @@ inline void regret_row_max_q(float* __restrict r, const int16_t* __restrict qr, 
     if constexpr (PR) pr[h] = inst;
     mr = std::max(mr, abs_bits(x));
     if constexpr (ACC) {
-      float y = static_cast<float>(qs[h]) * ss * sm + rp[h] * sa[h];
+      const float sd = static_cast<float>(qs[h]) * ss;  // decode_rows' value, its own statement: no fma
+      float y = sd * sm + rp[h] * sa[h];                 // with what follows, as in regret_row_max
       s[h] = y;
       ms = std::max(ms, nonneg_bits(y));
     }

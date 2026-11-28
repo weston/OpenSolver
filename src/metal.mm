@@ -1120,6 +1120,7 @@ class MetalSubtrees final : public SubtreeDevice {
       if (early != s->early_replay) {
         s->early_replay = early;
         s->replays = {};
+        refresh_reach = true;
       }
       const auto average = solver.strategy_average_step(t);
       const AverageMode mode = average.weight == 1.f ? DenseAverage : average.weight == 0.f ? SkipAverage : WeightedAverage;
@@ -1135,8 +1136,13 @@ class MetalSubtrees final : public SubtreeDevice {
                               unsigned(phase),
                               average.weight};
       memcpy(s->params[p].contents, &args, sizeof(args));
-      auto& plan = s->replays.plans[mode][0][0][p][1];
-      if (!plan.commands) plan = s->record(g, unsigned(p), true, mode);
+      // p's own reach below the roots is the opponent's last pass's, when that came last: p's strategy has not
+      // changed since (#599, as the whole-tree solve). Both after setup, an upload, a report or a new policy.
+      const bool both = refresh_reach || p == last_player;
+      refresh_reach = false;
+      last_player = p;
+      auto& plan = s->replays.plans[mode][0][0][p][both];
+      if (!plan.commands) plan = s->record(g, unsigned(p), both, mode);
       auto cmd = m.command();
       encode(cmd, unsigned(p), plan);
       [cmd commit];
@@ -1174,6 +1180,7 @@ class MetalSubtrees final : public SubtreeDevice {
         }
       }
       s->early_replay = early;
+      refresh_reach = true;  // the reaches below the roots are the average strategy's now
       [cmd commit];
       std::lock_guard<std::mutex> lock(wait_mu);
       pending = cmd;
@@ -1214,6 +1221,7 @@ class MetalSubtrees final : public SubtreeDevice {
   }
   void upload(const GameTree&) override {
     finish();
+    refresh_reach = true;
     if (g.regrets.data() != bound[0] || g.strat.data() != bound[1] || g.regrets.size() != bound_floats) {
       if (g.compressed) throw std::runtime_error("16-bit storage: the GPU's turn subtrees need float32 rows");
       @autoreleasepool {
@@ -1236,6 +1244,7 @@ class MetalSubtrees final : public SubtreeDevice {
     s->strategy_sums.input = s->strategy_sums.output = sums;
     if (copied) copy_up();
     s->replays = {};
+    refresh_reach = true;
     for (auto& p : checks)
       for (auto& plan : p) plan = {};
     bound[0] = g.regrets.data();
@@ -1271,6 +1280,8 @@ class MetalSubtrees final : public SubtreeDevice {
   vector<std::pair<size_t, size_t>> ranges;  // the GPU's subtrees' rows in storage: start, floats
   bool copied = false;                       // the rows are a copy (the tree's arrays could not be bound)
   bool device_newer = false;                 // a copy has iterations the tree lacks
+  bool refresh_reach = true;                 // the next pass propagates both players' reaches
+  int last_player = -1;                      // the player of the last solving pass
   std::mutex wait_mu;
   id<MTLCommandBuffer> pending = nil;
   bool pending_pass = false;  // pending is a solving pass (not a report)

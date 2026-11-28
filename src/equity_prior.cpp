@@ -20,6 +20,8 @@ using Transition = std::array<Row, bands>;
 
 struct Strengths {
   std::vector<float> hands[2];
+  std::vector<uint16_t> river_group[2];
+  std::vector<float> group_strength[2];
   float mass[2]{};
 };
 
@@ -34,13 +36,25 @@ Strengths river_strengths(const GameTree& game, const ShowdownBoard& board) {
     for (const auto& entry : board.ent[opp]) result.mass[opp] += game.init_reach[opp][entry.idx];
     auto& values = result.hands[p];
     values.resize(game.num_hands(p));
+    auto& groups = result.river_group[p];
+    auto& strengths = result.group_strength[p];
+    groups.resize(values.size());
+    strengths.push_back(0.f);
     size_t i = 0, j = 0;
     float weaker = 0;
     for (auto [end, opp_end] : board.groups[p]) {
       float through_ties = weaker;
       while (j < opp_end) through_ties += game.init_reach[opp][board.ent[opp][j++].idx];
       const float strength = (weaker + through_ties) * .5f / std::max(.001f, result.mass[opp]);
-      while (i < end) values[board.ent[p][i++].idx] = strength;
+      if (i < end) {
+        const auto group = static_cast<uint16_t>(strengths.size());
+        strengths.push_back(strength);
+        while (i < end) {
+          const auto hand = board.ent[p][i++].idx;
+          groups[hand] = group;
+          values[hand] = strength;
+        }
+      }
       weaker = through_ties;
     }
   }
@@ -204,10 +218,19 @@ class PriorSolver {
           Row prior;
           for (int h = 0; h < bands; ++h) prior[h] = learned[h] * weight;
           float* target = game.regrets.data() + node.storage + static_cast<size_t>(a) * hands;
-          for (int h = 0; h < hands; ++h) {
-            const float x = std::clamp(strengths.hands[p][h] * bands - .5f, 0.f, static_cast<float>(bands - 1));
+          auto interpolate = [&](float strength) {
+            const float x = std::clamp(strength * bands - .5f, 0.f, static_cast<float>(bands - 1));
             const int lo = static_cast<int>(x), hi = std::min(lo + 1, bands - 1);
-            target[h] = prior[lo] + (x - lo) * (prior[hi] - prior[lo]);
+            return prior[lo] + (x - lo) * (prior[hi] - prior[lo]);
+          };
+          if (node.board_len == 5) {
+            std::array<float, NUM_COMBOS + 1> by_group;
+            const auto& distinct = strengths.group_strength[p];
+            for (size_t k = 0; k < distinct.size(); ++k) by_group[k] = interpolate(distinct[k]);
+            const auto& groups = strengths.river_group[p];
+            for (int h = 0; h < hands; ++h) target[h] = by_group[groups[h]];
+          } else {
+            for (int h = 0; h < hands; ++h) target[h] = interpolate(strengths.hands[p][h]);
           }
         }
       }

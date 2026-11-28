@@ -143,7 +143,7 @@ static bool equity_prior_startup() {
   elect(cpu);
   cpu.apply_equity_prior(true);
   const auto seeded = cpu.root_stats();
-  if (!(seeded.exploitability < cold.exploitability)) return false;
+  if (!(seeded.exploitability < cold.exploitability && std::abs(seeded.exploitability - 7.23365) < .002)) return false;
   elect(gpu);
   auto device = metal_available() ? make_metal_solve(gpu_game, UINT64_MAX) : nullptr;
   gpu.apply_equity_prior(true);

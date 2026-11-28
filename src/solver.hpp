@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -164,10 +165,14 @@ class Solver {
   void update_flop_opening() {
     sqrt_weights_ = opening_ == FlopOpening::SquareRoot && uses_flop_ip_first() && g_.iterations < 8;
   }
+  void prepare_equity_prior();
+  void apply_equity_prior(bool metal_accuracy_solve);
   void cancel_flop_opening() {
+    equity_prior_pending_ = false;
     if (opening_ == FlopOpening::SquareRoot) set_flop_opening(FlopOpening::Edited);
   }
   void restart_flop_opening() {
+    equity_prior_pending_ = false;
     const bool previously_eligible = average_sampling_ != AverageSampling::Dense;
     const bool smart = g_.cfg.river_sizing == RiverSizing::Smart && half_precision_opening;
     const bool allow_fp16 = smart || fp16_sums_;
@@ -325,8 +330,9 @@ class Solver {
   void river_cfr(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   void river_down(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   // The same for the exploitability check's fused walk (walk_evbr): on-policy values and best responses.
-  void river_evbr(uint32_t ni, int p, const float* ro, float* ev, float* br);
-  void river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br);
+  using RiverPolicies = std::span<const std::pair<uint32_t, float*>>;
+  void river_evbr(uint32_t ni, int p, const float* ro, float* ev, float* br, RiverPolicies policies = {});
+  void river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br, RiverPolicies policies);
   template <class E>
   void allin_table_value(const AllinRunouts& ar, const E* e2, float W, float L, int p, const float* ro, float* out) const;
   template <class E>
@@ -412,6 +418,11 @@ class Solver {
   double root_matchups() const;
 
  private:
+  struct PairedRiverReports {
+    std::vector<uint8_t> ready;
+    ZVec<float> values;
+  };
+
   template <Walk M>
   void walk_t(uint32_t ni, int p, const float* rp, const float* ro, float* out);
   template <typename F>
@@ -436,7 +447,8 @@ class Solver {
   void flop_deal(const GNode& n, const ChanceInfo& ci, Walk mode, int p, const float* rp, const float* ro, float* out);
   // Evaluate and BestResponse in one traversal (root_stats): ev = on-policy values, br = best
   // response values, both for player p against the opponent's average strategy.
-  void walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br);
+  void walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br,
+                 PairedRiverReports* paired = nullptr);
   void fold_value(const GNode& n, int p, const float* ro, float* out) const;
   void showdown_board(const ShowdownBoard& sb, float W, float L, float T, int p, const float* ro, float* out,
                       float* compat = nullptr, const SdFold* fold = nullptr) const;
@@ -460,6 +472,7 @@ class Solver {
   bool accumulate_ = true;  // t > avg_delay: whether this iteration feeds the strategy sum
   FlopOpening opening_ = FlopOpening::Ordinary;
   AverageSampling average_sampling_ = AverageSampling::Dense;
+  bool equity_prior_pending_ = false;
   bool sqrt_weights_ = false;
   bool prune_this_iter_ = false;  // set by iterate/iterate_subtree; read-only during walks
 };

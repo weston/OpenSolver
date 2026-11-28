@@ -588,6 +588,7 @@ void Upi::solver_thread_main(double seconds, long long steps, std::shared_ptr<Su
           }
         }
       }
+      if (done == 0) solver_->apply_equity_prior(metal && metal_available() && !stable_flop && steps == 0 && seconds == 0);
       if (done == 0 && hybrid_wanted) {
         const char* fallback = nullptr;
         if (sub || tree_->cfg.preflop) fallback = "subtree and preflop iterations use CPU";
@@ -887,6 +888,7 @@ std::string Upi::cmd_build_tree(const Args& a) {
   solver_->flop_ip_first = auto_flop_order && !first_player_ && flop_ip_opens_betting(*tree_);
   if (sqrt_opening && solver_->uses_flop_ip_first()) {
     solver_->set_flop_opening(FlopOpening::SquareRoot);
+    solver_->prepare_equity_prior();
     // with bfloat16 regrets and fp16 sums on the GPU (0.3% targets) on every such flop, as with the ordinary
     // opening (#586); Solver::set_bfloat_regrets keeps suit-symmetric flops (paired, two-tone, monotone) out.
     // M4 Metal, to 0.3%: HUNL 3BP AhKd3c 11.92 -> 9.71 s, Qs8h4d 13.13 -> 10.31 s, 9c7d2h 11.71 -> 9.63 s (#596)

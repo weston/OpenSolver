@@ -92,6 +92,80 @@ static bool bfloat_regret_reports() {
   return !restored.uses_bfloat_regrets(9);
 }
 
+static bool equity_prior_startup() {
+  GameConfig cfg;
+  std::string error;
+  parse_cards("Ah3cQd", cfg.board);
+  if (!parse_range("KK,JJ,87s,AKs", cfg.range[0], error) || !parse_range("QQ,TT,AQs,KQs", cfg.range[1], error))
+    return false;
+  cfg.collapse_checkdowns = true;
+  cfg.river_sizing = RiverSizing::Smart;
+  cfg.pot[2] = 100;
+  cfg.eff_stack = 1950;
+  cfg.lines.add = {{0, 30, 90}, {0, 0, 30}, {0, 0, 0, 35, 110},
+                   {0, 0, 0, 0, 10}, {0, 0, 0, 0, 30}, {0, 0, 0, 0, 65}, {0, 0, 0, 0, 0, 50, 120}};
+  GameTree cpu_game, gpu_game;
+  if (!cpu_game.build(cfg, error) || !gpu_game.build(cfg, error)) return false;
+  Solver cpu(cpu_game), gpu(gpu_game);
+  auto elect = [](Solver& s) {
+    s.avg_delay = 32;
+    s.flop_ip_first = true;
+    s.pruning = false;
+    s.set_flop_opening(FlopOpening::SquareRoot);
+    s.set_average_sampling(AverageSampling::Bounded);
+    s.set_bfloat_regrets(true);
+    s.set_fp16_sums(true);
+    s.late_pairs_ = true;
+    s.prepare_equity_prior();
+  };
+  {
+    GameConfig shallow = cfg;
+    shallow.eff_stack = 400;
+    GameTree game;
+    if (!game.build(shallow, error)) return false;
+    Solver short_stack(game);
+    elect(short_stack);
+    short_stack.apply_equity_prior(true);
+    if (std::any_of(game.regrets.begin(), game.regrets.end(), [](float r) { return r != 0; })) return false;
+  }
+  elect(cpu);
+  cpu_game.regrets.back() = 7.f;
+  cpu.apply_equity_prior(false);
+  cpu.apply_equity_prior(true);
+  if (cpu_game.regrets.back() != 7 ||
+      std::any_of(cpu_game.regrets.begin(), cpu_game.regrets.end() - 1, [](float x) { return x != 0; })) return false;
+  elect(cpu);
+  cpu.cancel_flop_opening();
+  cpu.apply_equity_prior(true);
+  if (cpu_game.regrets.back() != 7) return false;
+  cpu_game.regrets.back() = 0.f;
+  const auto cold = cpu.root_stats();
+  elect(cpu);
+  cpu.apply_equity_prior(true);
+  const auto seeded = cpu.root_stats();
+  if (!(seeded.exploitability < cold.exploitability)) return false;
+  elect(gpu);
+  auto device = metal_available() ? make_metal_solve(gpu_game, UINT64_MAX) : nullptr;
+  gpu.apply_equity_prior(true);
+  if (!same_bytes(cpu_game.regrets, gpu_game.regrets) || !same_bytes(cpu_game.strat, gpu_game.strat)) return false;
+  for (int t = 1; t <= 33; ++t) {
+    cpu.iterate(t, cpu.whole_tree_first_player());
+    ++cpu_game.iterations;
+    cpu.update_flop_opening();
+    if (device) {
+      device->iterate(gpu_game, gpu, t, t == 1);
+      ++gpu_game.iterations;
+      gpu.update_flop_opening();
+      if (t == 1 || t == 8 || t == 9 || t == 33) {
+        device->publish_for_cpu(gpu_game);
+        const auto c = cpu.root_stats(), m = gpu.root_stats();
+        if (std::abs(m.exploitability - c.exploitability) > .003 * cfg.start_pot()) return false;
+      }
+    }
+  }
+  return cpu.root_stats().exploitability < seeded.exploitability;
+}
+
 static bool sampled_averaging_election() {
   GameTree game;
   game.cfg.river_sizing = RiverSizing::Smart;
@@ -1517,33 +1591,54 @@ static bool river_batch_matches() {
               same ? "identical" : "DIFFER", g1.regrets.size());
   // The exploitability check's river walk (river_evbr) against walk_evbr, on the same strategies.
   const RootStats a = s1.root_stats(), b = s2.root_stats();
-  const bool same_stats = a.ev[0] == b.ev[0] && a.ev[1] == b.ev[1] && a.mes[0] == b.mes[0] && a.mes[1] == b.mes[1] &&
-                          a.exploitability == b.exploitability && a.exploitability > 0;
+  auto identical = [](const RootStats& x, const RootStats& y) {
+    return x.ev[0] == y.ev[0] && x.ev[1] == y.ev[1] && x.mes[0] == y.mes[0] && x.mes[1] == y.mes[1] &&
+           x.exploitability == y.exploitability;
+  };
+  const bool same_stats = identical(a, b) && a.exploitability > 0;
   std::printf("[river batch] exploitability check river walk vs walk_evbr: %s (%.9g vs %.9g)\n",
               same_stats ? "identical" : "DIFFER", a.exploitability, b.exploitability);
-  return same && same_stats && !g1.regrets.empty();
+  for (GameTree* tree : {&g1, &g2}) {
+    for (const auto& n : tree->nodes) {
+      if (n.kind != ANodeKind::Decision || n.board_len != 4 || n.num_children < 2) continue;
+      const int hands = tree->num_hands(n.player);
+      float* sums = tree->strat.data() + n.storage;
+      std::fill_n(sums, (n.num_children - 1) * hands, 0.f);
+      std::fill_n(sums + (n.num_children - 1) * hands, hands, 1.f);
+    }
+  }
+  const auto pure = s1.root_stats();
+  const bool same_deviations = identical(pure, s2.root_stats()) && pure.exploitability != a.exploitability;
+  std::printf("[river batch] best responses through zero-probability turn actions: %s\n",
+              same_deviations ? "identical" : "DIFFER");
+  return same && same_stats && same_deviations && !g1.regrets.empty();
 }
 
 // set_info_freq auto across the average's restart (set_avg_delay). Replays the reports of a real
 // 115K-node flop solve (the viewer's fast-preview sketch, target 0.165 chips, delay 32): the restart
 // at iteration 33 lifts exploitability from 2.2 to 4.9, just under the previous report's 5.25. A
 // trend fitted across that reads as no progress and waited the longest gap (to 49, at 0.82 chips);
-// starting afresh reports at 41 (1.23 chips), which is when the preview's first threshold is met.
+// starting afresh reported at 41 (1.23 chips), which is when the preview's first threshold is met.
+// Since #603 the first report, far above the target before the restart, goes straight to 41; the trend
+// starts afresh there (the next at 51).
 static bool auto_report_schedule() {
   AutoReportSchedule s;
   const double target = 0.165;
   const long long reset = 33;
-  long long a = s.next(10, 29.38, target, reset), b = s.next(a, 11.74, target, reset);
-  long long c = s.next(b, 5.25, target, reset), d = s.next(c, 4.88, target, reset);
+  // far above the target before the restart (#603): the next report comes 8 iterations after it, then a
+  // fresh trend; near the target the schedule is as before
+  long long a = s.next(10, 29.38, target, reset), b = s.next(a, 4.88, target, reset);
+  AutoReportSchedule near;
+  long long n = near.next(10, 1.0, target, reset);
   AutoReportSchedule old;   // no restart passed: the trend runs across it
   long long od = old.next(old.next(old.next(old.next(10, 29.38, target, 0), 11.74, target, 0), 5.25, target, 0), 4.88, target, 0);
   // Without set_avg_delay the restart test never fires; a restart before the first report neither.
   AutoReportSchedule n1, n2;
   long long e1 = n1.next(n1.next(40, 2.0, target, 0), 1.0, target, 0);
   long long e2 = n2.next(n2.next(40, 2.0, target, 33), 1.0, target, 33);
-  bool ok = a == 15 && b == 22 && c == 33 && d == 41 && od == 49 && e1 == e2;
-  std::printf("[auto reports] after the average restarts: next report %lld (old schedule %lld), %s\n", d, od,
-              ok ? "ok" : "WRONG");
+  bool ok = a == 41 && b == 51 && n == 15 && od == 49 && e1 == e2;
+  std::printf("[auto reports] after the average restarts: reports at 10, %lld, %lld (old schedule %lld), near the target %lld: %s\n",
+              a, b, od, n, ok ? "ok" : "WRONG");
   return ok;
 }
 
@@ -1582,6 +1677,10 @@ int main(int argc, char** argv) {
   bool big = argc > 1 && std::string(argv[1]) == "big";
   int fails = 0;
   fails += !bfloat_regret_reports();
+  if (!equity_prior_startup()) {
+    std::puts("[equity prior] FAILED");
+    ++fails;
+  }
   fails += !sampled_averaging_election();
   fails += !low_reach_average_strategy();
   fails += !parallel_equivalence();

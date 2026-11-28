@@ -1575,6 +1575,30 @@ def check_go_limits_and_errors(u):
     u.cmd("set_accuracy 0.005")
 
 
+def check_near_target_report(exe):
+    u = Upi(exe)
+    try:
+        algorithms = ["v4_large"]
+        if "v4_gpu," in u.cmd("list_algorithms"):
+            algorithms.append("v4_gpu")
+        for algorithm in algorithms:
+            u.solver_msgs.clear()
+            for cmd in ("set_algorithm " + algorithm, "set_threads 1", "set_board Ah3cQd7s2d",
+                        "set_pot 0 0 100", "set_eff_stack 300", "set_range OOP KK,JJ,87s,AKs",
+                        "set_range IP QQ,TT,AQs,KQs", "clear_lines", "add_line 50", "add_line 0 75",
+                        "build_tree", "set_info_freq auto", "set_accuracy 2.46", "go", "wait_for_solver"):
+                answer = u.cmd(cmd)
+                assert not answer.startswith("ERROR"), (cmd, answer)
+            gap = float(u.cmd("explo_partial r:0"))
+            iterations = int(u.cmd("show_iters"))
+            if algorithm == "v4_gpu":
+                check(["SOLVER: device gpu"] in u.solver_msgs, "GPU ran the near-target solve")
+            check(iterations == 11 and 2.32 < gap < 2.34,
+                  f"{algorithm} stops on the first crossing ({iterations} iterations, {gap:.6f} chips)")
+    finally:
+        u.close()
+
+
 def check_info_freq_auto(u):
     """set_info_freq auto: adaptive report schedule; stops on the target with fewer checks."""
     print("[set_info_freq auto]")
@@ -3065,6 +3089,7 @@ def main(exe, big=False):
     check_hybrid(exe)
     check_solve_device(exe)
     check_flop_update_order(exe)
+    check_near_target_report(exe)
     check_sampled_averaging(exe)
     check_framing(exe)
     check_save_robustness(exe)

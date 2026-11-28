@@ -1636,7 +1636,14 @@ static bool auto_report_schedule() {
   AutoReportSchedule n1, n2;
   long long e1 = n1.next(n1.next(40, 2.0, target, 0), 1.0, target, 0);
   long long e2 = n2.next(n2.next(40, 2.0, target, 33), 1.0, target, 33);
-  bool ok = a == 41 && b == 51 && n == 15 && od == 49 && e1 == e2;
+  AutoReportSchedule sampled;
+  sampled.next(168, 1.958466, 1.5, 33, 169);
+  const auto recheck = sampled.next(196, 1.517621, 1.5, 33, 197);
+  const auto after_miss = sampled.next(197, 1.516, 1.5, 33, 199);
+  AutoReportSchedule skipped;
+  const auto next_weighted = skipped.next(65, 1.51, 1.5, 33, 69);
+  bool ok = a == 41 && b == 51 && n == 15 && od == 49 && e1 == e2 &&
+            recheck == 197 && after_miss > 199 && next_weighted == 69;
   std::printf("[auto reports] after the average restarts: reports at 10, %lld, %lld (old schedule %lld), near the target %lld: %s\n",
               a, b, od, n, ok ? "ok" : "WRONG");
   return ok;

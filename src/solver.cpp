@@ -1406,7 +1406,10 @@ void Solver::average_strategy(uint32_t ni, float* out) const {
         case 4: return average_float_strategy<4>(sums, regrets, out, H);
       }
     };
-    if (half) return read_average(half, report_bfloat16_regrets_ + n.storage);
+    if (half) {
+      if (report_bfloat16_regrets_) return read_average(half, report_bfloat16_regrets_ + n.storage);
+      return read_average(half, g_.regrets.data() + n.storage);
+    }
     if (report_bfloat16_regrets_) return read_average(S, report_bfloat16_regrets_ + n.storage);
     return read_average(S, g_.regrets.data() + n.storage);
   }
@@ -3030,7 +3033,7 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
 }
 
 
-RootStats Solver::root_stats_from_bfloat16(const uint16_t* committed_regrets, const uint16_t* committed_sums) const {
+RootStats Solver::root_stats_from_packed(const uint16_t* committed_regrets, const uint16_t* committed_sums) const {
   Solver reader = *this;
   reader.report_bfloat16_regrets_ = committed_regrets;
   reader.report_fp16_sums_ = committed_sums;

@@ -96,17 +96,30 @@ struct NodeRef {
 struct AutoReportSchedule {
   long long last_t = 0;  // the previous report (0: none since the solve started)
   double last_e = 0;
+  bool forecast_hit_limit = false;
   // The iteration of the next report, after one at iteration t with exploitability e.
   long long next(long long t, double e, double target, long long reset_t) {
     long long gap = std::max<long long>(5, t / 4);
-    if (reset_t > 0 && last_t < reset_t && t >= reset_t) last_t = 0;
-    if (target > 0 && e > target && last_t > 0 && t > last_t && last_e > e) {
-      double k = std::log(last_e / e) / std::log(static_cast<double>(t) / static_cast<double>(last_t));
-      k = std::clamp(k, 0.5, 4.0);
+    if (reset_t > 0 && last_t < reset_t && t >= reset_t) {
+      last_t = 0;
+      forecast_hit_limit = false;
+    }
+    if (target > 0 && e > target) {
+      constexpr double fastest_decay = 4.0;
+      const long long limit = std::max<long long>(5, t / 2);
       // aimed 2% below the target: a report that just misses costs another report (#603)
-      const double tstar = static_cast<double>(t) * std::pow(e / (0.98 * target), 1.0 / k);
-      const long long g = static_cast<long long>(std::ceil(tstar - static_cast<double>(t)));
-      gap = std::clamp<long long>(g, 2, std::max<long long>(5, t / 2));
+      const double ratio = e / (0.98 * target);
+      auto forecast = [&](double decay) {
+        const double wait = static_cast<double>(t) * (std::pow(ratio, 1.0 / decay) - 1.0);
+        return std::max<long long>(2, static_cast<long long>(std::ceil(std::min(wait, static_cast<double>(limit)))));
+      };
+      if (e > 2.0 * target) forecast_hit_limit = false;
+      if (last_t > 0 && t > last_t && last_e > e) {
+        double decay = std::log(last_e / e) / std::log(static_cast<double>(t) / static_cast<double>(last_t));
+        gap = forecast(std::clamp(decay, 0.5, fastest_decay));
+        if (e <= 2.0 * target && gap == limit) forecast_hit_limit = true;
+      }
+      if (forecast_hit_limit) gap = std::min(gap, forecast(fastest_decay));
     }
     last_t = t;
     last_e = e;

@@ -1517,11 +1517,27 @@ static bool river_batch_matches() {
               same ? "identical" : "DIFFER", g1.regrets.size());
   // The exploitability check's river walk (river_evbr) against walk_evbr, on the same strategies.
   const RootStats a = s1.root_stats(), b = s2.root_stats();
-  const bool same_stats = a.ev[0] == b.ev[0] && a.ev[1] == b.ev[1] && a.mes[0] == b.mes[0] && a.mes[1] == b.mes[1] &&
-                          a.exploitability == b.exploitability && a.exploitability > 0;
+  auto identical = [](const RootStats& x, const RootStats& y) {
+    return x.ev[0] == y.ev[0] && x.ev[1] == y.ev[1] && x.mes[0] == y.mes[0] && x.mes[1] == y.mes[1] &&
+           x.exploitability == y.exploitability;
+  };
+  const bool same_stats = identical(a, b) && a.exploitability > 0;
   std::printf("[river batch] exploitability check river walk vs walk_evbr: %s (%.9g vs %.9g)\n",
               same_stats ? "identical" : "DIFFER", a.exploitability, b.exploitability);
-  return same && same_stats && !g1.regrets.empty();
+  for (GameTree* tree : {&g1, &g2}) {
+    for (const auto& n : tree->nodes) {
+      if (n.kind != ANodeKind::Decision || n.board_len != 4 || n.num_children < 2) continue;
+      const int hands = tree->num_hands(n.player);
+      float* sums = tree->strat.data() + n.storage;
+      std::fill_n(sums, (n.num_children - 1) * hands, 0.f);
+      std::fill_n(sums + (n.num_children - 1) * hands, hands, 1.f);
+    }
+  }
+  const auto pure = s1.root_stats();
+  const bool same_deviations = identical(pure, s2.root_stats()) && pure.exploitability != a.exploitability;
+  std::printf("[river batch] best responses through zero-probability turn actions: %s\n",
+              same_deviations ? "identical" : "DIFFER");
+  return same && same_stats && same_deviations && !g1.regrets.empty();
 }
 
 // set_info_freq auto across the average's restart (set_avg_delay). Replays the reports of a real

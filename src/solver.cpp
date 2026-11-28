@@ -1354,6 +1354,13 @@ void Solver::apply_elimination(uint32_t ni, float* out) const {
 static float normalization_weight(float x) { return x; }
 static float normalization_weight(uint16_t x) { return scaled_fp16_sum_value(x); }
 
+#if PIO_SHOWDOWN_NEON
+static float32x4_t load_average4(const float* p) { return vld1q_f32(p); }
+static float32x4_t load_average4(const uint16_t* p) { return vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(p))); }
+static float32x4_t load_regret4(const float* p) { return vld1q_f32(p); }
+static float32x4_t load_regret4(const uint16_t* p) { return vreinterpretq_f32_u32(vshll_n_u16(vld1_u16(p), 16)); }
+#endif
+
 template <int actions, class Sum, class Regret>
 static void average_float_strategy(const Sum* sums, const Regret* regrets, float* out, int hands) {
   uint32_t max_sum_bits = 0;
@@ -1364,7 +1371,37 @@ static void average_float_strategy(const Sum* sums, const Regret* regrets, float
     max_sum_bits = std::max(max_sum_bits, std::bit_cast<uint32_t>(std::max(0.f, sum)));
   }
   const float threshold = std::bit_cast<float>(max_sum_bits) * 1e-4f;
-  for (int h = 0; h < hands; ++h) {
+  int h = 0;
+#if PIO_SHOWDOWN_NEON
+  const auto zero = vdupq_n_f32(0.f), one = vdupq_n_f32(1.f);
+  for (; h + 4 <= hands; h += 4) {
+    float32x4_t weights[actions], total = zero;
+    for (int a = 0; a < actions; ++a) {
+      weights[a] = load_average4(sums + a * hands + h);
+      if constexpr (!std::is_same_v<Sum, uint16_t>) total = vaddq_f32(total, weights[a]);
+    }
+    if constexpr (std::is_same_v<Sum, uint16_t>) total = vld1q_f32(out + h);
+    const auto use_average = vcgtq_f32(total, vdupq_n_f32(threshold));
+    if (vminvq_u32(use_average)) {
+      for (int a = 0; a < actions; ++a) vst1q_f32(out + a * hands + h, vdivq_f32(weights[a], total));
+      continue;
+    }
+    float32x4_t pos[actions], sum = zero;
+    for (int a = 0; a < actions; ++a) {
+      pos[a] = vmaxnmq_f32(zero, load_regret4(regrets + a * hands + h));
+      sum = vaddq_f32(sum, pos[a]);
+    }
+    const auto positive = vcgtq_f32(sum, zero);
+    const auto inv = vbslq_f32(positive, vdivq_f32(one, vbslq_f32(positive, sum, one)), zero);
+    const auto uniform = vbslq_f32(positive, zero, vdupq_n_f32(1.f / actions));
+    const auto denominator = vbslq_f32(use_average, total, one);
+    for (int a = 0; a < actions; ++a) {
+      const auto current = vfmaq_f32(uniform, pos[a], inv);
+      vst1q_f32(out + a * hands + h, vbslq_f32(use_average, vdivq_f32(weights[a], denominator), current));
+    }
+  }
+#endif
+  for (; h < hands; ++h) {
     float total = 0;
     if constexpr (std::is_same_v<Sum, uint16_t>) {
       total = out[h];
@@ -2584,6 +2621,7 @@ struct ENode {
 };
 struct EvbrWork {
   std::vector<ENode> nodes;
+  std::vector<std::pair<uint32_t, float*>> shared_policies;
   std::vector<SdJob> jobs;
   std::vector<std::pair<float*, float>> scale;
   const ShowdownBoard* sb = nullptr;
@@ -2592,7 +2630,7 @@ struct EvbrWork {
 thread_local EvbrWork tl_ew;
 }  // namespace
 
-void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br) {
+void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, float* br, RiverPolicies policies) {
   EvbrWork& w = tl_ew;
   Arena& ar = arena();
   const GNode& n = g_.nodes[ni];
@@ -2601,12 +2639,17 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
   const int A = n.num_children;
   const int actor = n.player;
   if (forced_action(n) && !g_.lazy && g_.nodes[n.first_child].kind == ANodeKind::Decision) {
-    river_evbr_down(n.first_child, p, ro, ev, br);
+    river_evbr_down(n.first_child, p, ro, ev, br, policies);
     return;
   }
   const int Ha = g_.num_hands(actor);
-  float* sigma = ar.alloc(static_cast<size_t>(A) * Ha);
-  average_strategy(ni, sigma);
+  const auto cached = std::lower_bound(policies.begin(), policies.end(), ni,
+                                       [](const auto& entry, uint32_t id) { return entry.first < id; });
+  float* sigma = cached != policies.end() && cached->first == ni ? cached->second : nullptr;
+  if (!sigma) {
+    sigma = ar.alloc(static_cast<size_t>(A) * Ha);
+    average_strategy(ni, sigma);
+  }
   float* cev = ar.alloc(static_cast<size_t>(A) * Hp);
   float* cbr = ar.alloc(static_cast<size_t>(A) * Hp);
   uint8_t* kind = reinterpret_cast<uint8_t*>(ar.alloc(static_cast<size_t>((A + 3) / 4)));
@@ -2646,7 +2689,7 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
         showdown_job(child, ro, ea, nullptr, nullptr, 0.0f);
         kind[a] = 1;
       } else {
-        river_evbr_down(ci, p, ro, ea, cbr + static_cast<size_t>(a) * Hp);
+        river_evbr_down(ci, p, ro, ea, cbr + static_cast<size_t>(a) * Hp, policies);
         kind[a] = 2;
       }
     }
@@ -2707,20 +2750,20 @@ void Solver::river_evbr_down(uint32_t ni, int p, const float* ro, float* ev, flo
       showdown_job(child, ro2, ea, nullptr, nullptr, 0.0f);
       kind[a] = 1;
     } else {
-      river_evbr_down(ci, p, ro2, ea, cbr + static_cast<size_t>(a) * Hp);
+      river_evbr_down(ci, p, ro2, ea, cbr + static_cast<size_t>(a) * Hp, policies);
       kind[a] = 2;
     }
   }
 }
 
-void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float* br) {
+void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float* br, RiverPolicies policies) {
   EvbrWork& w = tl_ew;
   w.busy = true;
   w.nodes.clear();
   w.jobs.clear();
   w.scale.clear();
   w.sb = nullptr;
-  river_evbr_down(root, p, ro, ev, br);
+  river_evbr_down(root, p, ro, ev, br, policies);
   if (!w.jobs.empty()) showdown_batch(*w.sb, p, static_cast<int>(w.jobs.size()), w.jobs.data(), g_.num_hands(1 - p));
   const int Hp = g_.num_hands(p);
   for (auto& [row, pay] : w.scale)
@@ -2729,8 +2772,9 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
     const ENode& r = w.nodes[i];
     const GNode& n = g_.nodes[r.ni];
     const int A = n.num_children;
-    for (int a = 0; a < A; ++a)
-      if (r.kind[a] == 1) std::memcpy(r.cbr + static_cast<size_t>(a) * Hp, r.cev + static_cast<size_t>(a) * Hp, sizeof(float) * Hp);
+    auto response = [&](int a) {
+      return (r.kind[a] == 1 ? r.cev : r.cbr) + static_cast<size_t>(a) * Hp;
+    };
     if (r.own) {
       // the first row as 0 + x, not added to a zeroed row: the same floats (as in river_cfr)
       for (int a = 0; a < A; ++a) {
@@ -2742,9 +2786,9 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
           for (int h = 0; h < Hp; ++h) r.ev[h] += sa[h] * c[h];
         }
       }
-      std::memcpy(r.br, r.cbr, sizeof(float) * Hp);
+      std::memcpy(r.br, response(0), sizeof(float) * Hp);
       for (int a = 1; a < A; ++a) {
-        const float* c = r.cbr + static_cast<size_t>(a) * Hp;
+        const float* c = response(a);
         for (int h = 0; h < Hp; ++h) r.br[h] = std::max(r.br[h], c[h]);
       }
       if (n.flags & (GF_LOCKED | GF_COMBO_LOCKED)) {
@@ -2756,7 +2800,7 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
         for (int h = 0; h < Hp; ++h) {
           if (lockmask && !lockmask[h]) continue;
           float v = 0.0f;
-          for (int a = 0; a < A; ++a) v += r.sigma[static_cast<size_t>(a) * Hp + h] * r.cbr[static_cast<size_t>(a) * Hp + h];
+          for (int a = 0; a < A; ++a) v += r.sigma[static_cast<size_t>(a) * Hp + h] * response(a)[h];
           r.br[h] = v;
         }
       }
@@ -2765,7 +2809,7 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
       for (int a = 0; a < A; ++a) {
         if (!r.kind[a]) continue;
         const float* e = r.cev + static_cast<size_t>(a) * Hp;
-        const float* b = r.cbr + static_cast<size_t>(a) * Hp;
+        const float* b = response(a);
         if (first) {
           for (int h = 0; h < Hp; ++h) r.ev[h] = 0.0f + e[h];
           for (int h = 0; h < Hp; ++h) r.br[h] = 0.0f + b[h];
@@ -2784,7 +2828,8 @@ void Solver::river_evbr(uint32_t root, int p, const float* ro, float* ev, float*
   w.busy = false;
 }
 
-void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br) {
+void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, float* ev, float* br,
+                       PairedRiverReports* paired) {
   const GNode& n = g_.nodes[ni];
   const int o = 1 - p;
   const int Hp = g_.num_hands(p), Ho = g_.num_hands(o);
@@ -2804,9 +2849,18 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
         flop_deal(n, ci, Walk::BestResponse, p, rp, ro, br);
         return;
       }
+      const bool river_deal = paired && n.board_len == 4;
+      float* ip_values = river_deal ? paired->values.data() + size_t(n.aux) * 2 * g_.num_hands(1) : nullptr;
+      if (river_deal && p == 1 && paired->ready[n.aux]) {
+        std::copy_n(ip_values, Hp, ev);
+        std::copy_n(ip_values + Hp, Hp, br);
+        return;
+      }
+      const bool evaluate_ip = river_deal && p == 0;
       const int K = n.num_children;
       ArenaScope sc;
       float* res = sc.a.alloc(static_cast<size_t>(K) * 2 * Hp);
+      float* ip_children = evaluate_ip ? sc.a.alloc(size_t(K) * 2 * Ho) : nullptr;
       auto task = [&](int k) {
         ArenaScope tsc;
         int card = ci.cards[k];
@@ -2834,16 +2888,28 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
         float* rp2 = tsc.a.alloc(Hp);
         std::memcpy(rp2, rp, sizeof(float) * Hp);
         for (uint16_t h : g_.hands_with_card[p][card]) rp2[h] = 0.0f;
-        if (all_zero(ro2, Ho)) {
-          std::memset(rk, 0, sizeof(float) * 2 * Hp);
-          return;
-        }
-        if (river_batch && g_.incentives.empty() && n.board_len == 4 && !tl_ew.busy &&
-            g_.nodes[n.first_child + static_cast<uint32_t>(k)].kind == ANodeKind::Decision)
-          river_evbr(n.first_child + static_cast<uint32_t>(k), p, ro2, rk, rk + Hp);
-        else
-          walk_evbr(n.first_child + static_cast<uint32_t>(k), p, rp2, ro2, rk, rk + Hp);
+        const auto child = n.first_child + static_cast<uint32_t>(k);
+        const bool batched = river_batch && g_.incentives.empty() && n.board_len == 4 && !tl_ew.busy &&
+                             g_.nodes[child].kind == ANodeKind::Decision;
+        const bool live = !all_zero(ro2, Ho);
+        if (!live) std::fill_n(rk, 2 * Hp, 0.0f);
+        else if (batched) river_evbr(child, p, ro2, rk, rk + Hp);
+        else walk_evbr(child, p, rp2, ro2, rk, rk + Hp, paired);
         for (uint16_t h : g_.hands_with_card[p][card]) rk[h] = rk[Hp + h] = 0.0f;
+        if (evaluate_ip) {
+          auto* dest = ip_children + size_t(k) * 2 * Ho;
+          if (all_zero(rp2, Hp)) std::fill_n(dest, 2 * Ho, 0.0f);
+          else if (batched) {
+            tl_ew.shared_policies.clear();
+            if (live) {
+              for (const auto& entry : tl_ew.nodes) tl_ew.shared_policies.emplace_back(entry.ni, entry.sigma);
+              std::sort(tl_ew.shared_policies.begin(), tl_ew.shared_policies.end(),
+                        [](const auto& a, const auto& b) { return a.first < b.first; });
+            }
+            river_evbr(child, o, rp2, dest, dest + Ho, tl_ew.shared_policies);
+          } else walk_evbr(child, o, ro2, rp2, dest, dest + Ho);
+          for (uint16_t h : g_.hands_with_card[o][card]) dest[h] = dest[Ho + h] = 0.0f;
+        }
       };
       if (parallel && K > 1) {
         std::function<void(int)> fn = task;
@@ -2852,18 +2918,25 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
         for (int k = 0; k < K; ++k) task(k);
       }
       const float inv = 1.0f / static_cast<float>(ci.num_possible);
-      for (int half = 0; half < 2; ++half) {
-        float* out = half ? br : ev;
-        std::memset(out, 0, sizeof(float) * Hp);
-        for (int k = 0; k < K; ++k) {
-          const float* rk = res + static_cast<size_t>(k) * 2 * Hp + static_cast<size_t>(half) * Hp;
-          for (int h = 0; h < Hp; ++h) out[h] += rk[h];
-          for (auto& cp : ci.iso[k]) {
-            const uint16_t* ph = g_.perm_hand[p][PERM_INV[cp.second]].data();
-            for (int h = 0; h < Hp; ++h) out[h] += rk[ph[h]];
+      auto collect = [&](int player, int hands, const float* rows, float* ev, float* br) {
+        for (int half = 0; half < 2; ++half) {
+          float* out = half ? br : ev;
+          std::memset(out, 0, sizeof(float) * hands);
+          for (int k = 0; k < K; ++k) {
+            const float* rk = rows + static_cast<size_t>(k) * 2 * hands + static_cast<size_t>(half) * hands;
+            for (int h = 0; h < hands; ++h) out[h] += rk[h];
+            for (auto& cp : ci.iso[k]) {
+              const uint16_t* ph = g_.perm_hand[player][PERM_INV[cp.second]].data();
+              for (int h = 0; h < hands; ++h) out[h] += rk[ph[h]];
+            }
           }
+          for (int h = 0; h < hands; ++h) out[h] *= inv;
         }
-        for (int h = 0; h < Hp; ++h) out[h] *= inv;
+      };
+      collect(p, Hp, res, ev, br);
+      if (evaluate_ip) {
+        collect(o, Ho, ip_children, ip_values, ip_values + Ho);
+        paired->ready[n.aux] = 1;
       }
       return;
     }
@@ -2871,7 +2944,7 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
   }
 
   if (forced_action(n) && !g_.lazy && (n.player == p || !all_zero(ro, Ho))) {
-    walk_evbr(n.first_child, p, rp, ro, ev, br);
+    walk_evbr(n.first_child, p, rp, ro, ev, br, paired);
     return;
   }
   const int A = n.num_children;
@@ -2916,7 +2989,7 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
       const float* sa = sigma + static_cast<size_t>(a) * Hp;
       float* rp2 = rpa + static_cast<size_t>(a) * Hp;
       for (int h = 0; h < Hp; ++h) rp2[h] = rp[h] * sa[h];
-      walk_evbr(ci, p, rp2, ro, ea, ba);
+      walk_evbr(ci, p, rp2, ro, ea, ba, paired);
     };
     run_actions(n, A, act);
     if (n.flags & GF_INCENTIVES) {
@@ -3017,7 +3090,7 @@ void Solver::walk_evbr(uint32_t ni, int p, const float* rp, const float* ro, flo
       any |= v != 0.0f;
     }
     if (!any) return;
-    walk_evbr(ci, p, rp, ro2, ea, ba);
+    walk_evbr(ci, p, rp, ro2, ea, ba, paired);
     used[a] = 1;
   };
   run_actions(n, A, act);
@@ -3080,6 +3153,13 @@ RootStats Solver::root_stats() {
     bool& flag;
     ~CheckOff() { flag = false; }
   } check_off{hybrid_check_};
+  PairedRiverReports rivers;
+  const bool pair_reports = river_batch && !subtrees && !write_best_response && g_.incentives.empty() &&
+                            g_.root_board_len() >= 3 && !g_.chances.empty();
+  if (pair_reports) {
+    rivers.ready.resize(g_.chances.size());
+    rivers.values.resize(g_.chances.size() * 2 * g_.num_hands(1));
+  }
   for (int p = 0; p < 2; ++p) {
     ArenaScope sc;
     int Hp = g_.num_hands(p);
@@ -3091,7 +3171,7 @@ RootStats Solver::root_stats() {
       walk_t<Walk::Evaluate>(0, p, rp, ro, out);
       walk_t<Walk::BestResponse>(0, p, rp, ro, br);
     } else {
-      walk_evbr(0, p, rp, ro, out, br);
+      walk_evbr(0, p, rp, ro, out, br, pair_reports ? &rivers : nullptr);
     }
     double s = 0;
     for (int h = 0; h < Hp; ++h) s += static_cast<double>(rp[h]) * out[h];

@@ -284,6 +284,16 @@ class PostflopSolve final : public MetalSolve {
     publish_regrets(g);
   }
 
+  void finish_for_cpu(GameTree& g) override {
+    replays = {};
+    regrets.output = nil;
+    strategy_sums.output = nil;
+    r[0] = r[1] = v = nil;
+    publish_sums(g);
+    strategy_sums.input = nil;
+    publish_regrets(g);
+  }
+
   void prepare_regrets(const GameTree& g) {
     auto* dest = static_cast<uint16_t*>(regrets.input.contents);
     transfer_state(g.regrets.data(), dest, g.regrets.size(),

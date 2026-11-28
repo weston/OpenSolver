@@ -157,7 +157,8 @@ static bool equity_prior_startup() {
       ++gpu_game.iterations;
       gpu.update_flop_opening();
       if (t == 1 || t == 8 || t == 9 || t == 33) {
-        device->publish_for_cpu(gpu_game);
+        if (t == 33) device->finish_for_cpu(gpu_game);
+        else device->publish_for_cpu(gpu_game);
         const auto c = cpu.root_stats(), m = gpu.root_stats();
         if (std::abs(m.exploitability - c.exploitability) > .003 * cfg.start_pot()) return false;
       }

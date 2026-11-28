@@ -204,7 +204,15 @@ SIMD-group or 2.0 features, so it also compiles as CUDA C++ under NVRTC.
   same with average strategies and the kernels' `mode` 1 / 2 (EV, best response; the sums passed as the
   regrets, nothing written). The GPU's rows are its subtrees' storage ranges packed (`DeviceLayout`);
   a 16-bit tree converts them per node, a chunk at a time. `WSOLVER_HYBRID=<share>` fixes the share
-  (and turns it on under CPU algorithms); `WSOLVER_HYBRID_DEBUG=1` prints the iteration-2 timing.
+  (and turns it on under CPU algorithms); `WSOLVER_HYBRID_DEBUG=1` prints the share's timing.
+  - **On Apple Silicon (#589)** the device is metal.mm's `MetalSubtrees`: the tree's own float32 arrays are
+    bound with `newBufferWithBytesNoCopy` (`MetalRows::shared`) and updated in place, at the tree's
+    offsets (no `DeviceLayout`); arrays too small to be page-aligned are copied at the same offsets and
+    their subtrees' ranges copied back. 16-bit trees solve on the CPU. postflop.metal's report modes are
+    function constant 2 (`pass_mode`), so `v4_gpu` compiles as before. The share starts at 0.75 and is
+    measured over iterations 5-8 with both at work (`SubtreeDevice::times_passes`, the GPU time of its
+    command buffers): the Apple GPU lowers its clocks while it waits on the CPU, so timed alone at
+    iteration 2 (as CUDA/OpenCL are) its passes took twice their time in the solve.
 - **Discrete GPU memory.** The tree must fit the card: `small_strats auto` keeps float32 under
   `v4_gpu` only when it should (a 16-bit tree solves on the CPU). Discrete GPUs are not the default
   device (`gpu_preferred`), Metal is.

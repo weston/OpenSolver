@@ -1186,6 +1186,7 @@ class MetalSubtrees final : public SubtreeDevice {
   bool times_passes() const override { return true; }
   double pass_seconds() override {
     finish();
+    std::lock_guard<std::mutex> lock(wait_mu);
     const double seconds = passes;
     passes = 0;
     return seconds;

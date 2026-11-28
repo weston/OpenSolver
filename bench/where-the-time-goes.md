@@ -544,6 +544,33 @@ auto`, to 0.3% of pot, after #579:
   `-save-temps` in the build options writes the ISA: 52-64 VGPRs, wave32, 88 bytes of scratch (the
   arguments), no spills.
 
+## CPU and GPU together on Apple Silicon (#589)
+
+M1 Ultra (20 threads: 16 P + 4 E cores, 64-core GPU, 128 GB), the viewer's Smart trees to 0.3% of pot,
+2026-11-27. Memory is the peak footprint (`/usr/bin/time -l`):
+
+| tree | CPU (`v4_large`) | GPU (`v4_gpu`) | CPU and GPU (`v4_hybrid`) |
+|---|---|---|---|
+| HUNL 4BP | 1.14 s, 63 it, 0.48 GB | 0.87 s, 64 it, 1.06 GB | **0.63 s**, 63 it, **0.45 GB** |
+| HUNL 3BP | 9.39 s, 123 it, 2.67 GB | 4.37 s, 123 it, 5.80 GB | **3.40 s**, 123 it, **2.21 GB** |
+| HUNL SRP | 122.8 s, 227 it, 19.0 GB | 50.7 s, 224 it, 41.8 GB | **36.8 s**, 221 it, **15.3 GB** |
+
+- **The memory is the GPU path's double buffer, not the workspace.** `v4_gpu` keeps a second full copy of the
+  regrets and sums (`MetalRows` staging, so the CPU can measure a report while the GPU runs the next
+  iteration): 2.2-2.7x the tree. The hybrid binds the tree's own rows and updates them in place.
+- **Both devices at once cost each other little.** Two processes, the CPU solve (16 threads) and the GPU solve
+  (4 threads) of the `hunl_3bp` preset side by side: CPU 14.4 -> 15.6 s, GPU 10.1 -> 11.3 s (+8-12%).
+- **The share is best measured with both at work, from above.** Per pass at a fixed share (`bench/run.py`'s
+  `hunl_3bp` preset, plain `build_tree`, 3.56 GB; iterations 20-120): at 0.5 the CPU's turns take 0.025 s and the GPU is waiting on it; at 0.7 the two end together
+  (0.016 s); at 0.8 the GPU is 0.005 s behind. Whole solves: share 0.6 6.27 s, 0.7 5.09 s, 0.8 5.22 s, 0.9
+  5.90 s. #582's calibration (iteration 2, the device's passes alone, then the CPU's) said 0.58: the Apple
+  GPU's passes took about twice as long early and alone, and its time per pass also grows when it idles part
+  of each pass at a low share (clocks follow load). Measured from the command buffers' GPU times over
+  iterations 5-8, starting at 0.75 (where the GPU is the slower side), the calibration lands on 0.74 there (4.95-5.10 s
+  against 7.7 s on the GPU alone) and on 0.75 for the Smart SRP.
+- Not done: a 16-bit tree solves on the CPU. On ARM `small_strats auto` keeps float32 wherever it fits, and a
+  float32 copy of the GPU's share beside a 16-bit tree costs more memory than the float32 tree in place.
+
 ## Showdown terminals per river subtree, measured on arm64 (#186)
 
 #186 wants a river subtree's showdown terminals evaluated in one sweep over the board's strength

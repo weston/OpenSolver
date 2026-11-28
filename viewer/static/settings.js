@@ -23,7 +23,7 @@ export function updateDevice(st) {
   const gpu = field.querySelector('option[value="gpu"]');
   if (gpu) gpu.textContent = st.gpu_name ? `GPU (${st.gpu_name})` : "GPU";
   const hybrid = field.querySelector('option[value="hybrid"]');
-  if (hybrid) hybrid.hidden = !st.devices?.includes("hybrid");   // a discrete GPU (#582)
+  if (hybrid) hybrid.hidden = !st.devices?.includes("hybrid");   // any GPU (#582, #589)
   if (!savingDevice) field.value = st.device;
   field.disabled = savingDevice || st.solving || st.dead || benchRunning;
   const changed = currentDevice !== st.device;

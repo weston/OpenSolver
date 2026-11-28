@@ -165,10 +165,14 @@ class Solver {
   void update_flop_opening() {
     sqrt_weights_ = opening_ == FlopOpening::SquareRoot && uses_flop_ip_first() && g_.iterations < 8;
   }
+  void prepare_equity_prior();
+  void apply_equity_prior(bool metal_accuracy_solve);
   void cancel_flop_opening() {
+    equity_prior_pending_ = false;
     if (opening_ == FlopOpening::SquareRoot) set_flop_opening(FlopOpening::Edited);
   }
   void restart_flop_opening() {
+    equity_prior_pending_ = false;
     const bool previously_eligible = average_sampling_ != AverageSampling::Dense;
     const bool smart = g_.cfg.river_sizing == RiverSizing::Smart && half_precision_opening;
     const bool allow_fp16 = smart || fp16_sums_;
@@ -468,6 +472,7 @@ class Solver {
   bool accumulate_ = true;  // t > avg_delay: whether this iteration feeds the strategy sum
   FlopOpening opening_ = FlopOpening::Ordinary;
   AverageSampling average_sampling_ = AverageSampling::Dense;
+  bool equity_prior_pending_ = false;
   bool sqrt_weights_ = false;
   bool prune_this_iter_ = false;  // set by iterate/iterate_subtree; read-only during walks
 };

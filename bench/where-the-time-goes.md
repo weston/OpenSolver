@@ -605,7 +605,12 @@ their sampling noise is not averaged away.
   (OOP DDD, IP DDDS, OOP DDSF, IP DDS..., by child kind), so most river nodes take `update_values` level
   by level and every showdown its own `terminal` work-group. Per pass ~17 GB move against ~4.5 GB of
   state: the rest is value and reach rows and board tables. Folding a node's showdown and fold children
-  into its own work-group would save at most the `terminal` kernel's ~14%.
+  into its own work-group would save at most the `terminal` kernel's ~14%. Built and measured
+  (`river_decision`: a river decision with its 1-3 showdown and fold children in one work-group, their values
+  kept in registers): bit-identical, and 6381 ms of kernel time against 6358 ms. The kernel replaced ~2000 ms
+  of `terminal` and `update_values` with 1884 ms: the time is the prefix scans themselves (one per showdown,
+  each over the board's ~3,000-entry table and the opponent's 963 reaches, ~250,000 a pass), not the value
+  rows around them.
 
 ## Showdown terminals per river subtree, measured on arm64 (#186)
 
